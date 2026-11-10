@@ -125,11 +125,14 @@ impl Page {
             .width(Fill)
             .height(Fill)
             .style(move |_| container::Style::default().background(palette.background));
-        if self.leave_prompt {
-            stack![base, leave_prompt(palette)].into()
+        // Always a stack, so the prompt coming or going keeps the page's
+        // widget state, like its scroll offset.
+        let prompt: Element<'_, Message> = if self.leave_prompt {
+            leave_prompt(palette)
         } else {
-            base.into()
-        }
+            Space::new().into()
+        };
+        stack![base, prompt].into()
     }
     fn save_bar(&self, palette: Palette) -> Element<'_, Message> {
         let mut bar = column![].spacing(6);

@@ -936,3 +936,37 @@ fn a_save_closes_the_font_dropdown_with_the_other_menus() {
     assert!(font_form(&app).font_picker.is_none());
     assert!(!page_of(&app).menu_open);
 }
+
+#[test]
+fn a_font_switch_and_the_leave_prompt_keep_the_page_scrolled() {
+    use crate::layout_probe::{lay_out, relay_out};
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let size = iced::Size::new(900.0, 500.0);
+    let mut laid = lay_out(app.view(), size);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::scrollable::scroll_to(
+            Id::new(super::super::view::SCROLL_ID),
+            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 400.0 }.into(),
+        ),
+    ));
+    assert_eq!(laid.offsets(), [400.0]);
+    let mut tree = laid.into_tree();
+    for (step, message) in [
+        ("open", Message::Settings(Event::Appearance(Edit::FontOpen))),
+        (
+            "pick",
+            Message::Settings(Event::Appearance(Edit::Font(Some(WIDE.to_owned())))),
+        ),
+        ("prompt", Message::Section(crate::sidebar::Section::Library)),
+        ("keep editing", Message::Settings(Event::KeepEditing)),
+    ] {
+        let _ = app.update(message);
+        let mut laid = relay_out(app.view(), tree, size);
+        assert_eq!(laid.offsets(), [400.0], "after {step}");
+        tree = laid.into_tree();
+    }
+    assert!(!page_of(&app).leave_prompt && page_of(&app).is_dirty());
+}
