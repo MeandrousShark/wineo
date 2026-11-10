@@ -67,6 +67,10 @@ fn escape() -> Event {
 }
 
 fn press(key: keyboard::Key) -> Event {
+    press_with(key, keyboard::Modifiers::empty())
+}
+
+fn press_with(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Event {
     Event::Keyboard(keyboard::Event::KeyPressed {
         key: key.clone(),
         modified_key: key,
@@ -74,7 +78,7 @@ fn press(key: keyboard::Key) -> Event {
             keyboard::key::NativeCode::Unidentified,
         ),
         location: keyboard::Location::Standard,
-        modifiers: keyboard::Modifiers::empty(),
+        modifiers,
         text: None,
         repeat: false,
     })
@@ -146,4 +150,21 @@ fn the_arrows_and_enter_publish_their_messages_while_open() {
 fn without_keys_the_arrows_pass_through() {
     let event = press(keyboard::Key::Named(Named::ArrowDown));
     assert_eq!(run(true, ELSEWHERE, &[event]), (vec![], false));
+}
+
+#[test]
+fn tab_and_shift_tab_move_like_the_arrows_while_open() {
+    let tab = keyboard::Key::Named(Named::Tab);
+    let down = press(tab.clone());
+    let up = press_with(tab, keyboard::Modifiers::SHIFT);
+    assert_eq!(
+        run_with(true, true, ELSEWHERE, std::slice::from_ref(&down)),
+        (vec![Pressed::Down], true)
+    );
+    assert_eq!(
+        run_with(true, true, ELSEWHERE, &[up]),
+        (vec![Pressed::Up], true)
+    );
+    // Closed, Tab is left to move focus.
+    assert_eq!(run_with(false, true, ELSEWHERE, &[down]), (vec![], false));
 }

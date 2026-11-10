@@ -42,8 +42,8 @@ struct Keys<Message> {
 }
 
 impl<Message> Dropdown<'_, Message> {
-    /// Up and Down publish `up` and `down`, and Enter `enter`, while the
-    /// popup is open, so a list can keep a highlight while its search field
+    /// Up and Shift+Tab publish `up`, Down and Tab `down`, and Enter
+    /// `enter`, while the popup is open, so a list can keep a highlight while its search field
     /// has focus.
     pub(crate) fn on_keys(mut self, up: Message, down: Message, enter: Message) -> Self {
         self.keys = Some(Keys { up, down, enter });
@@ -258,12 +258,17 @@ impl<Message: Clone> overlay::Overlay<Message, iced::Theme, iced::Renderer>
         if let Some(keys) = &self.keys
             && let Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named),
+                modifiers,
                 ..
             }) = event
         {
+            // An open menu takes Tab too, so focus can't leave for the
+            // controls behind it.
             let message = match named {
                 Named::ArrowUp => Some(&keys.up),
                 Named::ArrowDown => Some(&keys.down),
+                Named::Tab if modifiers.shift() => Some(&keys.up),
+                Named::Tab => Some(&keys.down),
                 Named::Enter => Some(&keys.enter),
                 _ => None,
             };

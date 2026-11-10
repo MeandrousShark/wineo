@@ -1049,13 +1049,17 @@ impl App {
         };
         let (prompt, menu_open, global) =
             (page.leave_prompt, page.any_menu_open(), page.is_global());
+        let font_open = page
+            .appearance()
+            .is_some_and(|form| form.font_picker.is_some());
         match key.as_ref() {
             Key::Character(character)
                 if modifiers.control() && character.eq_ignore_ascii_case("s") =>
             {
                 self.settings_update(Event::Save)
             }
-            Key::Named(Named::Tab) if prompt => Task::none(),
+            // The Font dropdown moves its highlight with Tab instead.
+            Key::Named(Named::Tab) if prompt || font_open => Task::none(),
             // Only text inputs take focus in iced, so Tab moves between those.
             Key::Named(Named::Tab) if modifiers.shift() => {
                 iced::widget::operation::focus_previous()

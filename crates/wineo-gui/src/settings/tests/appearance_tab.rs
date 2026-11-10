@@ -1265,3 +1265,18 @@ fn an_open_font_dropdown_holds_navigation_without_the_menu_flag() {
     app.settings.as_mut().unwrap().menu_open = false;
     assert!(page_of(&app).navigation_blocked());
 }
+
+#[test]
+fn tab_stays_in_the_open_font_dropdown() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let tab = Key::Named(Named::Tab);
+    let moves = |task: iced::Task<Message>| iced_runtime::task::into_stream(task).is_some();
+    assert!(moves(app.settings_key(&tab, Modifiers::empty(), false)));
+    edit(&mut app, Edit::FontOpen);
+    // The popup captured it and sent a move, so focus stays put.
+    for modifiers in [Modifiers::empty(), Modifiers::SHIFT] {
+        assert!(!moves(app.settings_key(&tab, modifiers, true)));
+    }
+}
