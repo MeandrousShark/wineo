@@ -546,7 +546,7 @@ fn tab_reaches_the_dice_after_the_filter_tab_chips_and_before_the_slider() {
 }
 
 #[test]
-fn the_search_box_shrinks_to_its_minimum_before_the_toolbar_clips() {
+fn the_search_box_shrinks_to_its_minimum_then_becomes_an_icon() {
     let (_root, app) = library(4);
     let width = |window: f32| {
         let mut laid = lay_out(app.view(), Size::new(window, 800.0));
@@ -561,7 +561,20 @@ fn the_search_box_shrinks_to_its_minimum_before_the_toolbar_clips() {
     // A narrower window takes the same pixels off the search box.
     assert_eq!(width(1062.0), narrower - 10.0);
     assert_eq!(width(700.0), crate::grid::SEARCH_MIN_WIDTH);
-    assert_eq!(width(400.0), crate::grid::SEARCH_MIN_WIDTH);
+    // Too narrow even with everything folded: search is its icon, and the
+    // field isn't in the toolbar.
+    let mut laid = lay_out(app.view(), Size::new(400.0, 800.0));
+    assert_eq!(
+        bounds(&mut laid, crate::search_drop::ICON_ID).size(),
+        Size::new(32.0, 32.0)
+    );
+    let found = Arc::new(Mutex::new(None));
+    let sink = found.clone();
+    laid.run(Box::new(iced::advanced::widget::operation::map(
+        crate::library_menu::bounds_of(crate::SEARCH_ID),
+        move |bounds| *sink.lock().unwrap() = bounds,
+    )));
+    assert_eq!(*found.lock().unwrap(), None);
 }
 
 #[test]
