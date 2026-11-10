@@ -244,6 +244,17 @@ impl Page {
                 }
                 Step::none()
             }
+            // Hiding needs the tray to come back from, like Keep running.
+            Event::GlobalOnStart(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.desktop.tray) => {
+                Step::none()
+            }
+            Event::GlobalOnStart(on_start) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.on_start = on_start;
+                }
+                Step::none()
+            }
             Event::GlobalArtKind(kind, on) => {
                 if let View::Global(editor) = &self.view {
                     let fetch = editor.form.draft.art_fetch.with(kind, on);
@@ -424,6 +435,7 @@ impl Page {
                     | Event::GlobalAutoImport(_)
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
+                    | Event::GlobalOnStart(_)
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -448,6 +460,7 @@ impl Page {
                     | Event::GlobalAutoImport(_)
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
+                    | Event::GlobalOnStart(_)
                     | Event::Appearance(_)
             )
         {

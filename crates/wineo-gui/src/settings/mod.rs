@@ -80,6 +80,8 @@ pub(crate) enum Event {
     GlobalTray(bool),
     /// Desktop's Closing the window.
     GlobalClose(wineo_core::library::CloseWindow),
+    /// Desktop's When something starts.
+    GlobalOnStart(wineo_core::library::OnStart),
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -269,6 +271,7 @@ impl Event {
                 | Event::GlobalAutoImport(_)
                 | Event::GlobalTray(_)
                 | Event::GlobalClose(_)
+                | Event::GlobalOnStart(_)
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)

@@ -1,7 +1,7 @@
-//! The General tab's Desktop section: Show a tray icon and Closing the
-//! window, saved to `library.toml`'s `[desktop]`.
+//! The General tab's Desktop section: Show a tray icon, Closing the window,
+//! and When something starts, saved to `library.toml`'s `[desktop]`.
 
-use wineo_core::library::{CloseWindow, Desktop};
+use wineo_core::library::{CloseWindow, Desktop, OnStart};
 
 use super::*;
 
@@ -95,6 +95,7 @@ fn an_environment_page_ignores_the_desktop_section() {
     let _ = page.update(&paths, Event::Loaded(1, load::snapshot(&paths, "game")));
     let _ = page.update(&paths, Event::GlobalTray(false));
     let _ = page.update(&paths, Event::GlobalClose(CloseWindow::Tray));
+    let _ = page.update(&paths, Event::GlobalOnStart(OnStart::Hide));
     assert!(!page.is_dirty());
     assert_eq!(page.desktop(), None);
 }
@@ -167,4 +168,78 @@ fn the_app_follows_the_desktop_the_settings_page_read() {
     // An edit isn't saved yet, so the app keeps what's on disk.
     let _ = app.update(Message::Settings(Event::GlobalTray(false)));
     assert!(app.desktop.tray);
+}
+
+#[test]
+fn when_something_starts_defaults_to_keep_and_saves_hide() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    assert_eq!(desktop(&page).on_start, OnStart::Keep);
+    let _ = page.update(&paths, Event::GlobalOnStart(OnStart::Hide));
+    assert_eq!(page.changes(), 1);
+    assert!(global_editor(&page).form.edits().is_empty());
+    assert!(save_desktop(&paths, &page).failed.is_none());
+    let saved = wineo_core::library::load(&paths).desktop;
+    assert_eq!(saved.on_start, OnStart::Hide);
+    assert_eq!((saved.tray, saved.close), (true, CloseWindow::Quit));
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[desktop]\non_start = \"hide\"\n"
+    );
+
+    let page = global_page(&paths);
+    assert_eq!(desktop(&page).on_start, OnStart::Hide);
+    assert!(!page.is_dirty());
+}
+
+#[test]
+fn when_something_starts_is_locked_while_the_tray_is_off() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalTray(false));
+    let _ = page.update(&paths, Event::GlobalOnStart(OnStart::Hide));
+    assert_eq!(desktop(&page).on_start, OnStart::Keep);
+    assert_eq!(page.changes(), 1);
+    let _ = page.update(&paths, Event::GlobalTray(true));
+    let _ = page.update(&paths, Event::GlobalOnStart(OnStart::Hide));
+    assert_eq!(desktop(&page).on_start, OnStart::Hide);
+    assert_eq!(page.changes(), 1);
+
+    // Turning the tray off keeps the choice as made, locked.
+    let _ = page.update(&paths, Event::GlobalTray(false));
+    assert_eq!(desktop(&page).on_start, OnStart::Hide);
+    let _ = page.update(&paths, Event::GlobalOnStart(OnStart::Keep));
+    assert_eq!(desktop(&page).on_start, OnStart::Hide);
+}
+
+#[test]
+fn the_on_start_choice_reads_as_the_plan_says() {
+    assert_eq!(
+        super::super::view::OnStartChoice::ALL.map(|choice| choice.to_string()),
+        ["Keep the window open", "Hide to the tray"]
+    );
+}
+
+#[test]
+fn another_windows_on_start_save_moves_an_untouched_control() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::GlobalClose(CloseWindow::Tray));
+    wineo_core::library::set_desktop(
+        &paths,
+        &Desktop {
+            on_start: OnStart::Hide,
+            ..Desktop::default()
+        },
+    )
+    .unwrap();
+    let sequence = start_check(&mut page);
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, Texts::read_global(&paths)),
+    );
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    let form = &global_editor(&page).form;
+    assert_eq!(form.draft.desktop.on_start, OnStart::Hide);
+    assert_eq!(form.draft.desktop.close, CloseWindow::Tray);
 }
