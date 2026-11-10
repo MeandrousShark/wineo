@@ -202,15 +202,15 @@ fn an_explicit_reload_in_flight_wins_and_the_change_is_not_lost() {
 fn unfocused_pauses_the_rescan_and_focus_reloads_at_once() {
     let (_root, mut app) = shown(&["game"]);
     assert!(app.focused, "focused until the window says otherwise");
-    let _ = app.update(Message::Window(iced::window::Event::Focused));
+    let _ = app.update(app.window_event(iced::window::Event::Focused));
     assert!(
         !app.refreshing && !app.trash_refreshing,
         "no reload without a change of focus"
     );
-    let _ = app.update(Message::Window(iced::window::Event::Unfocused));
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
     assert!(!app.focused);
     assert!(!app.refreshing && !app.trash_refreshing);
-    let _ = app.update(Message::Window(iced::window::Event::Focused));
+    let _ = app.update(app.window_event(iced::window::Event::Focused));
     assert!(app.focused);
     assert!(app.refreshing && app.trash_refreshing);
 }
@@ -378,18 +378,19 @@ fn input_counts_as_focus_when_no_focused_event_comes() {
         position: iced::Point::ORIGIN,
     });
     assert!(
-        crate::window_or_press(moved).is_none(),
+        crate::window_or_press(moved, iced::window::Id::unique()).is_none(),
         "only presses count"
     );
     assert!(matches!(
-        crate::window_or_press(key),
+        crate::window_or_press(key, iced::window::Id::unique()),
         Some(Message::Pressed)
     ));
     // Events reach update in the order they happened, through one mapping.
     let run = |events: Vec<iced::Event>| {
         let (_root, mut app) = shown(&["game"]);
         for event in events {
-            let _ = app.update(crate::window_or_press(event).unwrap());
+            let message = crate::window_or_press(event, app.main_window.unwrap()).unwrap();
+            let _ = app.update(message);
         }
         (app.focused, app.refreshing && app.trash_refreshing)
     };

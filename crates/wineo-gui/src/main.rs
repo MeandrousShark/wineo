@@ -108,7 +108,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use iced::widget::{image, scrollable};
-use iced::{Settings, Subscription, Task, Theme, keyboard, window};
+use iced::{Element, Settings, Subscription, Task, Theme, keyboard, window};
 use wineo_core::cancel::Token;
 use wineo_core::paths::Paths;
 #[cfg(test)]
@@ -331,6 +331,8 @@ pub(crate) struct App {
     exiting: bool,
     /// Ends the process if work still holds it open after the window closes.
     watchdog: exit_watchdog::Watchdog,
+    /// The one window the app draws; events from any other id are dropped.
+    pub(crate) main_window: Option<window::Id>,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -459,7 +461,7 @@ pub(crate) enum Message {
     GridCardLocated(slot::SlotId, u64, grid_motion::CardBounds),
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
     ScrollIdle(u64),
-    Window(window::Event),
+    Window(window::Id, window::Event),
     ThemeChanged(iced::theme::Mode),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
@@ -707,6 +709,7 @@ impl App {
             close_wake: wake::Wake::default(),
             exiting: false,
             watchdog: exit_watchdog::Watchdog::default(),
+            main_window: None,
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -748,9 +751,14 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
+        let (main_window, open) = open_main_window();
+        app.main_window = Some(main_window);
         (
             app,
+            // Batched, not chained, so the window doesn't wait on the GOG
+            // check or the portal read.
             Task::batch([
+                open,
                 load,
                 badge,
                 prune,
@@ -763,6 +771,22 @@ impl App {
     }
     fn theme(&self) -> Theme {
         self.palette.theme()
+    }
+
+    fn title(&self, window: window::Id) -> String {
+        if self.main_window == Some(window) {
+            "wineo".to_owned()
+        } else {
+            String::new()
+        }
+    }
+
+    fn window_view(&self, window: window::Id) -> Element<'_, Message> {
+        if self.main_window == Some(window) {
+            self.view()
+        } else {
+            iced::widget::space().into()
+        }
     }
 
     /// Resolves the palette from the Appearance tab's draft while the global
@@ -902,7 +926,7 @@ impl App {
             rescan,
             settings_tick,
             iced::system::theme_changes().map(Message::ThemeChanged),
-            iced::event::listen_with(|event, _, _| window_or_press(event)),
+            iced::event::listen_with(|event, _, window| window_or_press(event, window)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
             grid_motion,
@@ -1230,7 +1254,8 @@ impl App {
             Message::Refresh => self.refresh(),
             Message::Rescanned(scan) => self.rescanned(*scan),
             Message::SettingsTick => self.settings_tick(),
-            Message::Pressed | Message::Window(window::Event::Focused) => {
+            Message::Window(window, _) if self.main_window != Some(window) => Task::none(),
+            Message::Pressed | Message::Window(_, window::Event::Focused) => {
                 if self.focused {
                     Task::none()
                 } else {
@@ -1332,10 +1357,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
-                self.window_resized(size)
-            }
-            Message::Window(window::Event::CloseRequested) => self.close_requested(),
+            Message::Window(
+                _,
+                window::Event::Resized(size) | window::Event::Opened { size, .. },
+            ) => self.window_resized(size),
+            Message::Window(_, window::Event::CloseRequested) => self.close_requested(),
             Message::CloseWaitOver(generation) => {
                 if self.close_wake.fired(generation) && self.close_by.is_some() {
                     self.exit_now()
@@ -1343,7 +1369,7 @@ impl App {
                     Task::none()
                 }
             }
-            Message::Window(window::Event::Unfocused) => {
+            Message::Window(_, window::Event::Unfocused) => {
                 self.focused = false;
                 // Keys released elsewhere never report here, so Ctrl
                 // can't be trusted to still be down.
@@ -1351,7 +1377,7 @@ impl App {
                 self.zooming.modifiers_changed(self.modifiers);
                 Task::none()
             }
-            Message::Window(_) => Task::none(),
+            Message::Window(..) => Task::none(),
             Message::ThemeChanged(mode) => {
                 self.system_mode = mode;
                 Task::none()
@@ -1567,7 +1593,7 @@ impl App {
                 watchdog.start(&work);
             })
             .discard()
-            .chain(iced::exit());
+            .chain(self.close_then_exit());
             task.chain(exit)
         } else {
             task
@@ -1793,14 +1819,16 @@ fn app_settings() -> Settings {
 fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env(None)?;
     fonts::install();
-    iced::application(move || App::boot(paths.clone()), App::update, App::view)
-        .title("wineo")
-        .theme(App::theme)
-        .settings(app_settings())
-        .window(window_settings())
-        .window_size((1200.0, 800.0))
-        .subscription(App::subscription)
-        .run()?;
+    iced::daemon(
+        move || App::boot(paths.clone()),
+        App::update,
+        App::window_view,
+    )
+    .title(App::title)
+    .theme(|app: &App, _| app.theme())
+    .settings(app_settings())
+    .subscription(App::subscription)
+    .run()?;
     Ok(())
 }
 
@@ -1840,8 +1868,16 @@ fn app_icon() -> Option<window::Icon> {
     window::icon::from_rgba(rgba, size.width(), size.height()).ok()
 }
 
+/// Opens the main window. The id is known at once, before the window
+/// exists, so events can be matched to it from the first one.
+fn open_main_window() -> (window::Id, Task<Message>) {
+    let (id, open) = window::open(window_settings());
+    (id, open.discard())
+}
+
 fn window_settings() -> window::Settings {
     window::Settings {
+        size: iced::Size::new(1200.0, 800.0),
         exit_on_close_request: false,
         icon: app_icon(),
         platform_specific: window::settings::PlatformSpecific {
@@ -1891,9 +1927,9 @@ fn read_reduced_motion() -> Task<Message> {
 /// Window events and presses share one subscription so focus changes and
 /// input arrive in the order they happened. X11 maps windows unfocused, and
 /// without a window manager no Focused follows, so a press counts as focus.
-pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
+pub(crate) fn window_or_press(event: iced::Event, window: window::Id) -> Option<Message> {
     match event {
-        iced::Event::Window(event) => Some(Message::Window(event)),
+        iced::Event::Window(event) => Some(Message::Window(window, event)),
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
         | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::Pressed),
         _ => None,

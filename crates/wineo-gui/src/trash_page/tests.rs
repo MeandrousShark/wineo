@@ -922,11 +922,11 @@ fn confirm_escape_tab_and_close_wait_during_prune() {
         app.change,
         Some(removal::Change::Trash(Change::Prune { .. }))
     ));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt && !app.closing);
     let _ = app.update(Message::KeepWorking);
     assert!(!app.close_prompt && app.change.is_some());
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     let _ = app.update(Message::CancelAndClose);
     assert!(app.closing && app.change.is_some());
     let outcomes = trash_work::prune_selection(&app.paths, &frozen);

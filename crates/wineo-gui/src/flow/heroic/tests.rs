@@ -1830,9 +1830,9 @@ fn a_stuck_import_is_named_and_force_stop_closes_the_window() {
     };
     let token = Token::new();
     page.token = Some(token.clone());
-    assert!(!exits(app.update(crate::Message::Window(
-        iced::window::Event::CloseRequested
-    ))));
+    assert!(!exits(
+        app.update(app.window_event(iced::window::Event::CloseRequested))
+    ));
     assert!(app.close_prompt);
     assert!(!exits(app.update(crate::Message::CancelAndClose)));
     assert!(token.is_canceled() && !token.is_forced());

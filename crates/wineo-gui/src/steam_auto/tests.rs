@@ -413,7 +413,7 @@ fn closing_during_a_pass_cancels_it_and_waits_for_it() {
     let games = scan(&app).discovery.unwrap().pending;
     let token = app.steam_auto.running.clone().unwrap();
 
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(token.is_canceled());
     assert!(
         app.closing && app.close_quietly,
@@ -579,8 +579,8 @@ fn while_stuck_a_changed_list_or_a_focus_reload_may_try_again() {
     reload(&mut app);
     assert!(!app.steam_auto.running());
 
-    let _ = app.update(Message::Window(iced::window::Event::Unfocused));
-    let _ = app.update(Message::Window(iced::window::Event::Focused));
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
+    let _ = app.update(app.window_event(iced::window::Event::Focused));
     reload(&mut app);
     assert!(app.steam_auto.running(), "coming back to the window tries");
     assert_eq!(games.len(), 1);

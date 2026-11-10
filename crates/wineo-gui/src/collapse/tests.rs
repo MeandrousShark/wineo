@@ -224,9 +224,7 @@ mod app {
         assert!(app.collapse.idle());
         let _ = app.update(Message::SearchChanged(String::new()));
         click_library(&mut app, 10);
-        let _ = app.update(Message::Window(iced::window::Event::Resized(Size::new(
-            900.0, 700.0,
-        ))));
+        let _ = app.update(app.window_event(iced::window::Event::Resized(Size::new(900.0, 700.0))));
         assert!(app.collapse.idle());
         click_library(&mut app, 10);
         assert!(!app.collapse.idle());
