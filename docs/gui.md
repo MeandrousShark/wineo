@@ -1061,6 +1061,12 @@ same bar as General's, and one **Save** writes both.
   colors that need it, in any theme. Dracula's muted text and several of
   Catppuccin Latte's colors change; the wineo themes and Macchiato already
   pass. Swatches show the colors you'll get.
+- **Accessibility** holds **Motion**: **Follow the system** (the default),
+  **Full**, or **Reduced**. Follow the system uses the desktop's animation
+  switch and picks up a change without a restart. Reduced snaps everything
+  that moves (the grid, zoom, the panel's slide, the layout switch, the
+  star) and keeps the fades; the busy spinner still turns. Like a theme, it
+  applies as you pick it and **Save** keeps it.
 
 Copies, renames, color edits, and deletes all wait for **Save**, which
 writes the theme files first, then `library.toml`, then removes deleted

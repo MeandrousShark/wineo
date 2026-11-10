@@ -406,6 +406,7 @@ dark = "cellar"
 light = "daylight"
 theme = "midnight"        # used when follow_system is false
 improve_readability = false
+motion = "system"         # system (default), full, or reduced
 
 [environments.hades]
 favorite = true
@@ -480,7 +481,13 @@ theme, a custom one whose file is gone or doesn't parse, or a light theme in
 `dark` (or a dark one in `light`) shows the default instead, and `validate`
 warns about it; picking a theme for that slot in Settings writes a good value.
 `improve_readability` raises the contrast of text colors that need it and
-defaults to `false`.
+defaults to `false`. `motion` (plan 0063) is how much the app moves:
+`system`, the default, follows the desktop's animation switch (GNOME's
+`enable-animations` through the desktop portal, picked up while the app
+runs; no portal means full motion), `full` always animates, and `reduced`
+snaps movement and keeps fades. An unknown value reads as `system`, isn't
+rewritten when the app saves, and `validate` reports it; repair keeps any
+string and drops other types.
 
 `[steam]` is how the desktop app remembers what it has
 [offered](steam.md#new-installs). `auto_import` imports new installs without
