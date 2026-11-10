@@ -56,10 +56,15 @@ pub(crate) fn request_bounds(
 }
 
 impl App {
-    /// Any toolbar menu is open: Sort, Filters, the dice's, or the action
-    /// bar's tag popup.
+    /// Any toolbar menu is open: Sort, Filters, the dice's, More, or the
+    /// action bar's tag popup.
     pub(crate) fn library_menu_open(&self) -> bool {
-        self.sort_menu || self.filter_menu || self.random_menu || self.tag_menu
+        self.sort_menu
+            || self.filter_menu
+            || self.random_menu
+            || self.more_menu
+            || self.search_open
+            || self.tag_menu
     }
 
     /// Any toolbar menu is showing over the Library.
@@ -67,6 +72,8 @@ impl App {
         self.sort_menu_shown()
             || self.filter_menu_shown()
             || self.random_menu_shown()
+            || self.more_menu_shown()
+            || self.search_dropdown_shown()
             || self.tag_menu_shown()
     }
 
@@ -78,6 +85,8 @@ impl App {
             || self.sort_menu
             || self.filter_menu
             || self.random_menu
+            || self.more_menu
+            || self.search_open
             || self.tag_menu
             || self.action_menu.is_some()
             || self.hook_stop_confirm.is_some()
@@ -91,10 +100,13 @@ impl App {
         self.sort_menu = false;
         self.filter_menu = false;
         self.random_menu = false;
+        self.more_menu = false;
+        self.search_open = false;
         self.tag_menu = false;
         self.sort_opening.cancel();
         self.filter_opening.cancel();
         self.random_opening.cancel();
+        self.more_opening.cancel();
         self.tag_opening.cancel();
         self.action_menu = None;
     }

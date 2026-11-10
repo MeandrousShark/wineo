@@ -268,18 +268,26 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 app.filter_menu = false;
                 return Task::none();
             }
-            crate::library_menu::request_bounds(
-                &mut app.filter_opening,
-                FILTER_BUTTON_ID,
-                |request, bounds| Message::Filter(Event::OpenUnder(request, bounds)),
-            )
+            // While Filters is folded the popup drops from More.
+            let home = app.filters_home();
+            crate::library_menu::request_bounds(&mut app.filter_opening, home, |request, bounds| {
+                Message::Filter(Event::OpenUnder(request, bounds))
+            })
         }
         Event::OpenUnder(request, bounds) => {
             if !app.filter_opening.answer(request) || !app.library_menu_may_open() {
                 return Task::none();
             }
+            let anchor = if app
+                .toolbar_folds
+                .contains(crate::toolbar_squeeze::Control::Filters)
+            {
+                |bounds| crate::more_menu::anchor_under_right(bounds, ACTION_MENU_WIDTH)
+            } else {
+                anchor_under
+            };
             match bounds {
-                Some(bounds) => open_menu(app, anchor_under(bounds)),
+                Some(bounds) => open_menu(app, anchor(bounds)),
                 None => Task::none(),
             }
         }
@@ -320,7 +328,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.filter_menu = false;
             Task::batch([
                 resorted,
-                iced::widget::operation::focus(iced::widget::Id::new(FILTER_BUTTON_ID)),
+                iced::widget::operation::focus(iced::widget::Id::new(app.filters_home())),
             ])
         }
         Event::ButtonBounds(bounds) => {
@@ -385,7 +393,7 @@ pub(crate) fn key(app: &mut App, key: &Key, modifiers: Modifiers) -> Task<Messag
                 return task;
             }
             app.filter_menu = false;
-            iced::widget::operation::focus(iced::widget::Id::new(FILTER_BUTTON_ID))
+            iced::widget::operation::focus(iced::widget::Id::new(app.filters_home()))
         }
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             let reverse = *key == Key::Named(Named::ArrowUp)

@@ -200,6 +200,63 @@ impl<M> Laid<'_, M> {
         self.event_with_status(event, cursor).0
     }
 
+    /// Hands `event` to the tree's overlays, laid out in the window, with
+    /// the cursor at `cursor`, and returns what they published.
+    pub(crate) fn overlay_event_at(
+        &mut self,
+        event: &iced::Event,
+        cursor: iced::mouse::Cursor,
+    ) -> Vec<M> {
+        let mut messages = Vec::new();
+        let viewport = Rectangle::with_size(self.size);
+        let Some(mut overlay) = self.element.as_widget_mut().overlay(
+            &mut self.tree,
+            Layout::new(&self.node),
+            &self.renderer,
+            &viewport,
+            Vector::ZERO,
+        ) else {
+            return messages;
+        };
+        let node = overlay.as_overlay_mut().layout(&self.renderer, self.size);
+        let mut shell = iced::advanced::Shell::new(&mut messages);
+        overlay.as_overlay_mut().update(
+            event,
+            Layout::new(&node),
+            cursor,
+            &self.renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+        );
+        drop(overlay);
+        messages
+    }
+
+    /// The bounds of each overlay the tree shows, laid out in the window.
+    pub(crate) fn overlay_bounds(&mut self) -> Vec<Rectangle> {
+        let viewport = Rectangle::with_size(self.size);
+        let Some(mut overlay) = self.element.as_widget_mut().overlay(
+            &mut self.tree,
+            Layout::new(&self.node),
+            &self.renderer,
+            &viewport,
+            Vector::ZERO,
+        ) else {
+            return Vec::new();
+        };
+        let node = overlay.as_overlay_mut().layout(&self.renderer, self.size);
+        // Overlays nest in groups, so every node is listed, outermost first.
+        fn walk(layout: Layout<'_>, found: &mut Vec<Rectangle>) {
+            for child in layout.children() {
+                found.push(child.bounds());
+                walk(child, found);
+            }
+        }
+        let mut found = Vec::new();
+        walk(Layout::new(&node), &mut found);
+        found
+    }
+
     /// Like `event_at`, with whether a widget captured the event.
     pub(crate) fn event_with_status(
         &mut self,

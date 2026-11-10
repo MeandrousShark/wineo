@@ -127,6 +127,9 @@ impl App {
         if self.random_menu_shown() {
             return crate::random_pick::key(self, &key, modifiers);
         }
+        if self.more_menu_shown() {
+            return crate::more_menu::key(self, &key, modifiers);
+        }
         if self.tag_menu_shown() {
             return crate::action_bar::key(self, &key, modifiers);
         }
@@ -147,6 +150,29 @@ impl App {
         }
         if self.section != crate::sidebar::Section::Library {
             return Task::none();
+        }
+        // Leaving the drop-down's field closes it, keeping the text, so the
+        // toolbar's menus can open again and nothing hangs over the grid.
+        if self.search_dropdown_shown() && search_focused && !modifiers.control() {
+            if key == Key::Named(Named::Tab) && !captured {
+                // Collapsed search means Filters is folded, so there's no
+                // filter tab, and the version picker isn't near the toolbar.
+                self.search_open = false;
+                // From the icon, which holds search's place in Tab's order.
+                let walk = if modifiers.shift() {
+                    iced::widget::operation::focus_previous()
+                } else {
+                    iced::widget::operation::focus_next()
+                };
+                return iced::widget::operation::focus(iced::widget::Id::new(
+                    crate::search_drop::ICON_ID,
+                ))
+                .chain(walk);
+            }
+            // Down only leaves when there's a card to go to.
+            if key == Key::Named(Named::ArrowDown) && !self.grid_places().ids.is_empty() {
+                self.search_open = false;
+            }
         }
         if key == Key::Named(Named::Tab)
             && let Some(task) = crate::removal::key(
@@ -217,6 +243,8 @@ impl App {
             self.search.is_empty(),
         ) {
             Action::None => Task::none(),
+            // Collapsed, search opens in its drop-down.
+            Action::FocusSearch if self.search_icon => self.open_search(),
             Action::FocusSearch => iced::widget::operation::focus(iced::widget::Id::new(SEARCH_ID))
                 .chain(
                     iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID))

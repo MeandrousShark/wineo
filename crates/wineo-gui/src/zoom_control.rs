@@ -26,12 +26,18 @@ const TICK: Size = Size::new(2.0, 10.0);
 /// A poster with a title line under it.
 const TITLES: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="4" y="1.5" width="8" height="9.5" rx="1.5" fill="none" stroke="#000" stroke-width="1.6"/><path d="M4.5 14h7" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"/></svg>"##;
 
-/// The slider and the toggle, for the toolbar after Filters.
-pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
+/// The toolbar's slider, after the layout switch.
+pub(crate) fn toolbar_slider(app: &App) -> Element<'_, Message> {
+    slider(app, SLIDER_ID)
+}
+
+/// The zoom slider as focus control `id`, for the toolbar or the More menu.
+pub(crate) fn slider<'a>(app: &'a App, id: &'static str) -> Element<'a, Message> {
     let palette = app.palette;
     let zoom = app.zooming.shown().unwrap_or_else(|| f32::from(app.zoom));
-    let slider = with_tooltip(
+    with_tooltip(
         Element::new(Slider {
+            id,
             value: zoom,
             dragging: app.zooming.dragging(),
             modifiers: app.modifiers,
@@ -39,50 +45,55 @@ pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
         }),
         "Zoom",
         palette,
-    );
-    let on = app.poster_only;
-    let toggle = button(
-        container(icon(
-            TITLES,
-            if on {
-                palette.primary
-            } else {
-                palette.foreground
-            },
-            16.0,
-        ))
-        .center(iced::Fill),
     )
-    .width(ui::BUTTON_HEIGHT)
-    .height(ui::BUTTON_HEIGHT)
-    .padding(0)
-    .on_press(Message::Zoom(ZoomEvent::TogglePosterOnly))
-    .style(move |_, status| {
-        let mut style = ui::secondary_style(palette, status);
-        // On reads like a chosen tag chip: tinted with a primary border.
-        if on {
-            let tint = match status {
-                button::Status::Hovered | button::Status::Pressed => 0.24,
-                _ => 0.15,
-            };
-            style.background = Some(palette.primary.scale_alpha(tint).into());
-            style.border = style.border.color(palette.primary);
-        }
-        style
-    });
+}
+
+/// The poster-only toggle, for the toolbar after the slider.
+pub(crate) fn toolbar_toggle(app: &App) -> Element<'_, Message> {
+    let palette = app.palette;
+    let on = app.poster_only;
+    let toggle = button(container(titles_icon(on, palette)).center(iced::Fill))
+        .width(ui::BUTTON_HEIGHT)
+        .height(ui::BUTTON_HEIGHT)
+        .padding(0)
+        .on_press(Message::Zoom(ZoomEvent::TogglePosterOnly))
+        .style(move |_, status| {
+            let mut style = ui::secondary_style(palette, status);
+            // On reads like a chosen tag chip: tinted with a primary border.
+            if on {
+                style.background = Some(palette.primary.scale_alpha(selected_tint(status)).into());
+                style.border = style.border.color(palette.primary);
+            }
+            style
+        });
     let toggle = with_tooltip(toggle.into(), toggle_label(on), palette);
-    iced::widget::row![
-        slider,
-        focus_button::control(
-            toggle,
-            true,
-            POSTER_ONLY_ID,
-            Message::Zoom(ZoomEvent::TogglePosterOnly),
-        ),
-    ]
-    .spacing(8)
-    .align_y(iced::Center)
-    .into()
+    focus_button::control(
+        toggle,
+        true,
+        POSTER_ONLY_ID,
+        Message::Zoom(ZoomEvent::TogglePosterOnly),
+    )
+}
+
+/// The poster icon, primary while titles are hidden.
+fn titles_icon(on: bool, palette: Palette) -> iced::widget::Svg<'static> {
+    icon(
+        TITLES,
+        if on {
+            palette.primary
+        } else {
+            palette.foreground
+        },
+        16.0,
+    )
+}
+
+/// The selected look's tint, a little stronger under the pointer.
+pub(crate) fn selected_tint(status: button::Status) -> f32 {
+    match status {
+        button::Status::Hovered | button::Status::Pressed => 0.24,
+        _ => 0.15,
+    }
 }
 
 /// What pressing the toggle does.
@@ -124,6 +135,7 @@ pub(crate) fn with_tooltip_at<'a>(
 }
 
 struct Slider {
+    id: &'static str,
     value: f32,
     /// The app still follows a drag. A dialog that opens mid-drag takes
     /// the release, and the app ends the drag without it.
@@ -220,7 +232,7 @@ impl Widget<Message, Theme, Renderer> for Slider {
         operation: &mut dyn iced::advanced::widget::Operation,
     ) {
         operation.focusable(
-            Some(&iced::widget::Id::new(SLIDER_ID)),
+            Some(&iced::widget::Id::new(self.id)),
             layout.bounds(),
             tree.state.downcast_mut::<State>(),
         );

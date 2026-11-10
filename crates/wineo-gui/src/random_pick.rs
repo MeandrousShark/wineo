@@ -21,7 +21,7 @@ const LAUNCHABLE_LABEL: &str = "Only games that can launch";
 const LAUNCHABLE_ID: &str = "library-random-launchable";
 
 /// A die showing five, with the pips filled so the tint reads at 16 px.
-const DICE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2.5" fill="none" stroke="#000" stroke-width="1.6"/><circle cx="5.5" cy="5.5" r="1.1" fill="#000"/><circle cx="10.5" cy="5.5" r="1.1" fill="#000"/><circle cx="8" cy="8" r="1.1" fill="#000"/><circle cx="5.5" cy="10.5" r="1.1" fill="#000"/><circle cx="10.5" cy="10.5" r="1.1" fill="#000"/></svg>"##;
+pub(crate) const DICE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2.5" fill="none" stroke="#000" stroke-width="1.6"/><circle cx="5.5" cy="5.5" r="1.1" fill="#000"/><circle cx="10.5" cy="5.5" r="1.1" fill="#000"/><circle cx="8" cy="8" r="1.1" fill="#000"/><circle cx="5.5" cy="10.5" r="1.1" fill="#000"/><circle cx="10.5" cy="10.5" r="1.1" fill="#000"/></svg>"##;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
@@ -106,19 +106,27 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.random_menu {
                 return Task::none();
             }
-            crate::library_menu::request_bounds(
-                &mut app.random_opening,
-                BUTTON_ID,
-                |request, bounds| Message::Random(Event::OpenUnder(request, bounds)),
-            )
+            // While the dice is folded its menu drops from More.
+            let home = app.dice_home();
+            crate::library_menu::request_bounds(&mut app.random_opening, home, |request, bounds| {
+                Message::Random(Event::OpenUnder(request, bounds))
+            })
         }
         Event::OpenUnder(request, bounds) => {
             // Whatever took the window since the press keeps it.
             if !app.random_opening.answer(request) || !app.library_menu_may_open() {
                 return Task::none();
             }
+            let anchor = if app
+                .toolbar_folds
+                .contains(crate::toolbar_squeeze::Control::Dice)
+            {
+                |bounds| crate::more_menu::anchor_under_right(bounds, MENU_WIDTH)
+            } else {
+                anchor_under
+            };
             match bounds {
-                Some(bounds) => open_menu(app, anchor_under(bounds)),
+                Some(bounds) => open_menu(app, anchor(bounds)),
                 None => Task::none(),
             }
         }
@@ -153,7 +161,7 @@ pub(crate) fn key(app: &mut App, key: &Key, _modifiers: Modifiers) -> Task<Messa
     match key {
         Key::Named(Named::Escape) => {
             app.random_menu = false;
-            iced::widget::operation::focus(iced::widget::Id::new(BUTTON_ID))
+            iced::widget::operation::focus(iced::widget::Id::new(app.dice_home()))
         }
         Key::Named(Named::Tab | Named::ArrowDown | Named::ArrowUp) => {
             iced::widget::operation::focus(iced::widget::Id::new(LAUNCHABLE_ID))
@@ -166,8 +174,7 @@ pub(crate) fn key(app: &mut App, key: &Key, _modifiers: Modifiers) -> Task<Messa
 /// to pick.
 pub(crate) fn toolbar(app: &App) -> Element<'_, Message> {
     let palette = app.palette;
-    // Only what's in view can come up (plan 0062, question 22).
-    let enabled = !app.grid_places().ids.is_empty();
+    let enabled = app.random_enabled();
     let ink = if enabled {
         palette.foreground
     } else {
@@ -197,6 +204,12 @@ fn menu_height() -> f32 {
 }
 
 impl App {
+    /// There's something to pick from. Only what's in view can come up
+    /// (plan 0062, question 22).
+    pub(crate) fn random_enabled(&self) -> bool {
+        !self.grid_places().ids.is_empty()
+    }
+
     /// The menu shows only over the Library itself.
     pub(crate) fn random_menu_shown(&self) -> bool {
         self.random_menu
