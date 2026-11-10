@@ -792,6 +792,8 @@ fn a_late_keyboard_reply_is_dropped_when_something_else_took_the_window() {
     reply(&mut app, request);
     assert!(!app.filter_menu);
     app.closing = false;
+    // The reply queued the exit, which a real close never takes back.
+    app.exiting = false;
 
     // The current reply opens it, once.
     let request = press_filters(&mut app);

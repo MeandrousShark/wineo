@@ -7,7 +7,7 @@ use wineo_core::cancel::Token;
 use wineo_core::paths::Paths;
 
 use super::*;
-use crate::sort_control::Event;
+use crate::sort_control::{Event, Field};
 use crate::test_script::KillOnDrop;
 use crate::{App, Message, Operation, OperationKind};
 
@@ -369,6 +369,28 @@ fn updates_after_a_queued_exit_queue_no_other() {
     let later = app.update(Message::ScrollIdle(0));
     assert!(steps(&app, later).is_empty());
     assert_closes_then_exits(&app, &steps(&app, first));
+}
+
+#[test]
+fn a_write_finishing_in_the_close_gap_starts_nothing() {
+    let (_root, mut app) = fixture();
+    app.operation = Some(running(OperationKind::Start, true));
+    // Flipped twice, so the first write's result is already stale and a
+    // live app would write again.
+    let first = Field::Descending(true);
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    assert!(app.view_writes.pending());
+
+    let task = app.update(Message::ForceCloseWork);
+    assert!(app.exiting && app.close_by.is_none());
+
+    // The window is closing, but the loop runs until the exit lands.
+    let late = app.update(Message::Sort(Event::Saved(first, Ok(()))));
+    assert!(!app.view_writes.pending(), "no follow-up write started");
+    assert!(app.close_by.is_none());
+    assert!(steps(&app, late).is_empty());
+    assert_closes_then_exits(&app, &steps(&app, task));
 }
 
 #[test]

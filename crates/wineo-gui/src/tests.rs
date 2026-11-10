@@ -21,18 +21,23 @@ fn boot_opens_the_main_window() {
     let home = root.path().to_owned();
     let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
         .unwrap();
-    let app = App::boot(paths).0;
+    let (app, boot) = App::boot(paths);
     let main = app.main_window.expect("boot opens the main window");
     assert_eq!(app.title(main), "wineo");
     assert_eq!(app.title(window::Id::unique()), "");
+    let children = |id| app.window_view(id).as_widget().children().len();
+    assert!(children(main) > 0);
+    assert_eq!(children(window::Id::unique()), 0);
 
-    let (id, open) = open_main_window();
-    let mut stream = iced_runtime::task::into_stream(open).unwrap();
+    // The batch yields the first ready action before polling the other
+    // tasks, which would reach the keyring and the portal. So this sees the
+    // open first only if it isn't chained behind any of them.
+    let mut stream = iced_runtime::task::into_stream(boot).unwrap();
     let action = iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream));
     let Some(iced_runtime::Action::Window(Action::Open(opened, settings, _))) = action else {
-        panic!("the task opens a window");
+        panic!("boot's first action opens a window");
     };
-    assert_eq!(opened, id);
+    assert_eq!(opened, main);
     assert_eq!(settings.size, iced::Size::new(1200.0, 800.0));
     assert!(!settings.exit_on_close_request);
     assert!(settings.icon.is_some());
