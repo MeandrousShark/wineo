@@ -22,7 +22,8 @@ const LINE: &str = "instance: ";
 
 /// Not a test of its own: the launch the others start. It claims the name
 /// for its environment's root and prints what it got. An owner then prints
-/// each `Show` and takes "refuse" and "leave" on stdin.
+/// each `Show` and takes "refuse", "leave", and "count" (how many `Show`
+/// calls it has taken) on stdin.
 #[test]
 fn child_launches() {
     if std::env::var_os(CHILD).is_none() {
@@ -60,6 +61,9 @@ fn child_launches() {
                         .unwrap()
                         .block_on(commands.leave());
                     println!("{LINE}left");
+                }
+                Ok("count") => {
+                    println!("{LINE}count {}", *commands.shows.borrow());
                 }
                 _ => {}
             }
@@ -157,6 +161,17 @@ impl Launch {
     fn quiet(&mut self) {
         if let Ok(line) = self.lines.recv_timeout(Duration::from_millis(300)) {
             panic!("unexpected {line:?}");
+        }
+    }
+
+    /// The owner's answer to "count", skipping its "show" lines.
+    fn next_count(&mut self) -> u64 {
+        loop {
+            let line = self.next();
+            if let Some(count) = line.strip_prefix("count ") {
+                return count.parse().unwrap();
+            }
+            assert_eq!(line, "show");
         }
     }
 
@@ -313,14 +328,29 @@ fn a_launch_finding_a_stuck_owner_starts_anyway() {
     let started = Instant::now();
     let mut second = Launch::start(Some(&bus), home.path(), Root::Default);
     second.expect("alone");
-    let waited = started.elapsed();
-    // One Show's wait, then the name is polled until the release wait runs
-    // out, with a margin for starting the child.
+    // Only a hang guard: one Show's wait, then the release wait, and a
+    // margin for starting the child.
     let bound = super::super::SHOW_WAIT + super::super::RELEASE_WAIT;
-    assert!(waited >= bound, "{waited:?}");
-    assert!(waited < bound + Duration::from_millis(1500), "{waited:?}");
+    assert!(started.elapsed() < bound + Duration::from_secs(3));
     assert!(second.exit_status().success());
+
+    // The bus queued every Show for the stopped owner, so once it runs again
+    // its count says how often the launch asked: once, since the owner
+    // never changed.
     rustix::process::kill_process(pid, rustix::process::Signal::CONT).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        first.send("count");
+        if first.next_count() >= 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the Show never arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Any later calls queued behind the first have landed by now too.
+    std::thread::sleep(Duration::from_millis(500));
+    first.send("count");
+    assert_eq!(first.next_count(), 1);
 }
 
 #[test]

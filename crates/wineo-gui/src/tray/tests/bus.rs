@@ -67,6 +67,7 @@ fn child_serves_the_tray() {
                         println!("{EVENT_LINE}{STOPPED}");
                     }
                 }
+                Ok("close") => close_ahead_of_a_write(&stopping),
                 _ => {}
             }
         }
@@ -78,6 +79,23 @@ fn child_serves_the_tray() {
             println!("{EVENT_LINE}{event:?}");
         }
     });
+}
+
+/// The app's close button with a `library.toml` write still pending: the
+/// close is final but waits on the write, and the tray must go now.
+fn close_ahead_of_a_write(running: &super::super::Running) {
+    let mut app = super::example();
+    super::with_tray(&mut app);
+    app.tray.running = running.clone();
+    let _ = app.update(crate::Message::Sort(
+        crate::sort_control::Event::FlipDirection,
+    ));
+    assert!(app.library_writes_pending());
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.closing && !app.exiting);
+    let leaving = app.leaving.clone().expect("the close stopped the tray");
+    iced::futures::executor::block_on(leaving);
+    println!("{EVENT_LINE}{STOPPED}");
 }
 
 /// A session bus of the test's own, with no service files, so nothing on it
@@ -228,6 +246,10 @@ impl Child {
 
     fn stop(&mut self) {
         writeln!(self.stdin, "stop").unwrap();
+    }
+
+    fn close(&mut self) {
+        writeln!(self.stdin, "close").unwrap();
     }
 }
 
@@ -485,6 +507,35 @@ fn an_exit_takes_the_icon_off_the_bus() {
             .await
             .unwrap();
         child.stop();
+        child.expect_line(STOPPED).await;
+        // The stop ends once the service has closed its connection, so the
+        // bus drops the item while the process lives on.
+        let proxy = zbus::fdo::DBusProxy::new(&host).await.unwrap();
+        let deadline = Instant::now() + PATIENCE;
+        while proxy.name_has_owner(owner.as_ref().into()).await.unwrap() {
+            assert!(Instant::now() < deadline, "{item} stayed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(child.process.try_wait().unwrap().is_none());
+    });
+}
+
+#[test]
+fn a_close_waiting_on_a_write_takes_the_icon_off_the_bus() {
+    run(async |bus| {
+        let host = bus.connect().await;
+        let watcher = Watcher::default();
+        watcher.serve(&host).await;
+        let mut child = Child::start(&bus);
+        child.expect(&Event::Available(true)).await;
+        let item = watcher.registered().await;
+        let owner = zbus::fdo::DBusProxy::new(&host)
+            .await
+            .unwrap()
+            .get_name_owner(item.as_str().try_into().unwrap())
+            .await
+            .unwrap();
+        child.close();
         child.expect_line(STOPPED).await;
         // The stop ends once the service has closed its connection, so the
         // bus drops the item while the process lives on.
