@@ -58,7 +58,7 @@ usage() {
 Usage: acceptance-library.sh DIR
 
 Writes the standard acceptance-test library into DIR, a WINEO_PORTABLE_DIR
-folder with about fifty games covering every source, tag, favorite, hidden,
+folder with about sixty games covering every source, tag, favorite, hidden,
 playtime, title, and art case the desktop app shows. DIR must not exist or
 must be an empty folder, and its parent must exist; nothing is deleted or
 overwritten. Then run:
@@ -477,7 +477,7 @@ add wine-added-newest added=2026-11-05T23:30:00Z
 # source: Windows; tags: none; a 45 second session
 add wine-short-play added=2026-10-30T09:00:00Z sessions="2026-11-01T10:00:00Z@45"
 
-# source: Windows; tags: one; the newest last-played value (2026-11-06 01:00 UTC, so the local day depends on the time zone)
+# source: Windows; tags: one; the newest last-played value before the tray games below (2026-11-06 01:00 UTC, so the local day depends on the time zone)
 add wine-played-today tags=game added=2026-10-05T09:00:00Z sessions="2026-11-06T01:00:00Z@1800"
 
 # source: Windows; tags: one; last played a year ago
@@ -492,6 +492,50 @@ add wine-played-ten-days-ago added=2026-07-01T09:00:00Z sessions="2026-10-27T20:
 
 # source: Windows; tags: several (rpg, co-op); hidden and played yesterday, where Group by's Hidden and Recently played sections meet
 add wine-hidden-recent tags="rpg co-op" hidden added=2026-09-12T09:00:00Z sessions="2026-11-05T20:00:00Z@3600"
+
+# Tray and hide on launch (plan 0063). These all play after every game above,
+# so with Hide to the tray off nothing else can reach the tray's Play rows.
+# The tray lists the three newest played games that aren't hidden, trashed, or
+# running. Expected rows, newest first, before anything is played:
+#   1. Play Sleeper Alpha (sleeps 10 min)
+#   2. Play Under__score__Quest__2        (the title shows its underscores doubled)
+#   3. Play Ōkami no Tō 影の塔 Café Ñandú 夜明けの旅路 影の塔の物…   (39 characters and an ellipsis)
+# Never in the rows: Tray Hidden Recent (hidden) and Tray Trash Me (remove it
+# in the app and the row goes at once). Not played, so never there: Running
+# Test. Next in line, each coming up as the ones above are hidden, run, or
+# removed: Sleeper Beta, then Tray Plain Fifth.
+# Try: play Alpha from the tray (the window hides when Hide to the tray is on,
+# Stop Alpha shows, Beta takes its Play row), play Beta too, stop Alpha (the
+# window stays hidden), stop Beta (the window comes back).
+
+# source: Native; tray Play row 1 (newest played); RUNNING GAME that stays up 10 min, the first to start from the tray, hide the window, and show a Stop row
+add tray-sleeper-alpha kind=native tags="game tray-test" title="Sleeper Alpha (sleeps 10 min)" run=sleep \
+    added=2026-11-07T08:00:00Z sessions="2026-11-09T20:00:00Z@1800 2026-11-08T20:00:00Z@900"
+
+# source: Native; tray Play row 2; underscores in the title, which the menu doubles so they aren't read as mnemonics
+add tray-underscore-quest kind=native tags="game tray-test" title="Under_score_Quest_2" \
+    added=2026-11-07T08:10:00Z sessions="2026-11-09T18:00:00Z@2400"
+
+# source: Native; tray Play row 3; title over 40 characters (51) with multibyte text, cut at 39 plus an ellipsis
+add tray-long-multibyte kind=native tags="game tray-test" \
+    title="Ōkami no Tō 影の塔 Café Ñandú 夜明けの旅路 影の塔の物語 Chronicles" \
+    added=2026-11-07T08:20:00Z sessions="2026-11-09T16:00:00Z@3000"
+
+# source: Native; tray Play row 4 (takes a row when one above is hidden, running, or removed); second RUNNING GAME that sleeps 10 min, for two Stop rows and the window coming back only when both stop
+add tray-sleeper-beta kind=native tags="game tray-test" title="Sleeper Beta (sleeps 10 min)" run=sleep \
+    added=2026-11-07T08:30:00Z sessions="2026-11-08T12:00:00Z@1200"
+
+# source: Native; tray Play row 5 (the last one in line behind the others)
+add tray-plain-fifth kind=native tags="game tray-test" title="Tray Plain Fifth" \
+    added=2026-11-07T08:40:00Z sessions="2026-11-07T12:00:00Z@600"
+
+# source: Native; hidden and played newer than every game above, so it must never be a tray Play row
+add tray-hidden-recent kind=native tags="game tray-test" title="Tray Hidden Recent" hidden \
+    added=2026-11-07T08:50:00Z sessions="2026-11-09T22:00:00Z@600"
+
+# source: Native; played newer than every game above but Hidden Recent; REMOVE IT in the app (the script can't write trash entries) and its tray Play row must go while the Undo toast shows
+add tray-trash-me kind=native tags="game tray-test" title="Tray Trash Me" \
+    added=2026-11-07T09:00:00Z sessions="2026-11-09T21:00:00Z@600"
 
 # Summary: the table comes from the `# source:` comment above each add call.
 summary=$(awk '
@@ -544,6 +588,14 @@ descending = true
 stores = ["gog", "itch"]
 platforms = ["amiga"]
 tags = ["no-such-tag"]
+
+# Plan 0063: a name wider than the Filters button's 120 px cut, so "Filters
+# (Name)" is as wide as it gets and the toolbar folds into More sooner. Picking
+# it shows the tray games, newest played first.
+[presets."Everything from the tray test, newest first"]
+sort = "last-played"
+descending = true
+tags = ["tray-test"]
 
 [presets.alpha]
 group = "source"
