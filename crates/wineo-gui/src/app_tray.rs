@@ -133,10 +133,7 @@ impl App {
                     self.tray_lost()
                 }
             }
-            Event::Open => {
-                let show = self.show_window();
-                Task::batch([show, self.release_held_error()])
-            }
+            Event::Open => self.user_show(),
             Event::Add => {
                 let show = self.show_window();
                 // Over a flow or page the window just shows; Add itself
@@ -167,6 +164,25 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Another launch for this root, which exits after this, so it's the
+    /// user asking for the window like Open wineo.
+    pub(crate) fn bus_show(&mut self) -> Task<Message> {
+        // A close that's waiting on writes or work still ends in an exit, and
+        // the name is already free for a relaunch to start fresh.
+        // Accepted race: a Show taken just before `closing` is set still shows.
+        if self.closing || self.exiting {
+            return Task::none();
+        }
+        self.user_show()
+    }
+
+    /// Open wineo and a relaunch: the window as it was, and a tray stop's
+    /// held error if its card's panel can open.
+    fn user_show(&mut self) -> Task<Message> {
+        let show = self.show_window();
+        Task::batch([show, self.release_held_error()])
     }
 
     /// A page, flow, or dialog is over the library, which a tray click must

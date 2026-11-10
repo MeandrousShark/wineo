@@ -42,6 +42,7 @@ mod grid;
 mod grid_motion;
 mod hover_fade;
 mod import_toast;
+mod instance;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
@@ -147,6 +148,14 @@ pub(crate) struct App {
     /// Settings page reads `library.toml`.
     desktop: wineo_core::library::Desktop,
     pub(crate) tray: tray::Tray,
+    /// The session bus name this app owns for its root, which other
+    /// launches call `Show` on. None in tests and without a bus.
+    pub(crate) instance: Option<instance::Instance>,
+    /// The first close that can't be taken back has let go of the bus.
+    left: bool,
+    /// The name's release and the tray's stop it started, if either was up,
+    /// awaited by every exit.
+    leaving: Option<iced::futures::future::Shared<iced::futures::future::BoxFuture<'static, ()>>>,
     /// The saved custom themes, replaced like `appearance`.
     themes: Vec<theme::Custom>,
     /// The last system light or dark mode the app saw.
@@ -590,6 +599,8 @@ pub(crate) enum Message {
     TrayPolled(u64, BTreeSet<String>),
     /// An environment's last play time, read after the poll saw it stop.
     TrayPlayed(String, Option<jiff::Timestamp>),
+    /// Another launch for this root asked for the window.
+    Show,
 }
 
 impl App {
@@ -600,6 +611,9 @@ impl App {
             appearance: Appearance::default(),
             desktop: wineo_core::library::Desktop::default(),
             tray: tray::Tray::default(),
+            instance: None,
+            left: false,
+            leaving: None,
             themes: Vec::new(),
             system_mode: iced::theme::Mode::Dark,
             palette_from: (Appearance::default(), Vec::new(), iced::theme::Mode::Dark),
@@ -1019,11 +1033,13 @@ impl App {
         } else {
             Subscription::none()
         };
-        let tray_on = self.tray.service && self.desktop.tray && !self.exiting;
+        // The tray stops as a close becomes final, with the bus name.
+        let tray_on = self.tray.service && self.desktop.tray && !self.closing && !self.exiting;
         let tray = if tray_on {
             Subscription::run_with(
                 tray::Service {
                     menu: self.tray.menu.subscribe(),
+                    running: self.tray.running.clone(),
                 },
                 tray::service,
             )
@@ -1042,11 +1058,18 @@ impl App {
         } else {
             Subscription::none()
         };
+        let shows = match &self.instance {
+            Some(instance) if !self.closing && !self.exiting => {
+                Subscription::run_with(instance.shows(), instance::shows)
+            }
+            _ => Subscription::none(),
+        };
         Subscription::batch([
             rescan,
             settings_tick,
             tray,
             tray_poll,
+            shows,
             iced::system::theme_changes().map(Message::ThemeChanged),
             motion::subscription(),
             iced::event::listen_with(|event, _, window| window_or_press(event, window)),
@@ -1681,6 +1704,7 @@ impl App {
                 self.cancel_and_close(event)
             }
             Message::Tray(event) => self.tray_event(event),
+            Message::Show => self.bus_show(),
             Message::TrayPolled(generation, running) => self.tray_polled(generation, running),
             Message::TrayPlayed(name, played) => {
                 self.tray_played(name, played);
@@ -1969,11 +1993,18 @@ fn app_settings() -> Settings {
 
 fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env(None)?;
+    // Before anything else, so a second launch never opens a window.
+    let instance = match instance::claim(&paths) {
+        instance::Claim::Owner(instance) => Some(instance),
+        instance::Claim::Shown => return Ok(()),
+        instance::Claim::Alone => None,
+    };
     fonts::install();
     iced::daemon(
         move || {
             let (mut app, task) = App::boot(paths.clone());
             app.tray.service = true;
+            app.instance = instance.clone();
             (app, task)
         },
         App::update,
