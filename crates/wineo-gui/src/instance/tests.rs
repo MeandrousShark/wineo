@@ -160,7 +160,7 @@ fn a_show_after_the_exit_started_does_nothing() {
 }
 
 /// An `Instance` with no bus behind it, and where its release requests go.
-fn instance() -> (Instance, mpsc::UnboundedReceiver<oneshot::Sender<()>>) {
+pub(crate) fn instance() -> (Instance, mpsc::UnboundedReceiver<oneshot::Sender<()>>) {
     let (release, releases) = mpsc::unbounded_channel();
     let instance = Instance {
         shows: watch::channel(0).1,

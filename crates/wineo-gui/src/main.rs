@@ -151,6 +151,11 @@ pub(crate) struct App {
     /// The session bus name this app owns for its root, which other
     /// launches call `Show` on. None in tests and without a bus.
     pub(crate) instance: Option<instance::Instance>,
+    /// The first close that can't be taken back has let go of the bus.
+    left: bool,
+    /// The name's release and the tray's stop it started, if either was up,
+    /// awaited by every exit.
+    leaving: Option<iced::futures::future::Shared<iced::futures::future::BoxFuture<'static, ()>>>,
     /// The saved custom themes, replaced like `appearance`.
     themes: Vec<theme::Custom>,
     /// The last system light or dark mode the app saw.
@@ -607,6 +612,8 @@ impl App {
             desktop: wineo_core::library::Desktop::default(),
             tray: tray::Tray::default(),
             instance: None,
+            left: false,
+            leaving: None,
             themes: Vec::new(),
             system_mode: iced::theme::Mode::Dark,
             palette_from: (Appearance::default(), Vec::new(), iced::theme::Mode::Dark),

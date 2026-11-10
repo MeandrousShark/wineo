@@ -372,6 +372,38 @@ fn a_forced_close_goes_out_while_a_chained_exit_waits_on_a_slow_task() {
 }
 
 #[test]
+fn a_forced_close_waits_on_the_release_a_chained_exit_started() {
+    let (_root, mut app) = fixture();
+    let (instance, mut releases) = crate::instance::tests::instance();
+    app.instance = Some(instance);
+    app.closing = true;
+    let slow = Task::perform(
+        async { tokio::time::sleep(Duration::from_secs(60)).await },
+        |()| Message::ScrollIdle(0),
+    );
+    let _chained = app.settle_panel(false, slow);
+    assert!(app.exiting);
+    let held = releases
+        .try_recv()
+        .expect("the chained exit let the name go");
+
+    let forced = app.update(Message::ForceCloseWork);
+    assert!(releases.try_recv().is_err(), "asked for only once");
+    // The release the chained exit started lands a while later, and the
+    // forced exit still waits for it, though the chained one never runs.
+    let answered = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let at = Instant::now();
+        let _ = held.send(());
+        at
+    });
+    let seen = steps(&app, forced);
+    let answered = answered.join().unwrap();
+    assert_closes_then_exits(&app, &seen);
+    assert!(seen[1].1 >= answered, "the exit waited for the release");
+}
+
+#[test]
 fn a_force_close_with_nothing_running_exits_once() {
     let (_root, mut app) = fixture();
     let task = app.update(Message::ForceCloseWork);

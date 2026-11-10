@@ -287,4 +287,4 @@ pub(crate) fn shows(shows: &Shows) -> impl Stream<Item = Message> + use<> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

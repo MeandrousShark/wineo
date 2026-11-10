@@ -116,8 +116,9 @@ impl App {
     /// The window goes first, so an exit stuck on work the watchdog is
     /// waiting out doesn't leave a frozen window up. The pause lets the
     /// destroy reach the compositor before the runtime stops.
-    pub(crate) fn close_then_exit(&self) -> Task<Message> {
-        let leave = self.leave_bus();
+    pub(crate) fn close_then_exit(&mut self) -> Task<Message> {
+        self.start_leaving();
+        let leave = self.leave_wait();
         let close = self.main_window.map_or_else(Task::none, window::close);
         close
             .chain(leave)
@@ -125,17 +126,23 @@ impl App {
             .chain(iced::exit())
     }
 
-    /// Gives the bus name back and takes the tray icon down, both started at
-    /// once, so a relaunch during an exit stuck on work starts a fresh app
-    /// instead of calling `Show` on this one. The exit waits for both, since
-    /// the runtime that serves the tray may hang once it's stopping.
-    fn leave_bus(&self) -> Task<Message> {
+    /// Gives the bus name back and takes the tray icon down as soon as a
+    /// close can't be taken back, so a relaunch while the exit waits on
+    /// writes or stuck work starts a fresh app instead of calling `Show` on
+    /// this one. Only the first call starts them; every exit path waits on
+    /// the same result.
+    pub(crate) fn start_leaving(&mut self) {
+        if self.left {
+            return;
+        }
+        self.left = true;
+        use iced::futures::FutureExt;
         let release = self.instance.as_ref().map(crate::instance::Instance::leave);
         let tray = self.tray.running.stop();
         if release.is_none() && tray.is_none() {
-            return Task::none();
+            return;
         }
-        Task::future(async move {
+        let both = async move {
             let release = async move {
                 if let Some(release) = release {
                     release.await;
@@ -146,8 +153,20 @@ impl App {
                     tray.await;
                 }
             };
-            let _ =
-                tokio::time::timeout(LEAVE_WAIT, iced::futures::future::join(release, tray)).await;
+            iced::futures::future::join(release, tray).await;
+        };
+        self.leaving = Some(both.boxed().shared());
+    }
+
+    /// Waits, bounded, for what `start_leaving` started. The runtime that
+    /// serves the tray may hang once it's stopping, so this runs before the
+    /// exit.
+    fn leave_wait(&self) -> Task<Message> {
+        let Some(leaving) = self.leaving.clone() else {
+            return Task::none();
+        };
+        Task::future(async move {
+            let _ = tokio::time::timeout(LEAVE_WAIT, leaving).await;
         })
         .discard()
     }
