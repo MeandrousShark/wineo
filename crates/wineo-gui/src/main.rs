@@ -2,6 +2,7 @@ mod action_bar;
 mod app_art;
 mod app_flow;
 mod app_grid;
+mod app_hide;
 mod app_keys;
 mod app_library;
 mod app_operation;
@@ -584,8 +585,9 @@ pub(crate) enum Message {
     CloseWaitOver(u64),
     /// A click in the tray, or its host coming or going.
     Tray(tray::Event),
-    /// What the light poll found running, when that changed.
-    TrayPolled(BTreeSet<String>),
+    /// What the light poll found running, when that changed, tagged with
+    /// the poll's generation.
+    TrayPolled(u64, BTreeSet<String>),
     /// An environment's last play time, read after the poll saw it stop.
     TrayPlayed(String, Option<jiff::Timestamp>),
 }
@@ -1033,6 +1035,7 @@ impl App {
             Subscription::run_with(
                 tray::Poll {
                     paths: self.paths.clone(),
+                    generation: self.tray.poll_generation,
                 },
                 tray::poll,
             )
@@ -1678,7 +1681,7 @@ impl App {
                 self.cancel_and_close(event)
             }
             Message::Tray(event) => self.tray_event(event),
-            Message::TrayPolled(running) => self.tray_polled(running),
+            Message::TrayPolled(generation, running) => self.tray_polled(generation, running),
             Message::TrayPlayed(name, played) => {
                 self.tray_played(name, played);
                 Task::none()

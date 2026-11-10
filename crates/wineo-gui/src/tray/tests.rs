@@ -41,7 +41,7 @@ fn with_cards(cards: Vec<Card>) -> App {
 
 /// The plan's example library: three to play, one running, and the rest
 /// passed over for a reason each.
-fn example() -> App {
+pub(crate) fn example() -> App {
     let mut hidden = played("secret", "Secret Game", 900);
     hidden.hidden = true;
     let mut never = card("fresh", State::Inactive, 0);
@@ -59,7 +59,7 @@ fn example() -> App {
 
 /// The tray is up and a host shows it, as `run()` and the watcher would
 /// leave it.
-fn with_tray(app: &mut App) {
+pub(crate) fn with_tray(app: &mut App) {
     app.tray.service = true;
     app.tray.available = true;
 }
@@ -292,7 +292,7 @@ fn the_poll_stands_in_for_the_cards_and_rereads_a_stopped_play_time() {
     assert_eq!(before.stop.len(), 1);
 
     // The poll no longer sees it run, so it's read again.
-    let task = app.update(Message::TrayPolled(BTreeSet::new()));
+    let task = app.update(Message::TrayPolled(0, BTreeSet::new()));
     assert!(app.tray_menu().stop.is_empty());
     let ran = run_counting(task, false, 1, |message| {
         matches!(message, Message::TrayPlayed(..))
@@ -316,7 +316,7 @@ fn the_poll_stands_in_for_the_cards_and_rereads_a_stopped_play_time() {
     assert_eq!(play, ["hollow", "stardew", "notepad"]);
 
     // The same set again stops nothing.
-    let quiet = app.tray_polled(BTreeSet::new());
+    let quiet = app.tray_polled(0, BTreeSet::new());
     assert!(iced_runtime::task::into_stream(quiet).is_none());
 
     // A full read is newer than both.

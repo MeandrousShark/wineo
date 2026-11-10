@@ -90,13 +90,17 @@ impl App {
         }) {
             self.operation = None;
         }
+        let hide = match &result {
+            Ok(outcome) if !cancelled => self.hide_for_start(&name, *outcome),
+            _ => Task::none(),
+        };
         if self.selected.as_deref() == Some(&name)
             && let Err(error) = result
             && !cancelled
         {
             self.panel_error = Some(error);
         }
-        self.reload_library_once()
+        Task::batch([hide, self.reload_library_once()])
     }
 
     pub(crate) fn stop_finished(
