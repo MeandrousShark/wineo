@@ -282,7 +282,7 @@ fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
 #[test]
 fn a_clean_appearance_has_no_findings() {
     let inspection = inspect_with_themes(
-        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\nmotion = \"reduced\"\n",
+        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\nmotion = \"reduced\"\ninterface_size = 130\nfont = \"Atkinson Hyperlegible\"\n",
         &[
             ("soft.toml", "name = \"Soft\"\nkind = \"light\"\n"),
             ("night.toml", "name = \"Night\"\n"),
@@ -331,6 +331,39 @@ fn an_unknown_or_mistyped_motion_is_a_field_finding() {
         messages(&inspection, FindingKind::FieldInvalid),
         ["library.toml: appearance.motion: expected one of system, full, reduced, found false"]
     );
+}
+
+#[test]
+fn an_interface_size_outside_the_range_or_mistyped_is_a_field_finding() {
+    for size in ["100", "130", "200"] {
+        let inspection = inspect_text(&format!("[appearance]\ninterface_size = {size}\n"));
+        assert_eq!(inspection.findings, [], "{size}");
+    }
+    for (size, found) in [("250", "250"), ("99", "99"), ("\"150\"", "\"150\"")] {
+        let inspection = inspect_text(&format!("[appearance]\ninterface_size = {size}\n"));
+        assert_eq!(
+            messages(&inspection, FindingKind::FieldInvalid),
+            [format!(
+                "library.toml: appearance.interface_size: expected a whole number from 100 to 200, found {found}"
+            )]
+        );
+    }
+}
+
+#[test]
+fn a_font_that_is_not_a_name_is_a_field_finding() {
+    // Whether the family is installed only shows at the app's launch.
+    let inspection = inspect_text("[appearance]\nfont = \"Not Installed Anywhere\"\n");
+    assert_eq!(inspection.findings, []);
+    for (font, found) in [("\"\"", "\"\""), ("3", "3")] {
+        let inspection = inspect_text(&format!("[appearance]\nfont = {font}\n"));
+        assert_eq!(
+            messages(&inspection, FindingKind::FieldInvalid),
+            [format!(
+                "library.toml: appearance.font: expected a font family name, found {found}"
+            )]
+        );
+    }
 }
 
 #[test]
