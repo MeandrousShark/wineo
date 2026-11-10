@@ -100,6 +100,8 @@ struct Cache<V> {
     entries: HashMap<Key, (V, u64)>,
     tick: u64,
     limit: usize,
+    /// The `fonts::generation` the entries were measured under.
+    font: u64,
 }
 
 impl<V: Clone> Cache<V> {
@@ -108,10 +110,17 @@ impl<V: Clone> Cache<V> {
             entries: HashMap::new(),
             tick: 0,
             limit: limit.max(2),
+            font: crate::fonts::generation(),
         }
     }
 
     fn get_or_insert_with(&mut self, key: Key, wrap: impl FnOnce() -> V) -> V {
+        // The key names the generic family, which a font switch remaps.
+        let font = crate::fonts::generation();
+        if self.font != font {
+            self.entries.clear();
+            self.font = font;
+        }
         self.tick += 1;
         if let Some((lines, used)) = self.entries.get_mut(&key) {
             *used = self.tick;

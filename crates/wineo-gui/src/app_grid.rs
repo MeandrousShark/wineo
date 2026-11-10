@@ -165,6 +165,7 @@ impl App {
                 shift: self.grid_shift(),
                 mode: self.layout,
                 width: self.slot_width(),
+                font: crate::fonts::generation(),
             });
         if let Some(key) = &key
             && let Some((cached, places)) = &*self.places.borrow()

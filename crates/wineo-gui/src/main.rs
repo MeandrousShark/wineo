@@ -1832,7 +1832,7 @@ impl App {
 fn app_settings() -> Settings {
     Settings {
         fonts: vec![fonts::REGULAR.into(), fonts::SEMIBOLD.into()],
-        default_font: fonts::DEFAULT,
+        default_font: iced::Font::DEFAULT,
         default_text_size: 14.into(),
         ..Settings::default()
     }

@@ -29,6 +29,7 @@ where
     fn wineo_style(self, palette: Palette) -> Self {
         self.padding([8, 10])
             .text_size(14)
+            .font(crate::fonts::named())
             .style(move |_, status| pick_list_style(palette, status))
             .menu_style(move |_| pick_menu_style(palette))
     }

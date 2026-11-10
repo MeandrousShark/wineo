@@ -351,6 +351,8 @@ pub(crate) struct PlacesKey {
     pub(crate) mode: ViewLayout,
     /// Each slot's width, which a list row takes from the window.
     pub(crate) width: f32,
+    /// `fonts::generation`, since card heights come from measured text.
+    pub(crate) font: u64,
 }
 
 impl Places {
