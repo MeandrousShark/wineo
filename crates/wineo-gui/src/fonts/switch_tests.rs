@@ -2,30 +2,22 @@
 //! its own, since a remap changes the one font system every test measures
 //! with.
 
-use std::borrow::Cow;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use iced::widget::{pick_list, text};
 use iced::{Element, Font, Size};
 
-use super::fixtures::wide;
+use super::fixtures::{WIDE, install_wide};
 use super::*;
 use crate::layout_probe::{lay_out, relay_out, render_with, renderer};
 
 const CHILD: &str = "WINEO_GUI_FONT_SWITCH_CHILD";
 
-/// Noto Sans with every advance doubled, and only a regular face.
-const WIDE: &str = "Wineo Test Wide";
-
 /// Gives this process the font system and adds `WIDE`.
 fn setup() {
     live::turn_on();
-    install_once();
-    font_system()
-        .write()
-        .expect("font system lock")
-        .load_font(Cow::Owned(wide(REGULAR, WIDE, 400)));
+    install_wide();
 }
 
 fn switch_to(family: Option<&str>) {

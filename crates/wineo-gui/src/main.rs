@@ -21,6 +21,7 @@ mod details_fade;
 mod download_progress;
 mod downloads_page;
 mod downloads_work;
+mod dropdown;
 mod ends;
 mod exit_watchdog;
 mod filter_control;
@@ -225,6 +226,10 @@ pub(crate) struct App {
     /// The interface size in percent the window draws at: the Appearance
     /// draft's while Settings shows it, the saved one otherwise.
     pub(crate) interface_size: u16,
+    /// The font the Appearance draft or the saved setting names, and the
+    /// family sans-serif points at for it.
+    font_wanted: Option<String>,
+    font: &'static str,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
@@ -628,6 +633,8 @@ impl App {
             collapse: collapse::Collapse::default(),
             motion: motion::Motion::default(),
             interface_size: wineo_core::library::INTERFACE_SIZE_MIN,
+            font_wanted: None,
+            font: fonts::BUILT_IN,
             grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
@@ -738,6 +745,7 @@ impl App {
         app.sync_palette();
         app.sync_motion();
         app.sync_interface_size();
+        app.sync_font();
         // The window opens the same size on screen at any interface size,
         // and these hold until its first size arrives.
         let launch = app_window::launch_size(app.interface_size);
@@ -840,6 +848,34 @@ impl App {
             .and_then(|page| page.appearance())
             .map_or(self.appearance.motion, |form| form.draft.motion);
         self.grid_motion.set_reduced(self.motion.reduced());
+    }
+
+    /// Follows the Appearance draft like `sync_palette`, so a font previews at
+    /// once and discarding the draft puts the saved one back. A family that
+    /// isn't installed falls back to the bundle and stays in the file.
+    fn sync_font(&mut self) {
+        let wanted = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(&self.appearance.font, |form| &form.draft.font);
+        // Resolving looks through every installed face, so only a new name
+        // pays for it.
+        if *wanted != self.font_wanted {
+            self.font_wanted.clone_from(wanted);
+            let family = fonts::resolve(self.font_wanted.as_deref());
+            if family != self.font {
+                fonts::remap(family);
+                self.font = family;
+            }
+        }
+        if let Some(form) = self
+            .settings
+            .as_mut()
+            .and_then(|page| page.appearance_mut())
+        {
+            form.font_in_use = self.font;
+        }
     }
 
     /// Follows the Appearance draft like `sync_palette`. Returns whether the
@@ -993,6 +1029,7 @@ impl App {
         self.sync_palette();
         self.sync_motion();
         let rescaled = self.sync_interface_size();
+        self.sync_font();
         // One place for every path that changes the selection.
         self.sync_cursor();
         // One place for every path that changes the hover or selection.

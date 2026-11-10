@@ -8,10 +8,8 @@
 //! Widgets draw with `Font::DEFAULT`, the generic sans-serif family, so a font
 //! change is one remap of that family rather than a font on every widget.
 
-// Only the spike's tests switch fonts so far.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -122,21 +120,45 @@ pub(crate) fn named() -> Font {
     Font::with_name(current())
 }
 
+/// The installed families a user can pick, by name, without the bundle's
+/// and without monospace ones, which stay the system's.
+pub(crate) fn families() -> Vec<&'static str> {
+    #[cfg(test)]
+    install_once();
+    let mut system = font_system().write().expect("font system lock");
+    let mut seen = HashSet::new();
+    let mut names: Vec<&'static str> = system
+        .raw()
+        .db()
+        .faces()
+        .filter(|face| !face.monospaced)
+        .filter_map(|face| face.families.first().map(|(name, _)| name.as_str()))
+        .filter(|name| *name != BUILT_IN && *name != ICONS && seen.insert(*name))
+        .map(intern)
+        .collect();
+    names.sort_by_cached_key(|name| (name.to_lowercase(), *name));
+    names
+}
+
+/// Iced's own icon font, which has no letters.
+const ICONS: &str = "Iced-Icons";
+
 fn has_family(db: &Database, family: &str) -> bool {
     db.faces()
         .any(|face| face.families.iter().any(|(name, _)| name == family))
 }
 
 /// Family names live as long as the app, since `Font` holds a `&'static
-/// str`. Only names someone picked are kept, so this stays small.
+/// str`. Each installed family is kept once, so this stays bounded.
 fn intern(name: &str) -> &'static str {
-    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
     let mut names = NAMES.lock().expect("font names lock");
-    if let Some(kept) = names.iter().find(|kept| **kept == name) {
+    let names = names.get_or_insert_with(HashSet::new);
+    if let Some(kept) = names.get(name) {
         return kept;
     }
     let kept: &'static str = Box::leak(name.to_owned().into_boxed_str());
-    names.push(kept);
+    names.insert(kept);
     kept
 }
 
@@ -165,6 +187,11 @@ pub(crate) mod live {
 
     pub(super) fn record(family: &'static str) {
         RECORDED.with_borrow_mut(|recorded| recorded.push(family));
+    }
+
+    /// The remaps this thread asked for since the last call.
+    pub(crate) fn take() -> Vec<&'static str> {
+        RECORDED.with_borrow_mut(std::mem::take)
     }
 }
 

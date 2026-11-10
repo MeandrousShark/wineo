@@ -774,3 +774,165 @@ fn a_hand_edited_size_between_steps_is_used_and_listed() {
     let app = App::boot(paths.clone()).0;
     assert_eq!(app.scale_factor(app.main_window.unwrap()), 2.0);
 }
+
+use crate::fonts::fixtures::{WIDE, install_wide};
+use crate::fonts::{BUILT_IN, live};
+
+fn font_form(app: &App) -> &appearance::Form {
+    page_of(app).appearance().unwrap()
+}
+
+#[test]
+fn the_font_dropdown_previews_live_and_save_writes_only_it() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    assert_eq!(
+        live::take(),
+        Vec::<&str>::new(),
+        "the bundle needs no remap"
+    );
+    let shown = super::custom_themes::texts(&app, &paths);
+    for label in ["Font", appearance::BUILT_IN_LABEL] {
+        assert!(
+            shown.iter().any(|text| text == label),
+            "{label} in {shown:?}"
+        );
+    }
+
+    edit(&mut app, Edit::FontOpen);
+    assert!(page_of(&app).menu_open, "Escape and the sidebar wait");
+    let picker = font_form(&app).font_picker.as_ref().unwrap();
+    let rows = picker.rows();
+    assert_eq!(rows[0], (appearance::BUILT_IN_LABEL, None));
+    assert!(rows.contains(&(WIDE, Some(WIDE))));
+    assert!(!rows.iter().any(|(label, _)| *label == BUILT_IN));
+    edit(&mut app, Edit::FontQuery("TEST wide".into()));
+    let rows = font_form(&app).font_picker.as_ref().unwrap().rows();
+    assert_eq!(rows, [(WIDE, Some(WIDE))]);
+    edit(&mut app, Edit::FontSubmit);
+    assert!(font_form(&app).font_picker.is_none());
+    assert!(!page_of(&app).menu_open);
+    assert_eq!(font_form(&app).draft.font.as_deref(), Some(WIDE));
+    assert_eq!(live::take(), [WIDE], "the draft applies at once");
+    assert_eq!(font_form(&app).font_in_use, WIDE);
+    let shown = super::custom_themes::texts(&app, &paths);
+    assert!(shown.iter().any(|text| text == WIDE), "{shown:?}");
+    assert_eq!(page_of(&app).changes(), 1);
+    assert_eq!(library_text(&paths), "", "nothing written before Save");
+
+    let _ = app.update(Message::Settings(Event::Revert));
+    assert_eq!(live::take(), [BUILT_IN], "Revert undoes the remap");
+
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert_eq!(live::take(), [WIDE]);
+    let report = save(&mut app, &paths);
+    assert_eq!(report.failed, None);
+    assert_eq!(
+        library_text(&paths),
+        format!("schema_version = 1\n\n[appearance]\nfont = \"{WIDE}\"\n")
+    );
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert!(app.settings.is_none());
+    assert_eq!(live::take(), Vec::<&str>::new(), "the saved font stays");
+}
+
+#[test]
+fn discarding_the_draft_undoes_the_font() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert_eq!(live::take(), [WIDE]);
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    let _ = app.update(Message::Settings(Event::Discard));
+    assert!(app.settings.is_none());
+    assert_eq!(live::take(), [BUILT_IN]);
+    assert_eq!(library_text(&paths), "");
+}
+
+#[test]
+fn startup_applies_the_saved_font() {
+    install_wide();
+    let (_root, paths) = setup();
+    write_library(&paths, &format!("[appearance]\nfont = \"{WIDE}\"\n"));
+    live::take();
+    let _app = App::boot(paths.clone()).0;
+    assert_eq!(live::take(), [WIDE], "before any update");
+}
+
+#[test]
+fn a_missing_font_shows_the_bundle_and_the_draft_keeps_its_name() {
+    let (_root, paths) = setup();
+    let text = "[appearance]\nfont = \"Not Installed Anywhere\"\n";
+    write_library(&paths, text);
+    live::take();
+    let mut app = open_global_app(&paths);
+    assert_eq!(live::take(), Vec::<&str>::new(), "the bundle stays in use");
+    assert_eq!(library_text(&paths), text, "nothing rewrites the file");
+    show_appearance(&mut app);
+    let form = font_form(&app);
+    assert_eq!(form.draft.font.as_deref(), Some("Not Installed Anywhere"));
+    assert_eq!(form.font_in_use, BUILT_IN);
+    let shown = super::custom_themes::texts(&app, &paths);
+    assert!(shown.iter().any(|text| text == appearance::BUILT_IN_LABEL));
+
+    // Saving another change keeps the name it doesn't show.
+    edit(&mut app, Edit::Motion(Motion::Reduced));
+    assert_eq!(page_of(&app).changes(), 1);
+    let report = save(&mut app, &paths);
+    assert_eq!(report.failed, None);
+    let saved = library_text(&paths);
+    assert!(
+        saved.contains("font = \"Not Installed Anywhere\"")
+            && saved.contains("motion = \"reduced\""),
+        "{saved}"
+    );
+
+    // Picking the built-in font is a change, and removes the name.
+    edit(&mut app, Edit::Font(None));
+    assert_eq!(page_of(&app).changes(), 1);
+    save(&mut app, &paths);
+    assert!(!library_text(&paths).contains("font"));
+}
+
+#[test]
+fn each_font_row_draws_in_its_own_family() {
+    use crate::layout_probe::{bounds_at, lay_out};
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::FontOpen);
+    let picker = font_form(&app).font_picker.clone().unwrap();
+    let rows = picker.rows();
+    let wide = rows.iter().position(|row| row.0 == WIDE).unwrap();
+    let laid = lay_out(
+        appearance::font_popup(&picker, BUILT_IN, Palette::DARK),
+        iced::Size::new(260.0, 2000.0),
+    );
+    // The popup's column, its list, the rows, and each row's label.
+    let label = |index: usize| bounds_at(&laid.node, &[0, 1, 0, index, 0]).width;
+    let own = label(wide);
+    let in_noto = crate::tile_title::line_width(WIDE, 14.0, iced::Font::with_name(BUILT_IN));
+    assert!(own > in_noto * 1.8, "{own} against {in_noto}");
+    assert_eq!(
+        label(0),
+        crate::tile_title::line_width(appearance::BUILT_IN_LABEL, 14.0, iced::Font::DEFAULT)
+    );
+}
+
+#[test]
+fn a_save_closes_the_font_dropdown_with_the_other_menus() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::InterfaceSize(125));
+    edit(&mut app, Edit::FontOpen);
+    assert!(page_of(&app).menu_open);
+    save(&mut app, &paths);
+    assert!(font_form(&app).font_picker.is_none());
+    assert!(!page_of(&app).menu_open);
+}

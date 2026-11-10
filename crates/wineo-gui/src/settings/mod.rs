@@ -619,6 +619,12 @@ impl Page {
             _ => None,
         }
     }
+    pub(crate) fn appearance_mut(&mut self) -> Option<&mut appearance::Form> {
+        match &mut self.view {
+            View::Global(editor) => Some(&mut editor.appearance),
+            _ => None,
+        }
+    }
     pub(crate) fn navigation_blocked(&self) -> bool {
         self.leave_prompt || self.menu_open || self.locked()
     }
@@ -685,6 +691,10 @@ impl Page {
         }
         self.drop_checks();
         self.menu_open = false;
+        // It counts as a menu, so it closes with them.
+        if let Some(form) = self.appearance_mut() {
+            form.font_picker = None;
+        }
         self.pending = Some(Pending {
             mode,
             draft: self.editor().map(|editor| editor.form.draft.clone()),

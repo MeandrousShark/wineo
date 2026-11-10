@@ -163,10 +163,24 @@ impl Page {
             Event::Appearance(edit) => {
                 self.edited();
                 let mode = self.system_mode;
-                if let View::Global(editor) = &mut self.view {
-                    editor.appearance.apply(edit, mode);
+                let View::Global(editor) = &mut self.view else {
+                    return Step::none();
+                };
+                let was_open = editor.appearance.font_picker.is_some();
+                editor.appearance.apply(edit, mode);
+                let open = editor.appearance.font_picker.is_some();
+                if open == was_open {
+                    return Step::none();
                 }
-                Step::none()
+                // Like a pick list's menu, so Escape and the sidebar wait.
+                self.menu_open = open;
+                if open {
+                    Step::task(iced::widget::operation::focus(iced::widget::Id::new(
+                        super::appearance::FONT_SEARCH_ID,
+                    )))
+                } else {
+                    Step::none()
+                }
             }
             Event::BrowseGamesRoot => self.browse_games_root(paths),
             Event::PickedGamesRoot(generation, previous, result) => {

@@ -79,3 +79,20 @@ fn table_offset(data: &[u8], tag: &[u8; 4]) -> usize {
     let record = table_record(data, tag);
     u32::from_be_bytes(data[record + 8..record + 12].try_into().unwrap()) as usize
 }
+
+/// Noto Sans with every advance doubled, and only a regular face.
+pub(crate) const WIDE: &str = "Wineo Test Wide";
+
+/// Adds `WIDE` to the font system once per process. Other tests never ask
+/// for it, and sans-serif still points at the bundle, so they measure as
+/// before.
+pub(crate) fn install_wide() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        super::install_once();
+        super::font_system()
+            .write()
+            .expect("font system lock")
+            .load_font(std::borrow::Cow::Owned(wide(super::REGULAR, WIDE, 400)));
+    });
+}

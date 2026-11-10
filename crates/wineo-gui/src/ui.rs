@@ -65,6 +65,38 @@ fn pick_list_style(
     }
 }
 
+/// A button made to look like a pick list, for dropdowns iced's can't draw.
+pub(crate) fn dropdown_style(
+    palette: Palette,
+    open: bool,
+    status: button::Status,
+) -> button::Style {
+    use iced::widget::pick_list::Status;
+    let status = match status {
+        _ if open => Status::Opened { is_hovered: false },
+        button::Status::Hovered | button::Status::Pressed => Status::Hovered,
+        button::Status::Active | button::Status::Disabled => Status::Active,
+    };
+    let style = pick_list_style(palette, status);
+    button::Style {
+        background: Some(style.background),
+        text_color: style.text_color,
+        border: style.border,
+        ..button::Style::default()
+    }
+}
+
+/// The popup of a `dropdown_style` control, in the pick lists' menu chrome.
+pub(crate) fn dropdown_popup_style(palette: Palette) -> container::Style {
+    let menu = pick_menu_style(palette);
+    container::Style {
+        background: Some(menu.background),
+        border: menu.border,
+        shadow: menu.shadow,
+        ..container::Style::default()
+    }
+}
+
 fn pick_menu_style(palette: Palette) -> iced::overlay::menu::Style {
     iced::overlay::menu::Style {
         background: palette.surface.into(),
