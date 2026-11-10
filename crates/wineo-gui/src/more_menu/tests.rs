@@ -772,3 +772,33 @@ fn a_more_pick_is_refused_whenever_the_dice_is() {
         assert_eq!(more.selected.is_some(), name == "idle", "{name}");
     }
 }
+
+#[test]
+fn a_menu_closed_by_unfolding_gives_focus_to_its_focused_rows_control() {
+    let (_root, mut app) = library(150);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    window.press(&mut app, Named::ArrowDown);
+    assert_eq!(window.focused(&app), ids(LAYOUT_ID));
+    at_size(&mut app, 100);
+    window.frame(&mut app);
+    assert!(!app.more_menu);
+    assert_eq!(window.focused(&app), ids(crate::layout_switch::ID));
+}
+
+#[test]
+fn a_slider_drag_ends_and_saves_when_the_slider_folds() {
+    let (_root, mut app) = library(100);
+    let mut window = Window::new(&mut app);
+    window.send(
+        &mut app,
+        vec![Message::Zoom(crate::zoom::Event::Drag(150.0))],
+    );
+    assert!(app.zooming.dragging());
+    at_size(&mut app, 150);
+    window.frame(&mut app);
+    assert!(app.toolbar_folds.contains(Control::Zoom));
+    assert!(!app.zooming.dragging());
+    let saved = std::fs::read_to_string(app.paths.library_file()).unwrap();
+    assert!(saved.contains("zoom = 150"), "{saved}");
+}

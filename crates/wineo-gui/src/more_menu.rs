@@ -40,6 +40,9 @@ pub(crate) enum Event {
     Pick,
     /// The Menu key or Shift+F10 on that row, for the dice's options.
     RandomOptions,
+    /// The focused control, found once nothing is folded any more, which
+    /// closes the open menu.
+    Unfolded(Option<iced::widget::Id>),
 }
 
 impl Event {
@@ -47,7 +50,10 @@ impl Event {
     pub(crate) fn is_input(&self) -> bool {
         // The reply always arrives so it can clear its request, and the
         // folds follow the layout whatever is open.
-        !matches!(self, Self::OpenUnder(..) | Self::Fitted(_))
+        !matches!(
+            self,
+            Self::OpenUnder(..) | Self::Fitted(_) | Self::Unfolded(_)
+        )
     }
 }
 
@@ -140,13 +146,8 @@ impl App {
     /// from is off, like the dice.
     pub(crate) fn more_ids(&self) -> Vec<&'static str> {
         self.more_controls()
-            .filter_map(|control| match control {
-                Control::Filters => Some(FILTERS_ID),
-                Control::Dice => self.random_enabled().then_some(RANDOM_ID),
-                Control::Layout => Some(LAYOUT_ID),
-                Control::Zoom => Some(ZOOM_ID),
-                Control::Titles => Some(TITLES_ID),
-            })
+            .filter(|control| *control != Control::Dice || self.random_enabled())
+            .map(row_id)
             .collect()
     }
 }
@@ -180,12 +181,43 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             Task::none()
         }
         Event::Fitted(fit) => {
+            // The filter tab reads the folds too, so it can trail this by a
+            // frame, which is only cosmetic.
             app.search_icon = fit.search_icon;
             // The field is back in the toolbar, with its text and focus.
             if !fit.search_icon {
                 app.search_open = false;
             }
-            folded(app, fit.folds)
+            // A folded slider gets no more events, so a drag on it ends
+            // here, saving where it was.
+            let ended = if fit.folds.contains(Control::Zoom)
+                && !app.toolbar_folds.contains(Control::Zoom)
+                && app.zooming.dragging()
+            {
+                app.end_zoom_drag()
+            } else {
+                Task::none()
+            };
+            Task::batch([ended, folded(app, fit.folds)])
+        }
+        Event::Unfolded(focused) => {
+            if !app.more_menu {
+                return Task::none();
+            }
+            app.more_menu = false;
+            // Focus goes to the control whose row had it, or else the
+            // first one back on the toolbar.
+            let row = focused.and_then(|focused| {
+                app.more_rows
+                    .iter()
+                    .find(|control| iced::widget::Id::new(row_id(*control)) == focused)
+            });
+            match row.or_else(|| app.more_rows.iter().next()) {
+                Some(control) => {
+                    iced::widget::operation::focus(iced::widget::Id::new(toolbar_id(control)))
+                }
+                None => Task::none(),
+            }
         }
         Event::OpenFilters => {
             if !app.more_menu_shown() {
@@ -220,8 +252,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
 
 /// The toolbar laid out with new folds. An open menu gains the rows of
 /// controls that just folded and keeps the rest; once nothing is folded
-/// More is gone, so the menu closes and focus goes to the first of its
-/// controls back on the toolbar.
+/// More is gone, so the menu closes once it's found which row had focus.
 fn folded(app: &mut App, folds: Folds) -> Task<Message> {
     app.toolbar_folds = folds;
     if !app.more_menu {
@@ -233,10 +264,51 @@ fn folded(app: &mut App, folds: Folds) -> Task<Message> {
     if !folds.is_empty() {
         return Task::none();
     }
-    app.more_menu = false;
-    match app.more_rows.iter().next() {
-        Some(control) => iced::widget::operation::focus(iced::widget::Id::new(toolbar_id(control))),
-        None => Task::none(),
+    iced::advanced::widget::operate(focused_id())
+        .map(|focused| Message::More(Event::Unfolded(focused)))
+}
+
+/// The id of the focused control, or None, always answering.
+fn focused_id() -> impl iced::advanced::widget::Operation<Option<iced::widget::Id>> {
+    struct Focused(Option<iced::widget::Id>);
+
+    impl iced::advanced::widget::Operation<Option<iced::widget::Id>> for Focused {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(
+                &mut dyn iced::advanced::widget::Operation<Option<iced::widget::Id>>,
+            ),
+        ) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            _bounds: Rectangle,
+            state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if state.is_focused() {
+                self.0 = id.cloned();
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<iced::widget::Id>> {
+            iced::advanced::widget::operation::Outcome::Some(self.0.clone())
+        }
+    }
+
+    Focused(None)
+}
+
+/// The menu row a folded control has.
+fn row_id(control: Control) -> &'static str {
+    match control {
+        Control::Filters => FILTERS_ID,
+        Control::Dice => RANDOM_ID,
+        Control::Layout => LAYOUT_ID,
+        Control::Zoom => ZOOM_ID,
+        Control::Titles => TITLES_ID,
     }
 }
 
