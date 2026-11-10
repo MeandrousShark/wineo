@@ -200,11 +200,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             app.more_menu = false;
             // The row is gone, so focus goes back to More, as the dice
-            // keeps it after its own pick.
+            // keeps it after its own pick. The pick goes through the app's
+            // update, so whatever blocks the dice blocks the row too.
             let focus = iced::widget::operation::focus(iced::widget::Id::new(MORE_ID));
             Task::batch([
                 focus,
-                crate::random_pick::update(app, crate::random_pick::Event::Pick),
+                app.update(Message::Random(crate::random_pick::Event::Pick)),
             ])
         }
         Event::RandomOptions => {
@@ -212,7 +213,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 return Task::none();
             }
             app.more_menu = false;
-            crate::random_pick::update(app, crate::random_pick::Event::OpenMenu)
+            app.update(Message::Random(crate::random_pick::Event::OpenMenu))
         }
     }
 }

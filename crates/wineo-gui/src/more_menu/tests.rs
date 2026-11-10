@@ -746,3 +746,29 @@ fn more_keeps_its_focus_through_a_partial_unfold() {
     assert!(!app.toolbar_folds.is_empty());
     assert_eq!(window.focused(&app), ids(MORE_ID));
 }
+
+#[test]
+fn a_more_pick_is_refused_whenever_the_dice_is() {
+    // Each state the app can be in, and whether a pick goes through.
+    let states: [(&str, fn(&mut App)); 3] = [
+        ("idle", |_| {}),
+        ("a dialog over the window", |app| app.close_prompt = true),
+        ("nothing to pick from", |app| {
+            let _ = app.update(Message::SearchChanged("nothing matches".into()));
+        }),
+    ];
+    for (name, state) in states {
+        let (_root, mut dice) = library(200);
+        settle(&mut dice);
+        state(&mut dice);
+        let _ = dice.update(Message::Random(crate::random_pick::Event::Pick));
+
+        let (_root, mut more) = library(200);
+        let mut window = Window::new(&mut more);
+        open(&mut more, &mut window);
+        state(&mut more);
+        window.send(&mut more, vec![Message::More(Event::Pick)]);
+        assert_eq!(more.selected.is_some(), dice.selected.is_some(), "{name}");
+        assert_eq!(more.selected.is_some(), name == "idle", "{name}");
+    }
+}
