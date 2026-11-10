@@ -136,6 +136,10 @@ pub(crate) struct Form {
     /// family that isn't installed shows as the built-in font, while the
     /// draft keeps its name.
     pub(crate) font_in_use: &'static str,
+    /// Whether `font_in_use` can draw its own name, which the app decides
+    /// when the family changes. The closed dropdown shows the built-in
+    /// font otherwise.
+    pub(crate) font_in_use_draws_name: bool,
 }
 
 /// The open Font dropdown.
@@ -225,6 +229,7 @@ impl Form {
             copies: 0,
             font_picker: None,
             font_in_use: crate::fonts::BUILT_IN,
+            font_in_use_draws_name: true,
         }
     }
     /// The draft appearance and themes, which a load compares to tell edits
@@ -955,7 +960,11 @@ pub(super) fn font_choice(
     let control = button(
         row![
             text(label)
-                .font(Font::with_name(in_use))
+                .font(Font::with_name(if form.font_in_use_draws_name {
+                    in_use
+                } else {
+                    crate::fonts::BUILT_IN
+                }))
                 .size(14)
                 .wrapping(text::Wrapping::None)
                 .width(Fill),

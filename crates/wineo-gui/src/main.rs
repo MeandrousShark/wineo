@@ -230,6 +230,8 @@ pub(crate) struct App {
     /// family sans-serif points at for it.
     font_wanted: Option<String>,
     font: &'static str,
+    /// Whether `font` can draw its own name, decided when it changes.
+    font_draws_name: bool,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
@@ -635,6 +637,7 @@ impl App {
             interface_size: wineo_core::library::INTERFACE_SIZE_MIN,
             font_wanted: None,
             font: fonts::BUILT_IN,
+            font_draws_name: true,
             grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
@@ -867,6 +870,7 @@ impl App {
             if family != self.font {
                 fonts::remap(family);
                 self.font = family;
+                self.font_draws_name = fonts::can_draw_own_name(family);
             }
         }
         if let Some(form) = self
@@ -875,6 +879,7 @@ impl App {
             .and_then(|page| page.appearance_mut())
         {
             form.font_in_use = self.font;
+            form.font_in_use_draws_name = self.font_draws_name;
         }
     }
 

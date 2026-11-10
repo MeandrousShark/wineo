@@ -195,6 +195,15 @@ pub(crate) fn families() -> Families {
     Families { names, fallback }
 }
 
+/// `draws_own_name` against the font system. The bundle always can.
+pub(crate) fn can_draw_own_name(family: &str) -> bool {
+    if family == BUILT_IN {
+        return true;
+    }
+    let mut system = font_system().write().expect("font system lock");
+    draws_own_name(system.raw().db(), family)
+}
+
 /// Whether the face `family` draws regular upright text with has a glyph for
 /// every character of its name but whitespace. A face that can't be found or
 /// read counts as not drawing it, since the bundle always can.

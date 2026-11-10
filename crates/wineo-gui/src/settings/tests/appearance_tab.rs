@@ -971,6 +971,64 @@ fn a_font_row_whose_family_cant_draw_its_name_draws_in_the_built_in_font() {
 }
 
 #[test]
+fn the_closed_font_dropdown_draws_a_family_that_cant_draw_its_name_in_the_built_in_font() {
+    use crate::fonts::checks;
+    use crate::layout_probe::render;
+    install_wide();
+    install_no_latin();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    assert!(
+        font_form(&app).font_in_use_draws_name,
+        "the bundle draws it"
+    );
+
+    let before = checks::so_far();
+    edit(&mut app, Edit::Font(Some(NO_LATIN.to_owned())));
+    assert_eq!(font_form(&app).font_in_use, NO_LATIN);
+    assert!(!font_form(&app).font_in_use_draws_name);
+    assert_eq!(checks::so_far() - before, 1, "checked once on the change");
+    edit(&mut app, Edit::Motion(Motion::Reduced));
+    let size = iced::Size::new(view::CONTROL_WIDTH, 40.0);
+    for _ in 0..2 {
+        let _ = render(
+            &mut appearance::font_choice(font_form(&app), false, Palette::DARK),
+            size,
+        );
+    }
+    assert_eq!(checks::so_far() - before, 1, "nor again per update or draw");
+
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert!(font_form(&app).font_in_use_draws_name);
+
+    // The rightmost inked column of the label, between the borders and
+    // left of the arrow.
+    let width = view::CONTROL_WIDTH as usize;
+    let ink_end = |form: &appearance::Form| {
+        let pixels = render(
+            &mut appearance::font_choice(form, false, Palette::DARK),
+            size,
+        );
+        let at = |x: usize, y: usize| &pixels[(y * width + x) * 4..(y * width + x) * 4 + 4];
+        (0..width - 32)
+            .filter(|x| (8..32).any(|y| at(*x, y) != at(4, 20)))
+            .max()
+            .unwrap() as f32
+    };
+    let own = ink_end(font_form(&app));
+    let mut decided = font_form(&app).clone();
+    decided.font_in_use_draws_name = false;
+    let fallen_back = ink_end(&decided);
+    let in_noto = 10.0 + crate::tile_title::line_width(WIDE, 14.0, iced::Font::with_name(BUILT_IN));
+    assert!(
+        (fallen_back - in_noto).abs() <= 3.0,
+        "{fallen_back} against {in_noto}"
+    );
+    assert!(own > fallen_back + 40.0, "{own} against {fallen_back}");
+}
+
+#[test]
 fn a_save_closes_the_font_dropdown_with_the_other_menus() {
     let (_root, paths) = setup();
     let mut app = open_global_app(&paths);
