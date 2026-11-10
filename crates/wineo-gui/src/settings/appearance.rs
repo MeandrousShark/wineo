@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use iced::theme::Mode;
 use iced::widget::{Space, column, container, pick_list, row, text};
 use iced::{Center, Element, Fill, border};
-use wineo_core::library::Motion;
+use wineo_core::library::{INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion};
 use wineo_core::themes::{ROLES, normalize_color};
 
 use super::Event;
@@ -28,6 +28,8 @@ pub(crate) enum Edit {
     Theme(Slot, String),
     ImproveReadability(bool),
     Motion(Motion),
+    /// In percent.
+    InterfaceSize(u16),
     /// Copies the theme the slot shows to a new custom theme, which the slot
     /// then shows.
     Copy(Slot),
@@ -183,6 +185,9 @@ impl Form {
             Edit::Theme(slot, id) => *slot.id_mut(&mut self.draft) = id,
             Edit::ImproveReadability(on) => self.draft.improve_readability = on,
             Edit::Motion(motion) => self.draft.motion = motion,
+            Edit::InterfaceSize(size) => {
+                self.draft.interface_size = size.clamp(INTERFACE_SIZE_MIN, INTERFACE_SIZE_MAX);
+            }
             Edit::Copy(slot) => self.copy(slot),
             Edit::Color(id, role, text) => self.set_color(&id, role, text),
             Edit::RenameOpen(id) => {
@@ -365,6 +370,7 @@ impl Form {
             before.theme != after.theme,
             before.improve_readability != after.improve_readability,
             before.motion != after.motion,
+            before.interface_size != after.interface_size,
         ]
         .into_iter()
         .filter(|changed| *changed)
@@ -449,6 +455,11 @@ impl Form {
             &new.improve_readability,
         );
         pick(&old.motion, &mut draft.motion, &new.motion);
+        pick(
+            &old.interface_size,
+            &mut draft.interface_size,
+            &new.interface_size,
+        );
     }
     /// A three-way merge of each theme against the old base, the new one,
     /// and the draft, so a change on disk shows unless the draft changed the
@@ -737,15 +748,63 @@ pub(super) fn tab(
         ))
         .push(super::view::section(
             "Accessibility",
-            super::view::setting_row(
-                "Motion",
-                motion_choice(draft.motion, locked, palette),
-                None,
-                palette,
-            ),
+            column![
+                super::view::setting_row(
+                    "Interface size",
+                    size_choice(draft.interface_size, locked, palette),
+                    None,
+                    palette,
+                ),
+                super::view::setting_row(
+                    "Motion",
+                    motion_choice(draft.motion, locked, palette),
+                    None,
+                    palette,
+                ),
+            ]
+            .spacing(12)
+            .into(),
             palette,
         ))
         .into()
+}
+
+/// The dropdown's sizes, in percent.
+pub(crate) const SIZE_STEPS: [u16; 6] = [100, 110, 125, 150, 175, 200];
+
+/// An interface size as the dropdown shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SizeChoice(pub(crate) u16);
+
+impl std::fmt::Display for SizeChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}%", self.0)
+    }
+}
+
+/// The steps, with a hand-edited size between them in its place, so the
+/// dropdown can show what's in use.
+pub(crate) fn size_choices(current: u16) -> Vec<SizeChoice> {
+    let mut sizes = SIZE_STEPS.to_vec();
+    if !sizes.contains(&current) {
+        sizes.push(current);
+        sizes.sort_unstable();
+    }
+    sizes.into_iter().map(SizeChoice).collect()
+}
+
+fn size_choice(size: u16, locked: bool, palette: Palette) -> Element<'static, Message> {
+    if locked {
+        return super::view::locked_choice(&SizeChoice(size).to_string(), palette);
+    }
+    pick_list(size_choices(size), Some(SizeChoice(size)), |choice| {
+        send(Edit::InterfaceSize(choice.0))
+    })
+    .on_open(Message::Settings(Event::MenuOpened))
+    .on_close(Message::Settings(Event::MenuClosed))
+    .width(super::view::CONTROL_WIDTH)
+    .wineo_style(palette)
+    .into()
 }
 
 fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {

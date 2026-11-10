@@ -13,7 +13,40 @@ pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
 /// How long the exit waits after closing the window.
 pub(crate) const EXIT_AFTER_CLOSE: Duration = Duration::from_millis(50);
 
+/// The window's size at 100%, in logical pixels.
+const LAUNCH: iced::Size = iced::Size::new(1200.0, 800.0);
+
+/// What iced multiplies the desktop's own scale by for an interface size in
+/// percent.
+pub(crate) fn factor(interface_size: u16) -> f32 {
+    f32::from(interface_size) / 100.0
+}
+
+/// The launch size in the window's logical pixels, which a bigger interface
+/// makes fewer.
+pub(crate) fn launch_size(interface_size: u16) -> iced::Size {
+    LAUNCH * (1.0 / factor(interface_size))
+}
+
 impl App {
+    pub(crate) fn scale_factor(&self, window: window::Id) -> f32 {
+        if self.main_window == Some(window) {
+            factor(self.interface_size)
+        } else {
+            1.0
+        }
+    }
+
+    /// A new scale factor changes the window's logical size without a
+    /// `Resized`, so this asks for it. iced applies the factor before it
+    /// answers.
+    pub(crate) fn refresh_window_size(&self) -> Task<Message> {
+        let Some(id) = self.main_window else {
+            return Task::none();
+        };
+        window::size(id).map(move |size| Message::Window(id, window::Event::Resized(size)))
+    }
+
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
         // A drag the close interrupts saves where it was, and the wait
         // below covers that write.

@@ -614,3 +614,163 @@ fn startup_applies_the_saved_motion() {
     let _ = app.update(Message::SystemMotion(true));
     assert!(!app.motion.reduced());
 }
+
+#[test]
+fn the_interface_size_follows_the_draft_and_save_writes_only_it() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let shown = super::custom_themes::texts(&app, &paths);
+    assert!(
+        shown.iter().any(|text| text == "Interface size"),
+        "{shown:?}"
+    );
+    let main = app.main_window.unwrap();
+    assert_eq!(app.scale_factor(main), 1.0);
+
+    edit(&mut app, Edit::InterfaceSize(150));
+    assert_eq!(app.scale_factor(main), 1.5, "the draft applies at once");
+    assert_eq!(app.scale_factor(iced::window::Id::unique()), 1.0);
+    assert_eq!(page_of(&app).changes(), 1);
+    assert_eq!(library_text(&paths), "", "nothing written before Save");
+    let _ = app.update(Message::Settings(Event::Revert));
+    assert_eq!(app.scale_factor(main), 1.0, "Revert undoes the preview");
+
+    edit(&mut app, Edit::InterfaceSize(175));
+    let report = save(&mut app, &paths);
+    assert_eq!(report.failed, None);
+    assert_eq!(
+        library_text(&paths),
+        "schema_version = 1\n\n[appearance]\ninterface_size = 175\n"
+    );
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert!(app.settings.is_none());
+    assert_eq!(app.scale_factor(main), 1.75, "the saved size stays");
+}
+
+#[test]
+fn discarding_the_draft_undoes_the_interface_size() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::InterfaceSize(200));
+    let main = app.main_window.unwrap();
+    assert_eq!(app.scale_factor(main), 2.0);
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert!(app.settings.is_some(), "asks before discarding");
+    let _ = app.update(Message::Settings(Event::Discard));
+    assert!(app.settings.is_none());
+    assert_eq!(app.scale_factor(main), 1.0);
+    assert_eq!(library_text(&paths), "");
+}
+
+/// Runs `task`, answering a `window::size` for `main` with `size` the way
+/// iced would after a scale change, and returns the message the answer
+/// became, if it asked.
+fn answer_size(
+    task: iced::Task<Message>,
+    main: iced::window::Id,
+    size: iced::Size,
+) -> Option<Message> {
+    use iced::futures::StreamExt;
+    use iced_runtime::{Action, window::Action as Window};
+    let mut stream = iced_runtime::task::into_stream(task)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut asked = false;
+        while let Ok(Some(action)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
+        {
+            match action {
+                Action::Window(Window::GetSize(id, channel)) => {
+                    assert_eq!(id, main);
+                    let _ = channel.send(size);
+                    asked = true;
+                }
+                Action::Output(message) if asked => return Some(message),
+                _ => {}
+            }
+        }
+        None
+    })
+}
+
+#[test]
+fn a_size_change_refreshes_the_window_size() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let main = app.main_window.unwrap();
+    let task = app.update(Message::Settings(Event::Appearance(Edit::InterfaceSize(
+        150,
+    ))));
+    let smaller = iced::Size::new(800.0, 533.0);
+    let message = answer_size(task, main, smaller).expect("asks for the window's size");
+    assert!(
+        matches!(message, Message::Window(id, iced::window::Event::Resized(size)) if id == main && size == smaller),
+        "{message:?}"
+    );
+    let _ = app.update(message);
+    assert_eq!(app.window_size, smaller);
+    assert_eq!(
+        app.viewport_width,
+        smaller.width - crate::sidebar::WIDTH,
+        "columns follow"
+    );
+
+    // Picking the size already in use asks for nothing.
+    let task = app.update(Message::Settings(Event::Appearance(Edit::InterfaceSize(
+        150,
+    ))));
+    assert!(answer_size(task, main, smaller).is_none());
+}
+
+#[test]
+fn startup_opens_the_same_size_on_screen_at_any_interface_size() {
+    use iced_runtime::{Action, window::Action as Window};
+    let (_root, paths) = setup();
+    for (size, open) in [
+        (100u16, iced::Size::new(1200.0, 800.0)),
+        (200, iced::Size::new(600.0, 400.0)),
+        (125, iced::Size::new(960.0, 640.0)),
+    ] {
+        write_library(&paths, &format!("[appearance]\ninterface_size = {size}\n"));
+        let (app, boot) = App::boot(paths.clone());
+        let main = app.main_window.unwrap();
+        assert_eq!(app.scale_factor(main), f32::from(size) / 100.0);
+        assert_eq!(app.window_size, open, "{size}%");
+        assert_eq!(app.viewport_width, open.width - crate::sidebar::WIDTH);
+        assert_eq!(app.viewport_height, open.height - 50.0);
+        let mut stream = iced_runtime::task::into_stream(boot).unwrap();
+        let action = iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream));
+        let Some(Action::Window(Window::Open(_, settings, _))) = action else {
+            panic!("boot's first action opens a window");
+        };
+        assert_eq!(settings.size, open, "{size}%");
+    }
+}
+
+#[test]
+fn a_hand_edited_size_between_steps_is_used_and_listed() {
+    let (_root, paths) = setup();
+    write_library(&paths, "[appearance]\ninterface_size = 130\n");
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    assert_eq!(app.scale_factor(app.main_window.unwrap()), 1.3);
+    let labels: Vec<String> = appearance::size_choices(130)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        labels,
+        ["100%", "110%", "125%", "130%", "150%", "175%", "200%"]
+    );
+    assert_eq!(appearance::size_choices(150).len(), 6);
+    // Out of range in the file clamps.
+    write_library(&paths, "[appearance]\ninterface_size = 900\n");
+    let app = App::boot(paths.clone()).0;
+    assert_eq!(app.scale_factor(app.main_window.unwrap()), 2.0);
+}

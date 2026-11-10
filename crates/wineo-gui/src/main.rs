@@ -222,6 +222,9 @@ pub(crate) struct App {
     places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
     collapse: collapse::Collapse,
     pub(crate) motion: motion::Motion,
+    /// The interface size in percent the window draws at: the Appearance
+    /// draft's while Settings shows it, the saved one otherwise.
+    pub(crate) interface_size: u16,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
@@ -624,6 +627,7 @@ impl App {
             places: Default::default(),
             collapse: collapse::Collapse::default(),
             motion: motion::Motion::default(),
+            interface_size: wineo_core::library::INTERFACE_SIZE_MIN,
             grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
@@ -733,6 +737,13 @@ impl App {
         app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
         app.sync_motion();
+        app.sync_interface_size();
+        // The window opens the same size on screen at any interface size,
+        // and these hold until its first size arrives.
+        let launch = app_window::launch_size(app.interface_size);
+        app.window_size = launch;
+        app.viewport_width = launch.width - sidebar::WIDTH;
+        app.viewport_height = launch.height - 50.0;
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
@@ -754,7 +765,7 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
-        let (main_window, open) = open_main_window();
+        let (main_window, open) = open_main_window(launch);
         app.main_window = Some(main_window);
         (
             app,
@@ -829,6 +840,21 @@ impl App {
             .and_then(|page| page.appearance())
             .map_or(self.appearance.motion, |form| form.draft.motion);
         self.grid_motion.set_reduced(self.motion.reduced());
+    }
+
+    /// Follows the Appearance draft like `sync_palette`. Returns whether the
+    /// size changed.
+    fn sync_interface_size(&mut self) -> bool {
+        let size = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(self.appearance.interface_size, |form| {
+                form.draft.interface_size
+            });
+        let changed = self.interface_size != size;
+        self.interface_size = size;
+        changed
     }
 
     fn management_busy(&self) -> bool {
@@ -966,6 +992,7 @@ impl App {
         // edit, a save, Revert, leaving Settings, or the system's mode.
         self.sync_palette();
         self.sync_motion();
+        let rescaled = self.sync_interface_size();
         // One place for every path that changes the selection.
         self.sync_cursor();
         // One place for every path that changes the hover or selection.
@@ -1019,7 +1046,12 @@ impl App {
                 .arm(self.next_toast_deadline(), Message::ToastTick),
             self.close_wake.arm(self.close_by, Message::CloseWaitOver),
         ]);
-        Task::batch([task, focus, wakes])
+        let rescaled = if rescaled {
+            self.refresh_window_size()
+        } else {
+            Task::none()
+        };
+        Task::batch([task, focus, wakes, rescaled])
     }
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
@@ -1848,6 +1880,7 @@ fn run() -> anyhow::Result<()> {
     )
     .title(App::title)
     .theme(|app: &App, _| app.theme())
+    .scale_factor(App::scale_factor)
     .settings(app_settings())
     .subscription(App::subscription)
     .run()?;
@@ -1892,14 +1925,14 @@ fn app_icon() -> Option<window::Icon> {
 
 /// Opens the main window. The id is known at once, before the window
 /// exists, so events can be matched to it from the first one.
-fn open_main_window() -> (window::Id, Task<Message>) {
-    let (id, open) = window::open(window_settings());
+fn open_main_window(size: iced::Size) -> (window::Id, Task<Message>) {
+    let (id, open) = window::open(window_settings(size));
     (id, open.discard())
 }
 
-fn window_settings() -> window::Settings {
+fn window_settings(size: iced::Size) -> window::Settings {
     window::Settings {
-        size: iced::Size::new(1200.0, 800.0),
+        size,
         exit_on_close_request: false,
         icon: app_icon(),
         platform_specific: window::settings::PlatformSpecific {
