@@ -2,7 +2,7 @@
 //! the system, Improve readability, custom themes, and Accessibility. Its
 //! edits preview at once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use iced::theme::Mode;
 use iced::widget::{
@@ -136,6 +136,10 @@ pub(crate) struct Form {
     /// family that isn't installed shows as the built-in font, while the
     /// draft keeps its name.
     pub(crate) font_in_use: &'static str,
+    /// Whether `font_in_use` can draw its own name, which the app decides
+    /// when the family changes. The closed dropdown shows the built-in
+    /// font otherwise.
+    pub(crate) font_in_use_draws_name: bool,
 }
 
 /// The open Font dropdown.
@@ -144,6 +148,9 @@ pub(crate) struct FontPicker {
     pub(crate) query: String,
     /// Read when it opened, so a font installed since shows next time.
     pub(crate) families: Vec<&'static str>,
+    /// Those of `families` whose rows draw in the built-in font, since
+    /// their own can't draw their names. Decided with the list.
+    pub(crate) fallback: HashSet<&'static str>,
     /// The index in `rows` of the row Enter picks.
     pub(crate) highlight: usize,
 }
@@ -222,6 +229,7 @@ impl Form {
             copies: 0,
             font_picker: None,
             font_in_use: crate::fonts::BUILT_IN,
+            font_in_use_draws_name: true,
         }
     }
     /// The draft appearance and themes, which a load compares to tell edits
@@ -254,9 +262,11 @@ impl Form {
                 self.font_picker = None;
             }
             Edit::FontOpen => {
+                let crate::fonts::Families { names, fallback } = crate::fonts::families();
                 let mut picker = FontPicker {
                     query: String::new(),
-                    families: crate::fonts::families(),
+                    families: names,
+                    fallback,
                     highlight: 0,
                 };
                 let in_use = self.font_in_use;
@@ -950,7 +960,11 @@ pub(super) fn font_choice(
     let control = button(
         row![
             text(label)
-                .font(Font::with_name(in_use))
+                .font(Font::with_name(if form.font_in_use_draws_name {
+                    in_use
+                } else {
+                    crate::fonts::BUILT_IN
+                }))
                 .size(14)
                 .wrapping(text::Wrapping::None)
                 .width(Fill),
@@ -1006,7 +1020,12 @@ pub(crate) fn font_popup(
                 Column::with_children(rows.into_iter().enumerate().map(
                     |(index, (label, family))| {
                         let chosen = family.unwrap_or(crate::fonts::BUILT_IN) == in_use;
-                        font_row(label, family, chosen, index == picker.highlight, palette)
+                        let font = Font::with_name(match family {
+                            Some(family) if !picker.fallback.contains(family) => family,
+                            _ => crate::fonts::BUILT_IN,
+                        });
+                        let highlighted = index == picker.highlight;
+                        font_row(label, family, font, chosen, highlighted, palette)
                     },
                 ))
                 .spacing(2)
@@ -1030,11 +1049,11 @@ pub(crate) fn font_popup(
 fn font_row(
     label: &'static str,
     family: Option<&'static str>,
+    font: Font,
     chosen: bool,
     highlighted: bool,
     palette: Palette,
 ) -> Element<'static, Message> {
-    let font = Font::with_name(family.unwrap_or(crate::fonts::BUILT_IN));
     let row = button(
         text(label)
             .font(font)

@@ -1071,11 +1071,14 @@ same bar as General's, and one **Save** writes both.
     with the desktop's own scale and with the grid's zoom. The window keeps
     its size on screen, so a bigger interface shows fewer columns.
   - **Font** lists the installed sans and serif families, each drawn in
-    itself, with **Noto Sans (built in)** first. Type to search; the arrows
-    or Tab move through the list and Enter picks. Bold text uses the
-    family's own semibold or bold, or its regular weight if it has neither,
-    so it never comes from another font. Monospace text keeps the system's
-    font. A family that's been uninstalled falls back to the built-in font.
+    itself, with **Noto Sans (built in)** first. A family that can't draw
+    its own name, like one with no Latin letters, shows its name in the
+    built-in font instead, in the list and on the button. Type to search;
+    the arrows or Tab move through the list and Enter picks. Bold text uses
+    the family's own semibold or bold, or its regular weight if it has
+    neither, so it never comes from another font. Monospace text keeps the
+    system's font. A family that's been uninstalled falls back to the
+    built-in font.
   - **Motion**: **Follow the system** (the default), **Full**, or
     **Reduced**. Follow the system uses the desktop's animation switch and
     picks up a change without a restart. Reduced snaps everything that

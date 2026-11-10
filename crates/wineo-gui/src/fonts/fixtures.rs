@@ -96,3 +96,47 @@ pub(crate) fn install_wide() {
             .load_font(std::borrow::Cow::Owned(wide(super::REGULAR, WIDE, 400)));
     });
 }
+
+/// `fake` with a character map that maps nothing, like a CJK or Arabic font
+/// with no Latin letters to draw its name.
+pub(crate) fn no_latin(font: &[u8], family: &str, weight: u16) -> Vec<u8> {
+    let mut data = fake(font, family, weight);
+    // One format 4 subtable holding only the closing 0xFFFF segment.
+    let mut cmap = Vec::new();
+    for value in [0u16, 1, 3, 1] {
+        cmap.extend_from_slice(&value.to_be_bytes());
+    }
+    cmap.extend_from_slice(&12u32.to_be_bytes());
+    for value in [4u16, 24, 0, 2, 2, 0, 0, 0xFFFF, 0, 0xFFFF, 1, 0] {
+        cmap.extend_from_slice(&value.to_be_bytes());
+    }
+    while !data.len().is_multiple_of(4) {
+        data.push(0);
+    }
+    let record = table_record(&data, b"cmap");
+    let start = u32::try_from(data.len()).unwrap();
+    data[record + 8..record + 12].copy_from_slice(&start.to_be_bytes());
+    data[record + 12..record + 16].copy_from_slice(&(cmap.len() as u32).to_be_bytes());
+    data.extend_from_slice(&cmap);
+    data
+}
+
+/// Noto Sans with no characters mapped, and only a regular face.
+pub(crate) const NO_LATIN: &str = "Wineo Test No Latin";
+
+/// Adds `NO_LATIN` to the font system once per process. Nothing maps to it,
+/// so no other text ever falls back to it.
+pub(crate) fn install_no_latin() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        super::install_once();
+        super::font_system()
+            .write()
+            .expect("font system lock")
+            .load_font(std::borrow::Cow::Owned(no_latin(
+                super::REGULAR,
+                NO_LATIN,
+                400,
+            )));
+    });
+}
