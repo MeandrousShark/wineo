@@ -76,7 +76,7 @@ pub(crate) fn toolbar_toggle(app: &App) -> Element<'_, Message> {
 }
 
 /// The poster icon, primary while titles are hidden.
-pub(crate) fn titles_icon(on: bool, palette: Palette) -> iced::widget::Svg<'static> {
+fn titles_icon(on: bool, palette: Palette) -> iced::widget::Svg<'static> {
     icon(
         TITLES,
         if on {

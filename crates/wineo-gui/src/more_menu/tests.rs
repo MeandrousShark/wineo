@@ -802,3 +802,31 @@ fn a_slider_drag_ends_and_saves_when_the_slider_folds() {
     let saved = std::fs::read_to_string(app.paths.library_file()).unwrap();
     assert!(saved.contains("zoom = 150"), "{saved}");
 }
+
+#[test]
+fn hide_titles_is_a_check_row_checked_while_titles_are_hidden() {
+    let (_root, mut app) = library(150);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    let row = window.bounds(&app, TITLES_ID).unwrap();
+    // Inside the check box's corner, clear of the check mark. The box
+    // sits at the row's start.
+    let pixel = |app: &App| {
+        let size = app.window_size;
+        let pixels = crate::layout_probe::render(&mut app.view(), size);
+        let (x, y) = ((row.x + 12.5) as usize, (row.center_y() - 5.0) as usize);
+        let at = (y * size.width as usize + x) * 4;
+        pixels[at..at + 3].to_vec()
+    };
+    let unchecked = pixel(&app);
+    window.send(
+        &mut app,
+        vec![Message::Zoom(crate::zoom::Event::TogglePosterOnly)],
+    );
+    assert!(app.poster_only);
+    assert!(app.more_menu, "the toggle leaves the menu open");
+    let checked = pixel(&app);
+    let primary = app.palette.primary.into_rgba8();
+    assert_ne!(unchecked, checked);
+    assert_eq!(checked, primary[..3].to_vec());
+}

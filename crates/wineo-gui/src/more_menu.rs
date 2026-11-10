@@ -7,7 +7,7 @@ use iced::{Center, Element, Fill, Point, Rectangle, Task};
 
 use crate::grid::{ACTION_MENU_DIVIDER, ACTION_MENU_PADDING, ACTION_MENU_SPACING, menu_position};
 use crate::grid_motion::ViewLayout;
-use crate::library_menu::{icon, menu_row};
+use crate::library_menu::{check_box, icon, menu_row};
 use crate::toolbar_squeeze::{Control, Fit, Folds};
 use crate::{App, Message, focus_button, ui, zoom_control};
 
@@ -18,6 +18,7 @@ pub(crate) const LAYOUT_ID: &str = "library-more-layout";
 pub(crate) const ZOOM_ID: &str = "library-more-zoom";
 pub(crate) const TITLES_ID: &str = "library-more-titles";
 pub(crate) const LABEL: &str = "More";
+const TITLES_LABEL: &str = "Hide titles";
 pub(crate) const WIDTH: f32 = crate::grid::ACTION_MENU_WIDTH;
 
 /// Three dots in a row.
@@ -422,10 +423,12 @@ impl App {
                         rows.push(ui::separator(palette).into());
                         dividers += 1;
                     }
+                    // A check row like the dice menu's, checked while titles
+                    // are hidden.
                     menu_row(
                         row![
-                            zoom_control::titles_icon(self.poster_only, palette),
-                            text(zoom_control::toggle_label(self.poster_only)).size(14),
+                            check_box(self.poster_only, palette),
+                            text(TITLES_LABEL).size(14),
                         ]
                         .spacing(8)
                         .align_y(Center)
