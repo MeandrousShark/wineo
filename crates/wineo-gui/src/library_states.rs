@@ -16,7 +16,7 @@ pub(crate) const CLEAR_ID: &str = "library-empty-clear";
 pub(crate) const CHECKUP_ID: &str = "library-banner-checkup";
 pub(crate) const TRASH_CHECKUP_ID: &str = "trash-banner-checkup";
 
-const SEARCH_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="#000" stroke-width="1.8"/><path d="M15.5 15.5L20 20" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
+pub(crate) const SEARCH_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="#000" stroke-width="1.8"/><path d="M15.5 15.5L20 20" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
 const EYE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="#000" stroke-width="1.8"/><path d="M4 20L20 4" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/></svg>"##;
 const SURFACE_WIDTH: f32 = 440.0;
 

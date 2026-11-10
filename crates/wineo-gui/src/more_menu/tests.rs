@@ -25,7 +25,7 @@ fn fixture(text: Option<&str>) -> (tempfile::TempDir, App) {
 
 /// An app showing four games in a 1200 px window at `size` percent, over
 /// `text` as its `library.toml` when there is one.
-fn library_with(text: Option<&str>, size: u16) -> (tempfile::TempDir, App) {
+pub(crate) fn library_with(text: Option<&str>, size: u16) -> (tempfile::TempDir, App) {
     let (root, mut app) = fixture(text);
     let cards = (0..4)
         .map(|index| crate::tests::card(&format!("game-{index:03}"), State::Inactive, 60))
@@ -35,22 +35,22 @@ fn library_with(text: Option<&str>, size: u16) -> (tempfile::TempDir, App) {
     (root, app)
 }
 
-fn library(size: u16) -> (tempfile::TempDir, App) {
+pub(crate) fn library(size: u16) -> (tempfile::TempDir, App) {
     library_with(None, size)
 }
 
 /// A 1200 px window at `size` percent, which leaves it fewer logical px.
-fn at_size(app: &mut App, size: u16) {
+pub(crate) fn at_size(app: &mut App, size: u16) {
     app.interface_size = size;
     let _ = app.window_resized(crate::app_window::launch_size(size));
 }
 
-fn redraw() -> iced::Event {
+pub(crate) fn redraw() -> iced::Event {
     iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now()))
 }
 
 /// Lays the window out and lets the toolbar report its folds.
-fn settle(app: &mut App) {
+pub(crate) fn settle(app: &mut App) {
     let mut laid = lay_out(app.view(), app.window_size);
     let messages = laid.event(&redraw());
     drop(laid);
@@ -59,7 +59,7 @@ fn settle(app: &mut App) {
     }
 }
 
-fn bounds(laid: &mut Laid<'_, Message>, id: &'static str) -> Option<Rectangle> {
+pub(crate) fn bounds(laid: &mut Laid<'_, Message>, id: &'static str) -> Option<Rectangle> {
     let found = std::sync::Arc::new(std::sync::Mutex::new(None));
     let sink = found.clone();
     laid.run(Box::new(iced::advanced::widget::operation::map(
@@ -69,13 +69,13 @@ fn bounds(laid: &mut Laid<'_, Message>, id: &'static str) -> Option<Rectangle> {
     *found.lock().unwrap()
 }
 
-fn shown(app: &App, id: &'static str) -> Option<Rectangle> {
+pub(crate) fn shown(app: &App, id: &'static str) -> Option<Rectangle> {
     bounds(&mut lay_out(app.view(), app.window_size), id)
 }
 
 /// Runs `task` against `laid`, answering its widget operations, and
 /// returns the messages it sent.
-fn drive(laid: &mut Laid<'_, Message>, task: Task<Message>) -> Vec<Message> {
+pub(crate) fn drive(laid: &mut Laid<'_, Message>, task: Task<Message>) -> Vec<Message> {
     use iced::futures::StreamExt;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
@@ -100,10 +100,36 @@ fn drive(laid: &mut Laid<'_, Message>, task: Task<Message>) -> Vec<Message> {
 }
 
 /// The window's widget state between updates, as the runtime keeps it.
-struct Window(Option<Tree>);
+pub(crate) struct Window(Option<Tree>);
 
 impl Window {
-    fn new(app: &mut App) -> Self {
+    /// Hands `event` to the overlays with the cursor at `point`, or none,
+    /// then what they publish to the app.
+    pub(crate) fn overlay_event(
+        &mut self,
+        app: &mut App,
+        event: iced::Event,
+        point: Option<iced::Point>,
+    ) {
+        let cursor = point.map_or(
+            iced::mouse::Cursor::Unavailable,
+            iced::mouse::Cursor::Available,
+        );
+        let mut laid = self.lay_out(app);
+        let messages = laid.overlay_event_at(&event, cursor);
+        self.0 = Some(laid.into_tree());
+        self.send(app, messages);
+        self.frame(app);
+    }
+
+    pub(crate) fn overlays(&mut self, app: &App) -> Vec<Rectangle> {
+        let mut laid = self.lay_out(app);
+        let found = laid.overlay_bounds();
+        self.0 = Some(laid.into_tree());
+        found
+    }
+
+    pub(crate) fn new(app: &mut App) -> Self {
         let mut window = Self(None);
         window.frame(app);
         window
@@ -111,14 +137,14 @@ impl Window {
 
     /// Lays the view out over the kept state and runs a redraw, handing
     /// what it publishes to the app.
-    fn frame(&mut self, app: &mut App) {
+    pub(crate) fn frame(&mut self, app: &mut App) {
         let mut laid = self.lay_out(app);
         let messages = laid.event(&redraw());
         self.0 = Some(laid.into_tree());
         self.send(app, messages);
     }
 
-    fn lay_out<'a>(&mut self, app: &'a App) -> Laid<'a, Message> {
+    pub(crate) fn lay_out<'a>(&mut self, app: &'a App) -> Laid<'a, Message> {
         match self.0.take() {
             Some(tree) => relay_out(app.view(), tree, app.window_size),
             None => lay_out(app.view(), app.window_size),
@@ -127,7 +153,7 @@ impl Window {
 
     /// Hands each message to the app and runs the tasks it returns, and
     /// whatever they send, against the window.
-    fn send(&mut self, app: &mut App, messages: Vec<Message>) {
+    pub(crate) fn send(&mut self, app: &mut App, messages: Vec<Message>) {
         let mut queue = std::collections::VecDeque::from(messages);
         while let Some(message) = queue.pop_front() {
             let task = app.update(message);
@@ -140,7 +166,7 @@ impl Window {
 
     /// A key press as the window delivers it: to the widgets first, then
     /// to the app with whether one captured it.
-    fn key(&mut self, app: &mut App, named: Named, modifiers: Modifiers) {
+    pub(crate) fn key(&mut self, app: &mut App, named: Named, modifiers: Modifiers) {
         let mut laid = self.lay_out(app);
         let mut event = press(named);
         if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -157,18 +183,18 @@ impl Window {
         self.frame(app);
     }
 
-    fn press(&mut self, app: &mut App, named: Named) {
+    pub(crate) fn press(&mut self, app: &mut App, named: Named) {
         self.key(app, named, Modifiers::empty());
     }
 
-    fn focused(&mut self, app: &App) -> Vec<iced::widget::Id> {
+    pub(crate) fn focused(&mut self, app: &App) -> Vec<iced::widget::Id> {
         let mut laid = self.lay_out(app);
         let focused = laid.focused();
         self.0 = Some(laid.into_tree());
         focused
     }
 
-    fn bounds(&mut self, app: &App, id: &'static str) -> Option<Rectangle> {
+    pub(crate) fn bounds(&mut self, app: &App, id: &'static str) -> Option<Rectangle> {
         let mut laid = self.lay_out(app);
         let found = bounds(&mut laid, id);
         self.0 = Some(laid.into_tree());
@@ -176,7 +202,7 @@ impl Window {
     }
 
     /// A left click at `point`, pressed and released.
-    fn click(&mut self, app: &mut App, point: iced::Point) {
+    pub(crate) fn click(&mut self, app: &mut App, point: iced::Point) {
         use iced::mouse::{Button, Cursor, Event};
         for event in [
             Event::ButtonPressed(Button::Left),
@@ -190,7 +216,7 @@ impl Window {
         self.frame(app);
     }
 
-    fn focus(&mut self, app: &App, id: &'static str) {
+    pub(crate) fn focus(&mut self, app: &App, id: &'static str) {
         let mut laid = self.lay_out(app);
         laid.run(Box::new(
             iced::advanced::widget::operation::focusable::focus(iced::widget::Id::new(id)),
@@ -199,7 +225,7 @@ impl Window {
     }
 }
 
-fn ids(id: &'static str) -> Vec<iced::widget::Id> {
+pub(crate) fn ids(id: &'static str) -> Vec<iced::widget::Id> {
     vec![iced::widget::Id::new(id)]
 }
 
@@ -224,11 +250,11 @@ fn folds(controls: &[Control]) -> Folds {
 
 /// Where the toolbar's controls must end: the window's edge less its
 /// padding.
-fn right_edge(app: &App) -> f32 {
+pub(crate) fn right_edge(app: &App) -> f32 {
     app.window_size.width - 16.0
 }
 
-fn right(bounds: Rectangle) -> f32 {
+pub(crate) fn right(bounds: Rectangle) -> f32 {
     bounds.x + bounds.width
 }
 
@@ -289,10 +315,15 @@ fn a_1200_px_window_folds_more_as_the_interface_grows() {
     assert_eq!(shown(&app, crate::filter_control::FILTER_BUTTON_ID), None);
     // One fold fewer wouldn't fit either: Filters back in front of More.
     assert!(right(direction) + 8.0 + filters.width + 8.0 + more.width > right_edge(&app));
-    // Search keeps its 160 px floor; the right end clips past it.
-    assert_eq!(
-        shown(&app, crate::SEARCH_ID).unwrap().width,
-        crate::grid::SEARCH_MIN_WIDTH
+    // Even then the 160 px field doesn't fit, so search, last, is its icon,
+    // and the row fits.
+    assert!(app.search_icon);
+    assert_eq!(shown(&app, crate::SEARCH_ID), None);
+    let icon = shown(&app, crate::search_drop::ICON_ID).expect("the search icon");
+    assert_eq!(icon.size(), Size::new(32.0, 32.0));
+    assert!(right(more) <= right_edge(&app));
+    assert!(
+        icon.x + crate::grid::SEARCH_MIN_WIDTH + (right(more) - right(icon)) > right_edge(&app)
     );
 }
 

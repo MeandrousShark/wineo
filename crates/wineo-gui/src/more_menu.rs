@@ -8,7 +8,7 @@ use iced::{Center, Element, Fill, Point, Rectangle, Task};
 use crate::grid::{ACTION_MENU_DIVIDER, ACTION_MENU_PADDING, ACTION_MENU_SPACING, menu_position};
 use crate::grid_motion::ViewLayout;
 use crate::library_menu::{icon, menu_row};
-use crate::toolbar_squeeze::{Control, Folds};
+use crate::toolbar_squeeze::{Control, Fit, Folds};
 use crate::{App, Message, focus_button, ui, zoom_control};
 
 pub(crate) const MORE_ID: &str = "library-more";
@@ -32,8 +32,8 @@ pub(crate) enum Event {
     OpenUnder(u64, Option<Rectangle>),
     /// A click outside the menu.
     CloseMenu,
-    /// The toolbar's laid out folds, when they change.
-    Folded(Folds),
+    /// The toolbar's laid out folds and search, when they change.
+    Fitted(Fit),
     /// The Filters row, which opens the Filters popup under More.
     OpenFilters,
     /// The Pick one at random row.
@@ -47,7 +47,7 @@ impl Event {
     pub(crate) fn is_input(&self) -> bool {
         // The reply always arrives so it can clear its request, and the
         // folds follow the layout whatever is open.
-        !matches!(self, Self::OpenUnder(..) | Self::Folded(_))
+        !matches!(self, Self::OpenUnder(..) | Self::Fitted(_))
     }
 }
 
@@ -179,7 +179,14 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             app.more_menu = false;
             Task::none()
         }
-        Event::Folded(folds) => folded(app, folds),
+        Event::Fitted(fit) => {
+            app.search_icon = fit.search_icon;
+            // The field is back in the toolbar, with its text and focus.
+            if !fit.search_icon {
+                app.search_open = false;
+            }
+            folded(app, fit.folds)
+        }
         Event::OpenFilters => {
             if !app.more_menu_shown() {
                 return Task::none();
@@ -413,4 +420,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

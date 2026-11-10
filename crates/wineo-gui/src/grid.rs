@@ -1431,10 +1431,18 @@ impl App {
             }
         };
         let controls = crate::toolbar_squeeze::squeeze(
-            search.into(),
-            crate::toolbar_squeeze::Search {
-                min: SEARCH_MIN_WIDTH,
-                max: SEARCH_WIDTH,
+            crate::toolbar_squeeze::SearchParts {
+                field: search.into(),
+                icon: crate::search_drop::toolbar(self),
+                range: crate::toolbar_squeeze::Search {
+                    min: SEARCH_MIN_WIDTH,
+                    max: SEARCH_WIDTH,
+                    icon: ui::BUTTON_HEIGHT,
+                },
+                open: self.search_open,
+                on_collapse_focused: Message::Search(crate::search_drop::Event::CollapsedWithFocus),
+                on_close: Message::Search(crate::search_drop::Event::Close),
+                palette,
             },
             vec![
                 child(crate::sort_control::toolbar(self), None, true),
@@ -1462,7 +1470,7 @@ impl App {
             ],
             crate::more_menu::toolbar(self),
             8.0,
-            |folds| Message::More(crate::more_menu::Event::Folded(folds)),
+            |fit| Message::More(crate::more_menu::Event::Fitted(fit)),
         );
         container(
             row![

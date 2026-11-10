@@ -68,6 +68,7 @@ mod removal;
 mod remove_work;
 mod rescan;
 mod runner_label;
+mod search_drop;
 mod sections;
 mod settings;
 mod shortcuts;
@@ -208,6 +209,10 @@ pub(crate) struct App {
     more_opening: library_menu::Opening,
     /// The controls the toolbar folded into More as last laid out.
     toolbar_folds: toolbar_squeeze::Folds,
+    /// Search is down to its icon as last laid out, and its drop-down is
+    /// open.
+    search_icon: bool,
+    search_open: bool,
     /// The action bar's tag popup is open.
     tag_menu: bool,
     tag_popup: action_bar::Popup,
@@ -589,6 +594,8 @@ pub(crate) enum Message {
     Layout(layout_switch::Event),
     /// The toolbar's More button and menu.
     More(more_menu::Event),
+    /// Search's icon and drop-down, once it collapses.
+    Search(search_drop::Event),
     /// The action bar and its tag popup.
     Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
@@ -643,6 +650,8 @@ impl App {
             more_menu_position: iced::Point::ORIGIN,
             more_opening: library_menu::Opening::default(),
             toolbar_folds: toolbar_squeeze::Folds::default(),
+            search_icon: false,
+            search_open: false,
             tag_menu: false,
             tag_popup: action_bar::Popup::default(),
             tag_opening: library_menu::Opening::default(),
@@ -1127,6 +1136,9 @@ impl App {
         if self.more_menu && !self.more_menu_shown() {
             self.more_menu = false;
         }
+        if self.search_open && !self.search_dropdown_shown() {
+            self.search_open = false;
+        }
         if self.tag_menu && !self.tag_menu_shown() {
             self.tag_menu = false;
         }
@@ -1232,6 +1244,7 @@ impl App {
                 || matches!(message, Message::Random(event) if event.is_input())
                 || matches!(message, Message::Layout(event) if event.is_input())
                 || matches!(message, Message::More(event) if event.is_input())
+                || matches!(message, Message::Search(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
@@ -1299,6 +1312,7 @@ impl App {
             Message::Random(event) => random_pick::update(self, event),
             Message::Layout(event) => layout_switch::update(self, event),
             Message::More(event) => more_menu::update(self, event),
+            Message::Search(event) => search_drop::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
@@ -1582,6 +1596,13 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.trash_confirm_open() => {
                 trash_page::key(self, &key, modifiers)
+            }
+            // Esc closes the search drop-down; every other key is the
+            // field's, as when it's in the toolbar.
+            Message::Key(keyboard::Key::Named(keyboard::key::Named::Escape), _, _)
+                if self.search_dropdown_shown() =>
+            {
+                self.close_search()
             }
             // Only the menu's own keys work while it's open.
             Message::Key(key, modifiers, _) if self.sort_menu_shown() => {

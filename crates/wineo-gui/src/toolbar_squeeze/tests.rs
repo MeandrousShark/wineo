@@ -3,6 +3,7 @@ use super::*;
 const SEARCH: Search = Search {
     min: 160.0,
     max: 320.0,
+    icon: 32.0,
 };
 
 fn item(control: Option<Control>, width: f32) -> Item {
@@ -41,7 +42,8 @@ fn search_takes_what_is_left_up_to_its_width_while_nothing_folds() {
         squeeze(ALL + 400.0),
         Squeeze {
             folds: Folds::default(),
-            search: 320.0
+            search: 320.0,
+            search_icon: false,
         }
     );
     assert_eq!(squeeze(ALL + 200.0).search, 200.0);
@@ -49,7 +51,8 @@ fn search_takes_what_is_left_up_to_its_width_while_nothing_folds() {
         squeeze(ALL + 160.0),
         Squeeze {
             folds: Folds::default(),
-            search: 160.0
+            search: 160.0,
+            search_icon: false,
         }
     );
 }
@@ -72,11 +75,25 @@ fn controls_fold_right_to_left_only_while_the_row_still_does_not_fit() {
     assert_eq!(order, Control::ALL, "in toolbar order");
 }
 
+/// Sort and More with their gaps, all that's left once everything folds.
+const FOLDED: f32 = 8.0 + 160.0 + 8.0 + 32.0;
+
 #[test]
-fn with_everything_folded_the_row_clips_and_search_keeps_its_floor() {
-    let squeezed = squeeze(10.0);
-    assert_eq!(squeezed.folds.iter().count(), Control::ALL.len());
-    assert_eq!(squeezed.search, 160.0);
+fn search_collapses_to_its_icon_only_after_the_last_fold() {
+    // Everything folded and the field at its floor just fits.
+    let fits = squeeze(160.0 + FOLDED);
+    assert_eq!(fits.folds.iter().count(), Control::ALL.len());
+    assert!(!fits.search_icon);
+    assert_eq!(fits.search, 160.0);
+    // A pixel less and search is its icon.
+    let icon = squeeze(160.0 + FOLDED - 1.0);
+    assert_eq!(icon.folds, fits.folds);
+    assert!(icon.search_icon);
+    assert_eq!(icon.search, 32.0);
+    // Past that the right end clips, with search still an icon.
+    assert!(squeeze(10.0).search_icon);
+    // Never while a fold could still help.
+    assert!(!squeeze(160.0 + FOLDED + 86.0 + 8.0).search_icon);
 }
 
 #[test]

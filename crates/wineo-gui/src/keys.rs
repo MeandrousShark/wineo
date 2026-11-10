@@ -220,6 +220,8 @@ impl App {
             self.search.is_empty(),
         ) {
             Action::None => Task::none(),
+            // Collapsed, search opens in its drop-down.
+            Action::FocusSearch if self.search_icon => self.open_search(),
             Action::FocusSearch => iced::widget::operation::focus(iced::widget::Id::new(SEARCH_ID))
                 .chain(
                     iced::widget::operation::is_focused(iced::widget::Id::new(SEARCH_ID))
