@@ -341,6 +341,18 @@ impl App {
     /// A start from the tray, through the same checks and operation slot as
     /// Play. One that can't start now shows the window on that card.
     pub(crate) fn start_named(&mut self, name: String) -> Task<Message> {
+        if self.tray_card_gone(&name) {
+            return self.show_window();
+        }
+        // The menu never offers a hidden card, so a click that raced its
+        // update goes to the card rather than starting it.
+        if self
+            .cards
+            .iter()
+            .any(|card| card.name == name && card.hidden)
+        {
+            return self.tray_blocked(name, crate::tray::PLAY_BLOCKED);
+        }
         match self.startable(&name) {
             Some(target) => self.begin_start(name, target),
             None => self.tray_blocked(name, crate::tray::PLAY_BLOCKED),
@@ -526,6 +538,9 @@ impl App {
     /// Force stop and the hooks' prompts stay in the panel, so anything but
     /// a plain stop of a running card shows the window on it instead.
     pub(crate) fn stop_named(&mut self, name: String) -> Task<Message> {
+        if self.tray_card_gone(&name) {
+            return self.show_window();
+        }
         let plain = self
             .cards
             .iter()

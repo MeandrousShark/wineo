@@ -781,3 +781,53 @@ fn a_held_error_drops_with_its_card() {
     assert!(app.tray.held_error.is_none());
     assert_eq!(app.selected, None);
 }
+
+/// The card `example` just moved to the trash, as the Undo toast says.
+fn trash(app: &mut App, root: &tempfile::TempDir, name: &str) {
+    let paths = temp_paths(root);
+    let config = paths.environment_config(name);
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "kind = 'native'\n").unwrap();
+    let entry = wineo_core::trash::remove(&paths, name, false).unwrap();
+    app.toast = Some(crate::removal::Toast::new(entry));
+}
+
+#[test]
+fn a_stale_click_for_a_card_that_is_gone_only_shows_the_window() {
+    let root = tempfile::tempdir().unwrap();
+    for event in [Event::Play("renamed".into()), Event::Stop("renamed".into())] {
+        let mut app = example();
+        with_tray(&mut app);
+        app.desktop.close = CloseWindow::Tray;
+        let _ = app.update(app.window_event(window::Event::CloseRequested));
+        let _ = app.update(Message::Tray(event.clone()));
+        assert!(app.main_window.is_some(), "{event:?}");
+        assert!(app.operation.is_none());
+        assert_eq!(app.selected, None);
+        assert!(!app.panel_open);
+        assert!(app.feature_notice.is_none());
+    }
+    // Just trashed: the card is still there until the reload.
+    let mut app = example();
+    trash(&mut app, &root, "stardew");
+    let _ = app.update(Message::Tray(Event::Play("stardew".into())));
+    assert!(app.operation.is_none());
+    assert_eq!(app.selected, None);
+    let mut app = example();
+    trash(&mut app, &root, "hollow");
+    let _ = app.update(Message::Tray(Event::Stop("hollow".into())));
+    assert!(app.operation.is_none());
+    assert_eq!(app.selected, None);
+}
+
+#[test]
+fn a_stale_play_for_a_hidden_card_shows_it_instead_of_starting() {
+    let mut app = example();
+    let _ = app.update(Message::Tray(Event::Play("secret".into())));
+    assert!(app.operation.is_none());
+    assert_eq!(app.selected.as_deref(), Some("secret"));
+    assert!(app.panel_open);
+    // Its own panel's Play still starts it.
+    let _ = app.update(Message::Play);
+    assert!(app.operation.is_some());
+}
