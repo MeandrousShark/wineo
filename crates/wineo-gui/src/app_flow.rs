@@ -173,6 +173,7 @@ impl App {
             .and_then(|card| card.default_target.clone());
         self.panel_error = None;
         self.panel_note = None;
+        self.show_held_error(&name);
         let mut tasks = vec![checks, self.load_visible_art(), self.load_panel_art()];
         if launch {
             tasks.push(self.start_selected());

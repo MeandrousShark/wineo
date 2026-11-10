@@ -280,6 +280,14 @@ impl App {
         // A full read is newer than what the tray's poll last saw.
         self.tray.polled = None;
         self.tray.played.clear();
+        if self
+            .tray
+            .held_error
+            .as_ref()
+            .is_some_and(|(name, _)| !cards.iter().any(|card| &card.name == name))
+        {
+            self.tray.held_error = None;
+        }
         self.refreshing = false;
         self.loaded = true;
         if self.hook_stop_confirm.as_ref().is_some_and(|name| {

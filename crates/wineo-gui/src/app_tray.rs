@@ -47,7 +47,7 @@ impl App {
             .as_ref()
             .filter(|operation| operation.kind == OperationKind::Start)
             .map(|operation| operation.name.as_str());
-        let trashed = self.toast.as_ref().and_then(crate::removal::Toast::trashed);
+        let trashed = self.trashed_name();
         let mut played: Vec<(Timestamp, &Card)> = self
             .cards
             .iter()
@@ -129,16 +129,26 @@ impl App {
                 self.tray.available = available;
                 Task::none()
             }
-            Event::Open => self.show_window(),
+            Event::Open => {
+                let show = self.show_window();
+                Task::batch([show, self.release_held_error()])
+            }
             Event::Add => {
                 let show = self.show_window();
                 // Over a flow or page the window just shows; Add itself
-                // refuses while anything else is busy.
-                if self.page_open() {
-                    show
+                // refuses while anything else is busy. The chooser claims
+                // the window, so a held error waits for its card.
+                let add = if self.page_open() {
+                    Task::none()
                 } else {
-                    Task::batch([show, self.update(Message::Add)])
-                }
+                    self.update(Message::Add)
+                };
+                let release = if self.flow.is_none() {
+                    self.release_held_error()
+                } else {
+                    Task::none()
+                };
+                Task::batch([show, add, release])
             }
             Event::Play(name) => self.start_named(name),
             Event::Stop(name) => self.stop_named(name),
@@ -161,6 +171,18 @@ impl App {
         self.panel_hidden() || self.input_covered()
     }
 
+    /// The environment the Undo toast just moved to the trash, whose card
+    /// stays until the library reloads.
+    pub(crate) fn trashed_name(&self) -> Option<&str> {
+        self.toast.as_ref().and_then(crate::removal::Toast::trashed)
+    }
+
+    /// A tray click for a card the menu offered but the library no longer
+    /// has, renamed, removed, or just trashed. The window only shows.
+    pub(crate) fn tray_card_gone(&self, name: &str) -> bool {
+        self.trashed_name() == Some(name) || !self.cards.iter().any(|card| card.name == name)
+    }
+
     /// A tray Play or Stop that can't go straight through: the window shows
     /// on that card with its panel open, where the reason or choice is, or
     /// as it is with `notice` when a page or flow is open.
@@ -171,6 +193,7 @@ impl App {
             return show;
         }
         let open = if self.selected.as_deref() == Some(&name) && self.panel_open {
+            self.show_held_error(&name);
             Task::none()
         } else {
             self.update(Message::OpenCard(name))
@@ -182,7 +205,7 @@ impl App {
     /// can't pass the tray's activation token, since iced takes none, so a
     /// compositor may refuse to focus it.
     pub(crate) fn show_window(&mut self) -> Task<Message> {
-        let shown = match self.main_window {
+        match self.main_window {
             Some(id) => window::gain_focus(id),
             None => {
                 let (id, open) = crate::open_main_window(self.window_size);
@@ -204,8 +227,7 @@ impl App {
                 };
                 Task::batch([open.chain(scroll), reload])
             }
-        };
-        Task::batch([shown, self.release_held_error()])
+        }
     }
 
     /// Closes the window and keeps running in the tray. The window's state
@@ -223,24 +245,41 @@ impl App {
         Task::batch([drag, window::close(id)])
     }
 
-    /// Puts a tray stop's held error in its card's panel, once the library
-    /// is what the window shows.
+    /// Opens the panel of the card a tray stop's error is held for, when the
+    /// window shows the library and nothing else is about to claim the
+    /// panel. An error whose card is gone drops.
     pub(crate) fn release_held_error(&mut self) -> Task<Message> {
+        let Some(name) = self.tray.held_error.as_ref().map(|(name, _)| name.clone()) else {
+            return Task::none();
+        };
+        if self.tray_card_gone(&name) {
+            self.tray.held_error = None;
+            return Task::none();
+        }
         if self.main_window.is_none() || self.page_open() {
             return Task::none();
         }
-        let Some((name, error)) = self.tray.held_error.take() else {
-            return Task::none();
-        };
-        let open = if self.selected.as_deref() == Some(&name) && self.panel_open {
+        if self.selected.as_deref() == Some(&name) && self.panel_open {
+            self.show_held_error(&name);
             Task::none()
         } else {
-            self.update(Message::OpenCard(name.clone()))
-        };
-        if self.selected.as_deref() == Some(&name) {
+            // Opening the panel shows it.
+            self.update(Message::OpenCard(name))
+        }
+    }
+
+    /// Shows a held error in `name`'s panel, which just opened. The error
+    /// belongs to its card, so another card's panel leaves it held.
+    pub(crate) fn show_held_error(&mut self, name: &str) {
+        if self
+            .tray
+            .held_error
+            .as_ref()
+            .is_some_and(|(held, _)| held == name)
+            && let Some((_, error)) = self.tray.held_error.take()
+        {
             self.panel_error = Some(error);
         }
-        open
     }
 
     /// The light poll's running set. What it no longer lists has stopped,

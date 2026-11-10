@@ -689,3 +689,95 @@ fn nothing_in_process_reaches_d_bus() {
     let app = crate::tests::app();
     assert!(!app.tray.service);
 }
+
+fn hold(app: &mut App, name: &str) {
+    app.tray.held_error = Some((name.to_owned(), error("it would not stop")));
+}
+
+fn shown_error(app: &App) -> Option<&str> {
+    app.panel_error.as_ref().map(|error| error.text.as_str())
+}
+
+#[test]
+fn a_held_error_waits_through_a_blocked_click_on_another_card() {
+    let mut app = example();
+    let _ = app.start_named("stardew".into());
+    hold(&mut app, "hollow");
+    let _ = app.update(Message::Tray(Event::Play("notepad".into())));
+    assert_eq!(app.selected.as_deref(), Some("notepad"));
+    assert_eq!(shown_error(&app), None);
+    assert!(app.tray.held_error.is_some());
+    // Whatever opens its card's panel shows it, a click on the card too.
+    let _ = app.update(Message::OpenCard("hollow".into()));
+    assert_eq!(shown_error(&app), Some("it would not stop"));
+    assert!(app.tray.held_error.is_none());
+}
+
+#[test]
+fn a_blocked_click_on_the_held_cards_open_panel_shows_its_error() {
+    let mut app = example();
+    let _ = app.start_named("stardew".into());
+    let _ = app.update(Message::OpenCard("hollow".into()));
+    hold(&mut app, "hollow");
+    let _ = app.update(Message::Tray(Event::Stop("hollow".into())));
+    assert_eq!(shown_error(&app), Some("it would not stop"));
+}
+
+#[test]
+fn a_held_error_waits_through_add_and_the_flow() {
+    let mut app = example();
+    hold(&mut app, "hollow");
+    let _ = app.update(Message::Tray(Event::Add));
+    assert!(app.flow.is_some());
+    assert!(app.tray.held_error.is_some());
+    // Leaving the chooser.
+    let _ = app.flow_update(app.flow_generation, crate::flow::Event::Back);
+    assert!(app.flow.is_none());
+    assert!(app.tray.held_error.is_some());
+    let _ = app.update(Message::OpenCard("hollow".into()));
+    assert_eq!(shown_error(&app), Some("it would not stop"));
+
+    // Finishing it, which opens the new card's panel instead.
+    let mut app = example();
+    hold(&mut app, "hollow");
+    let _ = app.update(Message::Tray(Event::Add));
+    let mut cards = app.cards.clone();
+    cards.push(card("new", State::Inactive, 0));
+    // As the flow's last step does before its read comes back.
+    app.flow = None;
+    let _ = app.flow_returned(
+        crate::flow::Action::Library {
+            name: Some("new".into()),
+            launch: false,
+        },
+        Ok(cards),
+    );
+    assert_eq!(app.selected.as_deref(), Some("new"));
+    assert_eq!(shown_error(&app), None);
+    assert!(app.tray.held_error.is_some());
+    let _ = app.update(Message::OpenCard("hollow".into()));
+    assert_eq!(shown_error(&app), Some("it would not stop"));
+}
+
+#[test]
+fn a_held_error_drops_with_its_card() {
+    let mut app = example();
+    hold(&mut app, "hollow");
+    let cards: Vec<Card> = app
+        .cards
+        .iter()
+        .filter(|card| card.name != "hollow")
+        .cloned()
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert!(app.tray.held_error.is_none());
+
+    // Gone from the cards some other way, it drops when the window shows.
+    let mut app = example();
+    hold(&mut app, "hollow");
+    app.cards.retain(|card| card.name != "hollow");
+    app.reorder();
+    let _ = app.update(Message::Tray(Event::Open));
+    assert!(app.tray.held_error.is_none());
+    assert_eq!(app.selected, None);
+}
