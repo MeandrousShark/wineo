@@ -748,7 +748,9 @@ fn more_keeps_its_focus_through_a_partial_unfold() {
 }
 
 #[test]
-fn a_more_pick_is_refused_whenever_the_dice_is() {
+fn a_more_pick_matches_the_dice_in_parity() {
+    // Parity only: the other gate on a pick is applied centrally to
+    // `Message::Random`, which the row now goes through.
     // Each state the app can be in, and whether a pick goes through.
     type Setup = fn(&mut App);
     let states: [(&str, Setup); 3] = [
@@ -830,4 +832,30 @@ fn hide_titles_is_a_check_row_checked_while_titles_are_hidden() {
     let primary = app.palette.primary.into_rgba8();
     assert_ne!(unchecked, checked);
     assert_eq!(checked, primary[..3].to_vec());
+}
+
+#[test]
+fn a_menu_closed_by_unfolding_with_no_focused_row_focuses_the_first_control_back() {
+    let (_root, mut app) = library(150);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    let mut laid = window.lay_out(&app);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::unfocus(),
+    ));
+    window.0 = Some(laid.into_tree());
+    assert!(window.focused(&app).is_empty());
+    at_size(&mut app, 100);
+    window.frame(&mut app);
+    assert!(!app.more_menu);
+    assert_eq!(window.focused(&app), ids(crate::random_pick::BUTTON_ID));
+}
+
+#[test]
+fn an_unfold_reply_after_folding_again_leaves_the_menu_open() {
+    let (_root, mut app) = library(150);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    window.send(&mut app, vec![Message::More(Event::Unfolded(None))]);
+    assert!(app.more_menu, "still folded, so More is there");
 }

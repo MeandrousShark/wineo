@@ -155,6 +155,8 @@ impl App {
         // toolbar's menus can open again and nothing hangs over the grid.
         if self.search_dropdown_shown() && search_focused && !modifiers.control() {
             if key == Key::Named(Named::Tab) && !captured {
+                // Collapsed search means Filters is folded, so there's no
+                // filter tab, and the version picker isn't near the toolbar.
                 self.search_open = false;
                 // From the icon, which holds search's place in Tab's order.
                 let walk = if modifiers.shift() {

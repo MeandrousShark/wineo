@@ -202,7 +202,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             Task::batch([ended, folded(app, fit.folds)])
         }
         Event::Unfolded(focused) => {
-            if !app.more_menu {
+            // Something folded again before the reply, so More is back.
+            if !app.more_menu || !app.toolbar_folds.is_empty() {
                 return Task::none();
             }
             app.more_menu = false;
