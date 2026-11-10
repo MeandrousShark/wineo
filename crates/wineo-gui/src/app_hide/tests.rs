@@ -718,3 +718,22 @@ fn always_show_joins_nothing_while_the_close_question_closing_or_exiting() {
         }
     }
 }
+
+#[test]
+fn a_close_request_arriving_after_a_hide_leaves_what_it_hid_for() {
+    let mut app = hiding();
+    assert_eq!(app.desktop.on_stop, OnStop::Restore);
+    app.desktop.close = CloseWindow::Tray;
+    // The request was queued for the window before the hide took it.
+    let queued = Message::Window(app.main_window.unwrap(), window::Event::CloseRequested);
+    window_play(&mut app, "stardew", StartOutcome::Started);
+    assert_eq!(app.main_window, None);
+    let _ = app.update(queued);
+    assert_eq!(hidden_for(&app), ["stardew"]);
+    // `update` drops a message for a window that's gone, so the guard in
+    // the close itself is checked directly.
+    app.closing_to_the_tray();
+    assert_eq!(hidden_for(&app), ["stardew"]);
+    let _ = polled(&mut app, &[]);
+    assert!(app.main_window.is_some());
+}

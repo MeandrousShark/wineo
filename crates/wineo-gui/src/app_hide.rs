@@ -96,6 +96,11 @@ impl App {
     /// run already over doesn't bring it straight back, and with Bring back
     /// a hidden window nothing does: this isn't a hide's doing.
     pub(crate) fn closing_to_the_tray(&mut self) {
+        // A close request can arrive after a hide already took the window,
+        // and that window's set isn't the user's to wipe.
+        if self.main_window.is_none() {
+            return;
+        }
         if self.desktop.on_stop == OnStop::Restore {
             self.tray.hidden_for.clear();
         } else {
