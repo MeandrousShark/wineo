@@ -592,6 +592,7 @@ fn keep_running_quits_anyway_without_a_tray_to_come_back_from() {
         app.desktop = Desktop {
             tray,
             close: CloseWindow::Tray,
+            ..Desktop::default()
         };
         let close = app.update(app.window_event(window::Event::CloseRequested));
         assert!(app.exiting, "{service} {tray} {available}");

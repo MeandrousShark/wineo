@@ -109,6 +109,7 @@ fn another_windows_desktop_save_moves_only_untouched_controls() {
         &Desktop {
             tray: false,
             close: CloseWindow::Quit,
+            ..Desktop::default()
         },
     )
     .unwrap();
@@ -149,6 +150,7 @@ fn the_app_follows_the_desktop_the_settings_page_read() {
         &Desktop {
             tray: false,
             close: CloseWindow::Tray,
+            ..Desktop::default()
         },
     )
     .unwrap();

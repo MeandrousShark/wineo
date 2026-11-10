@@ -293,12 +293,13 @@ impl Default for Appearance {
     }
 }
 
-/// How the desktop app lives on the desktop: its tray icon and what closing
-/// the window does.
+/// How the desktop app lives on the desktop: its tray icon, what closing
+/// the window does, and what a start does to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Desktop {
     pub tray: bool,
     pub close: CloseWindow,
+    pub on_start: OnStart,
 }
 
 impl Default for Desktop {
@@ -306,6 +307,7 @@ impl Default for Desktop {
         Self {
             tray: true,
             close: CloseWindow::default(),
+            on_start: OnStart::default(),
         }
     }
 }
@@ -334,6 +336,35 @@ impl CloseWindow {
         match value {
             "quit" => Some(Self::Quit),
             "tray" => Some(Self::Tray),
+            _ => None,
+        }
+    }
+}
+
+/// What the desktop app's window does when something it runs starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnStart {
+    #[default]
+    Keep,
+    /// Closes the window to the tray until what started has stopped.
+    Hide,
+}
+
+impl OnStart {
+    pub const ALL: [Self; 2] = [Self::Keep, Self::Hide];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Hide => "hide",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "keep" => Some(Self::Keep),
+            "hide" => Some(Self::Hide),
             _ => None,
         }
     }
@@ -684,6 +715,14 @@ pub fn set_desktop(paths: &Paths, desktop: &Desktop) -> Result<bool> {
             );
             changed = true;
         }
+        if read_desktop(document).on_start != desktop.on_start {
+            store_value(
+                desktop_table_mut(document),
+                "on_start",
+                Value::from(desktop.on_start.as_str()),
+            );
+            changed = true;
+        }
         changed
     })
 }
@@ -928,6 +967,11 @@ fn read_desktop(document: &DocumentMut) -> Desktop {
             .and_then(Item::as_str)
             .and_then(CloseWindow::parse)
             .unwrap_or(default.close),
+        on_start: table
+            .get("on_start")
+            .and_then(Item::as_str)
+            .and_then(OnStart::parse)
+            .unwrap_or(default.on_start),
     }
 }
 

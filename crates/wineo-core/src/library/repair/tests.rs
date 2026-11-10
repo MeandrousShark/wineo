@@ -1607,3 +1607,29 @@ fn a_desktop_table_in_the_broken_tail_is_salvaged() {
     assert!(!library.desktop.tray);
     assert_eq!(library.desktop.close, crate::library::CloseWindow::Tray);
 }
+
+#[test]
+fn repair_keeps_an_on_start_string_and_drops_a_mistyped_one() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\non_start = \"hide\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered, "{report}");
+    assert_eq!(
+        load(&fixture.paths).desktop.on_start,
+        crate::library::OnStart::Hide
+    );
+
+    // A value this wineo doesn't know may be a newer one's, so it stays.
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\non_start = \"minimize\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered);
+    assert!(fixture.read().contains("on_start = \"minimize\""));
+
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\ntray = false\non_start = 2\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("on_start"), "{}", fixture.read());
+    assert!(!load(&fixture.paths).desktop.tray);
+}

@@ -595,6 +595,10 @@ fn a_clean_desktop_has_no_findings() {
         let inspection = inspect_text(&format!("[desktop]\ntray = false\nclose = \"{close}\"\n"));
         assert_eq!(inspection.findings, [], "{close}");
     }
+    for on_start in ["keep", "hide"] {
+        let inspection = inspect_text(&format!("[desktop]\non_start = \"{on_start}\"\n"));
+        assert_eq!(inspection.findings, [], "{on_start}");
+    }
 }
 
 #[test]
@@ -621,5 +625,20 @@ fn bad_desktop_values_are_field_findings_and_unknown_keys_are_reported() {
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
         ["library.toml: desktop: expected a table, found 4"]
+    );
+}
+
+#[test]
+fn a_bad_on_start_is_a_field_finding() {
+    let inspection = inspect_text("[desktop]\non_start = \"minimize\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.on_start: expected one of keep, hide, found \"minimize\""]
+    );
+    assert!(messages(&inspection, FindingKind::KeyUnknown).is_empty());
+    let inspection = inspect_text("[desktop]\non_start = true\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.on_start: expected one of keep, hide, found true"]
     );
 }

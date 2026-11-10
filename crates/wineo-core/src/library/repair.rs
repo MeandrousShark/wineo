@@ -1047,11 +1047,11 @@ fn valid_appearance_field(key: &str, item: &Item) -> bool {
     }
 }
 
-/// Only the types, so a newer wineo's `close` value stays.
+/// Only the types, so a newer wineo's `close` or `on_start` value stays.
 fn valid_desktop_field(key: &str, item: &Item) -> bool {
     match key {
         "tray" => item.as_bool().is_some(),
-        "close" => item.as_str().is_some(),
+        "close" | "on_start" => item.as_str().is_some(),
         _ => true,
     }
 }
