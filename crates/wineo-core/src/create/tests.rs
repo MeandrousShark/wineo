@@ -514,6 +514,52 @@ fn target_name_titles_the_default_target() {
 }
 
 #[test]
+fn title_is_written_trimmed_and_absent_without_one() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    fake_runner(&paths, "fake");
+    let mut titled = request("hollow-knight");
+    titled.title = Some("  Hollow Knight ".to_owned());
+    run(&paths, titled, &Token::new(), |event| {
+        build_registry(event, &mut Vec::new())
+    })
+    .unwrap();
+    let text = fs::read_to_string(paths.environment_config("hollow-knight")).unwrap();
+    assert!(text.contains("title = \"Hollow Knight\"\n"), "{text}");
+
+    let created = run(&paths, request("plain"), &Token::new(), |event| {
+        build_registry(event, &mut Vec::new())
+    })
+    .unwrap();
+    assert_eq!(created.environment.config.title, None);
+    // The same keys as before the title existed, in the same order.
+    let text = fs::read_to_string(paths.environment_config("plain")).unwrap();
+    let keys: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split(" = ").next())
+        .collect();
+    assert_eq!(
+        keys,
+        ["schema_version", "prefix", "runner", "arch"],
+        "{text}"
+    );
+}
+
+#[test]
+fn a_bad_title_is_refused_before_anything_is_built() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    fake_runner(&paths, "fake");
+    for bad in ["bad\ttitle", &"x".repeat(121), "  "] {
+        let mut request = request("game");
+        request.title = Some(bad.to_owned());
+        let error = plan(&paths, request).unwrap_err().to_string();
+        assert!(error.starts_with("Invalid title:"), "{error}");
+    }
+    assert!(!paths.environment_config("game").exists());
+}
+
+#[test]
 fn missing_exe_keeps_environment_without_a_target() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());

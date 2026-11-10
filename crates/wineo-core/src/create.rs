@@ -37,6 +37,9 @@ pub struct CreateRequest {
     /// What the default target's desktop entry is called. None uses the
     /// environment name.
     pub target_name: Option<String>,
+    /// The environment's own title for its card, written as the `title` key.
+    /// None writes no key.
+    pub title: Option<String>,
     pub desktop: bool,
     /// Refuse a changed create/adopt decision after a caller's review.
     pub expected_adopted: Option<bool>,
@@ -243,6 +246,11 @@ pub fn plan(paths: &Paths, request: CreateRequest) -> anyhow::Result<CreatePlan>
         arch,
         template,
         gog_id: request.gog_id,
+        title: request
+            .title
+            .as_deref()
+            .map(crate::environment::normalize_env_title)
+            .transpose()?,
     };
     let prefix = new.prefix_dir(paths, &global)?;
     crate::environment::check_new_name(paths, &new.name)?;
