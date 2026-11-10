@@ -2119,7 +2119,6 @@ fn perform(
             name,
             exe,
             draft.target_title().as_deref(),
-            draft.target_title().as_deref(),
             draft.desktop,
             |warning| report.notes.push(warning),
         ) {

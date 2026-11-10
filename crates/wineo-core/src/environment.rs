@@ -331,37 +331,35 @@ impl Environment {
         desktop: bool,
         warnings: impl FnMut(String),
     ) -> Result<Self> {
-        Self::create_native_titled(paths, global, name, exe, None, None, desktop, warnings)
+        Self::create_native_titled(paths, global, name, exe, None, desktop, warnings)
     }
 
-    /// Like `create_native`, with `title` naming the default target's desktop
-    /// entry instead of the environment, and `environment_title` written as
-    /// the environment's own `title` for its card.
-    #[allow(clippy::too_many_arguments)]
+    /// Like `create_native`, with `title` written as the environment's own
+    /// `title` for its card and naming the default target's desktop entry
+    /// instead of the environment. One value for both, so they can't differ.
     pub fn create_native_titled(
         paths: &Paths,
         global: &GlobalConfig,
         name: &str,
         exe: Option<&str>,
         title: Option<&str>,
-        environment_title: Option<&str>,
         desktop: bool,
         mut warnings: impl FnMut(String),
     ) -> Result<Self> {
         Self::plan_native(paths, global, name, exe)?;
-        let environment_title = environment_title.map(normalize_env_title).transpose()?;
+        let title = title.map(normalize_env_title).transpose()?;
         let path = paths.environment_config(name);
         let mut doc = config::new_document();
         doc["kind"] = value("native");
-        if let Some(title) = environment_title {
-            doc["title"] = value(title);
+        if let Some(title) = &title {
+            doc["title"] = value(title.as_str());
         }
         if let Some(exe) = exe {
             let mut table = toml_edit::Table::new();
             table["exe"] = value(paths.store_value(exe)?);
             table["default"] = value(true);
-            if let Some(title) = title {
-                table["name"] = value(title);
+            if let Some(title) = &title {
+                table["name"] = value(title.as_str());
             }
             if desktop {
                 table["desktop"] = value(true);

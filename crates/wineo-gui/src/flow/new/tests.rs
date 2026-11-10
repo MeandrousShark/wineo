@@ -392,6 +392,40 @@ fn an_installer_target_added_with_desktop_off_keeps_the_typed_name() {
 }
 
 #[test]
+fn an_empty_name_with_an_environment_override_creates_without_a_title() {
+    for kind in [Kind::Windows, Kind::Native] {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        fake_runner(&paths);
+        let draft = Draft {
+            environment: Some("my-env".to_owned()),
+            kind,
+            runner: "fake".to_owned(),
+            ..Draft::default()
+        };
+        assert_eq!(draft.target_title(), None);
+        let review = prepare(&paths, &draft).unwrap();
+        let report = perform(
+            &paths,
+            draft,
+            review,
+            artwork::Draft::new(),
+            Token::new(),
+            |_| {},
+            |_| {},
+        );
+        assert!(report.registered, "{kind}: {:?}", report.notes);
+        assert!(
+            !read_config(&paths, "my-env").contains("title"),
+            "{kind}: {}",
+            read_config(&paths, "my-env")
+        );
+        assert_eq!(card_title_of(&paths, "my-env"), "my-env");
+    }
+}
+
+#[test]
 fn a_name_with_control_characters_is_refused_with_the_core_message() {
     let mut page = page();
     let _ = page.update(Event::Name("Hollow\u{7}Knight".to_owned()));
