@@ -30,6 +30,28 @@ impl Motion {
     }
 }
 
+/// The dropdown's label for a setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Choice(pub(crate) Setting);
+
+impl Choice {
+    pub(crate) const ALL: [Self; 3] = [
+        Self(Setting::System),
+        Self(Setting::Full),
+        Self(Setting::Reduced),
+    ];
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            Setting::System => "Follow the system",
+            Setting::Full => "Full",
+            Setting::Reduced => "Reduced",
+        })
+    }
+}
+
 /// GNOME's switch as the portal gave it. Anything but a readable `false`
 /// means full motion.
 pub(crate) fn reduced_from<E>(enabled: Result<bool, E>) -> bool {

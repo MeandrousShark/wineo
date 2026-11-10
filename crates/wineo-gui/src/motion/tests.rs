@@ -28,6 +28,12 @@ fn the_setting_overrides_the_system_unless_it_follows_it() {
     }
 }
 
+#[test]
+fn the_dropdown_labels_each_setting_in_order() {
+    let labels: Vec<String> = Choice::ALL.iter().map(Choice::to_string).collect();
+    assert_eq!(labels, ["Follow the system", "Full", "Reduced"]);
+}
+
 fn library(count: usize) -> (tempfile::TempDir, App) {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().to_owned();
