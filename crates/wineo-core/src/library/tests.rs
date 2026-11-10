@@ -1426,6 +1426,7 @@ fn desktop_reads_its_defaults_without_a_table() {
             tray: true,
             close: CloseWindow::Quit,
             on_start: OnStart::Keep,
+            on_stop: OnStop::Restore,
         }
     );
     fixture.write("schema_version = 1\n[desktop]\n");
@@ -1593,5 +1594,71 @@ fn an_unknown_on_start_is_not_rewritten_by_reads_or_no_op_edits() {
     assert_eq!(
         fixture.read(),
         "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_start   =   \"hide\"\n"
+    );
+}
+
+#[test]
+fn on_stop_reads_each_value_and_bad_ones_as_restore() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).desktop.on_stop, OnStop::Restore);
+    for on_stop in OnStop::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_stop = \"{}\"\n",
+            on_stop.as_str()
+        ));
+        assert_eq!(load(&fixture.paths).desktop.on_stop, on_stop);
+    }
+    for value in ["\"hide\"", "\"Show\"", "true", "1", "[]"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_stop = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.desktop.on_stop, OnStop::Restore, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_desktop_writes_on_stop_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let show = Desktop {
+        on_stop: OnStop::Show,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &show).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_stop = \"show\"\n"
+    );
+    assert!(!set_desktop(&fixture.paths, &show).unwrap());
+    assert_eq!(load(&fixture.paths).desktop, show);
+    assert!(set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_stop = \"restore\"\n"
+    );
+}
+
+#[test]
+fn an_unknown_on_stop_is_not_rewritten_by_reads_or_no_op_edits() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_stop   =   \"hide\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).desktop;
+    assert_eq!(read.on_stop, OnStop::Restore);
+    assert!(!set_desktop(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    let show = Desktop {
+        on_stop: OnStop::Show,
+        ..read
+    };
+    assert!(set_desktop(&fixture.paths, &show).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_stop   =   \"show\"\n"
     );
 }

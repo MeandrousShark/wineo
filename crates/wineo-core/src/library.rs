@@ -294,12 +294,13 @@ impl Default for Appearance {
 }
 
 /// How the desktop app lives on the desktop: its tray icon, what closing
-/// the window does, and what a start does to the window.
+/// the window does, and what a start and the last stop do to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Desktop {
     pub tray: bool,
     pub close: CloseWindow,
     pub on_start: OnStart,
+    pub on_stop: OnStop,
 }
 
 impl Default for Desktop {
@@ -308,6 +309,7 @@ impl Default for Desktop {
             tray: true,
             close: CloseWindow::default(),
             on_start: OnStart::default(),
+            on_stop: OnStop::default(),
         }
     }
 }
@@ -365,6 +367,36 @@ impl OnStart {
         match value {
             "keep" => Some(Self::Keep),
             "hide" => Some(Self::Hide),
+            _ => None,
+        }
+    }
+}
+
+/// What the desktop app's window does once everything it started has stopped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnStop {
+    /// Brings back a window a start hid, and leaves one the user closed.
+    #[default]
+    Restore,
+    /// Opens the window, even if the user had closed it.
+    Show,
+}
+
+impl OnStop {
+    pub const ALL: [Self; 2] = [Self::Restore, Self::Show];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Restore => "restore",
+            Self::Show => "show",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "restore" => Some(Self::Restore),
+            "show" => Some(Self::Show),
             _ => None,
         }
     }
@@ -723,6 +755,14 @@ pub fn set_desktop(paths: &Paths, desktop: &Desktop) -> Result<bool> {
             );
             changed = true;
         }
+        if read_desktop(document).on_stop != desktop.on_stop {
+            store_value(
+                desktop_table_mut(document),
+                "on_stop",
+                Value::from(desktop.on_stop.as_str()),
+            );
+            changed = true;
+        }
         changed
     })
 }
@@ -972,6 +1012,11 @@ fn read_desktop(document: &DocumentMut) -> Desktop {
             .and_then(Item::as_str)
             .and_then(OnStart::parse)
             .unwrap_or(default.on_start),
+        on_stop: table
+            .get("on_stop")
+            .and_then(Item::as_str)
+            .and_then(OnStop::parse)
+            .unwrap_or(default.on_stop),
     }
 }
 

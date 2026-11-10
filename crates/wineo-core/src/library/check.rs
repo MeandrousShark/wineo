@@ -9,9 +9,9 @@ use toml_edit::{DocumentMut, Item, Key};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
-    CloseWindow, GroupBy, INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion, OnStart, RandomPool,
-    ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN, edit, read_document,
-    read_zoom, sort_name,
+    CloseWindow, GroupBy, INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion, OnStart, OnStop,
+    RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN, edit,
+    read_document, read_zoom, sort_name,
 };
 use crate::paths::Paths;
 use crate::source::{Platform, Store};
@@ -346,6 +346,10 @@ fn inspect_desktop(item: &Item, inspection: &mut Inspection) {
             "on_start" => match value.as_str() {
                 Some(name) if OnStart::parse(name).is_some() => continue,
                 _ => expected_one_of(OnStart::ALL.map(OnStart::as_str)),
+            },
+            "on_stop" => match value.as_str() {
+                Some(name) if OnStop::parse(name).is_some() => continue,
+                _ => expected_one_of(OnStop::ALL.map(OnStop::as_str)),
             },
             _ => {
                 inspection.findings.push(unknown(None, &path));
