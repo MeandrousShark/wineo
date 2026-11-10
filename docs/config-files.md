@@ -524,8 +524,9 @@ already running, a Steam launch, or a start from the CLI. Like `close =
 hidden, the window comes back at once. `on_stop` is what happens once
 everything started from the app has stopped: `restore`, the default,
 brings back only a window that `hide` closed, and `show` also opens a
-window you closed yourself with `close = "tray"`. Opening the window
-yourself in between ends either. A value of the wrong type, or an unknown
+window you closed yourself with `close = "tray"`, but leaves an open window
+where it is. It needs the tray too, and opening the window yourself in
+between ends either. A value of the wrong type, or an unknown
 `close`, `on_start`, or `on_stop`, reads as the default, isn't rewritten
 when the app saves, and `validate` reports it; repair keeps any boolean
 `tray` and any string `close`, `on_start`, or `on_stop` and drops other
