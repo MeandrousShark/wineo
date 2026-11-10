@@ -221,9 +221,7 @@ fn a_resize_snaps_a_transition() {
     let (_root, mut app) = fixture(&named("game", 12));
     let _ = app.update(Message::Select("game-07".into()));
     assert!(app.grid_motion.active());
-    let _ = app.update(Message::Window(iced::window::Event::Resized(Size::new(
-        1400.0, 900.0,
-    ))));
+    let _ = app.update(app.window_event(iced::window::Event::Resized(Size::new(1400.0, 900.0))));
     assert!(!app.grid_motion.active());
     assert_eq!(frames(&app), 0);
     for name in shown(&app) {
@@ -268,9 +266,7 @@ fn a_waiting_scroll_resolves_once_when_the_last_motion_ends() {
     let ends: [(&str, End); 3] = [
         ("settle", settle_grid),
         ("resize", |app| {
-            app.update(Message::Window(iced::window::Event::Resized(Size::new(
-                1300.0, 800.0,
-            ))))
+            app.update(app.window_event(iced::window::Event::Resized(Size::new(1300.0, 800.0))))
         }),
         ("rescan", |app| {
             let mut names: Vec<String> = (0..120).map(|index| format!("game-{index:03}")).collect();
@@ -632,7 +628,7 @@ fn places_are_measured_again_only_when_their_inputs_change() {
 
 /// Resizes the window so the library's viewport is `width` wide.
 fn resize(app: &mut App, width: f32) -> Task<Message> {
-    app.update(Message::Window(iced::window::Event::Resized(Size::new(
+    app.update(app.window_event(iced::window::Event::Resized(Size::new(
         width + crate::sidebar::WIDTH,
         800.0,
     ))))

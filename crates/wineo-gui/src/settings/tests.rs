@@ -2410,11 +2410,11 @@ fn gog_account_work_and_the_startup_check_never_hold_the_window_open() {
     let mut app = open_global_app(&paths);
     let _ = app.update(Message::Settings(Event::Gog(gog::Event::Logout)));
     assert!(app.gog_work.pending());
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(!app.close_prompt);
 
     let mut app = App::boot(paths.clone()).0;
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(!app.close_prompt);
 }
 

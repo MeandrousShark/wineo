@@ -265,7 +265,7 @@ fn closing_the_window_while_updating_asks_first_then_cancels() {
     let _ = page.update(Event::Update);
     let mut app = crate::App::boot(paths).0;
     app.flow = Some(super::super::Page::GogUpdate(Box::new(page)));
-    let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt);
     let _ = app.update(crate::Message::CancelAndClose);
     assert!(app.closing);
@@ -325,7 +325,7 @@ fn planning_is_work_for_back_cancel_and_close() {
     let (page, _) = Page::new(paths.clone(), "rimworld".to_owned());
     let mut app = crate::App::boot(paths).0;
     app.flow = Some(super::super::Page::GogUpdate(Box::new(page)));
-    let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt, "closing while planning asks first");
     let _ = app.update(crate::Message::CancelAndClose);
     let Some(super::super::Page::GogUpdate(page)) = &app.flow else {

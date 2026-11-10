@@ -570,7 +570,7 @@ fn closing_the_window_while_migrating_asks_first_then_cancels() {
     let _ = page.update(Event::Migrate);
     let mut app = crate::App::boot(fx.paths.clone()).0;
     app.flow = Some(super::super::Page::Gog(Box::new(page)));
-    let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt);
     let _ = app.update(crate::Message::CancelAndClose);
     assert!(app.closing);
@@ -615,7 +615,7 @@ fn checking_is_dropped_on_back_and_prerequisites_cancel_like_heroic() {
     assert!(page.busy());
     let mut app = crate::App::boot(fx.paths.clone()).0;
     app.flow = Some(super::super::Page::Gog(Box::new(page)));
-    let _ = app.update(crate::Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt);
     let _ = app.update(crate::Message::CancelAndClose);
     let Some(super::super::Page::Gog(page)) = &mut app.flow else {

@@ -723,7 +723,7 @@ fn cancel_and_close_cancels_and_waits_with_force_stop_for_winetricks() {
     let (_root, mut app) = fixture();
     let generation = start(&mut app);
     let token = app.checkup_change().unwrap().token.clone();
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt && !token.is_canceled());
     let _ = app.update(Message::KeepWorking);
     assert!(!app.close_prompt);
@@ -731,7 +731,7 @@ fn cancel_and_close_cancels_and_waits_with_force_stop_for_winetricks() {
         &mut app,
         Event::InstallStarted(generation, "game".into(), Token::new()),
     );
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     let _ = app.update(Message::CancelAndClose);
     assert!(app.closing && app.foreground_busy() && token.is_canceled());
     assert!(app.checkup_force_available());

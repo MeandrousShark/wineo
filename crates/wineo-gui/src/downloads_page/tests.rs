@@ -806,7 +806,7 @@ fn running_changes_survive_sections_show_sidebar_spinner_and_close_waits() {
         if let Some(token) = &token {
             assert!(!token.is_canceled());
         }
-        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
         assert!(app.close_prompt && !app.closing);
         let _ = app.update(Message::CancelAndClose);
         assert!(app.closing && app.foreground_busy());

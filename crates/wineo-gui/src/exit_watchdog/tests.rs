@@ -7,7 +7,7 @@ use wineo_core::cancel::Token;
 use wineo_core::paths::Paths;
 
 use super::*;
-use crate::sort_control::Event;
+use crate::sort_control::{Event, Field};
 use crate::test_script::KillOnDrop;
 use crate::{App, Message, Operation, OperationKind};
 
@@ -41,8 +41,8 @@ pub(crate) fn exits(task: Task<Message>) -> bool {
     })
 }
 
-fn close() -> Message {
-    Message::Window(iced::window::Event::CloseRequested)
+fn close(app: &App) -> Message {
+    app.window_event(iced::window::Event::CloseRequested)
 }
 
 fn running(kind: OperationKind, after_hook: bool) -> Operation {
@@ -123,7 +123,7 @@ fn the_watchdog_stays_quiet_inside_the_bound() {
 fn a_close_with_nothing_tracked_still_starts_the_watchdog() {
     let (_root, mut app) = fixture();
     assert!(app.watchdog.started().is_none());
-    assert!(exits(app.update(close())));
+    assert!(exits(app.update(close(&app))));
     assert_eq!(
         said(&app),
         "wineo-gui: gave up after 0 s on background work that isn't tracked."
@@ -135,7 +135,7 @@ fn a_stuck_library_write_is_named_when_the_wait_runs_out() {
     let (_root, mut app) = fixture();
     let _stalled = app.update(Message::Sort(Event::FlipDirection));
     assert!(app.view_writes.pending());
-    assert!(!exits(app.update(close())));
+    assert!(!exits(app.update(close(&app))));
     assert!(app.watchdog.started().is_none(), "still waiting");
     let over = app.update(Message::CloseWaitOver(app.close_wake.generation()));
     assert!(exits(over));
@@ -146,7 +146,7 @@ fn a_stuck_library_write_is_named_when_the_wait_runs_out() {
 fn a_stuck_hook_is_named_and_force_stop_closes_the_window() {
     let (_root, mut app) = fixture();
     app.operation = Some(running(OperationKind::Start, true));
-    assert!(!exits(app.update(close())));
+    assert!(!exits(app.update(close(&app))));
     assert!(app.close_prompt);
 
     // A plain cancel keeps waiting, with no watchdog running.
@@ -272,6 +272,167 @@ fn the_watchdog_starts_when_the_chained_exit_runs_not_when_it_is_queued() {
     assert_eq!(seen[0], ("slow task", None));
     assert_eq!(seen[1].0, "exit");
     assert!(seen[1].1.is_some(), "started by the time the window exits");
+}
+
+#[derive(Debug, PartialEq)]
+enum Step {
+    Close(iced::window::Id),
+    Exit,
+}
+
+/// The window actions `task` asks for, in order, each with when it came and
+/// whether the watchdog was running by then.
+fn steps(app: &App, task: Task<Message>) -> Vec<(Step, Instant, bool)> {
+    use iced::futures::StreamExt;
+    let mut stream = iced_runtime::task::into_stream(task).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut seen = Vec::new();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_millis(1000), stream.next()).await
+        {
+            let step = match action {
+                iced_runtime::Action::Window(iced_runtime::window::Action::Close(id)) => {
+                    Step::Close(id)
+                }
+                iced_runtime::Action::Exit => Step::Exit,
+                _ => continue,
+            };
+            seen.push((step, Instant::now(), app.watchdog.started().is_some()));
+        }
+    });
+    seen
+}
+
+fn assert_closes_then_exits(app: &App, seen: &[(Step, Instant, bool)]) {
+    let main = app.main_window.unwrap();
+    assert_eq!(
+        seen.len(),
+        2,
+        "{:?}",
+        seen.iter().map(|s| &s.0).collect::<Vec<_>>()
+    );
+    assert_eq!(seen[0].0, Step::Close(main));
+    assert_eq!(seen[1].0, Step::Exit);
+    assert!(seen[0].2, "the watchdog runs by the time the window goes");
+    assert!(
+        seen[1].1 - seen[0].1 >= crate::app_window::EXIT_AFTER_CLOSE,
+        "the exit waits for the close to land"
+    );
+}
+
+#[test]
+fn a_close_takes_the_window_down_before_exiting() {
+    let (_root, mut app) = fixture();
+    let task = app.update(close(&app));
+    assert!(app.watchdog.started().is_some(), "started with the close");
+    let seen = steps(&app, task);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
+fn a_force_close_takes_the_window_down_before_exiting() {
+    let (_root, mut app) = fixture();
+    app.operation = Some(running(OperationKind::Start, true));
+    let task = app.update(Message::ForceCloseWork);
+    assert!(app.watchdog.started().is_some());
+    let seen = steps(&app, task);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
+fn a_chained_exit_takes_the_window_down_before_exiting() {
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    let task = app.update(Message::ScrollIdle(0));
+    assert!(app.watchdog.started().is_none(), "queued, not run");
+    let seen = steps(&app, task);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
+fn a_forced_close_goes_out_while_a_chained_exit_waits_on_a_slow_task() {
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    let slow = Task::perform(
+        async { tokio::time::sleep(Duration::from_secs(60)).await },
+        |()| Message::ScrollIdle(0),
+    );
+    let _chained = app.settle_panel(false, slow);
+    assert!(app.exiting, "the exit is queued behind the slow task");
+
+    // The forced task is polled alone: it must close and exit by itself,
+    // since the chained exit won't run for a minute.
+    let forced = app.update(Message::ForceCloseWork);
+    let seen = steps(&app, forced);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
+fn a_force_close_with_nothing_running_exits_once() {
+    let (_root, mut app) = fixture();
+    let task = app.update(Message::ForceCloseWork);
+    let seen = steps(&app, task);
+    assert_closes_then_exits(&app, &seen);
+}
+
+#[test]
+fn updates_after_a_queued_exit_queue_no_other() {
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    let first = app.update(Message::ScrollIdle(0));
+    let later = app.update(Message::ScrollIdle(0));
+    assert!(steps(&app, later).is_empty());
+    assert_closes_then_exits(&app, &steps(&app, first));
+}
+
+#[test]
+fn a_write_finishing_in_the_close_gap_starts_nothing() {
+    let (_root, mut app) = fixture();
+    app.operation = Some(running(OperationKind::Start, true));
+    // Flipped twice, so the first write's result is already stale and a
+    // live app would write again.
+    let first = Field::Descending(true);
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    let _ = app.update(Message::Sort(Event::FlipDirection));
+    assert!(app.view_writes.pending());
+
+    let task = app.update(Message::ForceCloseWork);
+    assert!(app.exiting && app.close_by.is_none());
+
+    // The window is closing, but the loop runs until the exit lands.
+    let late = app.update(Message::Sort(Event::Saved(first, Ok(()))));
+    assert!(!app.view_writes.pending(), "no follow-up write started");
+    assert!(app.close_by.is_none());
+    assert!(steps(&app, late).is_empty());
+    assert_closes_then_exits(&app, &steps(&app, task));
+}
+
+#[test]
+fn events_from_another_window_are_ignored() {
+    let (_root, mut app) = fixture();
+    let stale = iced::window::Id::unique();
+    let size = app.window_size;
+    let event = |event| Message::Window(stale, event);
+    assert!(!exits(
+        app.update(event(iced::window::Event::CloseRequested))
+    ));
+    assert!(!app.close_prompt && !app.closing && !app.exiting);
+    assert!(app.watchdog.started().is_none());
+    let _ = app.update(event(iced::window::Event::Unfocused));
+    assert!(app.focused);
+    let _ = app.update(event(iced::window::Event::Resized(iced::Size::new(
+        640.0, 480.0,
+    ))));
+    assert_eq!(app.window_size, size);
+
+    // The main window's own events still land.
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
+    assert!(!app.focused);
+    assert!(exits(app.update(close(&app))));
 }
 
 /// Child modes for the process tests below: the test binary re-runs itself

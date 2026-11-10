@@ -306,6 +306,13 @@ pub(crate) struct SteamRecordWrites {
     warned: bool,
 }
 
+impl SteamRecordWrites {
+    #[cfg(test)]
+    pub(crate) fn writing(&self) -> bool {
+        self.writing
+    }
+}
+
 /// One write of what a scan proposed, then the rescan's cache rereads the file.
 pub(crate) fn write_steam_record(
     paths: &Paths,

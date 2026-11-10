@@ -2,13 +2,16 @@
 
 use std::time::Duration;
 
-use iced::Task;
+use iced::{Task, window};
 
 use crate::{App, Message, OperationKind, portable_page, sidebar, snapshots_page};
 
 /// How long a close waits for `library.toml` writes: one config lock wait,
 /// about 5 s, and a margin. A write stalled past that is given up on.
 pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
+
+/// How long the exit waits after closing the window.
+pub(crate) const EXIT_AFTER_CLOSE: Duration = Duration::from_millis(50);
 
 impl App {
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
@@ -51,12 +54,25 @@ impl App {
 
     /// Closes the window and starts the watchdog. Every exit goes through
     /// here, so work still holding the runtime open can't keep the process.
-    /// Starting it again is harmless.
+    /// Starting it again is harmless, and a forced close must still go
+    /// through while a chained exit waits on a slow task.
     pub(crate) fn close_window(&mut self) -> Task<Message> {
+        // Messages run until the loop stops, so late results must drop.
+        self.exiting = true;
         self.steam_auto.cancel();
         let work = self.abandoned_work();
         self.watchdog.start(&work);
-        iced::exit()
+        self.close_then_exit()
+    }
+
+    /// The window goes first, so an exit stuck on work the watchdog is
+    /// waiting out doesn't leave a frozen window up. The pause lets the
+    /// destroy reach the compositor before the runtime stops.
+    pub(crate) fn close_then_exit(&self) -> Task<Message> {
+        let close = self.main_window.map_or_else(Task::none, window::close);
+        close
+            .chain(Task::future(async { tokio::time::sleep(EXIT_AFTER_CLOSE).await }).discard())
+            .chain(iced::exit())
     }
 
     /// What closing would leave unfinished, named for the line the watchdog
@@ -155,5 +171,11 @@ impl App {
         self.collapse.reset();
         let waited = self.motion_ended(true);
         Task::batch([self.load_visible_art(), waited])
+    }
+
+    /// A window event from the main window, as the runtime would send it.
+    #[cfg(test)]
+    pub(crate) fn window_event(&self, event: window::Event) -> Message {
+        Message::Window(self.main_window.expect("boot opens the main window"), event)
     }
 }

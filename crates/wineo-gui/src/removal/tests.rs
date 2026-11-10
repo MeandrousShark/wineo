@@ -714,11 +714,11 @@ fn closing_prompts_cancels_wait_and_waits_for_moving_or_restore() {
             Some(Change::Remove { token, .. }) => token.clone(),
             _ => unreachable!(),
         };
-        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
         assert!(app.close_prompt && !app.closing);
         let _ = app.update(Message::KeepWorking);
         assert!(!app.close_prompt);
-        let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+        let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
         let _ = app.update(Message::CancelAndClose);
         assert!(app.closing && app.foreground_busy());
         assert_eq!(token.is_canceled(), !moving);
@@ -731,7 +731,7 @@ fn closing_prompts_cancels_wait_and_waits_for_moving_or_restore() {
     let (_root, mut app) = fixture(false);
     removed(&mut app);
     let _ = app.update(Message::Undo);
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     let _ = app.update(Message::CancelAndClose);
     assert!(app.closing && app.foreground_busy());
     let _ = app.update(Message::UndoFinished(app.change_generation, Ok(Vec::new())));
@@ -817,7 +817,7 @@ fn closing_a_dialog_cancels_measurement_and_ignores_old_size() {
     let _ = app.update(Message::RemoveSize(app.remove_generation, Ok(24)));
     assert_eq!(app.removal.as_ref().unwrap().size, Some(Ok(24)));
     let token = app.removal.as_ref().unwrap().measure.clone();
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.removal.is_none() && token.is_canceled());
 }
 
