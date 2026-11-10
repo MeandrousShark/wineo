@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use iced::futures::FutureExt;
 use iced::{Task, window};
 
 use crate::{App, Message, OperationKind, portable_page, sidebar, snapshots_page};
@@ -137,7 +138,6 @@ impl App {
             return;
         }
         self.left = true;
-        use iced::futures::FutureExt;
         let release = self.instance.as_ref().map(crate::instance::Instance::leave);
         let tray = self.tray.running.stop();
         if release.is_none() && tray.is_none() {

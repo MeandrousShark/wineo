@@ -171,6 +171,7 @@ impl App {
     pub(crate) fn bus_show(&mut self) -> Task<Message> {
         // A close that's waiting on writes or work still ends in an exit, and
         // the name is already free for a relaunch to start fresh.
+        // Accepted race: a Show taken just before `closing` is set still shows.
         if self.closing || self.exiting {
             return Task::none();
         }
