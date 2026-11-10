@@ -50,6 +50,7 @@ mod library_states;
 mod list_view;
 mod logview;
 mod menu_anchor;
+mod motion;
 mod multi_select;
 mod order;
 mod panel;
@@ -220,8 +221,7 @@ pub(crate) struct App {
     /// `grid_places` for the inputs it was measured from.
     places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
     collapse: collapse::Collapse,
-    /// The desktop asked for reduced motion, read once at startup.
-    reduced_motion: bool,
+    pub(crate) motion: motion::Motion,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
@@ -455,7 +455,8 @@ pub(crate) enum Message {
     SectionClicked(sidebar::Section),
     Rebuild,
     CollapseTick(u64, Instant),
-    ReducedMotion(bool),
+    /// The desktop's animation switch says to reduce motion.
+    SystemMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
@@ -622,7 +623,7 @@ impl App {
             details_fade: details_fade::DetailsFade::default(),
             places: Default::default(),
             collapse: collapse::Collapse::default(),
-            reduced_motion: false,
+            motion: motion::Motion::default(),
             grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
@@ -731,6 +732,7 @@ impl App {
         app.appearance = saved.appearance;
         app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
+        app.sync_motion();
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
@@ -757,7 +759,7 @@ impl App {
         (
             app,
             // Batched, not chained, so the window doesn't wait on the GOG
-            // check or the portal read.
+            // check.
             Task::batch([
                 open,
                 load,
@@ -766,7 +768,6 @@ impl App {
                 key_presence,
                 gog_check,
                 iced::system::theme().map(Message::ThemeChanged),
-                read_reduced_motion(),
             ]),
         )
     }
@@ -817,6 +818,17 @@ impl App {
             self.palette = theme::resolve(shown, self.system_mode, themes);
             self.palette_from = (shown.clone(), themes.clone(), self.system_mode);
         }
+    }
+
+    /// Follows the Appearance draft like `sync_palette`, so the Motion
+    /// dropdown previews at once.
+    fn sync_motion(&mut self) {
+        self.motion.setting = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(self.appearance.motion, |form| form.draft.motion);
+        self.grid_motion.set_reduced(self.motion.reduced());
     }
 
     fn management_busy(&self) -> bool {
@@ -927,6 +939,7 @@ impl App {
             rescan,
             settings_tick,
             iced::system::theme_changes().map(Message::ThemeChanged),
+            motion::subscription(),
             iced::event::listen_with(|event, _, window| window_or_press(event, window)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
@@ -952,6 +965,7 @@ impl App {
         // One place for every path that changes the theme: an Appearance
         // edit, a save, Revert, leaving Settings, or the system's mode.
         self.sync_palette();
+        self.sync_motion();
         // One place for every path that changes the selection.
         self.sync_cursor();
         // One place for every path that changes the hover or selection.
@@ -1288,8 +1302,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ReducedMotion(reduced) => {
-                self.reduced_motion = reduced;
+            Message::SystemMotion(reduced) => {
+                self.motion.system_reduced = reduced;
                 Task::none()
             }
             Message::LibraryScanned(generation, discovery, result, problem) => {
@@ -1677,7 +1691,7 @@ impl App {
         self.hovered = None;
         self.star_hovered = None;
         self.star_pops.clear();
-        if self.reduced_motion {
+        if self.motion.reduced() {
             self.collapse.fade(now);
         } else {
             let layout = self.grid_layout();
@@ -1911,23 +1925,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// Reads GNOME's animation switch through the desktop portal, the same
-/// D-Bus service the file chooser uses. Any failure means full motion.
-fn read_reduced_motion() -> Task<Message> {
-    Task::perform(
-        async {
-            let Ok(settings) = ashpd::desktop::settings::Settings::new().await else {
-                return false;
-            };
-            settings
-                .read::<bool>("org.gnome.desktop.interface", "enable-animations")
-                .await
-                .is_ok_and(|enabled| !enabled)
-        },
-        Message::ReducedMotion,
-    )
 }
 
 /// Maps a runtime event to an app message. The mouse Back button becomes an

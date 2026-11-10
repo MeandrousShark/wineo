@@ -203,7 +203,7 @@ mod app {
         tick(&mut app, Duration::from_secs(61));
         assert!(app.collapse.idle());
 
-        app.reduced_motion = true;
+        app.motion.system_reduced = true;
         click_library(&mut app, 10);
         tick(&mut app, Duration::from_secs(4));
         tick(&mut app, Duration::from_secs(60));
@@ -270,7 +270,7 @@ mod app {
     #[test]
     fn reduced_motion_fades_out_and_the_empty_library_brings_it_back() {
         let mut app = library(6);
-        app.reduced_motion = true;
+        app.motion.system_reduced = true;
         click_library(&mut app, 10);
         tick(&mut app, Duration::from_secs(1));
         assert!(app.collapse.alpha() > 0.0 && app.collapse.alpha() < 1.0);

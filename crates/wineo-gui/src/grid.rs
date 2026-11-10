@@ -303,7 +303,7 @@ impl App {
             scene,
             self.grid_layout(),
             self.layout,
-            crate::details_fade::DetailsFade::drift(progress),
+            self.details_drift(progress),
         )
     }
     /// The details the grid draws under `card`'s title at the details
@@ -1324,6 +1324,7 @@ impl App {
                             panel,
                             self.panel_motion.progress(),
                             self.panel_open && self.panel_motion.interactive(),
+                            !self.motion.reduced(),
                             palette.surface,
                         ))
                         .width(crate::grid_motion::PANEL_WIDTH)

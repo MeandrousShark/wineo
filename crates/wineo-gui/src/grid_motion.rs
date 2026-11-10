@@ -582,9 +582,16 @@ pub(crate) struct GridMotion {
     last_tick: Option<Instant>,
     deadline: Option<Instant>,
     generation: u64,
+    /// Springs land on their first tick. They still start and tick, so what
+    /// waits for the grid to settle, like the anchor and a scroll, runs once.
+    reduced: bool,
 }
 
 impl GridMotion {
+    pub(crate) fn set_reduced(&mut self, reduced: bool) {
+        self.reduced = reduced;
+    }
+
     /// Puts every card in its slot at once, ending any motion.
     pub(crate) fn snap_to(&mut self, places: &Places) {
         let now = Instant::now();
@@ -782,7 +789,9 @@ impl GridMotion {
         let previous = self.last_tick.unwrap_or(now);
         self.last_tick = Some(now);
         let fade = now.saturating_duration_since(previous).as_secs_f32() / FADE.as_secs_f32();
-        let settled = self.deadline.is_some_and(|deadline| now >= deadline);
+        let settled = self
+            .deadline
+            .is_some_and(|deadline| self.reduced || now >= deadline);
         for body in self.bodies.values_mut().chain(self.headers.values_mut()) {
             if let Some(deadline) = self.deadline {
                 if settled {

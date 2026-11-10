@@ -226,7 +226,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             let was = favorite(app);
             let task = app.toggle_flag(slot.name(), Flag::Favorite);
             // Only the copy clicked pops.
-            if !was && favorite(app) && !app.reduced_motion && app.collapse.idle() {
+            if !was && favorite(app) && !app.motion.reduced() && app.collapse.idle() {
                 app.star_pops.start(&slot);
             }
             task
