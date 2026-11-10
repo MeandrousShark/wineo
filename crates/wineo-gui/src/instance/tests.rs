@@ -23,6 +23,7 @@ fn the_default_root_has_the_plain_name() {
     assert_eq!(bus_name(&paths(&[("HOME", "/home/me")])), NAME);
     let named = paths(&[
         ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/home/me/.config"),
         ("XDG_DATA_HOME", "/home/me/.local/share"),
     ]);
     assert_eq!(bus_name(&named), NAME);
@@ -37,6 +38,15 @@ fn other_roots_append_a_hash_that_never_changes() {
         ("WINEO_PORTABLE_DIR", "/games/wineo"),
     ]));
     let data = bus_name(&paths(&[("HOME", "/home/me"), ("XDG_DATA_HOME", "/games")]));
+    let config = bus_name(&paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/games"),
+    ]));
+    let both = bus_name(&paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/games"),
+        ("XDG_DATA_HOME", "/games"),
+    ]));
     let other = bus_name(&paths(&[
         ("HOME", "/home/me"),
         ("WINEO_PORTABLE_DIR", "/games/other"),
@@ -44,9 +54,20 @@ fn other_roots_append_a_hash_that_never_changes() {
     // Pinned, so a change of algorithm or input shows up here rather than as
     // two apps for one root after an update.
     assert_eq!(portable, "io.github.MeandrousShark.wineo.Gui_8174faa4c3c3");
-    assert_eq!(data, "io.github.MeandrousShark.wineo.Gui_f7cda781271d");
-    // Both are /games/wineo, as a portable folder and as a data dir.
-    assert_ne!(portable, data);
+    assert_eq!(data, "io.github.MeandrousShark.wineo.Gui_4cb436d44ffc");
+    assert_eq!(config, "io.github.MeandrousShark.wineo.Gui_9f71062520d7");
+    assert_eq!(both, "io.github.MeandrousShark.wineo.Gui_ceb73a5e648b");
+    // All are /games/wineo, as a portable folder and as config and data dirs.
+    // A custom config dir counts because the library lives in it.
+    for name in [&portable, &data, &config, &both] {
+        assert_ne!(name, NAME);
+    }
+    let names = [&portable, &data, &config, &both];
+    for (at, one) in names.iter().enumerate() {
+        for other in &names[at + 1..] {
+            assert_ne!(one, other);
+        }
+    }
     assert_ne!(other, portable);
     // The same root is the same name whatever the home.
     let elsewhere = paths(&[
@@ -54,6 +75,34 @@ fn other_roots_append_a_hash_that_never_changes() {
         ("WINEO_PORTABLE_DIR", "/games/wineo"),
     ]);
     assert_eq!(bus_name(&elsewhere), portable);
+}
+
+#[test]
+fn a_custom_config_dir_is_not_the_default_root() {
+    let config = bus_name(&paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/conf"),
+    ]));
+    let data = bus_name(&paths(&[("HOME", "/home/me"), ("XDG_DATA_HOME", "/data")]));
+    let both = bus_name(&paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/conf"),
+        ("XDG_DATA_HOME", "/data"),
+    ]));
+    assert_eq!(config, "io.github.MeandrousShark.wineo.Gui_8d5bfa9def24");
+    for name in [&config, &data, &both] {
+        assert_ne!(name, NAME);
+    }
+    assert_ne!(config, data);
+    assert_ne!(config, both);
+    assert_ne!(data, both);
+    // Swapping the dirs is another root, which the separator keeps apart.
+    let swapped = bus_name(&paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/data"),
+        ("XDG_DATA_HOME", "/conf"),
+    ]));
+    assert_ne!(swapped, both);
 }
 
 #[test]
@@ -68,6 +117,10 @@ fn every_name_is_a_valid_bus_name() {
         vec![
             ("HOME", "/home/me"),
             ("XDG_DATA_HOME", "/9/starts-with-a-digit"),
+        ],
+        vec![
+            ("HOME", "/home/me"),
+            ("XDG_CONFIG_HOME", "/ünïcode/ földer"),
         ],
     ] {
         let name = bus_name(&paths(&vars));

@@ -3,7 +3,6 @@
 //! calls that and exits instead of opening a second app.
 
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -32,17 +31,24 @@ const RETRY: Duration = Duration::from_millis(50);
 
 /// The bus name for the root `paths` points at, so two roots stay two apps.
 pub(crate) fn bus_name(paths: &Paths) -> String {
-    let (tag, root): (&[u8], &Path) = match paths.root() {
-        Root::Default => return NAME.to_owned(),
-        Root::Portable(root) => (b"portable\0", root),
-        Root::Data(root) => (b"data\0", root),
-    };
     // A fixed algorithm, so the name stays the same across builds. The tag
     // keeps a portable folder from sharing a name with the same path as a
-    // data dir.
+    // config or data dir, and the NUL separators keep two dirs from running
+    // into each other.
     let mut hash = Sha256::new();
-    hash.update(tag);
-    hash.update(root.as_os_str().as_bytes());
+    match paths.root() {
+        Root::Default => return NAME.to_owned(),
+        Root::Portable(root) => {
+            hash.update(b"portable\0");
+            hash.update(root.as_os_str().as_bytes());
+        }
+        Root::Dirs { config, data } => {
+            hash.update(b"dirs\0");
+            hash.update(config.as_os_str().as_bytes());
+            hash.update(b"\0");
+            hash.update(data.as_os_str().as_bytes());
+        }
+    }
     let digest = hash.finalize();
     let short: String = digest[..6]
         .iter()

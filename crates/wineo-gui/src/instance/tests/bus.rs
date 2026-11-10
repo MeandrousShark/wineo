@@ -81,12 +81,13 @@ fn child_launches() {
 }
 
 /// The roots a launch can have: the default one under its home, a
-/// portable folder, or a custom data dir.
+/// portable folder, or a custom data or config dir.
 #[derive(Clone, Copy)]
 enum Root<'a> {
     Default,
     Portable(&'a Path),
     Data(&'a Path),
+    Config(&'a Path),
 }
 
 /// One launch, with its printed lines.
@@ -122,6 +123,9 @@ impl Launch {
             }
             Root::Data(dir) => {
                 command.env("XDG_DATA_HOME", dir);
+            }
+            Root::Config(dir) => {
+                command.env("XDG_CONFIG_HOME", dir);
             }
         }
         let mut child = command.spawn().unwrap();
@@ -275,6 +279,29 @@ fn two_roots_are_two_apps() {
     portable.expect("show");
     default.quiet();
     custom.quiet();
+}
+
+#[test]
+fn a_custom_config_dir_and_the_default_are_two_apps() {
+    let Some(bus) = Bus::start() else { return };
+    let home = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let mut default = Launch::start(Some(&bus), home.path(), Root::Default);
+    default.expect("owner");
+    let mut custom = Launch::start(Some(&bus), home.path(), Root::Config(config.path()));
+    custom.expect("owner");
+
+    let config_name = name_for(&[("HOME", home.path()), ("XDG_CONFIG_HOME", config.path())]);
+    assert_ne!(config_name, NAME);
+    assert!(owned(&bus, NAME));
+    assert!(owned(&bus, &config_name));
+
+    // A relaunch reaches only the app for its own root.
+    let mut again = Launch::start(Some(&bus), home.path(), Root::Config(config.path()));
+    again.expect("shown");
+    assert!(again.exit_status().success());
+    custom.expect("show");
+    default.quiet();
 }
 
 #[test]
