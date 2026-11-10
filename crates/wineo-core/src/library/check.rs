@@ -9,8 +9,9 @@ use toml_edit::{DocumentMut, Item, Key};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
-    GroupBy, Motion, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX,
-    ZOOM_MIN, edit, read_document, read_zoom, sort_name,
+    GroupBy, INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion, RandomPool, ReadFailure,
+    SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN, edit, read_document, read_zoom,
+    sort_name,
 };
 use crate::paths::Paths;
 use crate::source::{Platform, Store};
@@ -279,6 +280,22 @@ fn inspect_appearance(
             "motion" => match value.as_str() {
                 Some(name) if Motion::parse(name).is_some() => continue,
                 _ => expected_one_of(Motion::ALL.map(Motion::as_str)),
+            },
+            "interface_size" => match value.as_integer() {
+                Some(size)
+                    if (i64::from(INTERFACE_SIZE_MIN)..=i64::from(INTERFACE_SIZE_MAX))
+                        .contains(&size) =>
+                {
+                    continue;
+                }
+                _ => format!(
+                    "expected a whole number from {INTERFACE_SIZE_MIN} to {INTERFACE_SIZE_MAX}"
+                ),
+            },
+            // Whether it's installed is the app's business, at launch.
+            "font" => match value.as_str() {
+                Some(name) if !name.trim().is_empty() => continue,
+                _ => "expected a font family name".to_owned(),
             },
             "dark" | "light" | "theme" => {
                 let wanted = match key {

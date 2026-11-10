@@ -1063,6 +1063,33 @@ fn repair_keeps_a_motion_string_and_drops_another_type() {
 }
 
 #[test]
+fn repair_keeps_a_size_number_and_a_font_string_and_drops_other_types() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\ninterface_size = 250\nfont = \"Inter\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let text = fixture.read();
+    // Out of range may be a newer wineo's, so the line stays as typed.
+    assert!(text.contains("interface_size = 250"), "{text}");
+    let appearance = load(&fixture.paths).appearance;
+    assert_eq!(appearance.interface_size, 200);
+    assert_eq!(appearance.font.as_deref(), Some("Inter"));
+
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\ninterface_size = \"big\"\nfont = 3\ndark = \"dracula\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.appearance, ViewRecovery::Partly);
+    let text = fixture.read();
+    assert!(
+        !text.contains("interface_size") && !text.contains("font"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_fully_recovered_appearance_is_reported() {
     let fixture = Fixture::new();
     fixture.write(

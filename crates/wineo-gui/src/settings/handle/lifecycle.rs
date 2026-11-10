@@ -39,6 +39,8 @@ impl Page {
         self.saving = true;
         self.drop_checks();
         self.leave_prompt = false;
+        // A failed save would otherwise show it again.
+        self.close_font_picker();
         self.edited();
         Step::task(load::save_task(
             paths.clone(),
@@ -68,6 +70,7 @@ impl Page {
             return Step::none();
         }
         self.edited();
+        self.close_font_picker();
         if let Some(editor) = self.editor_mut() {
             editor.form.revert();
             editor.clear_inputs();

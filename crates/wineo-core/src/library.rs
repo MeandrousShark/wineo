@@ -235,7 +235,16 @@ pub struct Appearance {
     pub theme: String,
     pub improve_readability: bool,
     pub motion: Motion,
+    /// How much bigger than normal the desktop app draws, in percent from
+    /// `INTERFACE_SIZE_MIN` to `INTERFACE_SIZE_MAX`.
+    pub interface_size: u16,
+    /// The font family the desktop app's text uses. None is the app's
+    /// built-in font.
+    pub font: Option<String>,
 }
+
+pub const INTERFACE_SIZE_MIN: u16 = 100;
+pub const INTERFACE_SIZE_MAX: u16 = 200;
 
 /// Whether the desktop app animates movement. `System` follows the
 /// desktop's own animation setting.
@@ -278,6 +287,8 @@ impl Default for Appearance {
             theme: "midnight".to_owned(),
             improve_readability: false,
             motion: Motion::default(),
+            interface_size: INTERFACE_SIZE_MIN,
+            font: None,
         }
     }
 }
@@ -599,6 +610,8 @@ pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
             default.improve_readability,
         );
         changed |= set_appearance_motion(document, appearance.motion);
+        changed |= set_interface_size(document, appearance.interface_size);
+        changed |= set_appearance_font(document, appearance.font.as_deref());
         changed
     })
 }
@@ -820,7 +833,24 @@ fn read_appearance(document: &DocumentMut) -> Appearance {
         theme: text("theme", default.theme),
         improve_readability: flag("improve_readability", default.improve_readability),
         motion: read_motion(table.get("motion")),
+        interface_size: read_interface_size(table.get("interface_size")),
+        font: read_font(table.get("font")),
     }
+}
+
+/// Out of range clamps; anything but a whole number reads as the default.
+fn read_interface_size(item: Option<&Item>) -> u16 {
+    item.and_then(Item::as_integer)
+        .map_or(INTERFACE_SIZE_MIN, |value| {
+            value.clamp(INTERFACE_SIZE_MIN.into(), INTERFACE_SIZE_MAX.into()) as u16
+        })
+}
+
+/// Anything but a family name reads as the built-in font.
+fn read_font(item: Option<&Item>) -> Option<String> {
+    item.and_then(Item::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
 }
 
 /// An unknown or mistyped value reads as the default.
@@ -986,6 +1016,44 @@ fn set_appearance_motion(document: &mut DocumentMut, motion: Motion) -> bool {
         "motion",
         Value::from(motion.as_str()),
     );
+    true
+}
+
+fn appearance_item<'a>(document: &'a DocumentMut, field: &str) -> Option<&'a Item> {
+    document
+        .get("appearance")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get(field))
+}
+
+/// Compares with what the file reads as, so a hand-edited size outside the
+/// range stays until the user picks another.
+fn set_interface_size(document: &mut DocumentMut, size: u16) -> bool {
+    let size = size.clamp(INTERFACE_SIZE_MIN, INTERFACE_SIZE_MAX);
+    if read_interface_size(appearance_item(document, "interface_size")) == size {
+        return false;
+    }
+    store_value(
+        appearance_table_mut(document),
+        "interface_size",
+        Value::from(i64::from(size)),
+    );
+    true
+}
+
+/// The built-in font is the key's absence, so picking it removes a family
+/// name. A value that isn't one reads as the built-in font and stays.
+fn set_appearance_font(document: &mut DocumentMut, font: Option<&str>) -> bool {
+    if read_font(appearance_item(document, "font")).as_deref() == font {
+        return false;
+    }
+    let table = appearance_table_mut(document);
+    match font {
+        Some(font) => store_value(table, "font", Value::from(font)),
+        None => {
+            table.remove("font");
+        }
+    }
     true
 }
 

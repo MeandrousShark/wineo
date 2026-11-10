@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use iced::widget::{Space, button, column, container, image, row, stack, svg, text};
-use iced::{Center, Color, ContentFit, Element, Fill, Font, Length, Padding, border, font};
+use iced::{Center, Color, ContentFit, Element, Fill, Font, Length, Padding, border};
 use wineo_core::library::SortKey;
 
 use crate::gog_library::Badge;
@@ -267,7 +267,7 @@ impl App {
         let mut title = column![
             text(fitted.title)
                 .size(TITLE_SIZE)
-                .font(SEMIBOLD)
+                .font(crate::fonts::semibold())
                 .color(if facts.faded {
                     palette.muted
                 } else {
@@ -438,7 +438,7 @@ impl App {
         let active = sort.is_some_and(|sort| sort == self.query.sort);
         let label = text(label)
             .size(HEADER_SIZE)
-            .font(SEMIBOLD)
+            .font(crate::fonts::semibold())
             .wrapping(text::Wrapping::None);
         let Some(sort) = sort else {
             return container(label.color(palette.muted))
@@ -464,11 +464,6 @@ impl App {
         container(cell).width(width).clip(true).into()
     }
 }
-
-const SEMIBOLD: Font = Font {
-    weight: font::Weight::Semibold,
-    ..Font::DEFAULT
-};
 
 /// A row's text cut to its cells with an ellipsis, so nothing clips
 /// mid-glyph.
@@ -507,7 +502,7 @@ pub(crate) fn row_text(facts: &RowFacts, columns: &[Column], width: f32) -> RowT
     use crate::tile_title::fit;
     let room = title_room(facts, columns, width);
     RowText {
-        title: fit(facts.title, room, TITLE_SIZE, SEMIBOLD),
+        title: fit(facts.title, room, TITLE_SIZE, crate::fonts::semibold()),
         identifier: facts
             .identifier
             .map(|identifier| fit(identifier, room, IDENTIFIER_SIZE, Font::DEFAULT)),

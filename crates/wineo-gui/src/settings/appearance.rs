@@ -5,17 +5,25 @@
 use std::collections::BTreeMap;
 
 use iced::theme::Mode;
-use iced::widget::{Space, column, container, pick_list, row, text};
-use iced::{Center, Element, Fill, border};
-use wineo_core::library::Motion;
+use iced::widget::{
+    Column, Space, button, column, container, pick_list, row, scrollable, stack, text, text_input,
+};
+use iced::{Center, Element, Fill, Font, border};
+use wineo_core::library::{INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion};
 use wineo_core::themes::{ROLES, normalize_color};
 
 use super::Event;
 use crate::Message;
+use crate::chips::input_style;
+use crate::dropdown::dropdown;
 use crate::library_menu::{CHECK, check_box, icon};
 use crate::motion::Choice as MotionChoice;
 use crate::theme::{self, Appearance, Custom, PRESETS, Palette, PresetKind, Shown};
-use crate::ui::{ListRow, PickListStyle, list_group, list_row, list_row_text, section_heading};
+use crate::ui::{
+    ListRow, PICK_LIST_PADDING, PickListStyle, ScrollStyle, accent_ink, dropdown_arrow,
+    dropdown_popup_style, dropdown_style, list_group, list_row, list_row_style, list_row_text,
+    section_heading,
+};
 
 pub(crate) const FOLLOW_ID: &str = "appearance-follow-system";
 pub(crate) const READABILITY_ID: &str = "appearance-readability";
@@ -28,6 +36,18 @@ pub(crate) enum Edit {
     Theme(Slot, String),
     ImproveReadability(bool),
     Motion(Motion),
+    /// In percent.
+    InterfaceSize(u16),
+    /// A family name, or None for the built-in font.
+    Font(Option<String>),
+    FontOpen,
+    FontClose,
+    FontQuery(String),
+    /// Moves the highlight up a row when true, down otherwise, wrapping
+    /// around at the ends like the Library's menus.
+    FontMove(bool),
+    /// Picks the highlighted row.
+    FontSubmit,
     /// Copies the theme the slot shows to a new custom theme, which the slot
     /// then shows.
     Copy(Slot),
@@ -111,6 +131,47 @@ pub(crate) struct Form {
     pub(crate) deleting: Option<String>,
     /// Numbers the temporary ids of copies not saved yet.
     copies: u32,
+    pub(crate) font_picker: Option<FontPicker>,
+    /// The family the draft's font resolves to, which the app sets. A
+    /// family that isn't installed shows as the built-in font, while the
+    /// draft keeps its name.
+    pub(crate) font_in_use: &'static str,
+}
+
+/// The open Font dropdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FontPicker {
+    pub(crate) query: String,
+    /// Read when it opened, so a font installed since shows next time.
+    pub(crate) families: Vec<&'static str>,
+    /// The index in `rows` of the row Enter picks.
+    pub(crate) highlight: usize,
+}
+
+pub(crate) const BUILT_IN_LABEL: &str = "Noto Sans (built in)";
+pub(crate) const FONT_SEARCH_ID: &str = "appearance-font-search";
+pub(crate) const FONT_LIST_ID: &str = "appearance-font-list";
+
+impl FontPicker {
+    /// The rows the search shows: the built-in font first, then the
+    /// families, each with what picking it sets.
+    pub(crate) fn rows(&self) -> Vec<(&'static str, Option<&'static str>)> {
+        let query = self.query.trim().to_lowercase();
+        std::iter::once((BUILT_IN_LABEL, None))
+            .chain(self.families.iter().map(|family| (*family, Some(*family))))
+            .filter(|(label, _)| label.to_lowercase().contains(&query))
+            .collect()
+    }
+    /// The id of the highlighted row's container, for scrolling it into view.
+    pub(crate) fn highlighted_id(&self) -> Option<iced::widget::Id> {
+        self.rows()
+            .get(self.highlight)
+            .map(|(label, _)| font_row_id(label))
+    }
+}
+
+pub(crate) fn font_row_id(label: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("appearance-font-row:{label}"))
 }
 
 /// The open name field of a custom theme.
@@ -159,6 +220,8 @@ impl Form {
             renaming: None,
             deleting: None,
             copies: 0,
+            font_picker: None,
+            font_in_use: crate::fonts::BUILT_IN,
         }
     }
     /// The draft appearance and themes, which a load compares to tell edits
@@ -183,6 +246,55 @@ impl Form {
             Edit::Theme(slot, id) => *slot.id_mut(&mut self.draft) = id,
             Edit::ImproveReadability(on) => self.draft.improve_readability = on,
             Edit::Motion(motion) => self.draft.motion = motion,
+            Edit::InterfaceSize(size) => {
+                self.draft.interface_size = size.clamp(INTERFACE_SIZE_MIN, INTERFACE_SIZE_MAX);
+            }
+            Edit::Font(font) => {
+                self.draft.font = font;
+                self.font_picker = None;
+            }
+            Edit::FontOpen => {
+                let mut picker = FontPicker {
+                    query: String::new(),
+                    families: crate::fonts::families(),
+                    highlight: 0,
+                };
+                let in_use = self.font_in_use;
+                picker.highlight = picker
+                    .rows()
+                    .iter()
+                    .position(|(_, family)| family.unwrap_or(crate::fonts::BUILT_IN) == in_use)
+                    .unwrap_or(0);
+                self.font_picker = Some(picker);
+            }
+            Edit::FontClose => self.font_picker = None,
+            Edit::FontQuery(query) => {
+                if let Some(picker) = &mut self.font_picker {
+                    picker.query = query;
+                    picker.highlight = 0;
+                }
+            }
+            Edit::FontMove(up) => {
+                if let Some(picker) = &mut self.font_picker {
+                    let count = picker.rows().len();
+                    if count > 0 {
+                        picker.highlight = if up {
+                            (picker.highlight + count - 1) % count
+                        } else {
+                            (picker.highlight + 1) % count
+                        };
+                    }
+                }
+            }
+            Edit::FontSubmit => {
+                let highlighted = self
+                    .font_picker
+                    .as_ref()
+                    .and_then(|picker| picker.rows().get(picker.highlight).copied());
+                if let Some((_, font)) = highlighted {
+                    self.apply(Edit::Font(font.map(str::to_owned)), mode);
+                }
+            }
             Edit::Copy(slot) => self.copy(slot),
             Edit::Color(id, role, text) => self.set_color(&id, role, text),
             Edit::RenameOpen(id) => {
@@ -365,6 +477,8 @@ impl Form {
             before.theme != after.theme,
             before.improve_readability != after.improve_readability,
             before.motion != after.motion,
+            before.interface_size != after.interface_size,
+            before.font != after.font,
         ]
         .into_iter()
         .filter(|changed| *changed)
@@ -404,6 +518,7 @@ impl Form {
         self.draft = self.loaded.clone();
         self.themes = self.loaded_themes.clone();
         self.clear_inputs();
+        self.font_picker = None;
     }
     fn clear_inputs(&mut self) {
         self.inputs.clear();
@@ -449,6 +564,12 @@ impl Form {
             &new.improve_readability,
         );
         pick(&old.motion, &mut draft.motion, &new.motion);
+        pick(
+            &old.interface_size,
+            &mut draft.interface_size,
+            &new.interface_size,
+        );
+        pick(&old.font, &mut draft.font, &new.font);
     }
     /// A three-way merge of each theme against the old base, the new one,
     /// and the draft, so a change on disk shows unless the draft changed the
@@ -735,17 +856,207 @@ pub(super) fn tab(
             locked,
             palette,
         ))
-        .push(super::view::section(
-            "Accessibility",
-            super::view::setting_row(
-                "Motion",
-                motion_choice(draft.motion, locked, palette),
-                None,
+        .push(
+            super::view::section(
+                "Accessibility",
+                column![
+                    super::view::setting_row(
+                        "Interface size",
+                        size_choice(draft.interface_size, locked, palette),
+                        None,
+                        palette,
+                    ),
+                    super::view::setting_row(
+                        "Font",
+                        font_choice(form, locked, palette),
+                        None,
+                        palette,
+                    ),
+                    super::view::setting_row(
+                        "Motion",
+                        motion_choice(draft.motion, locked, palette),
+                        None,
+                        palette,
+                    ),
+                ]
+                .spacing(12)
+                .into(),
                 palette,
             ),
-            palette,
-        ))
+        )
         .into()
+}
+
+/// The dropdown's sizes, in percent.
+pub(crate) const SIZE_STEPS: [u16; 6] = [100, 110, 125, 150, 175, 200];
+
+/// An interface size as the dropdown shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SizeChoice(pub(crate) u16);
+
+impl std::fmt::Display for SizeChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}%", self.0)
+    }
+}
+
+/// The steps, with a hand-edited size between them in its place, so the
+/// dropdown can show what's in use.
+pub(crate) fn size_choices(current: u16) -> Vec<SizeChoice> {
+    let mut sizes = SIZE_STEPS.to_vec();
+    if !sizes.contains(&current) {
+        sizes.push(current);
+        sizes.sort_unstable();
+    }
+    sizes.into_iter().map(SizeChoice).collect()
+}
+
+pub(super) fn size_choice(size: u16, locked: bool, palette: Palette) -> Element<'static, Message> {
+    if locked {
+        return super::view::locked_choice(&SizeChoice(size).to_string(), palette);
+    }
+    pick_list(size_choices(size), Some(SizeChoice(size)), |choice| {
+        send(Edit::InterfaceSize(choice.0))
+    })
+    .on_open(Message::Settings(Event::MenuOpened))
+    .on_close(Message::Settings(Event::MenuClosed))
+    .width(super::view::CONTROL_WIDTH)
+    .wineo_style(palette)
+    .into()
+}
+
+/// What the Font dropdown shows for a family: the built-in one by its label.
+fn font_label(family: &'static str) -> &'static str {
+    if family == crate::fonts::BUILT_IN {
+        BUILT_IN_LABEL
+    } else {
+        family
+    }
+}
+
+/// A searchable dropdown, since a pick list draws every row in one font
+/// and each family here shows in itself.
+pub(super) fn font_choice(
+    form: &Form,
+    locked: bool,
+    palette: Palette,
+) -> Element<'static, Message> {
+    let in_use = form.font_in_use;
+    let label = font_label(in_use);
+    if locked {
+        return super::view::locked_choice(label, palette);
+    }
+    let open = form.font_picker.is_some();
+    let control = button(
+        row![
+            text(label)
+                .font(Font::with_name(in_use))
+                .size(14)
+                .wrapping(text::Wrapping::None)
+                .width(Fill),
+            // Room for the arrow laid over the button.
+            Space::new().width(14),
+        ]
+        .spacing(8)
+        .align_y(Center),
+    )
+    .padding(PICK_LIST_PADDING)
+    .width(super::view::CONTROL_WIDTH)
+    .on_press(send(if open {
+        Edit::FontClose
+    } else {
+        Edit::FontOpen
+    }))
+    .style(move |_, status| dropdown_style(palette, open, status));
+    let control = stack![control, dropdown_arrow(palette, open)];
+    let popup = form
+        .font_picker
+        .as_ref()
+        .map(|picker| font_popup(picker, in_use, palette));
+    dropdown(control, popup, send(Edit::FontClose))
+        .on_keys(
+            send(Edit::FontMove(true)),
+            send(Edit::FontMove(false)),
+            send(Edit::FontSubmit),
+        )
+        .into()
+}
+
+const FONT_POPUP_HEIGHT: f32 = 320.0;
+
+pub(crate) fn font_popup(
+    picker: &FontPicker,
+    in_use: &'static str,
+    palette: Palette,
+) -> Element<'static, Message> {
+    let search = text_input("Search fonts", &picker.query)
+        .id(iced::widget::Id::new(FONT_SEARCH_ID))
+        .on_input(|query| send(Edit::FontQuery(query)))
+        .padding([6, 10])
+        .size(14)
+        .style(move |_, status| input_style(palette, status));
+    let rows = picker.rows();
+    let list: Element<'static, Message> =
+        if rows.is_empty() {
+            container(text("No fonts match.").size(14).color(palette.muted))
+                .padding([6, 10])
+                .into()
+        } else {
+            scrollable(
+                Column::with_children(rows.into_iter().enumerate().map(
+                    |(index, (label, family))| {
+                        let chosen = family.unwrap_or(crate::fonts::BUILT_IN) == in_use;
+                        font_row(label, family, chosen, index == picker.highlight, palette)
+                    },
+                ))
+                .spacing(2)
+                .padding(iced::Padding {
+                    right: crate::ui::SCROLLBAR_WIDTH + 4.0,
+                    ..iced::Padding::ZERO
+                }),
+            )
+            .id(iced::widget::Id::new(FONT_LIST_ID))
+            .wineo_style(palette)
+            .into()
+        };
+    container(column![search, list].spacing(6))
+        .padding(6)
+        .max_height(FONT_POPUP_HEIGHT)
+        .style(move |_| dropdown_popup_style(palette))
+        .into()
+}
+
+/// `highlighted` is the keyboard's row, drawn with the focus outline.
+fn font_row(
+    label: &'static str,
+    family: Option<&'static str>,
+    chosen: bool,
+    highlighted: bool,
+    palette: Palette,
+) -> Element<'static, Message> {
+    let font = Font::with_name(family.unwrap_or(crate::fonts::BUILT_IN));
+    let row = button(
+        text(label)
+            .font(font)
+            .size(14)
+            .wrapping(text::Wrapping::None),
+    )
+    .width(Fill)
+    .padding([6, 10])
+    .on_press(send(Edit::Font(family.map(str::to_owned))))
+    .style(move |_, status| {
+        if chosen {
+            button::Style {
+                background: Some(palette.primary.into()),
+                text_color: accent_ink(palette.primary),
+                border: border::rounded(crate::ui::CONTROL_RADIUS),
+                ..button::Style::default()
+            }
+        } else {
+            list_row_style(palette, status)
+        }
+    });
+    crate::dropdown::tagged(row, font_row_id(label), highlighted)
 }
 
 fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {

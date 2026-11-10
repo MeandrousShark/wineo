@@ -1079,6 +1079,8 @@ fn custom_appearance() -> Appearance {
         theme: "cellar".to_owned(),
         improve_readability: true,
         motion: Motion::Reduced,
+        interface_size: 150,
+        font: Some("Atkinson Hyperlegible".to_owned()),
     }
 }
 
@@ -1097,6 +1099,8 @@ fn a_library_without_appearance_reads_as_the_defaults() {
             theme: "midnight".to_owned(),
             improve_readability: false,
             motion: Motion::System,
+            interface_size: 100,
+            font: None,
         }
     );
 }
@@ -1114,6 +1118,8 @@ light = "custom:mine"
 theme = "cellar"
 improve_readability = true
 motion = "reduced"
+interface_size = 150
+font = "Atkinson Hyperlegible"
 future_key = "ignored"
 "#,
     );
@@ -1259,6 +1265,113 @@ fn an_unknown_motion_is_not_rewritten() {
         assert!(set_appearance(&fixture.paths, &full).unwrap());
         assert!(fixture.read().contains("motion = \"full\""));
     }
+}
+
+#[test]
+fn interface_size_reads_whole_numbers_and_clamps_out_of_range() {
+    let fixture = Fixture::new();
+    for (value, read) in [
+        ("100", 100),
+        ("125", 125),
+        // Not a dropdown step, but in range, so it's used as is.
+        ("130", 130),
+        ("200", 200),
+        ("250", 200),
+        ("50", 100),
+        ("-3", 100),
+        ("\"150\"", 100),
+        ("1.5", 100),
+        ("true", 100),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\ninterface_size = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.appearance.interface_size, read, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_appearance_writes_interface_size_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let bigger = Appearance {
+        interface_size: 125,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &bigger).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\ninterface_size = 125\n"
+    );
+    assert!(!set_appearance(&fixture.paths, &bigger).unwrap());
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert!(fixture.read().contains("interface_size = 100"));
+
+    // A hand edit that reads as what's saved stays as typed.
+    for text in [
+        "schema_version = 1\n\n[appearance]\ninterface_size = 400\n",
+        "schema_version = 1\n\n[appearance]\ninterface_size = \"big\"\n",
+    ] {
+        fixture.write(text);
+        let read = load(&fixture.paths).appearance;
+        assert!(!set_appearance(&fixture.paths, &read).unwrap());
+        assert_eq!(fixture.read(), text);
+    }
+    // Out of range from a caller clamps, so the file never holds what the
+    // reader would change.
+    let huge = Appearance {
+        interface_size: 900,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &huge).unwrap());
+    assert!(fixture.read().contains("interface_size = 200"));
+}
+
+#[test]
+fn font_reads_a_family_name_and_anything_else_as_built_in() {
+    let fixture = Fixture::new();
+    for (value, read) in [
+        ("\"Atkinson Hyperlegible\"", Some("Atkinson Hyperlegible")),
+        ("\"Not Installed Anywhere\"", Some("Not Installed Anywhere")),
+        ("\"\"", None),
+        ("\"  \"", None),
+        ("3", None),
+        ("[\"Inter\"]", None),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\nfont = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.appearance.font.as_deref(), read, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_appearance_writes_a_font_and_removes_it_for_the_built_in_one() {
+    let fixture = Fixture::new();
+    let inter = Appearance {
+        font: Some("Inter".to_owned()),
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &inter).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\nfont = \"Inter\"\n"
+    );
+    assert!(!set_appearance(&fixture.paths, &inter).unwrap());
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert_eq!(fixture.read(), "schema_version = 1\n\n[appearance]\n");
+
+    // A value that isn't a name reads as the built-in font, so saving that
+    // leaves it be.
+    let text = "schema_version = 1\n\n[appearance]\nfont = 3\n";
+    fixture.write(text);
+    assert!(!set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert!(set_appearance(&fixture.paths, &inter).unwrap());
+    assert!(fixture.read().contains("font = \"Inter\""));
 }
 
 #[test]

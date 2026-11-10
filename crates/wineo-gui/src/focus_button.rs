@@ -13,6 +13,27 @@ pub(crate) use rows::{ListRows, land, reveal, rows};
 
 pub(crate) const UNDO_ID: &str = "trash-undo";
 
+/// The keyboard focus outline around `bounds`, outside it so the control's
+/// geometry stays put. Also for a row that shows the keyboard's place
+/// without holding focus, like the Font dropdown's highlight.
+pub(crate) fn draw_ring<R: AdvancedRenderer>(
+    renderer: &mut R,
+    bounds: Rectangle,
+    theme: &iced::Theme,
+) {
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: bounds.expand(2.0),
+            border: iced::border::rounded(crate::ui::CONTROL_RADIUS + 2.0)
+                .width(2)
+                .color(theme.palette().primary),
+            shadow: iced::Shadow::default(),
+            snap: false,
+        },
+        iced::Color::TRANSPARENT,
+    );
+}
+
 pub(crate) fn undo<'a>(
     content: Element<'a, crate::Message>,
     enabled: bool,
@@ -556,17 +577,7 @@ where
         );
 
         if focused {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: layout.bounds().expand(2.0),
-                    border: iced::border::rounded(crate::ui::CONTROL_RADIUS + 2.0)
-                        .width(2)
-                        .color(theme.palette().primary),
-                    shadow: iced::Shadow::default(),
-                    snap: false,
-                },
-                iced::Color::TRANSPARENT,
-            );
+            draw_ring(renderer, layout.bounds(), theme);
         }
     }
 

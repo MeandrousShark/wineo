@@ -8,7 +8,7 @@ fn app_settings_carry_the_bundled_fonts() {
     let settings = app_settings();
 
     assert_eq!(settings.default_text_size, 14.into());
-    assert_eq!(settings.default_font, fonts::DEFAULT);
+    assert_eq!(settings.default_font, iced::Font::DEFAULT);
     assert_eq!(settings.fonts.len(), 2);
     assert_eq!(settings.fonts[0].as_ref(), fonts::REGULAR);
     assert_eq!(settings.fonts[1].as_ref(), fonts::SEMIBOLD);

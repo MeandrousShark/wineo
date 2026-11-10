@@ -407,6 +407,8 @@ light = "daylight"
 theme = "midnight"        # used when follow_system is false
 improve_readability = false
 motion = "system"         # system (default), full, or reduced
+interface_size = 125      # percent, 100 (default) to 200
+font = "Inter"            # no key means the built-in Noto Sans
 
 [environments.hades]
 favorite = true
@@ -488,6 +490,18 @@ runs; no portal means full motion), `full` always animates, and `reduced`
 snaps movement and keeps fades. An unknown value reads as `system`, isn't
 rewritten when the app saves, and `validate` reports it; repair keeps any
 string and drops other types.
+
+`interface_size` (plan 0063) scales the whole window, in percent on top of
+the desktop's own scale. It defaults to `100`; Settings offers 100, 110,
+125, 150, 175, and 200, and any whole number from 100 to 200 works. A
+number outside that range clamps to it, a value that isn't a whole number
+reads as `100`, and `validate` reports both. `font` is the family the app
+draws its text in, by name. Without the key, it uses the built-in Noto
+Sans, and picking that in Settings removes the key. A family that isn't
+installed when the app starts falls back to the built-in font without
+rewriting the file; an empty or non-string value does the same, and
+`validate` reports that. Repair keeps any integer `interface_size` and any
+string `font` and drops other types.
 
 `[steam]` is how the desktop app remembers what it has
 [offered](steam.md#new-installs). `auto_import` imports new installs without

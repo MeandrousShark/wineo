@@ -21,14 +21,23 @@ pub(crate) fn renderer() -> iced::Renderer {
 /// Draws `element` laid out in `size` onto a transparent background with
 /// the CPU renderer, and returns its RGBA pixels.
 pub(crate) fn render<M>(element: &mut Element<'_, M>, size: Size) -> Vec<u8> {
+    render_with(&mut renderer(), element, size)
+}
+
+/// `render` with a renderer kept between frames, so what it caches from one
+/// frame is still there for the next, as in a window.
+pub(crate) fn render_with<M>(
+    renderer: &mut iced::Renderer,
+    element: &mut Element<'_, M>,
+    size: Size,
+) -> Vec<u8> {
     use iced::advanced::Renderer as _;
-    let mut renderer = renderer();
+    renderer.reset(Rectangle::with_size(size));
     let mut tree = Tree::new(element.as_widget());
-    let node = element.as_widget_mut().layout(
-        &mut tree,
-        &renderer,
-        &layout::Limits::new(Size::ZERO, size),
-    );
+    let node =
+        element
+            .as_widget_mut()
+            .layout(&mut tree, renderer, &layout::Limits::new(Size::ZERO, size));
     let viewport = Rectangle::with_size(size);
     renderer.with_layer(viewport, |renderer| {
         element.as_widget().draw(

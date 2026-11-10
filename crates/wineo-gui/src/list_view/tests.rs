@@ -706,7 +706,10 @@ fn overlong_text_ends_in_an_ellipsis_within_its_column() {
         let text = row_text(&long, columns(width), width);
         let room = title_room(&long, columns(width), width);
         assert!(text.title.ends_with("..."), "{width}: {}", text.title);
-        assert!(line_width(&text.title, 14.0, SEMIBOLD) <= room, "{width}");
+        assert!(
+            line_width(&text.title, 14.0, crate::fonts::semibold()) <= room,
+            "{width}"
+        );
         let identifier = text.identifier.unwrap();
         assert!(identifier.ends_with("..."), "{width}: {identifier}");
         assert!(line_width(&identifier, 12.0, Font::DEFAULT) <= room);

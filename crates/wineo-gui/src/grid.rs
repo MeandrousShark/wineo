@@ -3,9 +3,7 @@ use iced::widget::{
     Space, button, column, container, image, mouse_area, row, scrollable, stack, svg, text,
     text_input,
 };
-use iced::{
-    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, font, mouse,
-};
+use iced::{Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, mouse};
 
 use crate::grid_motion::{CardText, GridLayout};
 use crate::library::Card;
@@ -438,10 +436,7 @@ impl App {
             })
             .into(),
         };
-        let title_font = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
+        let title_font = crate::fonts::semibold();
         let steam_mark = card.kind == Some(crate::library::CardKind::Proxied);
         // Marks belong to the game, so every copy shows them.
         let marked = self.marked.contains(slot.name());
@@ -1074,10 +1069,7 @@ impl App {
             let menu_items = column![
                 text(truncate_name(name, 224.0))
                     .size(14)
-                    .font(Font {
-                        weight: font::Weight::Semibold,
-                        ..Font::DEFAULT
-                    })
+                    .font(crate::fonts::semibold())
                     .color(palette.foreground)
                     .height(ACTION_MENU_HEADER_HEIGHT)
                     .align_y(Center)
@@ -1431,10 +1423,7 @@ impl App {
             row![
                 text("wineo")
                     .size(18)
-                    .font(Font {
-                        weight: font::Weight::Semibold,
-                        ..Font::DEFAULT
-                    })
+                    .font(crate::fonts::semibold())
                     .color(palette.foreground),
                 {
                     let enabled = !self.management_busy() && self.operation.is_none();
@@ -1571,10 +1560,7 @@ fn title_overlay(
     ink: Color,
     alpha: f32,
 ) -> Element<'static, Message> {
-    let font = Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    };
+    let font = crate::fonts::semibold();
     let right = if steam_mark {
         STEAM_MARK_ROOM
     } else {
@@ -1653,10 +1639,7 @@ fn text_width(content: &str) -> f32 {
         bounds: Size::INFINITE,
         size: 14.into(),
         line_height: iced::widget::text::LineHeight::default(),
-        font: Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        },
+        font: crate::fonts::semibold(),
         align_x: iced::advanced::text::Alignment::Default,
         align_y: iced::alignment::Vertical::Top,
         shaping: iced::widget::text::Shaping::Advanced,
@@ -1891,10 +1874,7 @@ mod tests {
     fn card_titles_wrap_to_two_balanced_lines_in_a_fixed_height() {
         use crate::layout_probe::{bounds_at, layout};
         let app = crate::tests::app();
-        let font = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
+        let font = crate::fonts::semibold();
         let grid = GridLayout::default();
         let lines =
             |title| crate::tile_title::lines(title, grid.card_width(), CARD_TITLE_SIZE, font);
