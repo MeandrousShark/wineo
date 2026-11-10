@@ -239,3 +239,14 @@ fn only_one_toolbar_menu_or_drop_down_is_open() {
     assert!(!app.search_open, "a menu is open");
     assert!(app.more_menu);
 }
+
+#[test]
+fn a_focused_icon_hands_its_focus_to_the_field_when_search_comes_back() {
+    let (_root, mut app) = library(200);
+    let mut window = Window::new(&mut app);
+    window.focus(&app, ICON_ID);
+    crate::more_menu::tests::at_size(&mut app, 100);
+    window.frame(&mut app);
+    assert!(!app.search_icon);
+    assert_eq!(window.focused(&app), ids(SEARCH_ID));
+}

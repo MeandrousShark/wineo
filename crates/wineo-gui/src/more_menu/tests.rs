@@ -724,3 +724,25 @@ fn more_shows_the_selected_look_while_its_menu_is_open() {
     let near = |channel: usize| (i32::from(open[channel]) - i32::from(primary[channel])).abs() < 40;
     assert!((0..3).all(near), "{open:?} reads as {primary:?}");
 }
+
+#[test]
+fn more_hands_its_focus_to_the_first_control_back_when_nothing_folds() {
+    let (_root, mut app) = library(150);
+    let mut window = Window::new(&mut app);
+    window.focus(&app, MORE_ID);
+    at_size(&mut app, 100);
+    window.frame(&mut app);
+    assert!(app.toolbar_folds.is_empty());
+    assert_eq!(window.focused(&app), ids(crate::random_pick::BUTTON_ID));
+}
+
+#[test]
+fn more_keeps_its_focus_through_a_partial_unfold() {
+    let (_root, mut app) = library(200);
+    let mut window = Window::new(&mut app);
+    window.focus(&app, MORE_ID);
+    at_size(&mut app, 150);
+    window.frame(&mut app);
+    assert!(!app.toolbar_folds.is_empty());
+    assert_eq!(window.focused(&app), ids(MORE_ID));
+}

@@ -259,6 +259,9 @@ struct State {
     /// The field was in the row at the last redraw, which tells a collapse
     /// from the drop-down closing.
     field_in_row: bool,
+    /// Which elements showed in the row at the last redraw, which tells
+    /// what just came back.
+    shown: Vec<bool>,
 }
 
 impl<Message: Clone> Row<'_, Message> {
@@ -511,7 +514,11 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Row<'_, Me
                 shell.publish((self.on_fit)(fit));
             }
             let was_in_row = std::mem::replace(&mut state.field_in_row, self.shown[FIELD]);
+            let before = std::mem::replace(&mut state.shown, self.shown.clone());
+            let more = self.more_index();
             let mut lost = false;
+            let mut icon_lost = false;
+            let mut more_lost = false;
             for (index, (element, state)) in
                 self.elements.iter_mut().zip(&mut tree.children).enumerate()
             {
@@ -541,19 +548,37 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Row<'_, Me
                     );
                     continue;
                 }
-                // A control that folded with focus hands it to More, which
-                // now holds it.
                 let mut unfocus = Unfocus::default();
                 element
                     .as_widget_mut()
                     .operate(state, child, renderer, &mut unfocus);
-                lost |= unfocus.0;
+                match index {
+                    ICON => icon_lost |= unfocus.0,
+                    _ if index == more => more_lost |= unfocus.0,
+                    _ => lost |= unfocus.0,
+                }
             }
-            let more = self.more_index();
-            if lost && self.shown[more] {
-                let child = layout.children().nth(more).expect("More's layout");
-                self.elements[more].as_widget_mut().operate(
-                    &mut tree.children[more],
+            // Focus follows what it was on: a control that folded hands it
+            // to More, which now holds it; More going away hands it to the
+            // first control that came back; the icon going away hands it to
+            // the field.
+            let target = if icon_lost {
+                Some(FIELD)
+            } else if more_lost {
+                (FIRST..more)
+                    .find(|index| {
+                        self.shown[*index] && !before.get(*index).copied().unwrap_or(false)
+                    })
+                    .or_else(|| (FIRST..more).rev().find(|index| self.shown[*index]))
+            } else if lost && self.shown[more] {
+                Some(more)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                let child = layout.children().nth(target).expect("a child's layout");
+                self.elements[target].as_widget_mut().operate(
+                    &mut tree.children[target],
                     child,
                     renderer,
                     &mut FocusFirst::default(),
