@@ -438,7 +438,7 @@ pub(super) const AUTO_IMPORT_NOTE: &str = "New installs, and any games the libra
      are imported with the same defaults as importing them all. Games you already have aren't \
      touched, and nothing is launched or downloaded.";
 
-fn global_view<'a>(
+pub(super) fn global_view<'a>(
     editor: &'a global::Editor,
     page: &'a Page,
     paths: &Paths,

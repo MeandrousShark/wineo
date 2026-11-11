@@ -916,6 +916,11 @@ fn commented_global_round_trip_changes_one_control_per_section() {
 
 /// Every piece of text the page shows, in order.
 fn page_texts(page: &Page, paths: &Paths) -> Vec<String> {
+    element_texts(page.view(paths, crate::theme::Palette::DARK))
+}
+
+/// Every piece of text the element shows, in order.
+fn element_texts(element: iced::Element<'_, crate::Message>) -> Vec<String> {
     use iced::advanced::widget::{Id, Operation};
     use std::sync::{Arc, Mutex};
 
@@ -929,10 +934,7 @@ fn page_texts(page: &Page, paths: &Paths) -> Vec<String> {
         }
     }
     let found = Arc::new(Mutex::new(Vec::new()));
-    let mut laid = crate::layout_probe::lay_out(
-        page.view(paths, crate::theme::Palette::DARK),
-        iced::Size::new(900.0, 3000.0),
-    );
+    let mut laid = crate::layout_probe::lay_out(element, iced::Size::new(900.0, 3000.0));
     laid.run(Box::new(All(found.clone())));
     found.lock().unwrap().clone()
 }
@@ -954,6 +956,15 @@ fn global_settings_end_with_the_version_wineo_reports() {
         .position(|text| text == "Environment variables")
         .unwrap();
     assert!(at > env_heading, "{texts:?}");
+    let global = global_page(&paths);
+    let general = view::global_view(
+        global_editor(&global),
+        &global,
+        &paths,
+        global.locked(),
+        crate::theme::Palette::DARK,
+    );
+    assert_eq!(element_texts(general).last(), Some(&line));
     write(&paths, GAME);
     assert!(!page_texts(&page(&paths), &paths).contains(&line));
 }
