@@ -959,15 +959,20 @@ pub(super) fn font_choice(
     let open = form.font_picker.is_some();
     let control = button(
         row![
-            text(label)
-                .font(Font::with_name(if form.font_in_use_draws_name {
-                    in_use
-                } else {
-                    crate::fonts::BUILT_IN
-                }))
-                .size(14)
-                .wrapping(text::Wrapping::None)
-                .width(Fill),
+            // A long family name is cut at the container's edge, short of
+            // the arrow, since text on one line doesn't clip on its own.
+            container(
+                text(label)
+                    .font(Font::with_name(if form.font_in_use_draws_name {
+                        in_use
+                    } else {
+                        crate::fonts::BUILT_IN
+                    }))
+                    .size(14)
+                    .wrapping(text::Wrapping::None)
+            )
+            .width(Fill)
+            .clip(true),
             // Room for the arrow laid over the button.
             Space::new().width(14),
         ]
@@ -987,13 +992,14 @@ pub(super) fn font_choice(
         .font_picker
         .as_ref()
         .map(|picker| font_popup(picker, in_use, palette));
-    dropdown(control, popup, send(Edit::FontClose))
-        .on_keys(
-            send(Edit::FontMove(true)),
-            send(Edit::FontMove(false)),
-            send(Edit::FontSubmit),
-        )
-        .into()
+    let control = dropdown(control, popup, send(Edit::FontClose)).on_keys(
+        send(Edit::FontMove(true)),
+        send(Edit::FontMove(false)),
+        send(Edit::FontSubmit),
+    );
+    // A stack sizes itself to its content, so the width is stated here for
+    // the row to see that it can't shrink.
+    container(control).width(super::view::CONTROL_WIDTH).into()
 }
 
 const FONT_POPUP_HEIGHT: f32 = 320.0;
@@ -1078,7 +1084,11 @@ fn font_row(
     crate::dropdown::tagged(row, font_row_id(label), highlighted)
 }
 
-fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {
+pub(super) fn motion_choice(
+    motion: Motion,
+    locked: bool,
+    palette: Palette,
+) -> Element<'static, Message> {
     if locked {
         return super::view::locked_choice(&MotionChoice(motion).to_string(), palette);
     }

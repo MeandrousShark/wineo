@@ -2,7 +2,7 @@ use iced::widget::{
     Column, Space, button, column, container, opaque, pick_list, row, scrollable, stack, text,
     text_input, toggler,
 };
-use iced::{Center, Color, Element, Fill, border};
+use iced::{Center, Color, Element, Fill, Length, border};
 
 use wineo_core::art::Kind;
 use wineo_core::components::Component;
@@ -2109,6 +2109,11 @@ pub(super) fn setting_row<'a>(
     note: Option<Element<'a, Message>>,
     palette: Palette,
 ) -> Element<'a, Message> {
+    // A control with a width of its own can't give any back, so when it
+    // doesn't fit beside the label it folds under it instead of squeezing to
+    // nothing. One that flexes (a field that fills, chips that wrap) keeps
+    // the plain row, which already hands it whatever the label leaves.
+    let fixed = matches!(control.as_widget().size().width, Length::Fixed(_));
     let mut line = row![
         text(label).color(palette.foreground).width(LABEL_WIDTH),
         control
@@ -2118,7 +2123,11 @@ pub(super) fn setting_row<'a>(
     if let Some(note) = note {
         line = line.push(note);
     }
-    line.into()
+    if fixed {
+        line.wrap().vertical_spacing(6).into()
+    } else {
+        line.into()
+    }
 }
 
 fn switch_row<'a>(

@@ -1446,3 +1446,107 @@ fn escape_with_the_font_dropdown_open_stays_on_settings() {
         "the popup closes itself"
     );
 }
+
+/// The bounds of the label and control of an Accessibility row laid out in
+/// `width`.
+fn accessibility_rows(app: &App, width: f32) -> Vec<(iced::Rectangle, iced::Rectangle)> {
+    let form = font_form(app);
+    let draft = &form.draft;
+    let palette = Palette::DARK;
+    let size = iced::Size::new(width, 600.0);
+    [
+        appearance::size_choice(draft.interface_size, false, palette),
+        appearance::font_choice(form, false, palette),
+        appearance::motion_choice(draft.motion, false, palette),
+    ]
+    .into_iter()
+    .map(|control| {
+        let mut row = view::setting_row("Label", control, None, palette);
+        let node = crate::layout_probe::layout(&mut row, size);
+        let parts: Vec<_> = node.children().iter().map(|part| part.bounds()).collect();
+        assert_eq!(parts.len(), 2);
+        (parts[0], parts[1])
+    })
+    .collect()
+}
+
+#[test]
+fn accessibility_controls_fold_under_their_label_in_a_narrow_window() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // 200% leaves about this much for the card, and then less.
+    for width in [300.0, 240.0, 150.0] {
+        for (label, control) in accessibility_rows(&app, width) {
+            assert_eq!(control.x, 0.0, "{width}");
+            assert!(control.y >= label.y + label.height, "{width}");
+            assert_eq!(control.width, width.min(view::CONTROL_WIDTH), "{width}");
+        }
+    }
+}
+
+#[test]
+fn accessibility_controls_sit_beside_their_label_in_a_wide_window() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // Exactly enough for the label, the gap, and the control, and more.
+    for width in [180.0 + 12.0 + view::CONTROL_WIDTH, 700.0] {
+        for (label, control) in accessibility_rows(&app, width) {
+            assert_eq!((label.x, label.width), (0.0, 180.0), "{width}");
+            assert_eq!(control.x, 192.0, "{width}");
+            assert_eq!(control.width, view::CONTROL_WIDTH, "{width}");
+            let middle = |bounds: iced::Rectangle| bounds.y + bounds.height / 2.0;
+            assert_eq!(middle(label), middle(control), "{width}");
+        }
+    }
+}
+
+#[test]
+fn a_filling_control_keeps_the_plain_row_beside_its_label() {
+    // Fields that fill take what the label leaves, so a narrow window
+    // doesn't move them and a wide one never stacks them.
+    for width in [700.0, 300.0] {
+        let field = iced::widget::text_input("x", "").width(iced::Fill).into();
+        let mut row = view::setting_row("Label", field, None, Palette::DARK);
+        let node = crate::layout_probe::layout(&mut row, iced::Size::new(width, 600.0));
+        let control = node.children()[1].bounds();
+        assert_eq!(control.x, 192.0, "{width}");
+        assert_eq!(control.width, width - 192.0, "{width}");
+    }
+}
+
+#[test]
+fn a_long_family_name_stays_inside_the_font_button() {
+    use crate::layout_probe::render;
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    let canvas = iced::Size::new(view::CONTROL_WIDTH, 40.0);
+    let button_width = 120.0;
+    let own = crate::tile_title::line_width(WIDE, 14.0, iced::Font::with_name(WIDE));
+    assert!(
+        own > button_width,
+        "the name must be longer than the button"
+    );
+    let mut narrow = iced::widget::container(appearance::font_choice(
+        font_form(&app),
+        false,
+        Palette::DARK,
+    ))
+    .width(button_width)
+    .into();
+    let pixels = render(&mut narrow, canvas);
+    let past: Vec<_> = pixels
+        .chunks(canvas.width as usize * 4)
+        .flat_map(|line| line[button_width as usize * 4..].chunks(4))
+        .filter(|pixel| pixel[3] != 0)
+        .collect();
+    assert!(
+        past.is_empty(),
+        "{} inked pixels past the button",
+        past.len()
+    );
+}
