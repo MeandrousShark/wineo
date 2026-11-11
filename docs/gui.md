@@ -1036,6 +1036,12 @@ section works in a portable folder too. **Games folder** (with
 and in what language games install; they save with the Save bar, and a
 portable folder leaves them alone.
 
+The General tab ends with the version, like `wineo 1.5.0`, the same line
+`wineo --version` prints. A build that isn't a tagged release adds which
+commit it is, like `wineo 1.4.1+12.g7e952c93` (12 commits past v1.4.1),
+with `.dirty` when it was built with uncommitted changes, so a problem can
+be matched to the exact build.
+
 ### Appearance
 
 The **Appearance** tab picks the app's colors (plan
