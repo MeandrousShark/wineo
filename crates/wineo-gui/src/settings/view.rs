@@ -611,10 +611,17 @@ fn global_view<'a>(
             ),
             palette
         ),
+        // The same string as `wineo --version`, so a problem report can name
+        // the exact build.
+        text(version_line()).size(12).color(palette.muted),
     ]
     .spacing(24)
     .width(Fill)
     .into()
+}
+
+pub(super) fn version_line() -> String {
+    format!("wineo {}", wineo_core::version::VERSION)
 }
 
 /// The auto-import switch. It stays in place with a reason when it can't do
