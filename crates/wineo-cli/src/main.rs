@@ -57,7 +57,11 @@ use wineo_core::paths::Paths;
 use wineo_core::supervisor;
 
 #[derive(Parser)]
-#[command(name = "wineo", version, about = "Manage Wine environments")]
+#[command(
+    name = "wineo",
+    version = wineo_core::version::VERSION,
+    about = "Manage Wine environments"
+)]
 struct Cli {
     /// Show full detail that lists normally leave out, like installed names
     #[arg(short, long, global = true)]

@@ -77,6 +77,7 @@ pub mod time;
 pub mod trash;
 pub mod units;
 pub mod validate;
+pub mod version;
 pub mod view;
 pub mod winetricks;
 pub mod winpath;
