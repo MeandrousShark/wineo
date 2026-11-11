@@ -536,6 +536,17 @@ right edge when both fit, gives the left side the rest of the line, and
 stacks the right group underneath in a narrow window instead of squeezing
 its buttons. Rows of buttons that can run out of room wrap.
 
+A settings row is a label, a control 12 px after it, and sometimes a note,
+laid out by `fold_row` (in `fold_row.rs`) through `setting_row`. A control
+with a fixed width sits beside the label while it fits, and otherwise folds
+under it and shrinks to the room. A field that fills folds once it would get
+less than 260 px beside the label. A note stays beside its control while it
+fits, and otherwise drops under the control, wherever the control is.
+Controls that size to their content, like tag chips, keep a plain row. The
+Font button cuts a long family name with "..." at the end and, when it's cut
+at the button's full width and the list is closed, shows the whole name in a
+tooltip.
+
 Settings uses grouped sections and a fixed Save/Revert footer with the edit
 count. The global page has General and Appearance tabs in its header,
 between the title and the divider: text buttons 32 px high, 14 px regular
