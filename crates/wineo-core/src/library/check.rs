@@ -9,8 +9,9 @@ use toml_edit::{DocumentMut, Item, Key};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
-    GroupBy, RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN,
-    edit, read_document, read_zoom, sort_name,
+    CloseWindow, GroupBy, INTERFACE_SIZE_MAX, INTERFACE_SIZE_MIN, Motion, OnStart, OnStop,
+    RandomPool, ReadFailure, SCHEMA_VERSION, SortKey, ViewLayout, ZOOM_MAX, ZOOM_MIN, edit,
+    read_document, read_zoom, sort_name,
 };
 use crate::paths::Paths;
 use crate::source::{Platform, Store};
@@ -72,6 +73,7 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
             "view" => inspect_view(item, &mut inspection),
             "presets" => inspect_presets(item, &mut inspection),
             "appearance" => inspect_appearance(paths, &mut themes, item, &mut inspection),
+            "desktop" => inspect_desktop(item, &mut inspection),
             "environments" => inspect_environments(item, &mut inspection),
             "steam" => inspect_steam(item, &mut inspection),
             other => inspection
@@ -276,6 +278,26 @@ fn inspect_appearance(
         let expected = match key {
             "follow_system" | "improve_readability" if value.as_bool().is_some() => continue,
             "follow_system" | "improve_readability" => BOOL.to_owned(),
+            "motion" => match value.as_str() {
+                Some(name) if Motion::parse(name).is_some() => continue,
+                _ => expected_one_of(Motion::ALL.map(Motion::as_str)),
+            },
+            "interface_size" => match value.as_integer() {
+                Some(size)
+                    if (i64::from(INTERFACE_SIZE_MIN)..=i64::from(INTERFACE_SIZE_MAX))
+                        .contains(&size) =>
+                {
+                    continue;
+                }
+                _ => format!(
+                    "expected a whole number from {INTERFACE_SIZE_MIN} to {INTERFACE_SIZE_MAX}"
+                ),
+            },
+            // Whether it's installed is the app's business, at launch.
+            "font" => match value.as_str() {
+                Some(name) if !name.trim().is_empty() => continue,
+                _ => "expected a font family name".to_owned(),
+            },
             "dark" | "light" | "theme" => {
                 let wanted = match key {
                     "dark" => Some(ThemeKind::Dark),
@@ -294,6 +316,41 @@ fn inspect_appearance(
                     None => continue,
                 }
             }
+            _ => {
+                inspection.findings.push(unknown(None, &path));
+                continue;
+            }
+        };
+        inspection
+            .findings
+            .push(invalid(None, &path, &expected, value));
+    }
+}
+
+fn inspect_desktop(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection
+            .findings
+            .push(invalid(None, &display_path(&["desktop"]), TABLE, item));
+        return;
+    };
+    for (key, value) in table.iter() {
+        let path = display_path(&["desktop", key]);
+        let expected = match key {
+            "tray" if value.as_bool().is_some() => continue,
+            "tray" => BOOL.to_owned(),
+            "close" => match value.as_str() {
+                Some(name) if CloseWindow::parse(name).is_some() => continue,
+                _ => expected_one_of(CloseWindow::ALL.map(CloseWindow::as_str)),
+            },
+            "on_start" => match value.as_str() {
+                Some(name) if OnStart::parse(name).is_some() => continue,
+                _ => expected_one_of(OnStart::ALL.map(OnStart::as_str)),
+            },
+            "on_stop" => match value.as_str() {
+                Some(name) if OnStop::parse(name).is_some() => continue,
+                _ => expected_one_of(OnStop::ALL.map(OnStop::as_str)),
+            },
             _ => {
                 inspection.findings.push(unknown(None, &path));
                 continue;

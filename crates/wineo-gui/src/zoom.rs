@@ -398,8 +398,14 @@ impl App {
         let Some(tween) = &mut self.zooming.tween else {
             return Task::none();
         };
-        let t = (now.saturating_duration_since(tween.start).as_secs_f32() / TWEEN.as_secs_f32())
-            .clamp(0.0, 1.0);
+        // Reduced motion lands on the first frame, which still keeps the
+        // place and ends the gesture like a last frame.
+        let t = if self.motion.reduced() {
+            1.0
+        } else {
+            (now.saturating_duration_since(tween.start).as_secs_f32() / TWEEN.as_secs_f32())
+                .clamp(0.0, 1.0)
+        };
         tween.shown = tween.from + (f32::from(tween.to) - tween.from) * ease_out(t);
         let done = t >= 1.0;
         self.zooming.moved();
@@ -470,7 +476,7 @@ impl App {
 }
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
-    if event.is_input() && !app.zoom_allowed() {
+    if event.is_input() && !(app.zoom_allowed() || app.more_menu_zoom(&event)) {
         return Task::none();
     }
     let now = Instant::now();

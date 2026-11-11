@@ -64,6 +64,7 @@ impl Page {
         // The other tab's sections may be gone from under an open menu, so
         // its close never arrives.
         self.menu_open = false;
+        self.close_font_picker();
         // The tabs share one scroll area, so each gets back where it was left.
         super::Step::task(iced::widget::operation::scroll_to(
             Id::new(super::view::SCROLL_ID),

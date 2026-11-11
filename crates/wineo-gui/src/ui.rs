@@ -1,13 +1,16 @@
 use std::borrow::Borrow;
 
 use iced::widget::{Button, Column, Container, Space, Text, button, container, scrollable, text};
-use iced::{Color, Element, Fill, Font, Theme, border, font};
+use iced::{Color, Element, Fill, Theme, border};
 
 use crate::theme::{Palette, luminance};
 
 pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
 pub(crate) const CONTROL_RADIUS: f32 = 8.0;
 pub(crate) const SECTION_RADIUS: f32 = 12.0;
+
+/// Vertical and horizontal.
+pub(crate) const PICK_LIST_PADDING: [u16; 2] = [8, 10];
 
 pub(crate) trait PickListStyle<'a, T, L, V, M>
 where
@@ -27,8 +30,9 @@ where
     M: Clone,
 {
     fn wineo_style(self, palette: Palette) -> Self {
-        self.padding([8, 10])
+        self.padding(PICK_LIST_PADDING)
             .text_size(14)
+            .font(crate::fonts::named())
             .style(move |_, status| pick_list_style(palette, status))
             .menu_style(move |_| pick_menu_style(palette))
     }
@@ -61,6 +65,53 @@ fn pick_list_style(
         },
         background: background.into(),
         border: border::rounded(CONTROL_RADIUS).width(1).color(border_color),
+    }
+}
+
+/// A button made to look like a pick list, for dropdowns iced's can't draw.
+pub(crate) fn dropdown_style(
+    palette: Palette,
+    open: bool,
+    status: button::Status,
+) -> button::Style {
+    use iced::widget::pick_list::Status;
+    let status = match status {
+        _ if open => Status::Opened { is_hovered: false },
+        button::Status::Hovered | button::Status::Pressed => Status::Hovered,
+        button::Status::Active | button::Status::Disabled => Status::Active,
+    };
+    let style = pick_list_style(palette, status);
+    button::Style {
+        background: Some(style.background),
+        text_color: style.text_color,
+        border: style.border,
+        ..button::Style::default()
+    }
+}
+
+/// The arrow a pick list draws, in its handle color, to lay over a
+/// `dropdown_style` control with `PICK_LIST_PADDING`.
+pub(crate) fn dropdown_arrow<'a, M: 'a>(palette: Palette, open: bool) -> Element<'a, M> {
+    use iced::widget::pick_list::Status;
+    let status = if open {
+        Status::Opened { is_hovered: false }
+    } else {
+        Status::Active
+    };
+    crate::dropdown::arrow(
+        pick_list_style(palette, status).handle_color,
+        f32::from(PICK_LIST_PADDING[1]),
+    )
+}
+
+/// The popup of a `dropdown_style` control, in the pick lists' menu chrome.
+pub(crate) fn dropdown_popup_style(palette: Palette) -> container::Style {
+    let menu = pick_menu_style(palette);
+    container::Style {
+        background: Some(menu.background),
+        border: menu.border,
+        shadow: menu.shadow,
+        ..container::Style::default()
     }
 }
 
@@ -361,10 +412,7 @@ pub(crate) fn section_heading(label: &str, palette: Palette) -> Text<'_> {
 fn heading(label: &str, palette: Palette, size: u32) -> Text<'_> {
     text(label)
         .size(size)
-        .font(Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        })
+        .font(crate::fonts::semibold())
         .color(palette.foreground)
 }
 

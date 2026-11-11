@@ -212,7 +212,7 @@ fn the_thumb_slides_to_the_chosen_side() {
 #[test]
 fn reduced_motion_snaps_the_thumb() {
     let (_root, mut app) = library(4);
-    app.reduced_motion = true;
+    app.motion.system_reduced = true;
     let _ = set(&mut app, ViewLayout::List);
     assert!(!app.layout_thumb.active());
     assert_eq!(app.layout_thumb.progress(), 0.0);

@@ -10,6 +10,20 @@ use crate::winpath;
 /// Selects a portable folder when `--portable` is not given.
 pub const PORTABLE_VAR: &str = "WINEO_PORTABLE_DIR";
 
+/// What `Paths::root` tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Root<'a> {
+    Default,
+    Portable(&'a Path),
+    /// A custom `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, or both. The library and
+    /// environments live under the config dir and the rest under the data
+    /// dir, so either one makes it a different root.
+    Dirs {
+        config: &'a Path,
+        data: &'a Path,
+    },
+}
+
 /// Where wineo keeps its files, following the XDG base directory spec unless a
 /// portable folder is selected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +114,24 @@ impl Paths {
     /// The selected portable folder, if any.
     pub fn portable_root(&self) -> Option<&Path> {
         self.portable.as_deref()
+    }
+
+    /// Which root this is, for telling two roots apart: a portable folder,
+    /// custom config or data dirs, or the default `~/.config/wineo` with
+    /// `~/.local/share/wineo`.
+    pub fn root(&self) -> Root<'_> {
+        if let Some(root) = &self.portable {
+            Root::Portable(root)
+        } else if self.config == self.home.join(".config/wineo")
+            && self.data == self.home.join(".local/share/wineo")
+        {
+            Root::Default
+        } else {
+            Root::Dirs {
+                config: &self.config,
+                data: &self.data,
+            }
+        }
     }
 
     pub fn global_config(&self) -> PathBuf {

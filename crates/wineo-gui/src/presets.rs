@@ -511,9 +511,7 @@ impl App {
             self.switch_layout_from(preset.layout, anchor, true)
         });
         let resorted = self.reflowed();
-        let focus = iced::widget::operation::focus(iced::widget::Id::new(
-            crate::filter_control::FILTER_BUTTON_ID,
-        ));
+        let focus = iced::widget::operation::focus(iced::widget::Id::new(self.filters_home()));
         Task::batch([switched, resorted, focus])
     }
 

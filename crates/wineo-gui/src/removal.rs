@@ -73,6 +73,12 @@ pub(crate) struct Toast {
 }
 
 impl Toast {
+    /// The environment this toast just moved to the trash, until it's back.
+    /// Its card stays until the library reloads.
+    pub(crate) fn trashed(&self) -> Option<&str> {
+        (!self.restored).then_some(self.name.as_str())
+    }
+
     pub(crate) fn new(entry: Entry) -> Self {
         let mut text = format!("Removed {} to the trash.", entry.name);
         if entry.prefix_left.is_some() && entry.prefix_present == Some(true) {

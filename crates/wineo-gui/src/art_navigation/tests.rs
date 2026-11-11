@@ -231,7 +231,7 @@ fn closing_after_leaving_art_waits_for_the_write_to_complete() {
     let _ = app.update(Message::Section(sidebar::Section::Trash));
     assert!(app.art_page.is_none());
     assert!(app.foreground_busy());
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt && !app.closing);
     let _ = app.update(Message::CancelAndClose);
     assert!(app.closing && app.foreground_busy());
@@ -586,7 +586,7 @@ fn closing_during_picker_use_cancels_and_waits_even_after_leaving() {
     let before = fs::read(app.paths.art_dir("game").join("grid.png")).unwrap();
     let (generation, visit, token) = start_picker_use(&mut app);
     let _ = app.update(Message::Section(sidebar::Section::Trash));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt && !app.closing);
     let _ = app.update(Message::CancelAndClose);
     assert!(token.is_canceled());

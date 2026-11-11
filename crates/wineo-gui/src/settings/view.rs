@@ -2,12 +2,13 @@ use iced::widget::{
     Column, Space, button, column, container, opaque, pick_list, row, scrollable, stack, text,
     text_input, toggler,
 };
-use iced::{Center, Color, Element, Fill, Font, border, font};
+use iced::{Center, Color, Element, Fill, Length, border};
 
 use wineo_core::art::Kind;
 use wineo_core::components::Component;
 use wineo_core::config::{self, Arch};
 use wineo_core::key_store::KeySource;
+use wineo_core::library::{CloseWindow, Desktop, OnStart, OnStop};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
@@ -15,6 +16,7 @@ use super::key_settings::KeyStatus;
 use super::load::Scan;
 use super::{Editor, Event, Page, TargetEdit, View, tabs};
 use crate::chips::{Chips, input_style};
+use crate::fold_row::fold_row;
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
 use crate::ui::{
@@ -24,7 +26,7 @@ use crate::{Message, WHEEL_STEP_SCALE, wheel};
 use wineo_core::paths::Paths;
 
 const LABEL_WIDTH: f32 = 180.0;
-const CONTROL_WIDTH: f32 = 260.0;
+pub(super) const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
 pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
@@ -42,13 +44,6 @@ fn root_placeholder(field: global::Field, paths: &Paths) -> String {
         .unwrap_or_else(|_| root.display().to_string())
 }
 
-fn semibold() -> Font {
-    Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    }
-}
-
 impl Page {
     pub(crate) fn view(&self, paths: &Paths, palette: Palette) -> Element<'_, Message> {
         // Global settings is a sidebar section, so the sidebar is its way out.
@@ -60,7 +55,7 @@ impl Page {
             back,
             text(format!("{} settings", self.name))
                 .size(22)
-                .font(semibold())
+                .font(crate::fonts::semibold())
                 .color(palette.foreground),
         ]
         .spacing(16)
@@ -132,11 +127,14 @@ impl Page {
             .width(Fill)
             .height(Fill)
             .style(move |_| container::Style::default().background(palette.background));
-        if self.leave_prompt {
-            stack![base, leave_prompt(palette)].into()
+        // Always a stack, so the prompt coming or going keeps the page's
+        // widget state, like its scroll offset.
+        let prompt: Element<'_, Message> = if self.leave_prompt {
+            leave_prompt(palette)
         } else {
-            base.into()
-        }
+            Space::new().into()
+        };
+        stack![base, prompt].into()
     }
     fn save_bar(&self, palette: Palette) -> Element<'_, Message> {
         let mut bar = column![].spacing(6);
@@ -576,6 +574,11 @@ pub(super) fn global_view<'a>(
         section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
+        section(
+            "Desktop",
+            desktop_rows(draft.desktop, locked, palette),
+            palette
+        ),
         section("Art to fetch", art.into(), palette),
         section(
             "SteamGridDB",
@@ -618,6 +621,128 @@ pub(super) fn global_view<'a>(
     .spacing(24)
     .width(Fill)
     .into()
+}
+
+/// The note under the Desktop choices while the tray icon is off.
+pub(super) const NEEDS_TRAY: &str = "Needs the tray icon.";
+
+/// Closing the window's dropdown label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CloseChoice(pub(super) CloseWindow);
+
+impl CloseChoice {
+    pub(super) const ALL: [Self; 2] = [Self(CloseWindow::Quit), Self(CloseWindow::Tray)];
+}
+
+impl std::fmt::Display for CloseChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            CloseWindow::Quit => "Quit",
+            CloseWindow::Tray => "Keep running in the tray",
+        })
+    }
+}
+
+/// When something starts' dropdown label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OnStartChoice(pub(super) OnStart);
+
+impl OnStartChoice {
+    pub(super) const ALL: [Self; 2] = [Self(OnStart::Keep), Self(OnStart::Hide)];
+}
+
+impl std::fmt::Display for OnStartChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            OnStart::Keep => "Keep the window open",
+            OnStart::Hide => "Hide to the tray",
+        })
+    }
+}
+
+/// When everything stops' dropdown label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OnStopChoice(pub(super) OnStop);
+
+impl OnStopChoice {
+    pub(super) const ALL: [Self; 2] = [Self(OnStop::Restore), Self(OnStop::Show)];
+}
+
+impl std::fmt::Display for OnStopChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            OnStop::Restore => "Bring back a hidden window",
+            OnStop::Show => "Always show the window",
+        })
+    }
+}
+
+/// The tray switch, what closing the window does, what a start does to it,
+/// and what the last stop does. The choices need the tray, so without it
+/// they stay in place, locked, with why.
+fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element<'a, Message> {
+    let needs_tray = locked || !desktop.tray;
+    let close: Element<'a, Message> = if needs_tray {
+        locked_choice(&CloseChoice(desktop.close).to_string(), palette)
+    } else {
+        pick_list(
+            CloseChoice::ALL,
+            Some(CloseChoice(desktop.close)),
+            |choice| send(Event::GlobalClose(choice.0)),
+        )
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .wineo_style(palette)
+        .into()
+    };
+    let on_start: Element<'a, Message> = if needs_tray {
+        locked_choice(&OnStartChoice(desktop.on_start).to_string(), palette)
+    } else {
+        pick_list(
+            OnStartChoice::ALL,
+            Some(OnStartChoice(desktop.on_start)),
+            |choice| send(Event::GlobalOnStart(choice.0)),
+        )
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .wineo_style(palette)
+        .into()
+    };
+    let on_stop: Element<'a, Message> = if needs_tray {
+        locked_choice(&OnStopChoice(desktop.on_stop).to_string(), palette)
+    } else {
+        pick_list(
+            OnStopChoice::ALL,
+            Some(OnStopChoice(desktop.on_stop)),
+            |choice| send(Event::GlobalOnStop(choice.0)),
+        )
+        .on_open(send(Event::MenuOpened))
+        .on_close(send(Event::MenuClosed))
+        .width(CONTROL_WIDTH)
+        .wineo_style(palette)
+        .into()
+    };
+    let mut rows = column![
+        switch_row(
+            "Show a tray icon",
+            desktop.tray,
+            None,
+            |on| send(Event::GlobalTray(on)),
+            None,
+            locked,
+            palette,
+        ),
+        setting_row("Closing the window", close, None, palette),
+        setting_row("When something starts", on_start, None, palette),
+        setting_row("When everything stops", on_stop, None, palette),
+    ]
+    .spacing(12);
+    if !desktop.tray {
+        rows = rows.push(text(NEEDS_TRAY).size(13).color(palette.muted));
+    }
+    rows.into()
 }
 
 pub(super) fn version_line() -> String {
@@ -1237,7 +1362,9 @@ fn target_card<'a>(
     }
     let header = button(
         row![
-            text(title).font(semibold()).color(palette.foreground),
+            text(title)
+                .font(crate::fonts::semibold())
+                .color(palette.foreground),
             text(values.exe.as_str()).size(13).color(palette.muted),
         ]
         .spacing(12)
@@ -1564,7 +1691,7 @@ fn add_target(
         |line: String| -> Element<'_, Message> { text(line).size(13).color(palette.muted).into() };
     let mut rows = column![
         text("Add target")
-            .font(semibold())
+            .font(crate::fonts::semibold())
             .color(palette.foreground)
     ]
     .spacing(10);
@@ -1950,21 +2077,18 @@ fn gamescope_fields<'a>(
                 .style(move |_, status| input_style(palette, status))
                 .into(),
         };
-        rows = rows.push(
-            row![
-                text(field.label())
-                    .color(palette.muted)
-                    .width(LABEL_WIDTH - 24.0),
-                control
-            ]
-            .spacing(12)
-            .align_y(Center),
-        );
+        rows = rows.push(labeled(
+            text(field.label())
+                .color(palette.muted)
+                .width(LABEL_WIDTH - 24.0),
+            control,
+            None,
+        ));
     }
     rows.into()
 }
 
-fn section<'a>(
+pub(super) fn section<'a>(
     title: &'a str,
     content: Element<'a, Message>,
     palette: Palette,
@@ -1977,18 +2101,33 @@ fn section<'a>(
     .into()
 }
 
-fn setting_row<'a>(
+pub(super) fn setting_row<'a>(
     label: &'a str,
     control: Element<'a, Message>,
     note: Option<Element<'a, Message>>,
     palette: Palette,
 ) -> Element<'a, Message> {
-    let mut line = row![
+    labeled(
         text(label).color(palette.foreground).width(LABEL_WIDTH),
-        control
-    ]
-    .spacing(12)
-    .align_y(Center);
+        control,
+        note,
+    )
+}
+
+/// A label beside its control and note. A control that is fixed wide or
+/// fills folds under the label when the line is too narrow for it, so it
+/// never squeezes to nothing. One that sizes to its content (chips, text)
+/// keeps the plain row, which already gives it whatever the label leaves.
+fn labeled<'a>(
+    label: impl Into<Element<'a, Message>>,
+    control: Element<'a, Message>,
+    note: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let width = control.as_widget().size().width;
+    if matches!(width, Length::Fixed(_)) || width.fill_factor() > 0 {
+        return fold_row(label.into(), control, note, CONTROL_WIDTH);
+    }
+    let mut line = row![label.into(), control].spacing(12).align_y(Center);
     if let Some(note) = note {
         line = line.push(note);
     }
@@ -2027,7 +2166,7 @@ fn leave_prompt(palette: Palette) -> Element<'static, Message> {
         column![
             text("Discard unsaved changes?")
                 .size(16)
-                .font(semibold())
+                .font(crate::fonts::semibold())
                 .color(palette.foreground),
             row![
                 Space::new().width(Fill),
@@ -2063,7 +2202,7 @@ fn divider(palette: Palette) -> Element<'static, Message> {
 
 /// A pick list's value while the page is locked, since iced's pick list has
 /// no disabled state.
-fn locked_choice(value: &str, palette: Palette) -> Element<'static, Message> {
+pub(super) fn locked_choice(value: &str, palette: Palette) -> Element<'static, Message> {
     container(text(value.to_owned()).color(palette.muted))
         .width(CONTROL_WIDTH)
         .padding([5, 10])

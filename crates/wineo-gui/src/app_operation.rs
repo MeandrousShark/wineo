@@ -90,13 +90,17 @@ impl App {
         }) {
             self.operation = None;
         }
+        let hide = match &result {
+            Ok(outcome) if !cancelled => self.hide_for_start(&name, *outcome),
+            _ => Task::none(),
+        };
         if self.selected.as_deref() == Some(&name)
             && let Err(error) = result
             && !cancelled
         {
             self.panel_error = Some(error);
         }
-        self.reload_library_once()
+        Task::batch([hide, self.reload_library_once()])
     }
 
     pub(crate) fn stop_finished(
@@ -116,13 +120,28 @@ impl App {
         {
             self.force_stop_at = None;
         }
-        if self.selected.as_deref() == Some(&name) {
+        // Seen in the window, where nothing polls. A stop from the tray
+        // leaves the set to the poll, which can't bring the window back from
+        // an empty one.
+        if result.is_ok() && self.main_window.is_some() {
+            self.tray.hidden_for.remove(&name);
+        }
+        let from_tray = self.tray.stopping.as_deref() == Some(&name);
+        if from_tray {
+            self.tray.stopping = None;
+        }
+        // A tray stop's panel may not be in front of anyone, so its error
+        // waits for the window instead of dropping.
+        let panel_shown = self.main_window.is_some() && self.panel_open && !self.page_open();
+        if self.selected.as_deref() == Some(&name) && (!from_tray || panel_shown) {
             match result {
                 Ok(messages) => {
                     self.panel_note = (!messages.is_empty()).then(|| messages.join("\n"))
                 }
                 Err(error) => self.panel_error = Some(error),
             }
+        } else if from_tray && let Err(error) = result {
+            self.tray.held_error = Some((name, error));
         }
         self.reload_library_once()
     }

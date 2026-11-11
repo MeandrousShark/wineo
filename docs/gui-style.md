@@ -153,8 +153,31 @@ Plan 0054 added these.
   are 32 px high, and Tab follows that order, with the filter tab's chips
   right after **Filters**. Its
   bottom padding is 15 px, room for the filter tab. Search is 320 px wide
-  and shrinks first as the window narrows, down to 160 px; then the right
-  end clips.
+  and shrinks first as the window narrows, down to 160 px.
+- When the row still doesn't fit (plan 0063), controls fold from the right
+  into a 32 px square **More** button with a three-dot icon (tooltip
+  "More"): the poster-only toggle, zoom, the layout switch, the dice, then
+  Filters, each only when the row still doesn't fit. Search stays at 160 px
+  once anything folds. With everything folded, search becomes a 32 px icon
+  button (tooltip "Search", or the typed text). Folds come from the row's
+  real width and each control's measured width at layout, never from fixed
+  breakpoints, so the sidebar, the interface size, and Filters' label all
+  count. Every control stays in the widget tree while folded, unshown, so
+  a fold never drops focus, text, or a drag: focus on a control that folds
+  moves to More, and focus on More or the search icon moves to what comes
+  back (the field, for search). The filter tab hides while Filters is
+  folded.
+- More opens a menu in the Sort menu's chrome under it, right-aligned, with
+  the folded controls in toolbar order: **Filters** with its count or
+  preset name and a right chevron (it opens the Filters popup under More),
+  **Pick one at random** with the die, **Layout** with the segment at the
+  row's right, **Zoom** with the slider at the row's right, and **Hide
+  titles**, a check row. Each row sends what its toolbar control sends. The
+  menu takes keys like the Sort menu, and More is one Tab stop where the
+  first folded control was. More shows the selected look while open. The
+  search icon opens the field in a drop-down in the same chrome; Esc, a
+  click outside, or Tab, Shift+Tab, or Down out of it closes it and keeps
+  the text, and the icon keeps the selected look while there's text.
 - The zoom slider is 96 px with no label or readout, a small muted tick at
   100%, and the usual focus ring; its tooltip says "Zoom". It snaps to 100%
   within 8 points and lets go past 10. The poster-only toggle is a 32 px
@@ -350,6 +373,45 @@ chips, and badges keep their sizes at every zoom.
 - Every poster layer fades with its card, including the marks, the pill
   or badge, the marked wash and check, and the install bar's track.
 
+## Accessibility
+
+Plan 0063 added these, under Settings, Appearance.
+
+- **Interface size** feeds the window's scale factor, multiplied with the
+  desktop's own, so every size in this guide grows together. Layout math
+  stays in logical pixels: never scale a size by hand, and never read the
+  physical window size for layout. The window keeps its size on screen, so
+  a bigger interface shows less, and anything that can run out of room
+  folds, wraps, or scrolls instead of clipping. Layouts can count on at
+  least 400 by 300: the window's minimum size is that in interface pixels,
+  so it grows on screen with the interface size and follows a change live.
+  Some compositors, like Hyprland, don't enforce it.
+- **Font**: text that names no font draws in the generic sans-serif family,
+  which the chosen font is mapped to, so leave text on the default font
+  unless it's monospace. Bold text goes through the semibold helper, which
+  picks the chosen family's own semibold, then bold, then regular, so heavy
+  text never comes from another family. A label drawn in a font for
+  preview (like the Font list) falls back to the built-in font when that
+  font can't draw it.
+- **Motion**: with reduced motion (the setting, or the desktop's animation
+  switch), everything that moves snaps and every fade stays. A snap is a
+  transition that ends on its first update, so work that waits for motion
+  to end still runs once. The busy spinner keeps turning, since it's the
+  only sign that work is going on. New animation asks the motion setting
+  whether to move.
+
+## Tray menu
+
+The tray menu reads **Open wineo**, **Add to library...**, a divider, up to
+three **Play NAME** rows, a divider, up to eight **Stop NAME** rows then
+**More in wineo...**, a divider, and **Quit**. A section with no rows hides
+with its divider. Rows are plain text with no icons. Names escape `_` (dbusmenu reads it as a mnemonic) and are
+cut at 40 characters with an ellipsis. A tray action never throws away a
+page or a flow: over one, it shows the window as it is, with a one-line
+notice when the action didn't happen. Anything with more to say than a menu
+row, like Force stop, a hook prompt, or an error, belongs in the panel, so
+a blocked or failed row shows the window on that card.
+
 ## Panel motion
 
 Opening and closing use a restrained slide from the right with a fade over
@@ -476,6 +538,17 @@ A header or card with a left group and a right group uses `ends` (in
 right edge when both fit, gives the left side the rest of the line, and
 stacks the right group underneath in a narrow window instead of squeezing
 its buttons. Rows of buttons that can run out of room wrap.
+
+A settings row is a label, a control 12 px after it, and sometimes a note,
+laid out by `fold_row` (in `fold_row.rs`) through `setting_row`. A control
+with a fixed width sits beside the label while it fits, and otherwise folds
+under it and shrinks to the room. A field that fills folds once it would get
+less than 260 px beside the label. A note stays beside its control while it
+fits, and otherwise drops under the control, wherever the control is.
+Controls that size to their content, like tag chips, keep a plain row. The
+Font button cuts a long family name with "..." at the end and, when it's cut
+at the button's full width and the list is closed, shows the whole name in a
+tooltip.
 
 Settings uses grouped sections and a fixed Save/Revert footer with the edit
 count. The global page has General and Appearance tabs in its header,

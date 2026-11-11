@@ -1078,6 +1078,9 @@ fn custom_appearance() -> Appearance {
         light: "custom:mine".to_owned(),
         theme: "cellar".to_owned(),
         improve_readability: true,
+        motion: Motion::Reduced,
+        interface_size: 150,
+        font: Some("Atkinson Hyperlegible".to_owned()),
     }
 }
 
@@ -1095,6 +1098,9 @@ fn a_library_without_appearance_reads_as_the_defaults() {
             light: "daylight".to_owned(),
             theme: "midnight".to_owned(),
             improve_readability: false,
+            motion: Motion::System,
+            interface_size: 100,
+            font: None,
         }
     );
 }
@@ -1111,6 +1117,9 @@ dark = "dracula"
 light = "custom:mine"
 theme = "cellar"
 improve_readability = true
+motion = "reduced"
+interface_size = 150
+font = "Atkinson Hyperlegible"
 future_key = "ignored"
 "#,
     );
@@ -1204,6 +1213,168 @@ fn a_no_op_set_appearance_does_not_rewrite_the_file() {
 }
 
 #[test]
+fn motion_reads_each_value_and_unknown_ones_as_system() {
+    let fixture = Fixture::new();
+    for motion in Motion::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\nmotion = \"{}\"\n",
+            motion.as_str()
+        ));
+        assert_eq!(load(&fixture.paths).appearance.motion, motion);
+    }
+    for bad in ["\"slow\"", "\"Reduced\"", "true", "2"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\nmotion = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.appearance.motion, Motion::System, "{bad}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_appearance_writes_motion_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let reduced = Appearance {
+        motion: Motion::Reduced,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &reduced).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\nmotion = \"reduced\"\n"
+    );
+    assert!(!set_appearance(&fixture.paths, &reduced).unwrap());
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert!(fixture.read().contains("motion = \"system\""));
+}
+
+#[test]
+fn an_unknown_motion_is_not_rewritten() {
+    let fixture = Fixture::new();
+    for bad in ["\"slow\"", "3"] {
+        let text = format!("schema_version = 1\n\n[appearance]\nmotion = {bad}\n");
+        fixture.write(&text);
+        // It reads as system, so saving system leaves it be.
+        assert!(!set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+        assert_eq!(fixture.read(), text);
+        let full = Appearance {
+            motion: Motion::Full,
+            ..Appearance::default()
+        };
+        assert!(set_appearance(&fixture.paths, &full).unwrap());
+        assert!(fixture.read().contains("motion = \"full\""));
+    }
+}
+
+#[test]
+fn interface_size_reads_whole_numbers_and_clamps_out_of_range() {
+    let fixture = Fixture::new();
+    for (value, read) in [
+        ("100", 100),
+        ("125", 125),
+        // Not a dropdown step, but in range, so it's used as is.
+        ("130", 130),
+        ("200", 200),
+        ("250", 200),
+        ("50", 100),
+        ("-3", 100),
+        ("\"150\"", 100),
+        ("1.5", 100),
+        ("true", 100),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\ninterface_size = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.appearance.interface_size, read, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_appearance_writes_interface_size_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let bigger = Appearance {
+        interface_size: 125,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &bigger).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\ninterface_size = 125\n"
+    );
+    assert!(!set_appearance(&fixture.paths, &bigger).unwrap());
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert!(fixture.read().contains("interface_size = 100"));
+
+    // A hand edit that reads as what's saved stays as typed.
+    for text in [
+        "schema_version = 1\n\n[appearance]\ninterface_size = 400\n",
+        "schema_version = 1\n\n[appearance]\ninterface_size = \"big\"\n",
+    ] {
+        fixture.write(text);
+        let read = load(&fixture.paths).appearance;
+        assert!(!set_appearance(&fixture.paths, &read).unwrap());
+        assert_eq!(fixture.read(), text);
+    }
+    // Out of range from a caller clamps, so the file never holds what the
+    // reader would change.
+    let huge = Appearance {
+        interface_size: 900,
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &huge).unwrap());
+    assert!(fixture.read().contains("interface_size = 200"));
+}
+
+#[test]
+fn font_reads_a_family_name_and_anything_else_as_built_in() {
+    let fixture = Fixture::new();
+    for (value, read) in [
+        ("\"Atkinson Hyperlegible\"", Some("Atkinson Hyperlegible")),
+        ("\"Not Installed Anywhere\"", Some("Not Installed Anywhere")),
+        ("\"\"", None),
+        ("\"  \"", None),
+        ("3", None),
+        ("[\"Inter\"]", None),
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n[appearance]\nfont = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.appearance.font.as_deref(), read, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_appearance_writes_a_font_and_removes_it_for_the_built_in_one() {
+    let fixture = Fixture::new();
+    let inter = Appearance {
+        font: Some("Inter".to_owned()),
+        ..Appearance::default()
+    };
+    assert!(set_appearance(&fixture.paths, &inter).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[appearance]\nfont = \"Inter\"\n"
+    );
+    assert!(!set_appearance(&fixture.paths, &inter).unwrap());
+    assert!(set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert_eq!(fixture.read(), "schema_version = 1\n\n[appearance]\n");
+
+    // A value that isn't a name reads as the built-in font, so saving that
+    // leaves it be.
+    let text = "schema_version = 1\n\n[appearance]\nfont = 3\n";
+    fixture.write(text);
+    assert!(!set_appearance(&fixture.paths, &Appearance::default()).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert!(set_appearance(&fixture.paths, &inter).unwrap());
+    assert!(fixture.read().contains("font = \"Inter\""));
+}
+
+#[test]
 fn set_appearance_replaces_a_bad_value_even_with_the_default() {
     let fixture = Fixture::new();
     fixture.write("schema_version = 1\n[appearance]\nfollow_system = \"yes\"\ndark = 3\n");
@@ -1244,4 +1415,250 @@ fn edits_write_through_a_symlinked_library_file() {
         new_file: NewFile::Default,
     }
     .check();
+}
+
+#[test]
+fn desktop_reads_its_defaults_without_a_table() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        load(&fixture.paths).desktop,
+        Desktop {
+            tray: true,
+            close: CloseWindow::Quit,
+            on_start: OnStart::Keep,
+            on_stop: OnStop::Restore,
+        }
+    );
+    fixture.write("schema_version = 1\n[desktop]\n");
+    assert_eq!(load(&fixture.paths).desktop, Desktop::default());
+}
+
+#[test]
+fn desktop_reads_each_value_and_bad_ones_as_the_default() {
+    let fixture = Fixture::new();
+    for close in CloseWindow::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\ntray = false\nclose = \"{}\"\n",
+            close.as_str()
+        ));
+        let desktop = load(&fixture.paths).desktop;
+        assert_eq!((desktop.tray, desktop.close), (false, close));
+    }
+    for (tray, close) in [("\"no\"", "\"hide\""), ("0", "\"Tray\""), ("[]", "true")] {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\ntray = {tray}\nclose = {close}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.desktop, Desktop::default(), "{tray} {close}");
+        assert_eq!(library.problem, None);
+    }
+    fixture.write("schema_version = 1\ndesktop = 4\n");
+    assert_eq!(load(&fixture.paths).desktop, Desktop::default());
+}
+
+#[test]
+fn set_desktop_writes_only_the_fields_that_change() {
+    let fixture = Fixture::new();
+    // The defaults on a missing file are already what it reads as.
+    assert!(!set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    let tray_off = Desktop {
+        tray: false,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &tray_off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\ntray = false\n"
+    );
+    assert!(!set_desktop(&fixture.paths, &tray_off).unwrap());
+
+    let keep = Desktop {
+        tray: true,
+        close: CloseWindow::Tray,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &keep).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\ntray = true\nclose = \"tray\"\n"
+    );
+    assert_eq!(load(&fixture.paths).desktop, keep);
+}
+
+#[test]
+fn a_no_op_desktop_edit_leaves_the_file_alone() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[desktop]\n# by hand\nclose   =   \"tray\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).desktop;
+    assert!(!set_desktop(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    // A change keeps the comments and the other field as written.
+    let quit = Desktop {
+        close: CloseWindow::Quit,
+        ..read
+    };
+    assert!(set_desktop(&fixture.paths, &quit).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# mine\nschema_version = 1\n\n[desktop]\n# by hand\nclose   =   \"quit\"\n"
+    );
+}
+
+#[test]
+fn an_unknown_desktop_value_is_not_rewritten() {
+    let fixture = Fixture::new();
+    for text in [
+        "schema_version = 1\n\n[desktop]\ntray = \"yes\"\nclose = \"minimize\"\n",
+        "schema_version = 1\n\n[desktop]\nclose = 3\n",
+    ] {
+        fixture.write(text);
+        // It reads as the default, so saving the default leaves it be.
+        assert!(!set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+        assert_eq!(fixture.read(), text);
+        let keep = Desktop {
+            close: CloseWindow::Tray,
+            ..Desktop::default()
+        };
+        assert!(set_desktop(&fixture.paths, &keep).unwrap());
+        assert!(fixture.read().contains("close = \"tray\""));
+    }
+}
+
+#[test]
+fn on_start_reads_each_value_and_bad_ones_as_keep() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).desktop.on_start, OnStart::Keep);
+    for on_start in OnStart::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_start = \"{}\"\n",
+            on_start.as_str()
+        ));
+        assert_eq!(load(&fixture.paths).desktop.on_start, on_start);
+    }
+    for value in ["\"minimize\"", "\"Hide\"", "true", "1", "[]"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_start = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.desktop.on_start, OnStart::Keep, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_desktop_writes_on_start_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let hide = Desktop {
+        on_start: OnStart::Hide,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &hide).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_start = \"hide\"\n"
+    );
+    assert!(!set_desktop(&fixture.paths, &hide).unwrap());
+    assert_eq!(load(&fixture.paths).desktop, hide);
+    assert!(set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_start = \"keep\"\n"
+    );
+}
+
+#[test]
+fn an_unknown_on_start_is_not_rewritten_by_reads_or_no_op_edits() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_start   =   \"minimize\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).desktop;
+    assert_eq!(read.on_start, OnStart::Keep);
+    assert!(!set_desktop(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    let hide = Desktop {
+        on_start: OnStart::Hide,
+        ..read
+    };
+    assert!(set_desktop(&fixture.paths, &hide).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_start   =   \"hide\"\n"
+    );
+}
+
+#[test]
+fn on_stop_reads_each_value_and_bad_ones_as_restore() {
+    let fixture = Fixture::new();
+    assert_eq!(load(&fixture.paths).desktop.on_stop, OnStop::Restore);
+    for on_stop in OnStop::ALL {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_stop = \"{}\"\n",
+            on_stop.as_str()
+        ));
+        assert_eq!(load(&fixture.paths).desktop.on_stop, on_stop);
+    }
+    for value in ["\"hide\"", "\"Show\"", "true", "1", "[]"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[desktop]\non_stop = {value}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.desktop.on_stop, OnStop::Restore, "{value}");
+        assert_eq!(library.problem, None);
+    }
+}
+
+#[test]
+fn set_desktop_writes_on_stop_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let show = Desktop {
+        on_stop: OnStop::Show,
+        ..Desktop::default()
+    };
+    assert!(set_desktop(&fixture.paths, &show).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_stop = \"show\"\n"
+    );
+    assert!(!set_desktop(&fixture.paths, &show).unwrap());
+    assert_eq!(load(&fixture.paths).desktop, show);
+    assert!(set_desktop(&fixture.paths, &Desktop::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[desktop]\non_stop = \"restore\"\n"
+    );
+}
+
+#[test]
+fn an_unknown_on_stop_is_not_rewritten_by_reads_or_no_op_edits() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_stop   =   \"hide\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let before = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).desktop;
+    assert_eq!(read.on_stop, OnStop::Restore);
+    assert!(!set_desktop(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), before);
+
+    let show = Desktop {
+        on_stop: OnStop::Show,
+        ..read
+    };
+    assert!(set_desktop(&fixture.paths, &show).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_stop   =   \"show\"\n"
+    );
 }

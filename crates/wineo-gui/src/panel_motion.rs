@@ -129,16 +129,19 @@ impl PanelMotion {
     }
 }
 
+/// Without `slide`, for reduced motion, the panel only fades.
 pub(crate) fn presentation<'a, Message: 'a>(
     content: Element<'a, Message>,
     progress: f32,
     interactive: bool,
+    slide: bool,
     background: Color,
 ) -> Element<'a, Message> {
     Element::new(Presentation {
         content,
         progress,
         interactive,
+        slide,
         background,
     })
 }
@@ -147,7 +150,19 @@ struct Presentation<'a, Message> {
     content: Element<'a, Message>,
     progress: f32,
     interactive: bool,
+    slide: bool,
     background: Color,
+}
+
+impl<Message> Presentation<'_, Message> {
+    /// How far right of its place the panel draws.
+    fn shift(&self) -> f32 {
+        if self.slide {
+            SLIDE * (1.0 - self.progress)
+        } else {
+            0.0
+        }
+    }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Presentation<'_, Message> {
@@ -198,14 +213,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Presentation<'_, Message> {
         }
         let bounds = layout.bounds();
         renderer.with_layer(bounds, |renderer| {
-            renderer.with_translation(
-                Vector::new(SLIDE * (1.0 - self.progress), 0.0),
-                |renderer| {
-                    self.content
-                        .as_widget()
-                        .draw(tree, renderer, theme, style, layout, cursor, viewport);
-                },
-            );
+            renderer.with_translation(Vector::new(self.shift(), 0.0), |renderer| {
+                self.content
+                    .as_widget()
+                    .draw(tree, renderer, theme, style, layout, cursor, viewport);
+            });
             if self.progress < 1.0 {
                 renderer.fill_quad(
                     Quad {
@@ -309,6 +321,22 @@ mod tests {
         motion.tick(motion.generation(), start + Duration::from_millis(160));
         assert!(!motion.reserved());
         assert!(!motion.active());
+    }
+
+    #[test]
+    fn without_the_slide_the_panel_only_fades_in_place() {
+        let shift = |slide| {
+            Presentation::<()> {
+                content: iced::widget::space().into(),
+                progress: 0.25,
+                interactive: false,
+                slide,
+                background: Color::BLACK,
+            }
+            .shift()
+        };
+        assert_eq!(shift(true), SLIDE * 0.75);
+        assert_eq!(shift(false), 0.0);
     }
 
     #[test]

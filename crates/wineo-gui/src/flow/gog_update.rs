@@ -556,10 +556,7 @@ impl Page {
         };
         let heading = text(title)
             .size(22)
-            .font(iced::Font {
-                weight: iced::font::Weight::Semibold,
-                ..iced::Font::DEFAULT
-            })
+            .font(crate::fonts::semibold())
             .color(palette.foreground);
         let mut body = column![heading].spacing(14).width(Fill);
         if !self.status.is_empty() {

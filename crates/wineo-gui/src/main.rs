@@ -2,10 +2,12 @@ mod action_bar;
 mod app_art;
 mod app_flow;
 mod app_grid;
+mod app_hide;
 mod app_keys;
 mod app_library;
 mod app_operation;
 mod app_selection;
+mod app_tray;
 mod app_window;
 mod art_cache;
 mod art_navigation;
@@ -21,13 +23,15 @@ mod details_fade;
 mod download_progress;
 mod downloads_page;
 mod downloads_work;
+mod dropdown;
 mod ends;
 mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
-mod fit_width;
+mod fit_text;
 mod flow;
 mod focus_button;
+mod fold_row;
 mod fonts;
 #[cfg(test)]
 mod galaxy_fake;
@@ -39,6 +43,7 @@ mod grid;
 mod grid_motion;
 mod hover_fade;
 mod import_toast;
+mod instance;
 mod keys;
 #[cfg(test)]
 mod layout_probe;
@@ -50,6 +55,8 @@ mod library_states;
 mod list_view;
 mod logview;
 mod menu_anchor;
+mod more_menu;
+mod motion;
 mod multi_select;
 mod order;
 mod panel;
@@ -64,6 +71,7 @@ mod removal;
 mod remove_work;
 mod rescan;
 mod runner_label;
+mod search_drop;
 mod sections;
 mod settings;
 mod shortcuts;
@@ -86,10 +94,12 @@ mod test_runners;
 mod test_script;
 mod theme;
 mod tile_title;
+mod toolbar_squeeze;
 mod tools_navigation;
 mod tools_page;
 mod trash_page;
 mod trash_work;
+mod tray;
 mod ui;
 mod version_picker;
 mod wake;
@@ -108,7 +118,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use iced::widget::{image, scrollable};
-use iced::{Settings, Subscription, Task, Theme, keyboard, window};
+use iced::{Element, Settings, Subscription, Task, Theme, keyboard, window};
 use wineo_core::cancel::Token;
 use wineo_core::paths::Paths;
 #[cfg(test)]
@@ -122,7 +132,7 @@ use crate::theme::{Appearance, Palette};
 
 pub(crate) const CARD_WIDTH: f32 = 160.0;
 pub(crate) const GAP: f32 = 16.0;
-const SCROLL_ID: &str = "library";
+pub(crate) const SCROLL_ID: &str = "library";
 const SEARCH_ID: &str = "library-search";
 // iced moves 60px per wheel line, which felt too fast beside native apps.
 const WHEEL_STEP_SCALE: f32 = 0.7;
@@ -138,10 +148,25 @@ pub(crate) struct App {
     /// The saved appearance. The global Settings page's base replaces it
     /// whenever that page reads `library.toml`.
     appearance: Appearance,
+    /// The saved `[desktop]`, replaced like `appearance` whenever the global
+    /// Settings page reads `library.toml`.
+    desktop: wineo_core::library::Desktop,
+    pub(crate) tray: tray::Tray,
+    /// The session bus name this app owns for its root, which other
+    /// launches call `Show` on. None in tests and without a bus.
+    pub(crate) instance: Option<instance::Instance>,
+    /// The first close that can't be taken back has let go of the bus.
+    left: bool,
+    /// The name's release and the tray's stop it started, if either was up,
+    /// awaited by every exit.
+    leaving: Option<iced::futures::future::Shared<iced::futures::future::BoxFuture<'static, ()>>>,
     /// The saved custom themes, replaced like `appearance`.
     themes: Vec<theme::Custom>,
     /// The last system light or dark mode the app saw.
     system_mode: iced::theme::Mode,
+    /// A real light or dark mode has arrived, so a later `None` is iced's
+    /// stand-in for a new window's theme rather than the system's.
+    system_mode_known: bool,
     /// What `palette` was resolved from, so it's resolved again only when
     /// that changes.
     palette_from: (Appearance, Vec<theme::Custom>, iced::theme::Mode),
@@ -190,6 +215,18 @@ pub(crate) struct App {
     random_menu: bool,
     random_menu_position: iced::Point,
     random_opening: library_menu::Opening,
+    /// The More menu is open, and the folded controls it was opened with
+    /// plus any that folded since.
+    more_menu: bool,
+    more_rows: toolbar_squeeze::Folds,
+    more_menu_position: iced::Point,
+    more_opening: library_menu::Opening,
+    /// The controls the toolbar folded into More as last laid out.
+    toolbar_folds: toolbar_squeeze::Folds,
+    /// Search is down to its icon as last laid out, and its drop-down is
+    /// open.
+    search_icon: bool,
+    search_open: bool,
     /// The action bar's tag popup is open.
     tag_menu: bool,
     tag_popup: action_bar::Popup,
@@ -220,8 +257,16 @@ pub(crate) struct App {
     /// `grid_places` for the inputs it was measured from.
     places: std::cell::RefCell<Option<(grid_motion::PlacesKey, std::rc::Rc<grid_motion::Places>)>>,
     collapse: collapse::Collapse,
-    /// The desktop asked for reduced motion, read once at startup.
-    reduced_motion: bool,
+    pub(crate) motion: motion::Motion,
+    /// The interface size in percent the window draws at: the Appearance
+    /// draft's while Settings shows it, the saved one otherwise.
+    pub(crate) interface_size: u16,
+    /// The font the Appearance draft or the saved setting names, and the
+    /// family sans-serif points at for it.
+    font_wanted: Option<String>,
+    font: &'static str,
+    /// Whether `font` can draw its own name, decided when it changes.
+    font_draws_name: bool,
     grid_scroll_after_settle: Option<String>,
     pub(crate) target: Option<String>,
     card_click_target: Option<(String, Option<String>)>,
@@ -327,10 +372,13 @@ pub(crate) struct App {
     /// When a close waiting on sort writes gives up and exits anyway.
     close_by: Option<Instant>,
     close_wake: wake::Wake,
-    /// The window chose to exit, so late results only drop.
+    /// The window chose to exit, so late results only drop. Set as soon as
+    /// the close is queued, since messages still run until the loop stops.
     exiting: bool,
     /// Ends the process if work still holds it open after the window closes.
     watchdog: exit_watchdog::Watchdog,
+    /// The one window the app draws; events from any other id are dropped.
+    pub(crate) main_window: Option<window::Id>,
     feature_notice: Option<(String, Instant)>,
     change_generation: u64,
     library_generation: u64,
@@ -452,14 +500,15 @@ pub(crate) enum Message {
     SectionClicked(sidebar::Section),
     Rebuild,
     CollapseTick(u64, Instant),
-    ReducedMotion(bool),
+    /// The desktop's animation switch says to reduce motion.
+    SystemMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
     Scrolled(scrollable::Viewport),
     GridCardLocated(slot::SlotId, u64, grid_motion::CardBounds),
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
     ScrollIdle(u64),
-    Window(window::Event),
+    Window(window::Id, window::Event),
     ThemeChanged(iced::theme::Mode),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
@@ -557,11 +606,24 @@ pub(crate) enum Message {
     Zoom(zoom::Event),
     Random(random_pick::Event),
     Layout(layout_switch::Event),
+    /// The toolbar's More button and menu.
+    More(more_menu::Event),
+    /// Search's icon and drop-down, once it collapses.
+    Search(search_drop::Event),
     /// The action bar and its tag popup.
     Tags(action_bar::Event),
     /// The wait for `library.toml` writes on close is over, tagged with its
     /// wakeup.
     CloseWaitOver(u64),
+    /// A click in the tray, or its host coming or going.
+    Tray(tray::Event),
+    /// What the light poll found running, when that changed, tagged with
+    /// the poll's generation.
+    TrayPolled(u64, BTreeSet<String>),
+    /// An environment's last play time, read after the poll saw it stop.
+    TrayPlayed(String, Option<jiff::Timestamp>),
+    /// Another launch for this root asked for the window.
+    Show,
 }
 
 impl App {
@@ -570,8 +632,14 @@ impl App {
             paths,
             palette: Palette::DARK,
             appearance: Appearance::default(),
+            desktop: wineo_core::library::Desktop::default(),
+            tray: tray::Tray::default(),
+            instance: None,
+            left: false,
+            leaving: None,
             themes: Vec::new(),
             system_mode: iced::theme::Mode::Dark,
+            system_mode_known: false,
             palette_from: (Appearance::default(), Vec::new(), iced::theme::Mode::Dark),
             search: String::new(),
             search_focused: false,
@@ -597,6 +665,13 @@ impl App {
             random_menu: false,
             random_menu_position: iced::Point::ORIGIN,
             random_opening: library_menu::Opening::default(),
+            more_menu: false,
+            more_rows: toolbar_squeeze::Folds::default(),
+            more_menu_position: iced::Point::ORIGIN,
+            more_opening: library_menu::Opening::default(),
+            toolbar_folds: toolbar_squeeze::Folds::default(),
+            search_icon: false,
+            search_open: false,
             tag_menu: false,
             tag_popup: action_bar::Popup::default(),
             tag_opening: library_menu::Opening::default(),
@@ -619,7 +694,11 @@ impl App {
             details_fade: details_fade::DetailsFade::default(),
             places: Default::default(),
             collapse: collapse::Collapse::default(),
-            reduced_motion: false,
+            motion: motion::Motion::default(),
+            interface_size: wineo_core::library::INTERFACE_SIZE_MIN,
+            font_wanted: None,
+            font: fonts::BUILT_IN,
+            font_draws_name: true,
             grid_scroll_after_settle: None,
             target: None,
             card_click_target: None,
@@ -707,6 +786,7 @@ impl App {
             close_wake: wake::Wake::default(),
             exiting: false,
             watchdog: exit_watchdog::Watchdog::default(),
+            main_window: None,
             feature_notice: None,
             change_generation: 0,
             library_generation: 0,
@@ -725,8 +805,18 @@ impl App {
         // Until the system mode arrives, the saved dark theme shows, as
         // Midnight did before themes.
         app.appearance = saved.appearance;
+        app.desktop = saved.desktop;
         app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
+        app.sync_motion();
+        app.sync_interface_size();
+        app.sync_font();
+        // The window opens the same size on screen at any interface size,
+        // and these hold until its first size arrives.
+        let launch = app_window::launch_size(app.interface_size);
+        app.window_size = launch;
+        app.viewport_width = launch.width - sidebar::WIDTH;
+        app.viewport_height = launch.height - 50.0;
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
@@ -748,21 +838,41 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
+        let (main_window, open) = open_main_window(launch, app.interface_size);
+        app.main_window = Some(main_window);
         (
             app,
+            // Batched, not chained, so the window doesn't wait on the GOG
+            // check.
             Task::batch([
+                open,
                 load,
                 badge,
                 prune,
                 key_presence,
                 gog_check,
                 iced::system::theme().map(Message::ThemeChanged),
-                read_reduced_motion(),
             ]),
         )
     }
     fn theme(&self) -> Theme {
         self.palette.theme()
+    }
+
+    fn title(&self, window: window::Id) -> String {
+        if self.main_window == Some(window) {
+            "wineo".to_owned()
+        } else {
+            String::new()
+        }
+    }
+
+    fn window_view(&self, window: window::Id) -> Element<'_, Message> {
+        if self.main_window == Some(window) {
+            self.view()
+        } else {
+            iced::widget::space().into()
+        }
     }
 
     /// Resolves the palette from the Appearance tab's draft while the global
@@ -792,6 +902,62 @@ impl App {
             self.palette = theme::resolve(shown, self.system_mode, themes);
             self.palette_from = (shown.clone(), themes.clone(), self.system_mode);
         }
+    }
+
+    /// Follows the Appearance draft like `sync_palette`, so the Motion
+    /// dropdown previews at once.
+    fn sync_motion(&mut self) {
+        self.motion.setting = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(self.appearance.motion, |form| form.draft.motion);
+        self.grid_motion.set_reduced(self.motion.reduced());
+    }
+
+    /// Follows the Appearance draft like `sync_palette`, so a font previews at
+    /// once and discarding the draft puts the saved one back. A family that
+    /// isn't installed falls back to the bundle and stays in the file.
+    fn sync_font(&mut self) {
+        let wanted = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(&self.appearance.font, |form| &form.draft.font);
+        // Resolving looks through every installed face, so only a new name
+        // pays for it.
+        if *wanted != self.font_wanted {
+            self.font_wanted.clone_from(wanted);
+            let family = fonts::resolve(self.font_wanted.as_deref());
+            if family != self.font {
+                fonts::remap(family);
+                self.font = family;
+                self.font_draws_name = fonts::can_draw_own_name(family);
+            }
+        }
+        if let Some(form) = self
+            .settings
+            .as_mut()
+            .and_then(|page| page.appearance_mut())
+        {
+            form.font_in_use = self.font;
+            form.font_in_use_draws_name = self.font_draws_name;
+        }
+    }
+
+    /// Follows the Appearance draft like `sync_palette`. Returns whether the
+    /// size changed.
+    fn sync_interface_size(&mut self) -> bool {
+        let size = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.appearance())
+            .map_or(self.appearance.interface_size, |form| {
+                form.draft.interface_size
+            });
+        let changed = self.interface_size != size;
+        self.interface_size = size;
+        changed
     }
 
     fn management_busy(&self) -> bool {
@@ -898,11 +1064,46 @@ impl App {
         } else {
             Subscription::none()
         };
+        // The tray stops as a close becomes final, with the bus name.
+        let tray_on = self.tray.service && self.desktop.tray && !self.closing && !self.exiting;
+        let tray = if tray_on {
+            Subscription::run_with(
+                tray::Service {
+                    menu: self.tray.menu.subscribe(),
+                    running: self.tray.running.clone(),
+                },
+                tray::service,
+            )
+        } else {
+            Subscription::none()
+        };
+        // The tray's Stop rows need what runs while the rescan is paused.
+        let tray_poll = if tray_on && !self.focused {
+            Subscription::run_with(
+                tray::Poll {
+                    paths: self.paths.clone(),
+                    generation: self.tray.poll_generation,
+                },
+                tray::poll,
+            )
+        } else {
+            Subscription::none()
+        };
+        let shows = match &self.instance {
+            Some(instance) if !self.closing && !self.exiting => {
+                Subscription::run_with(instance.shows(), instance::shows)
+            }
+            _ => Subscription::none(),
+        };
         Subscription::batch([
             rescan,
             settings_tick,
+            tray,
+            tray_poll,
+            shows,
             iced::system::theme_changes().map(Message::ThemeChanged),
-            iced::event::listen_with(|event, _, _| window_or_press(event)),
+            motion::subscription(),
+            iced::event::listen_with(|event, _, window| window_or_press(event, window)),
             iced::event::listen_with(|event, status, _| event_message(event, status)),
             panel_motion,
             grid_motion,
@@ -927,6 +1128,13 @@ impl App {
         // One place for every path that changes the theme: an Appearance
         // edit, a save, Revert, leaving Settings, or the system's mode.
         self.sync_palette();
+        self.sync_motion();
+        let rescaled = self.sync_interface_size();
+        self.sync_font();
+        self.sync_desktop();
+        if self.tray.service && self.desktop.tray {
+            self.sync_tray_menu();
+        }
         // One place for every path that changes the selection.
         self.sync_cursor();
         // One place for every path that changes the hover or selection.
@@ -954,6 +1162,12 @@ impl App {
         if self.random_menu && !self.random_menu_shown() {
             self.random_menu = false;
         }
+        if self.more_menu && !self.more_menu_shown() {
+            self.more_menu = false;
+        }
+        if self.search_open && !self.search_dropdown_shown() {
+            self.search_open = false;
+        }
         if self.tag_menu && !self.tag_menu_shown() {
             self.tag_menu = false;
         }
@@ -980,7 +1194,12 @@ impl App {
                 .arm(self.next_toast_deadline(), Message::ToastTick),
             self.close_wake.arm(self.close_by, Message::CloseWaitOver),
         ]);
-        Task::batch([task, focus, wakes])
+        let rescaled = if rescaled {
+            self.refresh_window_size()
+        } else {
+            Task::none()
+        };
+        Task::batch([task, focus, wakes, rescaled])
     }
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
@@ -1053,6 +1272,8 @@ impl App {
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
                 || matches!(message, Message::Layout(event) if event.is_input())
+                || matches!(message, Message::More(event) if event.is_input())
+                || matches!(message, Message::Search(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
                 || matches!(message, Message::Zoom(event) if event.is_input()))
         {
@@ -1119,6 +1340,8 @@ impl App {
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
             Message::Layout(event) => layout_switch::update(self, event),
+            Message::More(event) => more_menu::update(self, event),
+            Message::Search(event) => search_drop::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
             message @ (Message::Remove(_)
             | Message::RemovePrefix(_)
@@ -1230,12 +1453,16 @@ impl App {
             Message::Refresh => self.refresh(),
             Message::Rescanned(scan) => self.rescanned(*scan),
             Message::SettingsTick => self.settings_tick(),
-            Message::Pressed | Message::Window(window::Event::Focused) => {
+            Message::Window(window, _) if self.main_window != Some(window) => Task::none(),
+            // A closed window's last presses still arrive.
+            Message::Pressed if self.main_window.is_none() => Task::none(),
+            Message::Pressed | Message::Window(_, window::Event::Focused) => {
                 if self.focused {
                     Task::none()
                 } else {
                     self.focused = true;
-                    self.update(Message::Refresh)
+                    let refresh = self.update(Message::Refresh);
+                    Task::batch([refresh, self.release_held_error()])
                 }
             }
             Message::Section(section) => self.navigate_section(section),
@@ -1262,8 +1489,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ReducedMotion(reduced) => {
-                self.reduced_motion = reduced;
+            Message::SystemMotion(reduced) => {
+                self.motion.system_reduced = reduced;
                 Task::none()
             }
             Message::LibraryScanned(generation, discovery, result, problem) => {
@@ -1332,10 +1559,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
-                self.window_resized(size)
-            }
-            Message::Window(window::Event::CloseRequested) => self.close_requested(),
+            Message::Window(
+                _,
+                window::Event::Resized(size) | window::Event::Opened { size, .. },
+            ) => self.window_resized(size),
+            Message::Window(_, window::Event::CloseRequested) => self.close_requested(),
             Message::CloseWaitOver(generation) => {
                 if self.close_wake.fired(generation) && self.close_by.is_some() {
                     self.exit_now()
@@ -1343,7 +1571,7 @@ impl App {
                     Task::none()
                 }
             }
-            Message::Window(window::Event::Unfocused) => {
+            Message::Window(_, window::Event::Unfocused) => {
                 self.focused = false;
                 // Keys released elsewhere never report here, so Ctrl
                 // can't be trusted to still be down.
@@ -1351,9 +1579,16 @@ impl App {
                 self.zooming.modifiers_changed(self.modifiers);
                 Task::none()
             }
-            Message::Window(_) => Task::none(),
+            Message::Window(..) => Task::none(),
             Message::ThemeChanged(mode) => {
-                self.system_mode = mode;
+                // iced_winit replaces the system theme with each new window's
+                // own, which is none on Wayland and X11, so reopening from the
+                // tray would turn a light desktop dark (iced-rs/iced#3540).
+                // Drop this once that's fixed.
+                if mode != iced::theme::Mode::None || !self.system_mode_known {
+                    self.system_mode_known = mode != iced::theme::Mode::None;
+                    self.system_mode = mode;
+                }
                 Task::none()
             }
             Message::PanelTick(generation, now) => {
@@ -1398,6 +1633,13 @@ impl App {
             Message::Key(key, modifiers, _) if self.trash_confirm_open() => {
                 trash_page::key(self, &key, modifiers)
             }
+            // Esc closes the search drop-down; every other key is the
+            // field's, as when it's in the toolbar.
+            Message::Key(keyboard::Key::Named(keyboard::key::Named::Escape), _, _)
+                if self.search_dropdown_shown() =>
+            {
+                self.close_search()
+            }
             // Only the menu's own keys work while it's open.
             Message::Key(key, modifiers, _) if self.sort_menu_shown() => {
                 sort_control::key(self, &key, modifiers)
@@ -1407,6 +1649,9 @@ impl App {
             }
             Message::Key(key, modifiers, _) if self.random_menu_shown() => {
                 random_pick::key(self, &key, modifiers)
+            }
+            Message::Key(key, modifiers, _) if self.more_menu_shown() => {
+                more_menu::key(self, &key, modifiers)
             }
             Message::Key(key, modifiers, _) if self.tag_menu_shown() => {
                 action_bar::key(self, &key, modifiers)
@@ -1498,7 +1743,13 @@ impl App {
             Message::FlowRead(generation, action, discovery, result)
                 if generation == self.flow_generation =>
             {
-                let recording = self.discovery_read(*discovery);
+                // A closing window would only race the exit with the Steam
+                // record write. The next read proposes the same record.
+                let recording = if self.closing {
+                    Task::none()
+                } else {
+                    self.discovery_read(*discovery)
+                };
                 let returned = self.flow_returned(action, result);
                 Task::batch([recording, returned])
             }
@@ -1509,6 +1760,13 @@ impl App {
             }
             event @ (Message::CancelAndClose | Message::ForceCloseWork) => {
                 self.cancel_and_close(event)
+            }
+            Message::Tray(event) => self.tray_event(event),
+            Message::Show => self.bus_show(),
+            Message::TrayPolled(generation, running) => self.tray_polled(generation, running),
+            Message::TrayPlayed(name, played) => {
+                self.tray_played(name, played);
+                Task::none()
             }
         })
     }
@@ -1560,14 +1818,15 @@ impl App {
         // the window still open. Nothing is named here either way, since
         // reaching this branch means nothing that `abandoned_work` names is
         // left.
-        if self.closing && !self.exit_waits() {
+        if self.closing && !self.exiting && !self.exit_waits() {
+            self.exiting = true;
             let watchdog = self.watchdog.clone();
             let work = self.abandoned_work();
             let exit = Task::future(async move {
                 watchdog.start(&work);
             })
             .discard()
-            .chain(iced::exit());
+            .chain(self.close_then_exit());
             task.chain(exit)
         } else {
             task
@@ -1643,7 +1902,7 @@ impl App {
         self.hovered = None;
         self.star_hovered = None;
         self.star_pops.clear();
-        if self.reduced_motion {
+        if self.motion.reduced() {
             self.collapse.fade(now);
         } else {
             let layout = self.grid_layout();
@@ -1784,7 +2043,7 @@ impl App {
 fn app_settings() -> Settings {
     Settings {
         fonts: vec![fonts::REGULAR.into(), fonts::SEMIBOLD.into()],
-        default_font: fonts::DEFAULT,
+        default_font: iced::Font::DEFAULT,
         default_text_size: 14.into(),
         ..Settings::default()
     }
@@ -1792,28 +2051,85 @@ fn app_settings() -> Settings {
 
 fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env(None)?;
+    // Before anything else, so a second launch never opens a window.
+    let instance = match instance::claim(&paths) {
+        instance::Claim::Owner(instance) => Some(instance),
+        instance::Claim::Shown => return Ok(()),
+        instance::Claim::Alone => None,
+    };
     fonts::install();
-    iced::application(move || App::boot(paths.clone()), App::update, App::view)
-        .title("wineo")
-        .theme(App::theme)
-        .settings(app_settings())
-        .window(window_settings())
-        .window_size((1200.0, 800.0))
-        .subscription(App::subscription)
-        .run()?;
+    iced::daemon(
+        move || {
+            let (mut app, task) = App::boot(paths.clone());
+            app.tray.service = true;
+            app.instance = instance.clone();
+            (app, task)
+        },
+        App::update,
+        App::window_view,
+    )
+    .title(App::title)
+    .theme(|app: &App, _| app.theme())
+    .scale_factor(App::scale_factor)
+    .settings(app_settings())
+    .subscription(App::subscription)
+    .run()?;
     Ok(())
 }
 
 fn app_icon() -> Option<window::Icon> {
+    let (rgba, width, height) = icon_rgba(None)?;
+    window::icon::from_rgba(rgba, width, height).ok()
+}
+
+/// The tray's pixmaps at 32 and 64 px, ARGB32 in network order, for a build
+/// that isn't installed and has no `wineo-gui` icon to find by name.
+pub(crate) fn tray_icons() -> Vec<ksni::Icon> {
+    [32, 64]
+        .into_iter()
+        .filter_map(|size| {
+            let (rgba, width, height) = icon_rgba(Some(size))?;
+            let data = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|[red, green, blue, alpha]| [*alpha, *red, *green, *blue])
+                .collect();
+            Some(ksni::Icon {
+                width: i32::try_from(width).ok()?,
+                height: i32::try_from(height).ok()?,
+                data,
+            })
+        })
+        .collect()
+}
+
+/// The app icon as straight RGBA, at its own size or scaled to `size` px
+/// square.
+fn icon_rgba(size: Option<u32>) -> Option<(Vec<u8>, u32, u32)> {
     let svg = include_bytes!("../assets/wineo-gui.svg");
     let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
-    let size = tree.size().to_int_size();
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())?;
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::default(),
-        &mut pixmap.as_mut(),
-    );
+    let natural = tree.size();
+    let (width, height, transform) = match size {
+        None => {
+            let size = natural.to_int_size();
+            (
+                size.width(),
+                size.height(),
+                resvg::tiny_skia::Transform::default(),
+            )
+        }
+        Some(size) => (
+            size,
+            size,
+            resvg::tiny_skia::Transform::from_scale(
+                size as f32 / natural.width(),
+                size as f32 / natural.height(),
+            ),
+        ),
+    };
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let rgba = pixmap
         .data()
@@ -1836,12 +2152,23 @@ fn app_icon() -> Option<window::Icon> {
             }
         })
         .collect();
-
-    window::icon::from_rgba(rgba, size.width(), size.height()).ok()
+    Some((rgba, width, height))
 }
 
-fn window_settings() -> window::Settings {
+/// Opens the main window. The id is known at once, before the window
+/// exists, so events can be matched to it from the first one.
+pub(crate) fn open_main_window(
+    size: iced::Size,
+    interface_size: u16,
+) -> (window::Id, Task<Message>) {
+    let (id, open) = window::open(window_settings(size, interface_size));
+    (id, open.discard())
+}
+
+fn window_settings(size: iced::Size, interface_size: u16) -> window::Settings {
     window::Settings {
+        size,
+        min_size: Some(app_window::open_min_size(interface_size)),
         exit_on_close_request: false,
         icon: app_icon(),
         platform_specific: window::settings::PlatformSpecific {
@@ -1869,31 +2196,14 @@ fn main() -> ExitCode {
     }
 }
 
-/// Reads GNOME's animation switch through the desktop portal, the same
-/// D-Bus service the file chooser uses. Any failure means full motion.
-fn read_reduced_motion() -> Task<Message> {
-    Task::perform(
-        async {
-            let Ok(settings) = ashpd::desktop::settings::Settings::new().await else {
-                return false;
-            };
-            settings
-                .read::<bool>("org.gnome.desktop.interface", "enable-animations")
-                .await
-                .is_ok_and(|enabled| !enabled)
-        },
-        Message::ReducedMotion,
-    )
-}
-
 /// Maps a runtime event to an app message. The mouse Back button becomes an
 /// uncaptured Escape so every page's existing Escape handling runs unchanged.
 /// Window events and presses share one subscription so focus changes and
 /// input arrive in the order they happened. X11 maps windows unfocused, and
 /// without a window manager no Focused follows, so a press counts as focus.
-pub(crate) fn window_or_press(event: iced::Event) -> Option<Message> {
+pub(crate) fn window_or_press(event: iced::Event, window: window::Id) -> Option<Message> {
     match event {
-        iced::Event::Window(event) => Some(Message::Window(event)),
+        iced::Event::Window(event) => Some(Message::Window(window, event)),
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
         | iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::Pressed),
         _ => None,

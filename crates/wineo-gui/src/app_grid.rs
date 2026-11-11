@@ -47,6 +47,7 @@ impl App {
 
     pub(crate) fn grid_tick(&mut self, generation: u64, now: Instant) -> Early {
         if self.section == sidebar::Section::Library && self.grid_motion.active() {
+            self.grid_motion.set_reduced(self.motion.reduced());
             self.grid_motion.tick(generation, now);
             let hold = self.hold_anchor();
             if !self.grid_motion.active() {
@@ -68,6 +69,16 @@ impl App {
 
     pub(crate) fn details_progress(&self) -> f32 {
         self.details_fade.progress(self.details_full())
+    }
+
+    /// How far below their place the details draw at `progress`. Reduced
+    /// motion keeps their fade but not the drift.
+    pub(crate) fn details_drift(&self, progress: f32) -> f32 {
+        if self.motion.reduced() {
+            0.0
+        } else {
+            crate::details_fade::DetailsFade::drift(progress)
+        }
     }
 
     /// The card whose poster star lights up: the pointer is on it, its card
@@ -154,6 +165,7 @@ impl App {
                 shift: self.grid_shift(),
                 mode: self.layout,
                 width: self.slot_width(),
+                font: crate::fonts::generation(),
             });
         if let Some(key) = &key
             && let Some((cached, places)) = &*self.places.borrow()

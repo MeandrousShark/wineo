@@ -483,3 +483,54 @@ fn absolute_resolves_relative_paths() {
     assert_eq!(paths.absolute("some/dir").unwrap(), cwd.join("some/dir"));
     assert_eq!(paths.absolute("~/x").unwrap(), Path::new("/home/me/x"));
 }
+
+#[test]
+fn root_tells_the_default_apart_from_custom_dirs_and_a_portable_folder() {
+    let default = paths(&[("HOME", "/home/me")]).unwrap();
+    assert_eq!(default.root(), Root::Default);
+    // Naming the defaults explicitly is still the default.
+    let named = paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/home/me/.config"),
+        ("XDG_DATA_HOME", "/home/me/.local/share/"),
+    ])
+    .unwrap();
+    assert_eq!(named.root(), Root::Default);
+    let config = paths(&[("HOME", "/home/me"), ("XDG_CONFIG_HOME", "/conf")]).unwrap();
+    assert_eq!(
+        config.root(),
+        Root::Dirs {
+            config: Path::new("/conf/wineo"),
+            data: Path::new("/home/me/.local/share/wineo"),
+        }
+    );
+    let data = paths(&[("HOME", "/home/me"), ("XDG_DATA_HOME", "/data")]).unwrap();
+    assert_eq!(
+        data.root(),
+        Root::Dirs {
+            config: Path::new("/home/me/.config/wineo"),
+            data: Path::new("/data/wineo"),
+        }
+    );
+    let both = paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/conf"),
+        ("XDG_DATA_HOME", "/data"),
+    ])
+    .unwrap();
+    assert_eq!(
+        both.root(),
+        Root::Dirs {
+            config: Path::new("/conf/wineo"),
+            data: Path::new("/data/wineo"),
+        }
+    );
+    let portable = paths(&[
+        ("HOME", "/home/me"),
+        ("XDG_CONFIG_HOME", "/conf"),
+        ("XDG_DATA_HOME", "/data"),
+        (PORTABLE_VAR, "/opt/folder"),
+    ])
+    .unwrap();
+    assert_eq!(portable.root(), Root::Portable(Path::new("/opt/folder")));
+}

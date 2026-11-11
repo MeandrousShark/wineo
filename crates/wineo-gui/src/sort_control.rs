@@ -3,7 +3,7 @@
 
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, column, container, row, scrollable, text, tooltip};
-use iced::{Center, Element, Fill, Font, Point, Rectangle, Task, border, font};
+use iced::{Center, Element, Fill, Point, Rectangle, Task, border};
 use wineo_core::library::{self, GroupBy, RandomPool, SortKey, ViewLayout};
 use wineo_core::paths::Paths;
 
@@ -567,10 +567,7 @@ impl App {
         let mut rows = column![
             text("Sort by")
                 .size(14)
-                .font(Font {
-                    weight: font::Weight::Semibold,
-                    ..Font::DEFAULT
-                })
+                .font(crate::fonts::semibold())
                 .color(palette.foreground)
                 .height(ACTION_MENU_HEADER_HEIGHT)
                 .align_y(Center),

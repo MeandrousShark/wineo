@@ -546,7 +546,7 @@ fn tab_reaches_the_dice_after_the_filter_tab_chips_and_before_the_slider() {
 }
 
 #[test]
-fn the_search_box_shrinks_to_its_minimum_before_the_toolbar_clips() {
+fn the_search_box_shrinks_to_its_minimum_then_becomes_an_icon() {
     let (_root, app) = library(4);
     let width = |window: f32| {
         let mut laid = lay_out(app.view(), Size::new(window, 800.0));
@@ -561,7 +561,20 @@ fn the_search_box_shrinks_to_its_minimum_before_the_toolbar_clips() {
     // A narrower window takes the same pixels off the search box.
     assert_eq!(width(1062.0), narrower - 10.0);
     assert_eq!(width(700.0), crate::grid::SEARCH_MIN_WIDTH);
-    assert_eq!(width(400.0), crate::grid::SEARCH_MIN_WIDTH);
+    // Too narrow even with everything folded: search is its icon, and the
+    // field isn't in the toolbar.
+    let mut laid = lay_out(app.view(), Size::new(400.0, 800.0));
+    assert_eq!(
+        bounds(&mut laid, crate::search_drop::ICON_ID).size(),
+        Size::new(32.0, 32.0)
+    );
+    let found = Arc::new(Mutex::new(None));
+    let sink = found.clone();
+    laid.run(Box::new(iced::advanced::widget::operation::map(
+        crate::library_menu::bounds_of(crate::SEARCH_ID),
+        move |bounds| *sink.lock().unwrap() = bounds,
+    )));
+    assert_eq!(*found.lock().unwrap(), None);
 }
 
 #[test]
@@ -1022,7 +1035,7 @@ fn closing_waits_for_an_unsaved_zoom() {
     // A drag the close interrupts.
     let (_root, mut app) = library(4);
     let _ = zoom(&mut app, Event::Drag(150.0));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(!app.zooming.dragging());
     assert_eq!(app.view_writes.zoom, Some(150));
     assert!(app.closing && app.close_quietly && !app.exiting);
@@ -1032,7 +1045,7 @@ fn closing_waits_for_an_unsaved_zoom() {
     // A step whose write is still running.
     let (_root, mut app) = library(4);
     let _ = zoom(&mut app, Event::Key(Key::Out));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.closing && app.close_quietly && !app.exiting);
     let Writes { zoom, .. } = app.view_writes;
     assert_eq!(zoom, Some(90));
@@ -1352,7 +1365,7 @@ fn a_drag_saves_only_its_release_even_when_a_step_write_finishes_during_it() {
     // So does a close that interrupts the drag.
     let _ = zoom(&mut app, Event::Key(Key::Out));
     let _ = zoom(&mut app, Event::Drag(80.0));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.closing && !app.exiting);
     finish_write(&mut app);
     assert_eq!(app.view_writes.zoom, Some(80));
@@ -1389,7 +1402,7 @@ fn ctrl_held_before_the_grid_was_built_still_zooms() {
     assert_eq!(app.zoom, 120);
 
     // Losing focus with Ctrl down doesn't leave it stuck.
-    let _ = app.update(Message::Window(iced::window::Event::Unfocused));
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
     assert_eq!(app.modifiers, Modifiers::empty());
     let mut laid = lay_out(app.view(), app.window_size);
     let messages = laid.event_at(&wheel(NOTCH_DOWN), Cursor::Available(over_grid()));
@@ -1552,9 +1565,7 @@ fn a_resize_during_the_dock_resolves_an_arrows_waiting_scroll_once() {
     assert!(!located(&app, task, &name));
     assert_eq!(app.grid_scroll_after_settle.as_deref(), Some(name.as_str()));
     // The resize snaps the dock, which is the last motion to end.
-    let task = app.update(Message::Window(iced::window::Event::Resized(Size::new(
-        1300.0, 800.0,
-    ))));
+    let task = app.update(app.window_event(iced::window::Event::Resized(Size::new(1300.0, 800.0))));
     assert!(!app.grid_motion.active());
     assert!(app.grid_scroll_after_settle.is_none());
     assert_eq!(

@@ -1079,7 +1079,7 @@ fn closing_waits_until_the_file_has_the_final_view() {
     let first = app.update(Message::Sort(Event::FlipDirection));
     let _ = app.update(Message::Sort(Event::FlipDirection));
     assert!(!app.query.descending);
-    let close = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let close = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.closing);
     assert!(app.close_quietly, "nothing to cancel, so no prompt shows");
     assert!(!run(close, 0).exits);
@@ -1104,7 +1104,7 @@ fn closing_still_ends_when_the_write_fails() {
     let (_root, mut app) = loaded();
     write_library(&app.paths, "[view\n");
     let write = app.update(Message::Sort(Event::ToggleFavoritesFirst));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     let messages = saved(run(write, 1));
     let done = app.update(messages.into_iter().next().unwrap());
     assert!(run(done, 0).exits);
@@ -1115,7 +1115,7 @@ fn closing_with_nothing_to_save_exits_at_once() {
     let (_root, mut app) = loaded();
     assert!(
         run(
-            app.update(Message::Window(iced::window::Event::CloseRequested)),
+            app.update(app.window_event(iced::window::Event::CloseRequested)),
             0
         )
         .exits
@@ -1221,7 +1221,7 @@ fn closing_gives_up_on_a_stalled_write_after_the_bound() {
     let asked = Instant::now();
     assert!(
         !run(
-            app.update(Message::Window(iced::window::Event::CloseRequested)),
+            app.update(app.window_event(iced::window::Event::CloseRequested)),
             0
         )
         .exits
@@ -1256,7 +1256,8 @@ fn closing_gives_up_on_a_stalled_write_after_the_bound() {
 fn a_second_close_while_waiting_exits_at_once() {
     let (_root, mut app) = loaded();
     let _write = app.update(Message::Sort(Event::FlipDirection));
-    let close = || Message::Window(iced::window::Event::CloseRequested);
+    let window = app.main_window.unwrap();
+    let close = move || Message::Window(window, iced::window::Event::CloseRequested);
     assert!(!run(app.update(close()), 0).exits);
     assert!(run(app.update(close()), 0).exits);
     assert!(app.view_writes.pending(), "the write was given up on");
@@ -1277,7 +1278,7 @@ fn a_close_that_cancels_foreground_work_still_bounds_the_sort_wait() {
         installing: false,
         after_hook: false,
     });
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_prompt && !app.close_quietly);
     assert!(!run(app.update(Message::CancelAndClose), 0).exits);
     assert!(app.closing);
@@ -1323,7 +1324,7 @@ fn a_quiet_close_takes_the_input_while_it_waits() {
     let (_root, mut app) = loaded();
     let _ = app.update(Message::Select("hades".into()));
     let _stalled = app.update(Message::Sort(Event::FlipDirection));
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.close_quietly && app.close_by.is_some());
     try_to_start_work(&mut app);
     let _ = app.update(Message::Sort(Event::FlipDirection));

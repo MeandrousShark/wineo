@@ -7,6 +7,7 @@ use crate::theme::Palette;
 
 fn element(value: f32, dragging: bool) -> Element<'static, Message> {
     Element::new(Slider {
+        id: SLIDER_ID,
         value,
         dragging,
         modifiers: keyboard::Modifiers::empty(),
@@ -155,6 +156,7 @@ fn a_drag_the_app_ended_without_a_release_stays_ended() {
 fn the_slider_starts_from_and_follows_the_apps_modifiers() {
     let element = |modifiers| {
         Element::new(Slider {
+            id: SLIDER_ID,
             value: 100.0,
             dragging: false,
             modifiers,

@@ -30,6 +30,55 @@ It uses the same configs, prefixes, and run state as the CLI, including a
 portable folder set with `WINEO_PORTABLE_DIR`. There's no `--portable` flag
 yet.
 
+One app runs at a time for each library (plan 0063). Starting it again
+while it's running, from the app menu or a terminal, brings the open one
+forward instead, showing its window if it was in the tray, and the new
+launch exits. A portable folder, or a custom `XDG_CONFIG_HOME` or
+`XDG_DATA_HOME`, is a library of its own, so each runs its own app. It
+finds the running one on the session bus as
+`io.github.MeandrousShark.wineo.Gui` (with `_` and a short hash of the
+folders for a library that isn't the default). Without a session bus, it
+runs without this or a tray icon. An app that's quitting lets go as soon
+as the quit can't be undone, so starting it again then opens a fresh one.
+
+## The tray icon
+
+The app puts an icon in the desktop's tray by default (plan 0063); turn it
+off in Settings under **Desktop**. A tray that starts after the app still
+gets it. Clicking the icon shows the window, or brings it forward. Its menu:
+
+- **Open wineo** shows the window where it was.
+- **Add to library...** shows the window and opens the Add chooser. If a
+  page or a flow is open, the window just shows, so nothing is lost.
+- **Play NAME**, up to three rows: the most recently played games, newest
+  first, leaving out hidden, trashed, and running ones and ones never
+  played. A game you start moves to Stop, and the next one fills in. A
+  Play that can't start right away (something else is running, it needs a
+  target picked, or Play is off for it) shows the window on that game's
+  panel, where the reason is. With a page or a flow open, the window shows
+  as it is with "Close this page to play."
+- **Stop NAME**, one row for each running game in the library's order, up
+  to eight, then **More in wineo...**. It's a normal stop; Force stop and
+  the hook prompts stay in the panel. A stop that fails while the window
+  is closed keeps its message for that game's panel. The rows are hidden
+  when nothing runs.
+- **Quit** closes the app the same way the window's close button does, so
+  work in progress still asks first.
+
+Names with `_` show it as is, and long names are cut at 40 characters.
+
+**Closing the window** can keep the app running in the tray instead of
+quitting. With **When something starts** set to **Hide to the tray**,
+starting a game from the window or the tray closes the window, and it
+comes back where it was, at the same size, once everything it hid for has
+stopped. Only a game wineo starts itself hides it: one that was already
+running, a Steam launch, or a start from the CLI leaves the window alone.
+Opening the window yourself in the meantime ends the wait. **When
+everything stops** set to **Always show the window** also brings back a
+window you closed yourself, once everything you started from the app has
+stopped. If the tray goes away while the window is closed, the window
+comes back at once, so the app is never left where you can't reach it.
+
 ## The library
 
 Each environment gets a card with its grid art, or its name when it has
@@ -71,6 +120,14 @@ the CLI shows up without doing anything.
 
 Type in the search field to filter by card title, environment name, or
 tag, so `rpg` finds games tagged `rpg`.
+
+When the window is too narrow for the whole toolbar, like at a bigger
+interface size, the controls at its right end move into a **More** menu
+(the three-dot button), from the right: Hide titles, zoom, the layout
+switch, the dice, then Filters. They work the same there. Narrower still,
+search becomes an icon; click it, or press `/` or Ctrl+F, to type in a
+field that drops down under it. While a search is typed in, the icon is
+highlighted and its tooltip shows the text.
 
 ### Sorting
 
@@ -995,6 +1052,12 @@ both. Each tab remembers how far it's scrolled while the page is open.
   the default locations for the current XDG or portable setup.
 - **Runs:** how long `stop` waits before killing a game, and how big a log
   gets.
+- **Desktop:** **Show a tray icon** (on by default), **Closing the
+  window** (**Quit**, the default, or **Keep running in the tray**), **When
+  something starts** (**Keep the window open**, the default, or **Hide to
+  the tray**), and **When everything stops** (**Bring back a hidden
+  window**, the default, or **Always show the window**). The last three
+  need the tray icon. See [The tray icon](#the-tray-icon).
 - **Art to fetch:** independent Icon, Grid, Hero, and Logo switches for
   `new` and `import`. Turn all four off to disable automatic fetching.
 - **Environment variables** for every launch.
@@ -1070,6 +1133,26 @@ same bar as General's, and one **Save** writes both.
   colors that need it, in any theme. Dracula's muted text and several of
   Catppuccin Latte's colors change; the wineo themes and Macchiato already
   pass. Swatches show the colors you'll get.
+- **Accessibility** holds three rows. Like a theme, each applies as you
+  pick it and **Save** keeps it.
+  - **Interface size**, from 100% (the default) to 200%, scales everything
+    together: text, buttons, rows, menus, posters, and the panel. It stacks
+    with the desktop's own scale and with the grid's zoom. The window keeps
+    its size on screen, so a bigger interface shows fewer columns.
+  - **Font** lists the installed sans and serif families, each drawn in
+    itself, with **Noto Sans (built in)** first. A family that can't draw
+    its own name, like one with no Latin letters, shows its name in the
+    built-in font instead, in the list and on the button. Type to search;
+    the arrows or Tab move through the list and Enter picks. Bold text uses
+    the family's own semibold or bold, or its regular weight if it has
+    neither, so it never comes from another font. Monospace text keeps the
+    system's font. A family that's been uninstalled falls back to the
+    built-in font.
+  - **Motion**: **Follow the system** (the default), **Full**, or
+    **Reduced**. Follow the system uses the desktop's animation switch and
+    picks up a change without a restart. Reduced snaps everything that
+    moves (the grid, zoom, the panel's slide, the layout switch, the star)
+    and keeps the fades; the busy spinner still turns.
 
 Copies, renames, color edits, and deletes all wait for **Save**, which
 writes the theme files first, then `library.toml`, then removes deleted
@@ -1094,7 +1177,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | R | Pick a shown game at random, as the dice does (Library only) |
 | Shift+F10 or Menu | Open the focused dice's menu (Library only) |
 | Esc | Close the log, version picker, results, or Tags list, then clear the marks, then close the panel, then clear the search |
-| `/` or Ctrl+F | Search |
+| `/` or Ctrl+F | Search, or open the search field when search is an icon |
 | Ctrl+N | Open Add (Library only) |
 | Ctrl+= or Ctrl++, Ctrl+- | Make the posters bigger or smaller (Library grid only) |
 | Ctrl+0 | Posters back to the usual size (Library grid only) |

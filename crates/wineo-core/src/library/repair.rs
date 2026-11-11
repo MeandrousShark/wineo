@@ -18,7 +18,7 @@ use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
-/// How much of `[view]` or `[appearance]` came back.
+/// How much of `[view]`, `[appearance]`, or `[desktop]` came back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewRecovery {
     /// The file had no such table the repair could find.
@@ -39,6 +39,7 @@ pub struct RepairReport {
     pub partly: usize,
     pub view: ViewRecovery,
     pub appearance: ViewRecovery,
+    pub desktop: ViewRecovery,
     /// How much of the saved presets came back, counting every field in
     /// every preset the repair could recognize.
     pub presets: ViewRecovery,
@@ -66,6 +67,7 @@ impl RepairReport {
                 self.appearance,
                 ViewRecovery::Absent | ViewRecovery::Recovered
             )
+            && matches!(self.desktop, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.presets, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.steam, ViewRecovery::Absent | ViewRecovery::Recovered)
     }
@@ -106,6 +108,12 @@ impl fmt::Display for RepairReport {
             ViewRecovery::Recovered => f.write_str(" Appearance settings recovered.")?,
             ViewRecovery::Partly => f.write_str(" Appearance settings partly recovered.")?,
             ViewRecovery::Lost => f.write_str(" Appearance settings could not be recovered.")?,
+        }
+        match self.desktop {
+            ViewRecovery::Absent => {}
+            ViewRecovery::Recovered => f.write_str(" Desktop settings recovered.")?,
+            ViewRecovery::Partly => f.write_str(" Desktop settings partly recovered.")?,
+            ViewRecovery::Lost => f.write_str(" Desktop settings could not be recovered.")?,
         }
         match self.presets {
             ViewRecovery::Absent => {}
@@ -287,7 +295,7 @@ impl<'a> Lines<'a> {
 
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
-    /// None for a header that isn't `[view]`, `[appearance]`, `[steam]`,
+    /// None for a header that isn't `[view]`, `[appearance]`, `[desktop]`, `[steam]`,
     /// `[steam.games]`, `[presets.<name>]`, or `[environments.<name>]`.
     Header {
         start: usize,
@@ -312,6 +320,7 @@ impl Unit {
 enum Header {
     View,
     Appearance,
+    Desktop,
     Steam,
     SteamGames,
     Preset(String),
@@ -461,6 +470,7 @@ impl Scan {
 struct Salvaged {
     view: Option<Section>,
     appearance: Option<Section>,
+    desktop: Option<Section>,
     steam: Option<SteamSection>,
     presets: Vec<(String, Section)>,
     entries: Vec<(String, Section)>,
@@ -638,6 +648,7 @@ enum Current {
     Top,
     View,
     Appearance,
+    Desktop,
     Steam,
     SteamGames,
     Preset(usize),
@@ -665,6 +676,10 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                     Some(Header::Appearance) => {
                         salvaged.appearance.get_or_insert_with(Section::default);
                         Current::Appearance
+                    }
+                    Some(Header::Desktop) => {
+                        salvaged.desktop.get_or_insert_with(Section::default);
+                        Current::Desktop
                     }
                     Some(Header::Steam) => {
                         salvaged.steam.get_or_insert_default();
@@ -728,6 +743,11 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                 .as_mut()
                 .expect("appearance section was recorded")
                 .offer(text, valid_appearance_field),
+            Current::Desktop => salvaged
+                .desktop
+                .as_mut()
+                .expect("desktop section was recorded")
+                .offer(text, valid_desktop_field),
             Current::Steam => {
                 let steam = salvaged.steam.as_mut().expect("steam section was recorded");
                 match lone_field(text) {
@@ -817,6 +837,13 @@ impl Salvaged {
                         appearance.read(&key, field, valid_appearance_field);
                     }
                 }
+                ("desktop", Some(table)) => {
+                    let desktop = self.desktop.get_or_insert_with(Section::default);
+                    for (name, field) in table.iter() {
+                        let key = table.key(name).cloned().unwrap_or_else(|| Key::new(name));
+                        desktop.read(&key, field, valid_desktop_field);
+                    }
+                }
                 ("steam", Some(table)) => {
                     let steam = self.steam.get_or_insert_default();
                     for (name, field) in table.iter() {
@@ -866,6 +893,7 @@ impl Salvaged {
                 [appearance] if appearance == "appearance" && self.appearance.is_some() => {
                     Current::Appearance
                 }
+                [desktop] if desktop == "desktop" && self.desktop.is_some() => Current::Desktop,
                 [steam] if steam == "steam" && self.steam.is_some() => Current::Steam,
                 [steam, games] if steam == "steam" && games == "games" && self.steam.is_some() => {
                     Current::SteamGames
@@ -925,7 +953,7 @@ fn last_header(
     last.as_ref().map(|(_, path)| path.clone())
 }
 
-/// A header line on its own: exactly `[view]`, `[appearance]`, `[steam]`,
+/// A header line on its own: exactly `[view]`, `[appearance]`, `[desktop]`, `[steam]`,
 /// `[steam.games]`, `[presets.<name>]`, or `[environments.<name>]`.
 fn header(line: &str) -> Option<Header> {
     let document = line.parse::<DocumentMut>().ok()?;
@@ -938,6 +966,7 @@ fn header(line: &str) -> Option<Header> {
     match key {
         "view" => table.is_empty().then_some(Header::View),
         "appearance" => table.is_empty().then_some(Header::Appearance),
+        "desktop" => table.is_empty().then_some(Header::Desktop),
         "steam" => {
             let mut children = table.iter();
             match (children.next(), children.next()) {
@@ -1007,11 +1036,22 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
 }
 
 /// Only the types: whether an id names a theme is `validate`'s business, and
-/// a newer wineo's theme id is no reason to drop the line.
+/// a newer wineo's theme id, motion, or size range is no reason to drop the
+/// line.
 fn valid_appearance_field(key: &str, item: &Item) -> bool {
     match key {
         "follow_system" | "improve_readability" => item.as_bool().is_some(),
-        "dark" | "light" | "theme" => item.as_str().is_some(),
+        "dark" | "light" | "theme" | "motion" | "font" => item.as_str().is_some(),
+        "interface_size" => item.as_integer().is_some(),
+        _ => true,
+    }
+}
+
+/// Only the types, so a newer wineo's `close`, `on_start`, or `on_stop` value stays.
+fn valid_desktop_field(key: &str, item: &Item) -> bool {
+    match key {
+        "tray" => item.as_bool().is_some(),
+        "close" | "on_start" | "on_stop" => item.as_str().is_some(),
         _ => true,
     }
 }
@@ -1025,6 +1065,9 @@ impl Salvaged {
         }
         if let Some(appearance) = self.appearance.as_ref().filter(|table| table.kept > 0) {
             document.insert("appearance", Item::Table(fresh_table(&appearance.table)));
+        }
+        if let Some(desktop) = self.desktop.as_ref().filter(|table| table.kept > 0) {
+            document.insert("desktop", Item::Table(fresh_table(&desktop.table)));
         }
         if !self.presets.is_empty() {
             let mut presets = Table::new();
@@ -1088,6 +1131,10 @@ impl Salvaged {
                 .map_or(ViewRecovery::Absent, Section::recovery),
             appearance: self
                 .appearance
+                .as_ref()
+                .map_or(ViewRecovery::Absent, Section::recovery),
+            desktop: self
+                .desktop
                 .as_ref()
                 .map_or(ViewRecovery::Absent, Section::recovery),
             presets: self.presets_recovery(),

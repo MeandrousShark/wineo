@@ -56,10 +56,15 @@ pub(crate) fn request_bounds(
 }
 
 impl App {
-    /// Any toolbar menu is open: Sort, Filters, the dice's, or the action
-    /// bar's tag popup.
+    /// Any toolbar menu is open: Sort, Filters, the dice's, More, or the
+    /// action bar's tag popup.
     pub(crate) fn library_menu_open(&self) -> bool {
-        self.sort_menu || self.filter_menu || self.random_menu || self.tag_menu
+        self.sort_menu
+            || self.filter_menu
+            || self.random_menu
+            || self.more_menu
+            || self.search_open
+            || self.tag_menu
     }
 
     /// Any toolbar menu is showing over the Library.
@@ -67,6 +72,8 @@ impl App {
         self.sort_menu_shown()
             || self.filter_menu_shown()
             || self.random_menu_shown()
+            || self.more_menu_shown()
+            || self.search_dropdown_shown()
             || self.tag_menu_shown()
     }
 
@@ -78,6 +85,8 @@ impl App {
             || self.sort_menu
             || self.filter_menu
             || self.random_menu
+            || self.more_menu
+            || self.search_open
             || self.tag_menu
             || self.action_menu.is_some()
             || self.hook_stop_confirm.is_some()
@@ -91,10 +100,13 @@ impl App {
         self.sort_menu = false;
         self.filter_menu = false;
         self.random_menu = false;
+        self.more_menu = false;
+        self.search_open = false;
         self.tag_menu = false;
         self.sort_opening.cancel();
         self.filter_opening.cancel();
         self.random_opening.cancel();
+        self.more_opening.cancel();
         self.tag_opening.cancel();
         self.action_menu = None;
     }
@@ -169,6 +181,24 @@ pub(crate) fn cycle<S: AsRef<str> + 'static>(
 pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widget::Operation {
     Reveal {
         id: iced::widget::Id::new(scroll),
+        row: None,
+        view: None,
+        entering: false,
+        depth: 0,
+        focused: None,
+        first: None,
+    }
+}
+
+/// `reveal_focused` for the container `row` instead of the focused control,
+/// for a list whose keyboard highlight isn't focus.
+pub(crate) fn reveal_row(
+    scroll: &'static str,
+    row: iced::widget::Id,
+) -> impl iced::advanced::widget::Operation {
+    Reveal {
+        id: iced::widget::Id::new(scroll),
+        row: Some(row),
         view: None,
         entering: false,
         depth: 0,
@@ -179,6 +209,8 @@ pub(crate) fn reveal_focused(scroll: &'static str) -> impl iced::advanced::widge
 
 struct Reveal {
     id: iced::widget::Id,
+    /// The container to show, or None for the focused control.
+    row: Option<iced::widget::Id>,
     /// The viewport, the content, and the current offset.
     view: Option<(Rectangle, Rectangle, f32)>,
     /// The next traversal is into the target scrollable.
@@ -219,13 +251,28 @@ impl iced::advanced::widget::Operation for Reveal {
         }
     }
 
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle) {
+        let Some(row) = &self.row else {
+            return;
+        };
+        if self.depth == 0 || id.is_none() {
+            return;
+        }
+        if self.first.is_none_or(|first| bounds.y < first) {
+            self.first = Some(bounds.y);
+        }
+        if id == Some(row) {
+            self.focused = Some(bounds);
+        }
+    }
+
     fn focusable(
         &mut self,
         _id: Option<&iced::widget::Id>,
         bounds: Rectangle,
         state: &mut dyn iced::advanced::widget::operation::Focusable,
     ) {
-        if self.depth == 0 {
+        if self.depth == 0 || self.row.is_some() {
             return;
         }
         if self.first.is_none_or(|first| bounds.y < first) {

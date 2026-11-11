@@ -3,9 +3,7 @@ use iced::widget::{
     Space, button, column, container, image, mouse_area, row, scrollable, stack, svg, text,
     text_input,
 };
-use iced::{
-    Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, font, mouse,
-};
+use iced::{Center, Color, ContentFit, Element, Fill, FillPortion, Font, Size, border, mouse};
 
 use crate::grid_motion::{CardText, GridLayout};
 use crate::library::Card;
@@ -303,7 +301,7 @@ impl App {
             scene,
             self.grid_layout(),
             self.layout,
-            crate::details_fade::DetailsFade::drift(progress),
+            self.details_drift(progress),
         )
     }
     /// The details the grid draws under `card`'s title at the details
@@ -438,10 +436,7 @@ impl App {
             })
             .into(),
         };
-        let title_font = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
+        let title_font = crate::fonts::semibold();
         let steam_mark = card.kind == Some(crate::library::CardKind::Proxied);
         // Marks belong to the game, so every copy shows them.
         let marked = self.marked.contains(slot.name());
@@ -906,6 +901,10 @@ impl App {
             let [backdrop, menu] = self.random_menu_view();
             return page.push(backdrop).push(menu).into();
         }
+        if self.more_menu_shown() {
+            let [backdrop, menu] = self.more_menu_view();
+            return page.push(backdrop).push(menu).into();
+        }
         if self.tag_menu_shown() {
             let [backdrop, menu] = self.tag_menu_view();
             return page.push(backdrop).push(menu).into();
@@ -1074,10 +1073,7 @@ impl App {
             let menu_items = column![
                 text(truncate_name(name, 224.0))
                     .size(14)
-                    .font(Font {
-                        weight: font::Weight::Semibold,
-                        ..Font::DEFAULT
-                    })
+                    .font(crate::fonts::semibold())
                     .color(palette.foreground)
                     .height(ACTION_MENU_HEADER_HEIGHT)
                     .align_y(Center)
@@ -1324,6 +1320,7 @@ impl App {
                             panel,
                             self.panel_motion.progress(),
                             self.panel_open && self.panel_motion.interactive(),
+                            !self.motion.reduced(),
                             palette.surface,
                         ))
                         .width(crate::grid_motion::PANEL_WIDTH)
@@ -1413,27 +1410,73 @@ impl App {
                 .style(|_, _| button::Style::default())
                 .into()
         };
-        let search = crate::fit_width::fit_width(
-            stack![
-                input,
-                container(clear)
-                    .width(Fill)
-                    .height(Fill)
-                    .align_right(Fill)
-                    .center_y(Fill)
-                    .padding([0, 6])
+        let search = stack![
+            input,
+            container(clear)
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .center_y(Fill)
+                .padding([0, 6])
+        ];
+        use crate::toolbar_squeeze::{Control, child};
+        let grid = self.layout == crate::grid_motion::ViewLayout::Grid;
+        // Every child stays in the tree, folded or absent, so the controls
+        // before it keep their places, and their focus.
+        let zoom_slot = |element: fn(&App) -> Element<'_, Message>| {
+            if grid {
+                element(self)
+            } else {
+                Space::new().into()
+            }
+        };
+        let controls = crate::toolbar_squeeze::squeeze(
+            crate::toolbar_squeeze::SearchParts {
+                field: search.into(),
+                icon: crate::search_drop::toolbar(self),
+                range: crate::toolbar_squeeze::Search {
+                    min: SEARCH_MIN_WIDTH,
+                    max: SEARCH_WIDTH,
+                    icon: ui::BUTTON_HEIGHT,
+                },
+                open: self.search_open,
+                on_collapse_focused: Message::Search(crate::search_drop::Event::CollapsedWithFocus),
+                on_close: Message::Search(crate::search_drop::Event::Close),
+                palette,
+            },
+            vec![
+                child(crate::sort_control::toolbar(self), None, true),
+                child(
+                    crate::filter_control::toolbar(self),
+                    Some(Control::Filters),
+                    true,
+                ),
+                child(crate::random_pick::toolbar(self), Some(Control::Dice), true),
+                child(
+                    crate::layout_switch::toolbar(self),
+                    Some(Control::Layout),
+                    true,
+                ),
+                child(
+                    zoom_slot(crate::zoom_control::toolbar_slider),
+                    Some(Control::Zoom),
+                    grid,
+                ),
+                child(
+                    zoom_slot(crate::zoom_control::toolbar_toggle),
+                    Some(Control::Titles),
+                    grid,
+                ),
             ],
-            SEARCH_MIN_WIDTH,
-            SEARCH_WIDTH,
+            crate::more_menu::toolbar(self),
+            8.0,
+            |fit| Message::More(crate::more_menu::Event::Fitted(fit)),
         );
         container(
             row![
                 text("wineo")
                     .size(18)
-                    .font(Font {
-                        weight: font::Weight::Semibold,
-                        ..Font::DEFAULT
-                    })
+                    .font(crate::fonts::semibold())
                     .color(palette.foreground),
                 {
                     let enabled = !self.management_busy() && self.operation.is_none();
@@ -1445,22 +1488,7 @@ impl App {
                         Message::Add,
                     )
                 },
-                row![
-                    search,
-                    crate::sort_control::toolbar(self),
-                    crate::filter_control::toolbar(self),
-                    crate::random_pick::toolbar(self),
-                    crate::layout_switch::toolbar(self),
-                    // Always a child, so the controls before it keep their
-                    // places in the tree, and their focus.
-                    if self.layout == crate::grid_motion::ViewLayout::Grid {
-                        crate::zoom_control::toolbar(self)
-                    } else {
-                        Space::new().into()
-                    },
-                ]
-                .spacing(8)
-                .align_y(Center),
+                controls,
             ]
             .spacing(16)
             .align_y(Center),
@@ -1570,10 +1598,7 @@ fn title_overlay(
     ink: Color,
     alpha: f32,
 ) -> Element<'static, Message> {
-    let font = Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    };
+    let font = crate::fonts::semibold();
     let right = if steam_mark {
         STEAM_MARK_ROOM
     } else {
@@ -1652,10 +1677,7 @@ fn text_width(content: &str) -> f32 {
         bounds: Size::INFINITE,
         size: 14.into(),
         line_height: iced::widget::text::LineHeight::default(),
-        font: Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        },
+        font: crate::fonts::semibold(),
         align_x: iced::advanced::text::Alignment::Default,
         align_y: iced::alignment::Vertical::Top,
         shaping: iced::widget::text::Shaping::Advanced,
@@ -1890,10 +1912,7 @@ mod tests {
     fn card_titles_wrap_to_two_balanced_lines_in_a_fixed_height() {
         use crate::layout_probe::{bounds_at, layout};
         let app = crate::tests::app();
-        let font = Font {
-            weight: font::Weight::Semibold,
-            ..Font::DEFAULT
-        };
+        let font = crate::fonts::semibold();
         let grid = GridLayout::default();
         let lines =
             |title| crate::tile_title::lines(title, grid.card_width(), CARD_TITLE_SIZE, font);

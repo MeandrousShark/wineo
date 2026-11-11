@@ -713,7 +713,7 @@ fn only_a_star_click_that_favorites_pops() {
 #[test]
 fn reduced_motion_skips_the_pop_but_not_the_glow() {
     let (_root, mut app) = fixture(&["game"], &[], &[]);
-    app.reduced_motion = true;
+    app.motion.system_reduced = true;
     let _ = app.update(Message::Hover(Some("game".into())));
     let _ = app.update(Message::StarHover("game".into(), true));
     assert_eq!(app.glowing_star().map(|slot| slot.name()), Some("game"));

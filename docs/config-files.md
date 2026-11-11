@@ -407,6 +407,15 @@ dark = "cellar"
 light = "daylight"
 theme = "midnight"        # used when follow_system is false
 improve_readability = false
+motion = "system"         # system (default), full, or reduced
+interface_size = 125      # percent, 100 (default) to 200
+font = "Inter"            # no key means the built-in Noto Sans
+
+[desktop]
+tray = true               # show a tray icon (default)
+close = "quit"            # quit (default) or tray
+on_start = "keep"         # keep (default) or hide
+on_stop = "restore"       # restore (default) or show
 
 [environments.hades]
 favorite = true
@@ -481,7 +490,48 @@ theme, a custom one whose file is gone or doesn't parse, or a light theme in
 `dark` (or a dark one in `light`) shows the default instead, and `validate`
 warns about it; picking a theme for that slot in Settings writes a good value.
 `improve_readability` raises the contrast of text colors that need it and
-defaults to `false`.
+defaults to `false`. `motion` (plan 0063) is how much the app moves:
+`system`, the default, follows the desktop's animation switch (GNOME's
+`enable-animations` through the desktop portal, picked up while the app
+runs; no portal means full motion), `full` always animates, and `reduced`
+snaps movement and keeps fades. An unknown value reads as `system`, isn't
+rewritten when the app saves, and `validate` reports it; repair keeps any
+string and drops other types.
+
+`interface_size` (plan 0063) scales the whole window, in percent on top of
+the desktop's own scale. It defaults to `100`; Settings offers 100, 110,
+125, 150, 175, and 200, and any whole number from 100 to 200 works. A
+number outside that range clamps to it, a value that isn't a whole number
+reads as `100`, and `validate` reports both. `font` is the family the app
+draws its text in, by name. Without the key, it uses the built-in Noto
+Sans, and picking that in Settings removes the key. A family that isn't
+installed when the app starts falls back to the built-in font without
+rewriting the file; an empty or non-string value does the same, and
+`validate` reports that. Repair keeps any integer `interface_size` and any
+string `font` and drops other types.
+
+`[desktop]` (plan 0063) is how the desktop app sits on the desktop. `tray`
+shows a tray icon and defaults to `true`. `close` is what the window's close
+button does: `quit`, the default, quits, and `tray` closes the window and
+keeps the app running in the tray. With no tray icon, or no tray on the
+desktop to show it in, `tray` quits anyway, so the app is never left running
+where you can't reach it. `on_start` is what the window does when the app
+starts something: `keep`, the default, leaves it open, and `hide` closes it
+to the tray and opens it again, where it was, once everything it hid for
+has stopped. Only a run wineo starts itself hides it, not one that was
+already running, a Steam launch, or a start from the CLI. Like `close =
+"tray"`, it needs the tray, and if the tray goes away while the window is
+hidden, the window comes back at once. `on_stop` is what happens once
+everything started from the app has stopped: `restore`, the default,
+brings back only a window that `hide` closed, and `show` also opens a
+window you closed yourself with `close = "tray"`, but leaves an open window
+where it is. It needs the tray too, and opening the window yourself in
+between ends either. A value of the wrong type, or an unknown
+`close`, `on_start`, or `on_stop`, reads as the default, isn't rewritten
+when the app saves, and `validate` reports it; repair keeps any boolean
+`tray` and any string `close`, `on_start`, or `on_stop` and drops other
+types. An older wineo warns about this table in `validate`, and its repair
+drops it.
 
 `[steam]` is how the desktop app remembers what it has
 [offered](steam.md#new-installs). `auto_import` imports new installs without
@@ -507,7 +557,8 @@ repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
 reads correctly on its own, under an entry, `[view]`, `[appearance]`,
-`[steam]`, or a preset, and reports what it couldn't keep. A file from a newer wineo is never repaired;
+`[desktop]`, `[steam]`, or a preset, and reports what it couldn't keep. A
+file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.
 

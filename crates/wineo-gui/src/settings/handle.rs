@@ -163,10 +163,39 @@ impl Page {
             Event::Appearance(edit) => {
                 self.edited();
                 let mode = self.system_mode;
-                if let View::Global(editor) = &mut self.view {
-                    editor.appearance.apply(edit, mode);
+                let View::Global(editor) = &mut self.view else {
+                    return Step::none();
+                };
+                let was_open = editor.appearance.font_picker.is_some();
+                editor.appearance.apply(edit, mode);
+                let Some(picker) = &editor.appearance.font_picker else {
+                    if was_open {
+                        self.menu_open = false;
+                    }
+                    return Step::none();
+                };
+                // The highlight moves with the arrows and the search, so
+                // its row is brought into the list's view after each.
+                let reveal = picker
+                    .highlighted_id()
+                    .map_or_else(iced::Task::none, |row| {
+                        iced::advanced::widget::operate(crate::library_menu::reveal_row(
+                            super::appearance::FONT_LIST_ID,
+                            row,
+                        ))
+                        .discard()
+                    });
+                if was_open {
+                    return Step::task(reveal);
                 }
-                Step::none()
+                // Like a pick list's menu, so Escape and the sidebar wait.
+                self.menu_open = true;
+                Step::task(
+                    iced::widget::operation::focus(iced::widget::Id::new(
+                        super::appearance::FONT_SEARCH_ID,
+                    ))
+                    .chain(reveal),
+                )
             }
             Event::BrowseGamesRoot => self.browse_games_root(paths),
             Event::PickedGamesRoot(generation, previous, result) => {
@@ -193,6 +222,47 @@ impl Page {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {
                     editor.form.draft.auto_import = on;
+                }
+                Step::none()
+            }
+            Event::GlobalTray(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.tray = on;
+                }
+                Step::none()
+            }
+            // Keeping running needs the tray, so the choice is locked
+            // without it.
+            Event::GlobalClose(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.desktop.tray) => {
+                Step::none()
+            }
+            Event::GlobalClose(close) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.close = close;
+                }
+                Step::none()
+            }
+            // Hiding needs the tray to come back from, like Keep running.
+            Event::GlobalOnStart(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.desktop.tray) => {
+                Step::none()
+            }
+            Event::GlobalOnStart(on_start) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.on_start = on_start;
+                }
+                Step::none()
+            }
+            // Bringing a window back needs the tray, like Keep running.
+            Event::GlobalOnStop(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.desktop.tray) => {
+                Step::none()
+            }
+            Event::GlobalOnStop(on_stop) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.desktop.on_stop = on_stop;
                 }
                 Step::none()
             }
@@ -374,6 +444,10 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalTray(_)
+                    | Event::GlobalClose(_)
+                    | Event::GlobalOnStart(_)
+                    | Event::GlobalOnStop(_)
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -396,6 +470,10 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalTray(_)
+                    | Event::GlobalClose(_)
+                    | Event::GlobalOnStart(_)
+                    | Event::GlobalOnStop(_)
                     | Event::Appearance(_)
             )
         {
@@ -410,6 +488,7 @@ impl Page {
     }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;
+        self.close_font_picker();
         let draft = self.editor().map(|editor| &editor.form.draft);
         let global_draft = match &self.view {
             View::Global(editor) => Some(&editor.form.draft),
@@ -437,6 +516,7 @@ impl Page {
                     if let Some(disk) = &mut self.disk {
                         disk.appearance = snapshot.texts.appearance;
                         disk.auto_import = snapshot.texts.auto_import;
+                        disk.desktop = snapshot.texts.desktop;
                         disk.themes = snapshot.texts.themes;
                     }
                 } else {

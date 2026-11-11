@@ -76,6 +76,14 @@ pub(crate) enum Event {
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
     GlobalAutoImport(bool),
+    /// Desktop's Show a tray icon.
+    GlobalTray(bool),
+    /// Desktop's Closing the window.
+    GlobalClose(wineo_core::library::CloseWindow),
+    /// Desktop's When something starts.
+    GlobalOnStart(wineo_core::library::OnStart),
+    /// Desktop's When everything stops.
+    GlobalOnStop(wineo_core::library::OnStop),
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -263,6 +271,10 @@ impl Event {
                 | Event::GlobalArtKind(_, _)
                 | Event::GlobalExternalRunners(_)
                 | Event::GlobalAutoImport(_)
+                | Event::GlobalTray(_)
+                | Event::GlobalClose(_)
+                | Event::GlobalOnStart(_)
+                | Event::GlobalOnStop(_)
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
@@ -328,7 +340,10 @@ impl ChangedFile {
     fn between(disk: &Texts, texts: &Texts) -> Self {
         if disk.environment != texts.environment || disk.global != texts.global {
             Self::Config
-        } else if disk.appearance != texts.appearance || disk.auto_import != texts.auto_import {
+        } else if disk.appearance != texts.appearance
+            || disk.auto_import != texts.auto_import
+            || disk.desktop != texts.desktop
+        {
             Self::Library
         } else if disk.themes != texts.themes {
             Self::Theme
@@ -619,8 +634,38 @@ impl Page {
             _ => None,
         }
     }
+    /// `[desktop]` as the global page last read it.
+    pub(crate) fn desktop(&self) -> Option<wineo_core::library::Desktop> {
+        match &self.view {
+            View::Global(editor) => Some(editor.form.loaded.desktop),
+            _ => None,
+        }
+    }
+    pub(crate) fn appearance_mut(&mut self) -> Option<&mut appearance::Form> {
+        match &mut self.view {
+            View::Global(editor) => Some(&mut editor.appearance),
+            _ => None,
+        }
+    }
+    /// Whether a pick list's menu or the Font dropdown is open, which holds
+    /// Escape and the sidebar.
+    fn any_menu_open(&self) -> bool {
+        self.menu_open
+            || self
+                .appearance()
+                .is_some_and(|form| form.font_picker.is_some())
+    }
+    /// Closes the Font dropdown, and the menu it counted as, so no path
+    /// leaves it open where it doesn't show.
+    pub(super) fn close_font_picker(&mut self) {
+        if let Some(form) = self.appearance_mut()
+            && form.font_picker.take().is_some()
+        {
+            self.menu_open = false;
+        }
+    }
     pub(crate) fn navigation_blocked(&self) -> bool {
-        self.leave_prompt || self.menu_open || self.locked()
+        self.leave_prompt || self.any_menu_open() || self.locked()
     }
     pub(crate) fn changes(&self) -> usize {
         match &self.view {
@@ -685,6 +730,7 @@ impl Page {
         }
         self.drop_checks();
         self.menu_open = false;
+        self.close_font_picker();
         self.pending = Some(Pending {
             mode,
             draft: self.editor().map(|editor| editor.form.draft.clone()),
@@ -1023,14 +1069,19 @@ impl App {
         let Some(page) = &self.settings else {
             return Task::none();
         };
-        let (prompt, menu_open, global) = (page.leave_prompt, page.menu_open, page.is_global());
+        let (prompt, menu_open, global) =
+            (page.leave_prompt, page.any_menu_open(), page.is_global());
+        let font_open = page
+            .appearance()
+            .is_some_and(|form| form.font_picker.is_some());
         match key.as_ref() {
             Key::Character(character)
                 if modifiers.control() && character.eq_ignore_ascii_case("s") =>
             {
                 self.settings_update(Event::Save)
             }
-            Key::Named(Named::Tab) if prompt => Task::none(),
+            // The Font dropdown moves its highlight with Tab instead.
+            Key::Named(Named::Tab) if prompt || font_open => Task::none(),
             // Only text inputs take focus in iced, so Tab moves between those.
             Key::Named(Named::Tab) if modifiers.shift() => {
                 iced::widget::operation::focus_previous()

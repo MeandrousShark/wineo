@@ -282,7 +282,7 @@ fn inspect_with_themes(text: &str, themes: &[(&str, &str)]) -> Inspection {
 #[test]
 fn a_clean_appearance_has_no_findings() {
     let inspection = inspect_with_themes(
-        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\n",
+        "[appearance]\nfollow_system = false\ndark = \"dracula\"\nlight = \"custom:soft\"\ntheme = \"custom:night\"\nimprove_readability = true\nmotion = \"reduced\"\ninterface_size = 130\nfont = \"Atkinson Hyperlegible\"\n",
         &[
             ("soft.toml", "name = \"Soft\"\nkind = \"light\"\n"),
             ("night.toml", "name = \"Night\"\n"),
@@ -313,6 +313,57 @@ fn bad_appearance_types_are_field_findings_and_unknown_keys_are_ignored() {
         messages(&inspection, FindingKind::FieldInvalid),
         ["library.toml: appearance: expected a table, found 4"]
     );
+}
+
+#[test]
+fn an_unknown_or_mistyped_motion_is_a_field_finding() {
+    for motion in ["system", "full", "reduced"] {
+        let inspection = inspect_text(&format!("[appearance]\nmotion = \"{motion}\"\n"));
+        assert_eq!(inspection.findings, [], "{motion}");
+    }
+    let inspection = inspect_text("[appearance]\nmotion = \"slow\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: appearance.motion: expected one of system, full, reduced, found \"slow\""]
+    );
+    let inspection = inspect_text("[appearance]\nmotion = false\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: appearance.motion: expected one of system, full, reduced, found false"]
+    );
+}
+
+#[test]
+fn an_interface_size_outside_the_range_or_mistyped_is_a_field_finding() {
+    for size in ["100", "130", "200"] {
+        let inspection = inspect_text(&format!("[appearance]\ninterface_size = {size}\n"));
+        assert_eq!(inspection.findings, [], "{size}");
+    }
+    for (size, found) in [("250", "250"), ("99", "99"), ("\"150\"", "\"150\"")] {
+        let inspection = inspect_text(&format!("[appearance]\ninterface_size = {size}\n"));
+        assert_eq!(
+            messages(&inspection, FindingKind::FieldInvalid),
+            [format!(
+                "library.toml: appearance.interface_size: expected a whole number from 100 to 200, found {found}"
+            )]
+        );
+    }
+}
+
+#[test]
+fn a_font_that_is_not_a_name_is_a_field_finding() {
+    // Whether the family is installed only shows at the app's launch.
+    let inspection = inspect_text("[appearance]\nfont = \"Not Installed Anywhere\"\n");
+    assert_eq!(inspection.findings, []);
+    for (font, found) in [("\"\"", "\"\""), ("3", "3")] {
+        let inspection = inspect_text(&format!("[appearance]\nfont = {font}\n"));
+        assert_eq!(
+            messages(&inspection, FindingKind::FieldInvalid),
+            [format!(
+                "library.toml: appearance.font: expected a font family name, found {found}"
+            )]
+        );
+    }
 }
 
 #[test]
@@ -535,5 +586,78 @@ fn a_badly_named_preset_still_has_its_fields_checked() {
             r#"library.toml: presets." P": expected a preset name that can't start or end with whitespace, found a table"#,
             r#"library.toml: presets." P".sort: expected one of name, last-played, playtime, added, source, tags, found "random""#,
         ]
+    );
+}
+
+#[test]
+fn a_clean_desktop_has_no_findings() {
+    for close in ["quit", "tray"] {
+        let inspection = inspect_text(&format!("[desktop]\ntray = false\nclose = \"{close}\"\n"));
+        assert_eq!(inspection.findings, [], "{close}");
+    }
+    for on_start in ["keep", "hide"] {
+        let inspection = inspect_text(&format!("[desktop]\non_start = \"{on_start}\"\n"));
+        assert_eq!(inspection.findings, [], "{on_start}");
+    }
+    for on_stop in ["restore", "show"] {
+        let inspection = inspect_text(&format!("[desktop]\non_stop = \"{on_stop}\"\n"));
+        assert_eq!(inspection.findings, [], "{on_stop}");
+    }
+}
+
+#[test]
+fn bad_desktop_values_are_field_findings_and_unknown_keys_are_reported() {
+    let inspection =
+        inspect_text("[desktop]\ntray = \"yes\"\nclose = \"minimize\"\nextra = true\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: desktop.tray: expected true or false, found \"yes\"",
+            "library.toml: desktop.close: expected one of quit, tray, found \"minimize\"",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        ["library.toml: desktop.extra: unknown key, ignored"]
+    );
+    let inspection = inspect_text("[desktop]\nclose = 1\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.close: expected one of quit, tray, found 1"]
+    );
+    let inspection = inspect_text("desktop = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop: expected a table, found 4"]
+    );
+}
+
+#[test]
+fn a_bad_on_start_is_a_field_finding() {
+    let inspection = inspect_text("[desktop]\non_start = \"minimize\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.on_start: expected one of keep, hide, found \"minimize\""]
+    );
+    assert!(messages(&inspection, FindingKind::KeyUnknown).is_empty());
+    let inspection = inspect_text("[desktop]\non_start = true\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.on_start: expected one of keep, hide, found true"]
+    );
+}
+
+#[test]
+fn a_bad_on_stop_is_a_field_finding() {
+    let inspection = inspect_text("[desktop]\non_stop = \"hide\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.on_stop: expected one of restore, show, found \"hide\""]
+    );
+    assert!(messages(&inspection, FindingKind::KeyUnknown).is_empty());
+    let inspection = inspect_text("[desktop]\non_stop = true\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: desktop.on_stop: expected one of restore, show, found true"]
     );
 }

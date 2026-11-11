@@ -8,10 +8,42 @@ fn app_settings_carry_the_bundled_fonts() {
     let settings = app_settings();
 
     assert_eq!(settings.default_text_size, 14.into());
-    assert_eq!(settings.default_font, fonts::DEFAULT);
+    assert_eq!(settings.default_font, iced::Font::DEFAULT);
     assert_eq!(settings.fonts.len(), 2);
     assert_eq!(settings.fonts[0].as_ref(), fonts::REGULAR);
     assert_eq!(settings.fonts[1].as_ref(), fonts::SEMIBOLD);
+}
+
+#[test]
+fn boot_opens_the_main_window() {
+    use iced_runtime::window::Action;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+        .unwrap();
+    let (app, boot) = App::boot(paths);
+    let main = app.main_window.expect("boot opens the main window");
+    assert_eq!(app.title(main), "wineo");
+    assert_eq!(app.title(window::Id::unique()), "");
+    let children = |id| app.window_view(id).as_widget().children().len();
+    assert!(children(main) > 0);
+    assert_eq!(children(window::Id::unique()), 0);
+
+    // The batch yields the first ready action before polling the other
+    // tasks, which would reach the keyring. So this sees the
+    // open first only if it isn't chained behind any of them. It also pins
+    // `open` as first in the batch, so moving it later would fail this even
+    // though that would be harmless.
+    let mut stream = iced_runtime::task::into_stream(boot).unwrap();
+    let action = iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream));
+    let Some(iced_runtime::Action::Window(Action::Open(opened, settings, _))) = action else {
+        panic!("boot's first action opens a window");
+    };
+    assert_eq!(opened, main);
+    assert_eq!(settings.size, iced::Size::new(1200.0, 800.0));
+    assert!(!settings.exit_on_close_request);
+    assert!(settings.icon.is_some());
+    assert_eq!(settings.platform_specific.application_id, "wineo-gui");
 }
 
 pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
@@ -241,7 +273,7 @@ fn closing_waits_for_all_tools_after_leaving_their_pages() {
         tools_page::Event::OpenWinetricks,
     ));
     let _ = app.update(Message::Section(sidebar::Section::Downloads));
-    let _ = app.update(Message::Window(window::Event::CloseRequested));
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
     assert!(app.close_prompt);
     let _ = app.update(Message::CancelAndClose);
     assert!(app.closing && app.foreground_busy());

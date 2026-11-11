@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use iced::Task;
+use iced::futures::FutureExt;
+use iced::{Task, window};
 
 use crate::{App, Message, OperationKind, portable_page, sidebar, snapshots_page};
 
@@ -10,8 +11,82 @@ use crate::{App, Message, OperationKind, portable_page, sidebar, snapshots_page}
 /// about 5 s, and a margin. A write stalled past that is given up on.
 pub(crate) const SORT_SAVE_WAIT: Duration = Duration::from_secs(6);
 
+/// How long the exit waits after closing the window.
+pub(crate) const EXIT_AFTER_CLOSE: Duration = Duration::from_millis(50);
+
+/// How long an exit waits for the bus to take back the app's name and the
+/// tray icon before it goes on anyway.
+pub(crate) const LEAVE_WAIT: Duration = Duration::from_secs(1);
+
+/// The window's size at 100%, in logical pixels.
+const LAUNCH: iced::Size = iced::Size::new(1200.0, 800.0);
+
+/// The smallest window the layouts hold up in, in interface pixels: below
+/// about 400 wide they break, and 300 high keeps the toolbar and a card row.
+const MIN_SIZE: iced::Size = iced::Size::new(400.0, 300.0);
+
+/// What iced multiplies the desktop's own scale by for an interface size in
+/// percent.
+pub(crate) fn factor(interface_size: u16) -> f32 {
+    f32::from(interface_size) / 100.0
+}
+
+/// The launch size in the window's logical pixels, which a bigger interface
+/// makes fewer.
+pub(crate) fn launch_size(interface_size: u16) -> iced::Size {
+    LAUNCH * (1.0 / factor(interface_size))
+}
+
+/// The minimum for `window::Settings::min_size`. iced hands that to the
+/// compositor as is, in the desktop's logical pixels, so a bigger interface
+/// needs a bigger one to keep the same room in interface pixels.
+pub(crate) fn open_min_size(interface_size: u16) -> iced::Size {
+    MIN_SIZE * factor(interface_size)
+}
+
+/// The minimum for `window::set_min_size`. Unlike the one at open, iced
+/// scales this by the window's whole scale factor, interface size included,
+/// so it takes interface pixels as they are.
+pub(crate) fn live_min_size() -> iced::Size {
+    MIN_SIZE
+}
+
 impl App {
+    pub(crate) fn scale_factor(&self, window: window::Id) -> f32 {
+        if self.main_window == Some(window) {
+            factor(self.interface_size)
+        } else {
+            1.0
+        }
+    }
+
+    /// A new scale factor changes the window's logical size without a
+    /// `Resized`, so this asks for it. iced applies the factor before it
+    /// answers. The minimum is sent again too, since iced turns it into
+    /// pixels with the factor in effect when it runs.
+    pub(crate) fn refresh_window_size(&self) -> Task<Message> {
+        let Some(id) = self.main_window else {
+            return Task::none();
+        };
+        let minimum = window::set_min_size(id, Some(live_min_size()));
+        let size =
+            window::size(id).map(move |size| Message::Window(id, window::Event::Resized(size)));
+        Task::batch([minimum, size])
+    }
+
+    /// The close button: Keep running in the tray hides the window, even
+    /// over foreground work since nothing stops, and otherwise it quits.
     pub(crate) fn close_requested(&mut self) -> Task<Message> {
+        if self.keeps_running() {
+            self.closing_to_the_tray();
+            self.hide_window()
+        } else {
+            self.quit_requested()
+        }
+    }
+
+    /// The tray's Quit, and the close button when it quits.
+    pub(crate) fn quit_requested(&mut self) -> Task<Message> {
         // A drag the close interrupts saves where it was, and the wait
         // below covers that write.
         let drag = self.end_zoom_drag();
@@ -30,6 +105,7 @@ impl App {
             // the wait runs out. Like any accepted close it takes the input,
             // but it shows nothing.
             self.closing = true;
+            self.start_leaving();
             self.steam_auto.cancel();
             self.close_prompt = true;
             self.close_quietly = true;
@@ -51,12 +127,72 @@ impl App {
 
     /// Closes the window and starts the watchdog. Every exit goes through
     /// here, so work still holding the runtime open can't keep the process.
-    /// Starting it again is harmless.
+    /// Starting it again is harmless, and a forced close must still go
+    /// through while a chained exit waits on a slow task.
     pub(crate) fn close_window(&mut self) -> Task<Message> {
+        // Messages run until the loop stops, so late results must drop.
+        self.exiting = true;
         self.steam_auto.cancel();
         let work = self.abandoned_work();
         self.watchdog.start(&work);
-        iced::exit()
+        self.close_then_exit()
+    }
+
+    /// The window goes first, so an exit stuck on work the watchdog is
+    /// waiting out doesn't leave a frozen window up. The pause lets the
+    /// destroy reach the compositor before the runtime stops.
+    pub(crate) fn close_then_exit(&mut self) -> Task<Message> {
+        self.start_leaving();
+        let leave = self.leave_wait();
+        let close = self.main_window.map_or_else(Task::none, window::close);
+        close
+            .chain(leave)
+            .chain(Task::future(async { tokio::time::sleep(EXIT_AFTER_CLOSE).await }).discard())
+            .chain(iced::exit())
+    }
+
+    /// Gives the bus name back and takes the tray icon down as soon as a
+    /// close can't be taken back, so a relaunch while the exit waits on
+    /// writes or stuck work starts a fresh app instead of calling `Show` on
+    /// this one. Only the first call starts them; every exit path waits on
+    /// the same result.
+    pub(crate) fn start_leaving(&mut self) {
+        if self.left {
+            return;
+        }
+        self.left = true;
+        let release = self.instance.as_ref().map(crate::instance::Instance::leave);
+        let tray = self.tray.running.stop();
+        if release.is_none() && tray.is_none() {
+            return;
+        }
+        let both = async move {
+            let release = async move {
+                if let Some(release) = release {
+                    release.await;
+                }
+            };
+            let tray = async move {
+                if let Some(tray) = tray {
+                    tray.await;
+                }
+            };
+            iced::futures::future::join(release, tray).await;
+        };
+        self.leaving = Some(both.boxed().shared());
+    }
+
+    /// Waits, bounded, for what `start_leaving` started. The runtime that
+    /// serves the tray may hang once it's stopping, so this runs before the
+    /// exit.
+    fn leave_wait(&self) -> Task<Message> {
+        let Some(leaving) = self.leaving.clone() else {
+            return Task::none();
+        };
+        Task::future(async move {
+            let _ = tokio::time::timeout(LEAVE_WAIT, leaving).await;
+        })
+        .discard()
     }
 
     /// What closing would leave unfinished, named for the line the watchdog
@@ -114,6 +250,7 @@ impl App {
     pub(crate) fn cancel_and_close(&mut self, event: Message) -> Task<Message> {
         let force = matches!(event, Message::ForceCloseWork);
         self.closing = true;
+        self.start_leaving();
         self.steam_auto.cancel();
         self.cancel_management();
         self.cancel_features(force);
@@ -155,5 +292,11 @@ impl App {
         self.collapse.reset();
         let waited = self.motion_ended(true);
         Task::batch([self.load_visible_art(), waited])
+    }
+
+    /// A window event from the main window, as the runtime would send it.
+    #[cfg(test)]
+    pub(crate) fn window_event(&self, event: window::Event) -> Message {
+        Message::Window(self.main_window.expect("boot opens the main window"), event)
     }
 }

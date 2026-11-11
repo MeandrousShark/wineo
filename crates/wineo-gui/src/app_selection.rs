@@ -126,6 +126,7 @@ impl App {
                 .and_then(|card| card.default_target.clone());
             self.panel_error = None;
             self.panel_note = None;
+            self.show_held_error(&name);
             self.load_panel_art()
         }
     }

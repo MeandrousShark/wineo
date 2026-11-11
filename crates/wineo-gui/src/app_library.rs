@@ -277,6 +277,17 @@ impl App {
     }
 
     pub(crate) fn cards_loaded(&mut self, cards: Vec<Card>) -> Task<Message> {
+        // A full read is newer than what the tray's poll last saw.
+        self.tray.polled = None;
+        self.tray.played.clear();
+        if self
+            .tray
+            .held_error
+            .as_ref()
+            .is_some_and(|(name, _)| !cards.iter().any(|card| &card.name == name))
+        {
+            self.tray.held_error = None;
+        }
         self.refreshing = false;
         self.loaded = true;
         if self.hook_stop_confirm.as_ref().is_some_and(|name| {
@@ -294,6 +305,7 @@ impl App {
         self.import_toast.resolve(&cards);
         let art = self.refresh_art(&cards);
         let checks = self.merge_checked(cards);
+        self.forget_stopped();
         Task::batch([art, checks, self.load_visible_art(), self.load_panel_art()])
     }
 }
@@ -304,6 +316,13 @@ pub(crate) struct SteamRecordWrites {
     writing: bool,
     /// The current run of failures has been shown.
     warned: bool,
+}
+
+impl SteamRecordWrites {
+    #[cfg(test)]
+    pub(crate) fn writing(&self) -> bool {
+        self.writing
+    }
 }
 
 /// One write of what a scan proposed, then the rescan's cache rereads the file.

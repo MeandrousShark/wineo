@@ -234,6 +234,48 @@ pub struct Appearance {
     /// Used when `follow_system` is off.
     pub theme: String,
     pub improve_readability: bool,
+    pub motion: Motion,
+    /// How much bigger than normal the desktop app draws, in percent from
+    /// `INTERFACE_SIZE_MIN` to `INTERFACE_SIZE_MAX`.
+    pub interface_size: u16,
+    /// The font family the desktop app's text uses. None is the app's
+    /// built-in font.
+    pub font: Option<String>,
+}
+
+pub const INTERFACE_SIZE_MIN: u16 = 100;
+pub const INTERFACE_SIZE_MAX: u16 = 200;
+
+/// Whether the desktop app animates movement. `System` follows the
+/// desktop's own animation setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Motion {
+    #[default]
+    System,
+    Full,
+    Reduced,
+}
+
+impl Motion {
+    pub const ALL: [Self; 3] = [Self::System, Self::Full, Self::Reduced];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Full => "full",
+            Self::Reduced => "reduced",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "full" => Some(Self::Full),
+            "reduced" => Some(Self::Reduced),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Appearance {
@@ -244,6 +286,118 @@ impl Default for Appearance {
             light: "daylight".to_owned(),
             theme: "midnight".to_owned(),
             improve_readability: false,
+            motion: Motion::default(),
+            interface_size: INTERFACE_SIZE_MIN,
+            font: None,
+        }
+    }
+}
+
+/// How the desktop app lives on the desktop: its tray icon, what closing
+/// the window does, and what a start and the last stop do to the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Desktop {
+    pub tray: bool,
+    pub close: CloseWindow,
+    pub on_start: OnStart,
+    pub on_stop: OnStop,
+}
+
+impl Default for Desktop {
+    fn default() -> Self {
+        Self {
+            tray: true,
+            close: CloseWindow::default(),
+            on_start: OnStart::default(),
+            on_stop: OnStop::default(),
+        }
+    }
+}
+
+/// What the desktop app's close button does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CloseWindow {
+    #[default]
+    Quit,
+    /// Closes the window and keeps the app in the tray.
+    Tray,
+}
+
+impl CloseWindow {
+    pub const ALL: [Self; 2] = [Self::Quit, Self::Tray];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quit => "quit",
+            Self::Tray => "tray",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "quit" => Some(Self::Quit),
+            "tray" => Some(Self::Tray),
+            _ => None,
+        }
+    }
+}
+
+/// What the desktop app's window does when something it runs starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnStart {
+    #[default]
+    Keep,
+    /// Closes the window to the tray until what started has stopped.
+    Hide,
+}
+
+impl OnStart {
+    pub const ALL: [Self; 2] = [Self::Keep, Self::Hide];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Hide => "hide",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "keep" => Some(Self::Keep),
+            "hide" => Some(Self::Hide),
+            _ => None,
+        }
+    }
+}
+
+/// What the desktop app's window does once everything it started has stopped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnStop {
+    /// Brings back a window a start hid, and leaves one the user closed.
+    #[default]
+    Restore,
+    /// Opens the window, even if the user had closed it.
+    Show,
+}
+
+impl OnStop {
+    pub const ALL: [Self; 2] = [Self::Restore, Self::Show];
+
+    /// The value `library.toml` holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Restore => "restore",
+            Self::Show => "show",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "restore" => Some(Self::Restore),
+            "show" => Some(Self::Show),
+            _ => None,
         }
     }
 }
@@ -294,6 +448,7 @@ pub(crate) fn unreadable_message(line: Option<usize>, reason: &str) -> String {
 pub struct Library {
     pub view: View,
     pub appearance: Appearance,
+    pub desktop: Desktop,
     pub environments: BTreeMap<String, Entry>,
     /// Saved views by name, A to Z ignoring case.
     pub presets: Vec<(String, Preset)>,
@@ -564,6 +719,50 @@ pub fn set_appearance(paths: &Paths, appearance: &Appearance) -> Result<bool> {
             appearance.improve_readability,
             default.improve_readability,
         );
+        changed |= set_appearance_motion(document, appearance.motion);
+        changed |= set_interface_size(document, appearance.interface_size);
+        changed |= set_appearance_font(document, appearance.font.as_deref());
+        changed
+    })
+}
+
+/// Writes only the fields that differ from what the file reads as, like
+/// `set_appearance`.
+pub fn set_desktop(paths: &Paths, desktop: &Desktop) -> Result<bool> {
+    edit(paths, |document| {
+        let mut changed = false;
+        if read_desktop(document).tray != desktop.tray {
+            store_value(
+                desktop_table_mut(document),
+                "tray",
+                Value::from(desktop.tray),
+            );
+            changed = true;
+        }
+        if read_desktop(document).close != desktop.close {
+            store_value(
+                desktop_table_mut(document),
+                "close",
+                Value::from(desktop.close.as_str()),
+            );
+            changed = true;
+        }
+        if read_desktop(document).on_start != desktop.on_start {
+            store_value(
+                desktop_table_mut(document),
+                "on_start",
+                Value::from(desktop.on_start.as_str()),
+            );
+            changed = true;
+        }
+        if read_desktop(document).on_stop != desktop.on_stop {
+            store_value(
+                desktop_table_mut(document),
+                "on_stop",
+                Value::from(desktop.on_stop.as_str()),
+            );
+            changed = true;
+        }
         changed
     })
 }
@@ -757,6 +956,7 @@ fn read_library(document: &DocumentMut) -> Library {
     Library {
         view,
         appearance: read_appearance(document),
+        desktop: read_desktop(document),
         environments,
         presets: preset::read_presets(document),
         other_presets: preset::read_other_presets(document),
@@ -784,7 +984,62 @@ fn read_appearance(document: &DocumentMut) -> Appearance {
         light: text("light", default.light),
         theme: text("theme", default.theme),
         improve_readability: flag("improve_readability", default.improve_readability),
+        motion: read_motion(table.get("motion")),
+        interface_size: read_interface_size(table.get("interface_size")),
+        font: read_font(table.get("font")),
     }
+}
+
+/// A mistyped or unknown value reads as the default, so a newer wineo's
+/// value stays in the file until the user picks another.
+fn read_desktop(document: &DocumentMut) -> Desktop {
+    let default = Desktop::default();
+    let Some(table) = document.get("desktop").and_then(Item::as_table_like) else {
+        return default;
+    };
+    Desktop {
+        tray: table
+            .get("tray")
+            .and_then(Item::as_bool)
+            .unwrap_or(default.tray),
+        close: table
+            .get("close")
+            .and_then(Item::as_str)
+            .and_then(CloseWindow::parse)
+            .unwrap_or(default.close),
+        on_start: table
+            .get("on_start")
+            .and_then(Item::as_str)
+            .and_then(OnStart::parse)
+            .unwrap_or(default.on_start),
+        on_stop: table
+            .get("on_stop")
+            .and_then(Item::as_str)
+            .and_then(OnStop::parse)
+            .unwrap_or(default.on_stop),
+    }
+}
+
+/// Out of range clamps; anything but a whole number reads as the default.
+fn read_interface_size(item: Option<&Item>) -> u16 {
+    item.and_then(Item::as_integer)
+        .map_or(INTERFACE_SIZE_MIN, |value| {
+            value.clamp(INTERFACE_SIZE_MIN.into(), INTERFACE_SIZE_MAX.into()) as u16
+        })
+}
+
+/// Anything but a family name reads as the built-in font.
+fn read_font(item: Option<&Item>) -> Option<String> {
+    item.and_then(Item::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+}
+
+/// An unknown or mistyped value reads as the default.
+fn read_motion(item: Option<&Item>) -> Motion {
+    item.and_then(Item::as_str)
+        .and_then(Motion::parse)
+        .unwrap_or_default()
 }
 
 fn read_entry(item: &Item) -> Entry {
@@ -928,6 +1183,62 @@ fn set_appearance_text(
     true
 }
 
+/// Compares with what the file reads as, so a value this wineo doesn't know,
+/// maybe a newer one's, stays until the user picks another.
+fn set_appearance_motion(document: &mut DocumentMut, motion: Motion) -> bool {
+    let current = document
+        .get("appearance")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("motion"));
+    if read_motion(current) == motion {
+        return false;
+    }
+    store_value(
+        appearance_table_mut(document),
+        "motion",
+        Value::from(motion.as_str()),
+    );
+    true
+}
+
+fn appearance_item<'a>(document: &'a DocumentMut, field: &str) -> Option<&'a Item> {
+    document
+        .get("appearance")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get(field))
+}
+
+/// Compares with what the file reads as, so a hand-edited size outside the
+/// range stays until the user picks another.
+fn set_interface_size(document: &mut DocumentMut, size: u16) -> bool {
+    let size = size.clamp(INTERFACE_SIZE_MIN, INTERFACE_SIZE_MAX);
+    if read_interface_size(appearance_item(document, "interface_size")) == size {
+        return false;
+    }
+    store_value(
+        appearance_table_mut(document),
+        "interface_size",
+        Value::from(i64::from(size)),
+    );
+    true
+}
+
+/// The built-in font is the key's absence, so picking it removes a family
+/// name. A value that isn't one reads as the built-in font and stays.
+fn set_appearance_font(document: &mut DocumentMut, font: Option<&str>) -> bool {
+    if read_font(appearance_item(document, "font")).as_deref() == font {
+        return false;
+    }
+    let table = appearance_table_mut(document);
+    match font {
+        Some(font) => store_value(table, "font", Value::from(font)),
+        None => {
+            table.remove("font");
+        }
+    }
+    true
+}
+
 fn set_added(paths: &Paths, name: &str, added: Timestamp) -> Result<bool> {
     edit(paths, |document| {
         let current = document
@@ -1003,6 +1314,10 @@ fn view_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
 
 fn appearance_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
     table_mut(document.as_table_mut(), "appearance")
+}
+
+fn desktop_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {
+    table_mut(document.as_table_mut(), "desktop")
 }
 
 fn environments_table_mut(document: &mut DocumentMut) -> &mut dyn TableLike {

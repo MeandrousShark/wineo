@@ -117,6 +117,7 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
             partly: 0,
             view: ViewRecovery::Recovered,
             appearance: ViewRecovery::Absent,
+            desktop: ViewRecovery::Absent,
             presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
@@ -178,6 +179,7 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
             partly: 1,
             view: ViewRecovery::Partly,
             appearance: ViewRecovery::Absent,
+            desktop: ViewRecovery::Absent,
             presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
@@ -496,6 +498,7 @@ fn wording_for_no_entries_and_lost_view() {
         partly: 0,
         view: ViewRecovery::Lost,
         appearance: ViewRecovery::Absent,
+        desktop: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -512,6 +515,7 @@ fn wording_for_no_entries_and_lost_view() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Absent,
+        desktop: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -1034,6 +1038,62 @@ future = "kept"
 }
 
 #[test]
+fn repair_keeps_a_motion_string_and_drops_another_type() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nmotion = \"reduced\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        load(&fixture.paths).appearance.motion,
+        crate::library::Motion::Reduced
+    );
+
+    // A value this wineo doesn't know may be a newer one's, so it stays.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nmotion = \"slow\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(fixture.read().contains("motion = \"slow\""));
+
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\nmotion = 3\ndark = \"dracula\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.appearance, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("motion"));
+}
+
+#[test]
+fn repair_keeps_a_size_number_and_a_font_string_and_drops_other_types() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\ninterface_size = 250\nfont = \"Inter\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let text = fixture.read();
+    // Out of range may be a newer wineo's, so the line stays as typed.
+    assert!(text.contains("interface_size = 250"), "{text}");
+    let appearance = load(&fixture.paths).appearance;
+    assert_eq!(appearance.interface_size, 200);
+    assert_eq!(appearance.font.as_deref(), Some("Inter"));
+
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[appearance]\ninterface_size = \"big\"\nfont = 3\ndark = \"dracula\"\n[appearance]\ntheme = \"cellar\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.appearance, ViewRecovery::Partly);
+    let text = fixture.read();
+    assert!(
+        !text.contains("interface_size") && !text.contains("font"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_fully_recovered_appearance_is_reported() {
     let fixture = Fixture::new();
     fixture.write(
@@ -1060,6 +1120,7 @@ fn appearance_wording_for_a_lost_table() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Lost,
+        desktop: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -1453,6 +1514,7 @@ fn presets_wording_is_after_appearance_and_before_steam() {
         partly: 0,
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Recovered,
+        desktop: ViewRecovery::Absent,
         presets: ViewRecovery::Partly,
         steam: ViewRecovery::Recovered,
         steam_dropped: 0,
@@ -1495,4 +1557,105 @@ fn repair_drops_a_blank_preset_header_in_the_broken_tail() {
             .collect::<Vec<_>>(),
         ["Good"]
     );
+}
+
+#[test]
+fn repair_keeps_desktop_fields_of_the_right_type() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[desktop]\ntray = false\nclose = \"tray\"\n[desktop]\nclose = \"quit\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    // The first value wins, and the duplicate costs nothing it recognized.
+    assert_eq!(report.desktop, ViewRecovery::Partly, "{report}");
+    assert!(
+        report
+            .to_string()
+            .contains("Desktop settings partly recovered."),
+        "{report}"
+    );
+    let desktop = load(&fixture.paths).desktop;
+    assert!(!desktop.tray);
+    assert_eq!(desktop.close, crate::library::CloseWindow::Tray);
+
+    // A value this wineo doesn't know may be a newer one's, so it stays.
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\nclose = \"minimize\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered);
+    assert!(fixture.read().contains("close = \"minimize\""));
+
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\ntray = \"no\"\nclose = 3\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Lost);
+    assert!(!report.complete());
+    assert!(!fixture.read().contains("[desktop]"), "{}", fixture.read());
+}
+
+#[test]
+fn a_desktop_table_in_the_broken_tail_is_salvaged() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n[desktop]\ntray = false\nclose = \"tray\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered, "{report}");
+    assert!(report.to_string().contains("Desktop settings recovered."));
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert!(!library.desktop.tray);
+    assert_eq!(library.desktop.close, crate::library::CloseWindow::Tray);
+}
+
+#[test]
+fn repair_keeps_an_on_start_string_and_drops_a_mistyped_one() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\non_start = \"hide\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered, "{report}");
+    assert_eq!(
+        load(&fixture.paths).desktop.on_start,
+        crate::library::OnStart::Hide
+    );
+
+    // A value this wineo doesn't know may be a newer one's, so it stays.
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\non_start = \"minimize\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered);
+    assert!(fixture.read().contains("on_start = \"minimize\""));
+
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\ntray = false\non_start = 2\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("on_start"), "{}", fixture.read());
+    assert!(!load(&fixture.paths).desktop.tray);
+}
+
+#[test]
+fn repair_keeps_an_on_stop_string_and_drops_a_mistyped_one() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\non_stop = \"show\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered, "{report}");
+    assert_eq!(
+        load(&fixture.paths).desktop.on_stop,
+        crate::library::OnStop::Show
+    );
+
+    // A value this wineo doesn't know may be a newer one's, so it stays.
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\non_stop = \"minimize\"\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Recovered);
+    assert!(fixture.read().contains("on_stop = \"minimize\""));
+
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[desktop]\ntray = false\non_stop = 2\n[broken header\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.desktop, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("on_stop"), "{}", fixture.read());
+    assert!(!load(&fixture.paths).desktop.tray);
 }

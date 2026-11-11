@@ -538,7 +538,7 @@ fn closing_waits_for_a_pending_favorite() {
     let _ = toggle(&mut app, "bravo", Flag::Favorite);
     let _ = toggle(&mut app, "bravo", Flag::Favorite);
     let asked = Instant::now();
-    let close = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let close = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(app.closing && app.close_quietly);
     assert!(!run_counting(close, false, 0, is_saved).exits);
     let due = app.close_wake.due().expect("the wait is bounded");
@@ -558,7 +558,7 @@ fn closing_waits_for_the_queued_toggle_too() {
     let (_root, mut app) = loaded();
     let first = toggle(&mut app, "bravo", Flag::Favorite);
     let _ = toggle(&mut app, "bravo", Flag::Favorite);
-    let _ = app.update(Message::Window(iced::window::Event::CloseRequested));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     let mut again = Vec::new();
     for message in saved(first, 1) {
         let ran = run_counting(app.update(message), false, 1, is_saved);
@@ -578,7 +578,8 @@ fn a_write_finishing_after_exit_changes_nothing() {
     let (_root, mut app) = loaded();
     let _ = toggle(&mut app, "bravo", Flag::Favorite);
     let _ = toggle(&mut app, "bravo", Flag::Favorite);
-    let close = || Message::Window(iced::window::Event::CloseRequested);
+    let window = app.main_window.unwrap();
+    let close = move || Message::Window(window, iced::window::Event::CloseRequested);
     let _ = app.update(close());
     let _ = app.update(close());
     assert!(app.exiting);

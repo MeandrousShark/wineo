@@ -3,7 +3,7 @@
 
 use iced::theme::Mode;
 use iced::widget::{Space, column, container, row, text, text_input};
-use iced::{Center, Element, Fill, Font, border, font};
+use iced::{Center, Element, Fill, border};
 use wineo_core::themes::ROLES;
 
 use super::appearance::{Edit, Form, NAME_TAKEN, send, swatch_palette};
@@ -41,13 +41,6 @@ const FIELD_WIDTH: f32 = 120.0;
 /// The focus id of a role's hex field.
 pub(crate) fn color_id(role: usize) -> String {
     format!("appearance-color-{}", ROLES[role])
-}
-
-fn semibold() -> Font {
-    Font {
-        weight: font::Weight::Semibold,
-        ..Font::DEFAULT
-    }
 }
 
 pub(super) fn section(
@@ -91,7 +84,7 @@ pub(super) fn section(
     }
     let head = row![
         text(shown.name().to_owned())
-            .font(semibold())
+            .font(crate::fonts::semibold())
             .color(palette.foreground)
             .width(Fill),
         actions,
