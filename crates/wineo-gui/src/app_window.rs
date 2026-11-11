@@ -21,6 +21,12 @@ pub(crate) const LEAVE_WAIT: Duration = Duration::from_secs(1);
 /// The window's size at 100%, in logical pixels.
 const LAUNCH: iced::Size = iced::Size::new(1200.0, 800.0);
 
+/// The smallest window the layouts hold up in, in interface pixels: below
+/// about 400 wide they break, and 300 high keeps the toolbar and a card row.
+const MIN_WIDTH: f32 = 400.0;
+const MIN_HEIGHT: f32 = 300.0;
+const MIN_SIZE: iced::Size = iced::Size::new(MIN_WIDTH, MIN_HEIGHT);
+
 /// What iced multiplies the desktop's own scale by for an interface size in
 /// percent.
 pub(crate) fn factor(interface_size: u16) -> f32 {
@@ -31,6 +37,20 @@ pub(crate) fn factor(interface_size: u16) -> f32 {
 /// makes fewer.
 pub(crate) fn launch_size(interface_size: u16) -> iced::Size {
     LAUNCH * (1.0 / factor(interface_size))
+}
+
+/// The minimum for `window::Settings::min_size`. iced hands that to the
+/// compositor as is, in the desktop's logical pixels, so a bigger interface
+/// needs a bigger one to keep the same room in interface pixels.
+pub(crate) fn open_min_size(interface_size: u16) -> iced::Size {
+    MIN_SIZE * factor(interface_size)
+}
+
+/// The minimum for `window::set_min_size`. Unlike the one at open, iced
+/// scales this by the window's whole scale factor, interface size included,
+/// so it takes interface pixels as they are.
+pub(crate) fn live_min_size() -> iced::Size {
+    MIN_SIZE
 }
 
 impl App {
@@ -44,12 +64,16 @@ impl App {
 
     /// A new scale factor changes the window's logical size without a
     /// `Resized`, so this asks for it. iced applies the factor before it
-    /// answers.
+    /// answers. The minimum is sent again too, since iced turns it into
+    /// pixels with the factor in effect when it runs.
     pub(crate) fn refresh_window_size(&self) -> Task<Message> {
         let Some(id) = self.main_window else {
             return Task::none();
         };
-        window::size(id).map(move |size| Message::Window(id, window::Event::Resized(size)))
+        let minimum = window::set_min_size(id, Some(live_min_size()));
+        let size =
+            window::size(id).map(move |size| Message::Window(id, window::Event::Resized(size)));
+        Task::batch([minimum, size])
     }
 
     /// The close button: Keep running in the tray hides the window, even

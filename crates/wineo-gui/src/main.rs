@@ -838,7 +838,7 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
-        let (main_window, open) = open_main_window(launch);
+        let (main_window, open) = open_main_window(launch, app.interface_size);
         app.main_window = Some(main_window);
         (
             app,
@@ -2157,14 +2157,18 @@ fn icon_rgba(size: Option<u32>) -> Option<(Vec<u8>, u32, u32)> {
 
 /// Opens the main window. The id is known at once, before the window
 /// exists, so events can be matched to it from the first one.
-pub(crate) fn open_main_window(size: iced::Size) -> (window::Id, Task<Message>) {
-    let (id, open) = window::open(window_settings(size));
+pub(crate) fn open_main_window(
+    size: iced::Size,
+    interface_size: u16,
+) -> (window::Id, Task<Message>) {
+    let (id, open) = window::open(window_settings(size, interface_size));
     (id, open.discard())
 }
 
-fn window_settings(size: iced::Size) -> window::Settings {
+fn window_settings(size: iced::Size, interface_size: u16) -> window::Settings {
     window::Settings {
         size,
+        min_size: Some(app_window::open_min_size(interface_size)),
         exit_on_close_request: false,
         icon: app_icon(),
         platform_specific: window::settings::PlatformSpecific {

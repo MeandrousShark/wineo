@@ -559,6 +559,45 @@ fn keep_running_hides_the_window_and_open_brings_it_back_where_it_was() {
 }
 
 #[test]
+fn a_window_hidden_in_the_tray_gets_no_minimum_update_and_reopens_with_the_current_one() {
+    use iced_runtime::window::Action as Window;
+    let mut app = example();
+    with_tray(&mut app);
+    app.desktop.close = CloseWindow::Tray;
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
+    assert_eq!(app.main_window, None);
+
+    // The size changes with no window to tell, as a Revert can do.
+    app.appearance.interface_size = 150;
+    let task = app.update(Message::Pressed);
+    if let Some(stream) = iced_runtime::task::into_stream(task) {
+        use iced::futures::StreamExt;
+        let actions = iced::futures::executor::block_on(stream.collect::<Vec<_>>());
+        assert!(
+            !actions.iter().any(|action| matches!(
+                action,
+                iced_runtime::Action::Window(Window::SetMinSize(..))
+            )),
+            "no window, no update"
+        );
+    }
+
+    let task = app.update(Message::Tray(Event::Open));
+    let mut stream = iced_runtime::task::into_stream(task).unwrap();
+    let mut opened = None;
+    while let Some(action) =
+        iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream))
+    {
+        if let iced_runtime::Action::Window(Window::Open(_, settings, _)) = action {
+            opened = Some(settings);
+            break;
+        }
+    }
+    let settings = opened.expect("the tray's Open opens the window");
+    assert_eq!(settings.min_size, Some(iced::Size::new(600.0, 450.0)));
+}
+
+#[test]
 fn open_raises_a_window_that_is_already_up() {
     let mut app = example();
     let main = app.main_window.unwrap();

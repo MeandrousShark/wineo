@@ -728,6 +728,128 @@ fn a_size_change_refreshes_the_window_size() {
     assert!(answer_size(task, main, smaller).is_none());
 }
 
+/// The minimum sizes `task` sets on `main`, in order. Other actions are
+/// dropped, which closes their channels.
+fn min_size_updates(task: iced::Task<Message>, main: iced::window::Id) -> Vec<Option<iced::Size>> {
+    use iced::futures::StreamExt;
+    use iced_runtime::{Action, window::Action as Window};
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut found = Vec::new();
+        while let Ok(Some(action)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await
+        {
+            if let Action::Window(Window::SetMinSize(id, size)) = action {
+                assert_eq!(id, main);
+                found.push(size);
+            }
+        }
+        found
+    })
+}
+
+#[test]
+fn the_minimum_size_in_each_unit_follows_the_interface_size() {
+    use crate::app_window::{live_min_size, open_min_size};
+    let size = iced::Size::new;
+    assert_eq!(open_min_size(100), size(400.0, 300.0));
+    assert_eq!(open_min_size(150), size(600.0, 450.0));
+    assert_eq!(open_min_size(200), size(800.0, 600.0));
+    // Between steps, as a hand-edited file can leave it.
+    assert_eq!(open_min_size(130), size(400.0 * 1.3, 300.0 * 1.3));
+    // The live one is in interface pixels, which iced scales itself.
+    assert_eq!(live_min_size(), size(400.0, 300.0));
+}
+
+#[test]
+fn the_window_opens_with_the_minimum_for_the_interface_size() {
+    let size = iced::Size::new;
+    assert_eq!(
+        crate::window_settings(size(1200.0, 800.0), 100).min_size,
+        Some(size(400.0, 300.0))
+    );
+    assert_eq!(
+        crate::window_settings(size(800.0, 533.0), 150).min_size,
+        Some(size(600.0, 450.0))
+    );
+    assert_eq!(
+        crate::window_settings(size(600.0, 400.0), 200).min_size,
+        Some(size(800.0, 600.0))
+    );
+    let (_root, paths) = setup();
+    write_library(&paths, "[appearance]\ninterface_size = 150\n");
+    let (app, boot) = App::boot(paths.clone());
+    let mut stream = iced_runtime::task::into_stream(boot).unwrap();
+    let action = iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream));
+    let Some(iced_runtime::Action::Window(iced_runtime::window::Action::Open(id, settings, _))) =
+        action
+    else {
+        panic!("boot's first action opens a window");
+    };
+    assert_eq!(Some(id), app.main_window);
+    assert_eq!(settings.min_size, Some(size(600.0, 450.0)));
+}
+
+#[test]
+fn every_interface_size_change_resets_the_minimum_of_the_open_window() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    let main = app.main_window.unwrap();
+    let min = Some(Some(iced::Size::new(400.0, 300.0)));
+    let one = |task| min_size_updates(task, main).first().copied();
+    let preview = |app: &mut App, size| {
+        app.update(Message::Settings(Event::Appearance(Edit::InterfaceSize(
+            size,
+        ))))
+    };
+
+    // The live preview.
+    assert_eq!(one(preview(&mut app, 150)), min);
+    assert_eq!(min_size_updates(preview(&mut app, 175), main).len(), 1);
+    // The size already in use changes nothing.
+    assert!(min_size_updates(preview(&mut app, 175), main).is_empty());
+    // Revert.
+    assert_eq!(one(app.update(Message::Settings(Event::Revert))), min);
+
+    // Save keeps the size the preview already applied, so the minimum
+    // already matches and nothing is sent again.
+    let _ = preview(&mut app, 150);
+    let _ = app.update(Message::Settings(Event::Save));
+    let page = page_of(&app);
+    let View::Global(editor) = &page.view else {
+        panic!("global form expected");
+    };
+    let report = load::save_global_page(
+        &paths,
+        &editor.form.edits(),
+        None,
+        editor.appearance.edits().as_ref(),
+    )
+    .unwrap();
+    let generation = page.generation;
+    let saved = app.update(Message::Settings(Event::Saved(generation, Ok(report))));
+    assert!(min_size_updates(saved, main).is_empty());
+    let loaded = app.update(Message::Settings(Event::Loaded(
+        generation,
+        load::snapshot_global(&paths),
+    )));
+    assert!(min_size_updates(loaded, main).is_empty());
+    assert_eq!(app.scale_factor(main), 1.5);
+
+    // Leaving with the draft discarded undoes a preview.
+    let _ = preview(&mut app, 200);
+    let _ = app.update(Message::Section(crate::sidebar::Section::Library));
+    assert_eq!(one(app.update(Message::Settings(Event::Discard))), min);
+    assert_eq!(app.scale_factor(main), 1.5, "back to the saved size");
+}
+
 #[test]
 fn startup_opens_the_same_size_on_screen_at_any_interface_size() {
     use iced_runtime::{Action, window::Action as Window};
