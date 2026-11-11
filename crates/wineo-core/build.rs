@@ -61,42 +61,62 @@ fn describe(workspace: &Path) -> Option<String> {
         while !path.exists() && path.pop() && path.starts_with(&common) {}
         watched.push(path);
     }
-    // A new tag at HEAD turns a stamped build into the release.
-    watched.extend([common.join("packed-refs"), common.join("refs/tags")]);
+    // A new tag at HEAD turns a stamped build into the release. A reftable
+    // repository keeps every ref in its tables instead.
+    watched
+        .extend(["packed-refs", "refs/tags", "reftable/tables.list"].map(|path| common.join(path)));
     for path in watched {
         // Cargo reruns on every build for a path that doesn't exist.
         if path.exists() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
-    git(
+    let describe = git(
         &workspace,
         &[
             "describe",
             "--tags",
             "--match",
             "v[0-9]*",
-            "--dirty",
             "--long",
             "--abbrev=8",
         ],
+    )?;
+    // Not `describe --dirty`, which takes index.lock and rewrites a stale
+    // index even under --no-optional-locks, so it could fail a `git add` or
+    // commit running beside the build. status refreshes only in memory. If
+    // it fails, the build is marked dirty rather than passed off as the
+    // release.
+    let dirty = git(
+        &workspace,
+        &["status", "--porcelain", "--untracked-files=no"],
     )
+    .is_none_or(|status| !status.trim().is_empty());
+    let describe = describe.trim();
+    Some(if dirty {
+        format!("{describe}-dirty")
+    } else {
+        describe.to_owned()
+    })
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(dir)
-        // Builds run beside the developer's own git commands, so the dirty
-        // check must not take the index lock.
+        // Builds run beside the developer's own git commands, so status must
+        // not write the refreshed index back.
         .arg("--no-optional-locks")
-        .args(args)
-        // Find the repository from the source tree, not from a caller's
-        // hook or script.
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
+        .args(args);
+    // Find the repository from the source tree, not from a caller's hook or
+    // script.
+    for (key, _) in env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let output = command
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
