@@ -382,7 +382,10 @@ Plan 0063 added these, under Settings, Appearance.
   stays in logical pixels: never scale a size by hand, and never read the
   physical window size for layout. The window keeps its size on screen, so
   a bigger interface shows less, and anything that can run out of room
-  folds, wraps, or scrolls instead of clipping.
+  folds, wraps, or scrolls instead of clipping. Layouts can count on at
+  least 400 by 300: the window's minimum size is that in interface pixels,
+  so it grows on screen with the interface size and follows a change live.
+  Some compositors, like Hyprland, don't enforce it.
 - **Font**: text that names no font draws in the generic sans-serif family,
   which the chosen font is mapped to, so leave text on the default font
   unless it's monospace. Bold text goes through the semibold helper, which
