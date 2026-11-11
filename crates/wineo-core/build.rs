@@ -110,7 +110,9 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         .arg("--no-optional-locks")
         .args(args);
     // Find the repository from the source tree, not from a caller's hook or
-    // script.
+    // script. This also drops config passed through GIT_CONFIG_*, so a
+    // safe.directory set that way leaves git unreadable, and the build prints
+    // the plain version as it does with no git at all.
     for (key, _) in env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
             command.env_remove(key);

@@ -4,7 +4,8 @@
 /// the commit unless the build is exactly the release.
 ///
 /// `describe` is the output of `git describe --tags --match 'v[0-9]*'
-/// --dirty --long`, or None without git or without a reachable tag. A tag
+/// --long`, with `-dirty` appended when `git status --porcelain` lists a
+/// change, or None without git or without a reachable tag. A tag
 /// that isn't `v{crate_version}` still gets metadata, even at distance 0, so
 /// only the tagged release commit can print the bare version.
 pub fn version(crate_version: &str, describe: Option<&str>) -> String {
