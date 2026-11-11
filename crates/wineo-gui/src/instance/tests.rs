@@ -167,6 +167,33 @@ fn show_brings_back_a_window_closed_with_keep_running() {
 }
 
 #[test]
+fn a_window_brought_back_from_the_tray_keeps_a_light_system() {
+    let mut app = example();
+    with_tray(&mut app);
+    app.desktop.close = CloseWindow::Tray;
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::Light));
+    let light = crate::theme::Palette::from_mode(iced::theme::Mode::Light);
+    assert_eq!(app.palette, light);
+    let _ = app.update(app.window_event(window::Event::CloseRequested));
+    let _ = app.update(Message::Show);
+    // What iced sends when the new window opens.
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::None));
+    assert_eq!(app.palette, light);
+}
+
+#[test]
+fn a_none_after_a_dark_system_stays_dark() {
+    let mut app = example();
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::Dark));
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::None));
+    assert_eq!(app.system_mode, iced::theme::Mode::Dark);
+    assert_eq!(
+        app.palette,
+        crate::theme::Palette::from_mode(iced::theme::Mode::Dark)
+    );
+}
+
+#[test]
 fn show_raises_an_open_window() {
     let mut app = example();
     let main = app.main_window;

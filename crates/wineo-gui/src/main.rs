@@ -162,6 +162,9 @@ pub(crate) struct App {
     themes: Vec<theme::Custom>,
     /// The last system light or dark mode the app saw.
     system_mode: iced::theme::Mode,
+    /// A real light or dark mode has arrived, so a later `None` is iced's
+    /// stand-in for a new window's theme rather than the system's.
+    system_mode_known: bool,
     /// What `palette` was resolved from, so it's resolved again only when
     /// that changes.
     palette_from: (Appearance, Vec<theme::Custom>, iced::theme::Mode),
@@ -634,6 +637,7 @@ impl App {
             leaving: None,
             themes: Vec::new(),
             system_mode: iced::theme::Mode::Dark,
+            system_mode_known: false,
             palette_from: (Appearance::default(), Vec::new(), iced::theme::Mode::Dark),
             search: String::new(),
             search_focused: false,
@@ -1575,7 +1579,14 @@ impl App {
             }
             Message::Window(..) => Task::none(),
             Message::ThemeChanged(mode) => {
-                self.system_mode = mode;
+                // iced_winit replaces the system theme with each new window's
+                // own, which is none on Wayland and X11, so reopening from the
+                // tray would turn a light desktop dark (iced-rs/iced#3540).
+                // Drop this once that's fixed.
+                if mode != iced::theme::Mode::None || !self.system_mode_known {
+                    self.system_mode_known = mode != iced::theme::Mode::None;
+                    self.system_mode = mode;
+                }
                 Task::none()
             }
             Message::PanelTick(generation, now) => {
