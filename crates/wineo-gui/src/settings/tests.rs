@@ -3883,3 +3883,5 @@ mod custom_themes;
 mod key_rows;
 
 mod desktop;
+
+mod narrow_rows;

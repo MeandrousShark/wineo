@@ -957,21 +957,20 @@ pub(super) fn font_choice(
         return super::view::locked_choice(label, palette);
     }
     let open = form.font_picker.is_some();
+    let font = Font::with_name(if form.font_in_use_draws_name {
+        in_use
+    } else {
+        crate::fonts::BUILT_IN
+    });
     let control = button(
         row![
-            text(label)
-                .font(Font::with_name(if form.font_in_use_draws_name {
-                    in_use
-                } else {
-                    crate::fonts::BUILT_IN
-                }))
-                .size(14)
-                .wrapping(text::Wrapping::None)
-                .width(Fill),
+            // A long name ends in an ellipsis wherever the control ends up,
+            // since it folds narrower than usual in a small window.
+            container(crate::fit_text::fit_text(label, font, 14.0)).width(Fill),
             // Room for the arrow laid over the button.
-            Space::new().width(14),
+            Space::new().width(FONT_ARROW_ROOM),
         ]
-        .spacing(8)
+        .spacing(FONT_GAP)
         .align_y(Center),
     )
     .padding(PICK_LIST_PADDING)
@@ -987,14 +986,37 @@ pub(super) fn font_choice(
         .font_picker
         .as_ref()
         .map(|picker| font_popup(picker, in_use, palette));
-    dropdown(control, popup, send(Edit::FontClose))
-        .on_keys(
-            send(Edit::FontMove(true)),
-            send(Edit::FontMove(false)),
-            send(Edit::FontSubmit),
-        )
-        .into()
+    let control = dropdown(control, popup, send(Edit::FontClose)).on_keys(
+        send(Edit::FontMove(true)),
+        send(Edit::FontMove(false)),
+        send(Edit::FontSubmit),
+    );
+    // A stack sizes itself to its content, so the width is stated here for
+    // the row to see that it can't shrink.
+    let control = container(control).width(super::view::CONTROL_WIDTH);
+    // Like the runner picker, the full name is on hover only when the label
+    // is cut at the control's usual width. Folded narrower it can be cut
+    // without one, which is rare enough to leave. While the popup is open
+    // the list shows the name, so there is none.
+    if open || crate::tile_title::fit(label, FONT_LABEL_ROOM, 14.0, font) == label {
+        return control.into();
+    }
+    crate::zoom_control::with_tooltip_at(
+        control.into(),
+        label,
+        palette,
+        iced::widget::tooltip::Position::Top,
+    )
 }
+
+/// The gap between the label and the arrow's room in the Font button.
+const FONT_GAP: f32 = 8.0;
+/// Room for the arrow, which lies over the button's right end.
+const FONT_ARROW_ROOM: f32 = 14.0;
+/// What the label has in the button at its usual width: the button less its
+/// padding on both sides, the gap, and the arrow's room.
+pub(crate) const FONT_LABEL_ROOM: f32 =
+    super::view::CONTROL_WIDTH - 2.0 * PICK_LIST_PADDING[1] as f32 - FONT_GAP - FONT_ARROW_ROOM;
 
 const FONT_POPUP_HEIGHT: f32 = 320.0;
 
@@ -1078,7 +1100,11 @@ fn font_row(
     crate::dropdown::tagged(row, font_row_id(label), highlighted)
 }
 
-fn motion_choice(motion: Motion, locked: bool, palette: Palette) -> Element<'static, Message> {
+pub(super) fn motion_choice(
+    motion: Motion,
+    locked: bool,
+    palette: Palette,
+) -> Element<'static, Message> {
     if locked {
         return super::view::locked_choice(&MotionChoice(motion).to_string(), palette);
     }

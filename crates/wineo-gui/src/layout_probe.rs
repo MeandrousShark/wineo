@@ -232,6 +232,25 @@ impl<M> Laid<'_, M> {
         messages
     }
 
+    /// Runs `operation` on the tree's overlays, laid out in the window, which
+    /// `run` doesn't reach.
+    pub(crate) fn run_in_overlay(&mut self, mut operation: Box<dyn Operation>) {
+        let viewport = Rectangle::with_size(self.size);
+        let Some(mut overlay) = self.element.as_widget_mut().overlay(
+            &mut self.tree,
+            Layout::new(&self.node),
+            &self.renderer,
+            &viewport,
+            Vector::ZERO,
+        ) else {
+            return;
+        };
+        let node = overlay.as_overlay_mut().layout(&self.renderer, self.size);
+        overlay
+            .as_overlay_mut()
+            .operate(Layout::new(&node), &self.renderer, operation.as_mut());
+    }
+
     /// The bounds of each overlay the tree shows, laid out in the window.
     pub(crate) fn overlay_bounds(&mut self) -> Vec<Rectangle> {
         let viewport = Rectangle::with_size(self.size);

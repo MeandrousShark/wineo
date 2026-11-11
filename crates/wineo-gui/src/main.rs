@@ -28,8 +28,10 @@ mod ends;
 mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
+mod fit_text;
 mod flow;
 mod focus_button;
+mod fold_row;
 mod fonts;
 #[cfg(test)]
 mod galaxy_fake;

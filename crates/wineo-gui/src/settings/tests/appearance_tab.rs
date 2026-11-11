@@ -1446,3 +1446,219 @@ fn escape_with_the_font_dropdown_open_stays_on_settings() {
         "the popup closes itself"
     );
 }
+
+/// The bounds of the label and control of an Accessibility row laid out in
+/// `width`.
+fn accessibility_rows(app: &App, width: f32) -> Vec<(iced::Rectangle, iced::Rectangle)> {
+    let form = font_form(app);
+    let draft = &form.draft;
+    let palette = Palette::DARK;
+    let size = iced::Size::new(width, 600.0);
+    [
+        appearance::size_choice(draft.interface_size, false, palette),
+        appearance::font_choice(form, false, palette),
+        appearance::motion_choice(draft.motion, false, palette),
+    ]
+    .into_iter()
+    .map(|control| {
+        let mut row = view::setting_row("Label", control, None, palette);
+        let node = crate::layout_probe::layout(&mut row, size);
+        let parts: Vec<_> = node.children().iter().map(|part| part.bounds()).collect();
+        assert_eq!(parts.len(), 2);
+        (parts[0], parts[1])
+    })
+    .collect()
+}
+
+#[test]
+fn accessibility_controls_fold_under_their_label_in_a_narrow_window() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // 200% leaves about this much for the card, and then less.
+    for width in [300.0, 240.0, 150.0] {
+        for (label, control) in accessibility_rows(&app, width) {
+            assert_eq!(control.x, 0.0, "{width}");
+            assert!(control.y >= label.y + label.height, "{width}");
+            assert_eq!(control.width, width.min(view::CONTROL_WIDTH), "{width}");
+        }
+    }
+}
+
+#[test]
+fn accessibility_controls_sit_beside_their_label_in_a_wide_window() {
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // Exactly enough for the label, the gap, and the control, and more.
+    for width in [180.0 + 12.0 + view::CONTROL_WIDTH, 700.0] {
+        for (label, control) in accessibility_rows(&app, width) {
+            assert_eq!((label.x, label.width), (0.0, 180.0), "{width}");
+            assert_eq!(control.x, 192.0, "{width}");
+            assert_eq!(control.width, view::CONTROL_WIDTH, "{width}");
+            let middle = |bounds: iced::Rectangle| bounds.y + bounds.height / 2.0;
+            assert_eq!(middle(label), middle(control), "{width}");
+        }
+    }
+}
+
+#[test]
+fn a_filling_control_stays_beside_its_label_until_it_would_get_less_than_a_control_width() {
+    let place = |width: f32| {
+        let field = iced::widget::text_input("x", "").width(iced::Fill).into();
+        let mut row = view::setting_row("Label", field, None, Palette::DARK);
+        let node = crate::layout_probe::layout(&mut row, iced::Size::new(width, 600.0));
+        node.children()[1].bounds()
+    };
+    let enough = 180.0 + 12.0 + view::CONTROL_WIDTH;
+    for width in [700.0, enough] {
+        let control = place(width);
+        assert_eq!(control.x, 192.0, "{width}");
+        assert_eq!(control.width, width - 192.0, "{width}");
+    }
+    for width in [enough - 1.0, 300.0] {
+        let control = place(width);
+        assert_eq!((control.x, control.width), (0.0, width), "{width}");
+        assert!(control.y > 0.0, "{width}");
+    }
+}
+
+/// The Font control drawn in a container `width` wide on a 260 px canvas.
+fn font_pixels(app: &App, width: f32) -> Vec<u8> {
+    let mut control = iced::widget::container(appearance::font_choice(
+        font_form(app),
+        false,
+        Palette::DARK,
+    ))
+    .width(width)
+    .into();
+    crate::layout_probe::render(&mut control, iced::Size::new(view::CONTROL_WIDTH, 40.0))
+}
+
+/// The pixels of columns `from..to` of a canvas as wide as the control.
+fn columns(pixels: &[u8], from: usize, to: usize) -> Vec<u8> {
+    let width = view::CONTROL_WIDTH as usize;
+    pixels
+        .chunks(width * 4)
+        .flat_map(|line| line[from * 4..to * 4].to_vec())
+        .collect()
+}
+
+#[test]
+fn a_long_family_name_stays_inside_the_font_button_at_any_width() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    let own = crate::tile_title::line_width(WIDE, 14.0, iced::Font::with_name(WIDE));
+    assert!(own > 200.0, "the name must be wider than any room it has");
+    for width in [260.0_f32, 180.0, 120.0] {
+        let pixels = font_pixels(&app, width);
+        let past = columns(&pixels, width as usize, 260);
+        assert!(
+            past.chunks(4).all(|pixel| pixel[3] == 0),
+            "ink past a {width} px button"
+        );
+    }
+}
+
+#[test]
+fn a_long_family_name_leaves_the_arrow_band_to_the_arrow() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // The arrow's 14 px, its padding, and the gap before it hold the same
+    // pixels whatever the name is, so no text reaches under the arrow.
+    let band =
+        |app: &App, width: usize| columns(&font_pixels(app, width as f32), width - 32, width);
+    let widths = [260usize, 180, 120];
+    let built_in: Vec<_> = widths.iter().map(|width| band(&app, *width)).collect();
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    for (width, expected) in widths.iter().zip(built_in) {
+        assert_eq!(band(&app, *width), expected, "{width}");
+    }
+}
+
+/// Whether the closed Font control is wrapped in a tooltip, which the tree
+/// shows by a widget that keeps state where a container keeps none.
+fn font_has_tooltip(app: &App) -> bool {
+    appearance::font_choice(font_form(app), false, Palette::DARK)
+        .as_widget()
+        .tag()
+        != iced::advanced::widget::tree::Tag::stateless()
+}
+
+#[test]
+fn the_font_control_has_a_tooltip_only_for_a_name_cut_at_its_full_width() {
+    install_wide();
+    install_no_latin();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // The room the label has is the button less its padding, gap, and arrow.
+    assert_eq!(appearance::FONT_LABEL_ROOM, 218.0);
+    let cut = |name: &str, font: &'static str| {
+        crate::tile_title::line_width(name, 14.0, iced::Font::with_name(font))
+            > appearance::FONT_LABEL_ROOM
+    };
+    assert!(!cut(appearance::BUILT_IN_LABEL, BUILT_IN));
+    assert!(!font_has_tooltip(&app), "the built-in name fits");
+
+    edit(&mut app, Edit::Font(Some(NO_LATIN.to_owned())));
+    assert!(!cut(NO_LATIN, BUILT_IN));
+    assert!(!font_has_tooltip(&app), "a short name fits");
+
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert!(cut(WIDE, WIDE), "the fixture family is wider than the room");
+    assert!(font_has_tooltip(&app), "a cut name shows in full on hover");
+
+    edit(&mut app, Edit::FontOpen);
+    assert!(!font_has_tooltip(&app), "none while the popup is open");
+    edit(&mut app, Edit::FontClose);
+    assert!(font_has_tooltip(&app));
+}
+
+#[test]
+fn opening_the_font_popup_with_a_long_name_still_focuses_its_search() {
+    use crate::layout_probe::{lay_out, relay_out};
+    use iced::advanced::widget::{Operation, operation::Focusable};
+    use std::sync::{Arc, Mutex};
+    // Opening swaps the tooltip for a plain container, which changes the
+    // widget at the root of the control, so the tree is carried across as the
+    // runtime does it.
+    struct Focus(Arc<Mutex<Option<bool>>>);
+    impl Operation for Focus {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn focusable(
+            &mut self,
+            id: Option<&Id>,
+            _bounds: iced::Rectangle,
+            state: &mut dyn Focusable,
+        ) {
+            if id == Some(&Id::new(appearance::FONT_SEARCH_ID)) {
+                state.focus();
+                *self.0.lock().unwrap() = Some(state.is_focused());
+            } else {
+                state.unfocus();
+            }
+        }
+    }
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert!(font_has_tooltip(&app));
+    let size = iced::Size::new(900.0, 2000.0);
+    let tree = lay_out(page_of(&app).view(&paths, Palette::DARK), size).into_tree();
+    edit(&mut app, Edit::FontOpen);
+    assert!(!font_has_tooltip(&app));
+    let mut laid = relay_out(page_of(&app).view(&paths, Palette::DARK), tree, size);
+    let found = Arc::new(Mutex::new(None));
+    laid.run_in_overlay(Box::new(Focus(found.clone())));
+    assert_eq!(*found.lock().unwrap(), Some(true), "the search takes focus");
+}

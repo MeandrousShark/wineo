@@ -2,7 +2,7 @@ use iced::widget::{
     Column, Space, button, column, container, opaque, pick_list, row, scrollable, stack, text,
     text_input, toggler,
 };
-use iced::{Center, Color, Element, Fill, border};
+use iced::{Center, Color, Element, Fill, Length, border};
 
 use wineo_core::art::Kind;
 use wineo_core::components::Component;
@@ -16,6 +16,7 @@ use super::key_settings::KeyStatus;
 use super::load::Scan;
 use super::{Editor, Event, Page, TargetEdit, View, tabs};
 use crate::chips::{Chips, input_style};
+use crate::fold_row::fold_row;
 use crate::panel::{action_button, error_box};
 use crate::theme::Palette;
 use crate::ui::{
@@ -2076,16 +2077,13 @@ fn gamescope_fields<'a>(
                 .style(move |_, status| input_style(palette, status))
                 .into(),
         };
-        rows = rows.push(
-            row![
-                text(field.label())
-                    .color(palette.muted)
-                    .width(LABEL_WIDTH - 24.0),
-                control
-            ]
-            .spacing(12)
-            .align_y(Center),
-        );
+        rows = rows.push(labeled(
+            text(field.label())
+                .color(palette.muted)
+                .width(LABEL_WIDTH - 24.0),
+            control,
+            None,
+        ));
     }
     rows.into()
 }
@@ -2109,12 +2107,27 @@ pub(super) fn setting_row<'a>(
     note: Option<Element<'a, Message>>,
     palette: Palette,
 ) -> Element<'a, Message> {
-    let mut line = row![
+    labeled(
         text(label).color(palette.foreground).width(LABEL_WIDTH),
-        control
-    ]
-    .spacing(12)
-    .align_y(Center);
+        control,
+        note,
+    )
+}
+
+/// A label beside its control and note. A control that is fixed wide or
+/// fills folds under the label when the line is too narrow for it, so it
+/// never squeezes to nothing. One that sizes to its content (chips, text)
+/// keeps the plain row, which already gives it whatever the label leaves.
+fn labeled<'a>(
+    label: impl Into<Element<'a, Message>>,
+    control: Element<'a, Message>,
+    note: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let width = control.as_widget().size().width;
+    if matches!(width, Length::Fixed(_)) || width.fill_factor() > 0 {
+        return fold_row(label.into(), control, note, CONTROL_WIDTH);
+    }
+    let mut line = row![label.into(), control].spacing(12).align_y(Center);
     if let Some(note) = note {
         line = line.push(note);
     }
