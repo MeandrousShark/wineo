@@ -193,6 +193,21 @@ fn a_none_after_a_dark_system_stays_dark() {
     );
 }
 
+// On Linux the first window's none and the boot read's none usually land
+// before the portal's first answer.
+#[test]
+fn a_none_before_the_system_answers_is_kept_until_it_does() {
+    let mut app = example();
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::None));
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::None));
+    assert_eq!(app.system_mode, iced::theme::Mode::None);
+    let _ = app.update(Message::ThemeChanged(iced::theme::Mode::Light));
+    assert_eq!(
+        app.palette,
+        crate::theme::Palette::from_mode(iced::theme::Mode::Light)
+    );
+}
+
 #[test]
 fn show_raises_an_open_window() {
     let mut app = example();
