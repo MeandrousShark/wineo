@@ -92,6 +92,20 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_with_dashes_keeps_the_count_and_hash_from_the_end() {
+        // The tag is everything before the last two dashes, so a hotfix tag
+        // reads as its own tag, never as the release.
+        assert_eq!(
+            version("1.4.1", Some("v1.4.1-hotfix-3-gabc12345")),
+            "1.4.1+3.gabc12345"
+        );
+        assert_eq!(
+            version("1.4.1", Some("v1.4.1-hotfix-0-gabc12345-dirty")),
+            "1.4.1+0.gabc12345.dirty"
+        );
+    }
+
+    #[test]
     fn output_that_isnt_describe_falls_back_to_the_plain_version() {
         for describe in [
             "",
