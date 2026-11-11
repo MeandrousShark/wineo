@@ -14,9 +14,9 @@ accessibility settings with Tray icon and hide on launch in 1.5.0 (plan
 0063). The rest get a plan when they come up, and the rows below have the
 details.
 
-1. The new environment flow: kind and starting point first, Review folded
+1. Publish to the repositories in parallel (maintainer, 2026-11-11).
+2. The new environment flow: kind and starting point first, Review folded
    into Details, and art chosen after Create (plan 0064).
-2. Publish to the repositories in parallel.
 
 Coverflow with controller navigation and store imports come after that.
 
