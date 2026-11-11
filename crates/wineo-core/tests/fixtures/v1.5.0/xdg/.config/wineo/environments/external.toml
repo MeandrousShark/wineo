@@ -1,0 +1,6 @@
+schema_version = 1
+prefix = "~/prefixes/external"
+runner = "GE-Proton-fixture"
+arch = "win64"
+gameid = "umu-12345"
+store = "gog"
