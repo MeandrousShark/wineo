@@ -3241,3 +3241,14 @@ fn status_hooks_shows_phases_and_resolves_the_last_targets_override() {
         );
     }
 }
+
+#[test]
+fn version_prints_the_shared_version_line() {
+    let root = tempfile::tempdir().unwrap();
+    let output = output(wineo(root.path()).arg("--version"));
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        format!("wineo {}\n", wineo_core::version::VERSION)
+    );
+}

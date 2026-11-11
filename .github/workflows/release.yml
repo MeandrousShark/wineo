@@ -103,6 +103,9 @@ jobs:
             sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # The release must print exactly `wineo $VERSION`. A build prints that
+      # at the tag, or when git can't be read; this shallow checkout, read
+      # before safe.directory is set below, gets it either way.
       - name: Build
         run: cargo build --release --locked -p wineo-cli -p wineo-gui
 

@@ -914,6 +914,61 @@ fn commented_global_round_trip_changes_one_control_per_section() {
     );
 }
 
+/// Every piece of text the page shows, in order.
+fn page_texts(page: &Page, paths: &Paths) -> Vec<String> {
+    element_texts(page.view(paths, crate::theme::Palette::DARK))
+}
+
+/// Every piece of text the element shows, in order.
+fn element_texts(element: iced::Element<'_, crate::Message>) -> Vec<String> {
+    use iced::advanced::widget::{Id, Operation};
+    use std::sync::{Arc, Mutex};
+
+    struct All(Arc<Mutex<Vec<String>>>);
+    impl Operation for All {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _id: Option<&Id>, _bounds: iced::Rectangle, text: &str) {
+            self.0.lock().unwrap().push(text.to_owned());
+        }
+    }
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let mut laid = crate::layout_probe::lay_out(element, iced::Size::new(900.0, 3000.0));
+    laid.run(Box::new(All(found.clone())));
+    found.lock().unwrap().clone()
+}
+
+#[test]
+fn global_settings_end_with_the_version_wineo_reports() {
+    let (_root, paths) = setup();
+    let line = view::version_line();
+    assert_eq!(line, format!("wineo {}", wineo_core::version::VERSION));
+    let texts = page_texts(&global_page(&paths), &paths);
+    assert_eq!(
+        texts.iter().filter(|text| **text == line).count(),
+        1,
+        "{texts:?}"
+    );
+    let at = texts.iter().position(|text| *text == line).unwrap();
+    let env_heading = texts
+        .iter()
+        .position(|text| text == "Environment variables")
+        .unwrap();
+    assert!(at > env_heading, "{texts:?}");
+    let global = global_page(&paths);
+    let general = view::global_view(
+        global_editor(&global),
+        &global,
+        &paths,
+        global.locked(),
+        crate::theme::Palette::DARK,
+    );
+    assert_eq!(element_texts(general).last(), Some(&line));
+    write(&paths, GAME);
+    assert!(!page_texts(&page(&paths), &paths).contains(&line));
+}
+
 fn setup() -> (tempfile::TempDir, Paths) {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().to_owned();

@@ -6,7 +6,7 @@ body:
     id: version
     attributes:
       label: wineo version
-      description: The output of `wineo --version`.
+      description: The output of `wineo --version`, or the line at the end of the General tab in the desktop app's Settings.
       placeholder: wineo 1.1.0
     validations:
       required: true

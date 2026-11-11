@@ -435,7 +435,7 @@ pub(super) const AUTO_IMPORT_NOTE: &str = "New installs, and any games the libra
      are imported with the same defaults as importing them all. Games you already have aren't \
      touched, and nothing is launched or downloaded.";
 
-fn global_view<'a>(
+pub(super) fn global_view<'a>(
     editor: &'a global::Editor,
     page: &'a Page,
     paths: &Paths,
@@ -613,6 +613,9 @@ fn global_view<'a>(
             ),
             palette
         ),
+        // The same string as `wineo --version`, so a problem report can name
+        // the exact build.
+        text(version_line()).size(12).color(palette.muted),
     ]
     .spacing(24)
     .width(Fill)
@@ -739,6 +742,10 @@ fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element
         rows = rows.push(text(NEEDS_TRAY).size(13).color(palette.muted));
     }
     rows.into()
+}
+
+pub(super) fn version_line() -> String {
+    format!("wineo {}", wineo_core::version::VERSION)
 }
 
 /// The auto-import switch. It stays in place with a reason when it can't do
