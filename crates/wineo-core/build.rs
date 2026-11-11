@@ -32,15 +32,13 @@ fn describe(workspace: &Path) -> Option<String> {
             "--show-toplevel",
             "--git-path",
             "HEAD",
-            "--git-path",
-            "index",
             "--git-common-dir",
             "--symbolic-full-name",
             "HEAD",
         ],
     )?;
     let lines: Vec<&str> = found.lines().collect();
-    let [top, head, index, common, head_ref] = lines[..] else {
+    let [top, head, common, head_ref] = lines[..] else {
         return None;
     };
     // An unpacked tarball inside some other checkout, like an AUR or Debian
@@ -51,9 +49,17 @@ fn describe(workspace: &Path) -> Option<String> {
     }
     // rev-parse prints these relative to the directory it ran in.
     let common = workspace.join(common);
-    let mut watched = vec![workspace.join(head), workspace.join(index)];
+    // The index isn't watched: agents stage constantly, and every rerun
+    // rebuilds core, the CLI, and the GUI. So `.dirty` reflects the tree when
+    // the stamp was last computed, which is fine because acceptance builds
+    // come from clean committed branches.
+    let mut watched = vec![workspace.join(head)];
     if head_ref.starts_with("refs/") {
-        watched.push(common.join(head_ref));
+        // A packed ref has no file yet, and the next commit creates one in
+        // its directory.
+        let mut path = common.join(head_ref);
+        while !path.exists() && path.pop() && path.starts_with(&common) {}
+        watched.push(path);
     }
     // A new tag at HEAD turns a stamped build into the release.
     watched.extend([common.join("packed-refs"), common.join("refs/tags")]);
