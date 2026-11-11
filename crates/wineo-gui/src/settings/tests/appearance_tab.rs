@@ -1503,50 +1503,80 @@ fn accessibility_controls_sit_beside_their_label_in_a_wide_window() {
 }
 
 #[test]
-fn a_filling_control_keeps_the_plain_row_beside_its_label() {
-    // Fields that fill take what the label leaves, so a narrow window
-    // doesn't move them and a wide one never stacks them.
-    for width in [700.0, 300.0] {
+fn a_filling_control_stays_beside_its_label_until_it_would_get_less_than_a_control_width() {
+    let place = |width: f32| {
         let field = iced::widget::text_input("x", "").width(iced::Fill).into();
         let mut row = view::setting_row("Label", field, None, Palette::DARK);
         let node = crate::layout_probe::layout(&mut row, iced::Size::new(width, 600.0));
-        let control = node.children()[1].bounds();
+        node.children()[1].bounds()
+    };
+    let enough = 180.0 + 12.0 + view::CONTROL_WIDTH;
+    for width in [700.0, enough] {
+        let control = place(width);
         assert_eq!(control.x, 192.0, "{width}");
         assert_eq!(control.width, width - 192.0, "{width}");
     }
+    for width in [enough - 1.0, 300.0] {
+        let control = place(width);
+        assert_eq!((control.x, control.width), (0.0, width), "{width}");
+        assert!(control.y > 0.0, "{width}");
+    }
+}
+
+/// The Font control drawn in a container `width` wide on a 260 px canvas.
+fn font_pixels(app: &App, width: f32) -> Vec<u8> {
+    let mut control = iced::widget::container(appearance::font_choice(
+        font_form(app),
+        false,
+        Palette::DARK,
+    ))
+    .width(width)
+    .into();
+    crate::layout_probe::render(&mut control, iced::Size::new(view::CONTROL_WIDTH, 40.0))
+}
+
+/// The pixels of columns `from..to` of a canvas as wide as the control.
+fn columns(pixels: &[u8], from: usize, to: usize) -> Vec<u8> {
+    let width = view::CONTROL_WIDTH as usize;
+    pixels
+        .chunks(width * 4)
+        .flat_map(|line| line[from * 4..to * 4].to_vec())
+        .collect()
 }
 
 #[test]
-fn a_long_family_name_stays_inside_the_font_button() {
-    use crate::layout_probe::render;
+fn a_long_family_name_stays_inside_the_font_button_at_any_width() {
     install_wide();
     let (_root, paths) = setup();
     let mut app = open_global_app(&paths);
     show_appearance(&mut app);
     edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
-    let canvas = iced::Size::new(view::CONTROL_WIDTH, 40.0);
-    let button_width = 120.0;
     let own = crate::tile_title::line_width(WIDE, 14.0, iced::Font::with_name(WIDE));
-    assert!(
-        own > button_width,
-        "the name must be longer than the button"
-    );
-    let mut narrow = iced::widget::container(appearance::font_choice(
-        font_form(&app),
-        false,
-        Palette::DARK,
-    ))
-    .width(button_width)
-    .into();
-    let pixels = render(&mut narrow, canvas);
-    let past: Vec<_> = pixels
-        .chunks(canvas.width as usize * 4)
-        .flat_map(|line| line[button_width as usize * 4..].chunks(4))
-        .filter(|pixel| pixel[3] != 0)
-        .collect();
-    assert!(
-        past.is_empty(),
-        "{} inked pixels past the button",
-        past.len()
-    );
+    assert!(own > 200.0, "the name must be wider than any room it has");
+    for width in [260.0_f32, 180.0, 120.0] {
+        let pixels = font_pixels(&app, width);
+        let past = columns(&pixels, width as usize, 260);
+        assert!(
+            past.chunks(4).all(|pixel| pixel[3] == 0),
+            "ink past a {width} px button"
+        );
+    }
+}
+
+#[test]
+fn a_long_family_name_leaves_the_arrow_band_to_the_arrow() {
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // The arrow's 14 px, its padding, and the gap before it hold the same
+    // pixels whatever the name is, so no text reaches under the arrow.
+    let band =
+        |app: &App, width: usize| columns(&font_pixels(app, width as f32), width - 32, width);
+    let widths = [260usize, 180, 120];
+    let built_in: Vec<_> = widths.iter().map(|width| band(&app, *width)).collect();
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    for (width, expected) in widths.iter().zip(built_in) {
+        assert_eq!(band(&app, *width), expected, "{width}");
+    }
 }

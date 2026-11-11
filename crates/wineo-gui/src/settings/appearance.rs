@@ -959,20 +959,18 @@ pub(super) fn font_choice(
     let open = form.font_picker.is_some();
     let control = button(
         row![
-            // A long family name is cut at the container's edge, short of
-            // the arrow, since text on one line doesn't clip on its own.
-            container(
-                text(label)
-                    .font(Font::with_name(if form.font_in_use_draws_name {
-                        in_use
-                    } else {
-                        crate::fonts::BUILT_IN
-                    }))
-                    .size(14)
-                    .wrapping(text::Wrapping::None)
-            )
-            .width(Fill)
-            .clip(true),
+            // A long name ends in an ellipsis wherever the control ends up,
+            // since it folds narrower than usual in a small window.
+            container(crate::fit_text::fit_text(
+                label,
+                Font::with_name(if form.font_in_use_draws_name {
+                    in_use
+                } else {
+                    crate::fonts::BUILT_IN
+                }),
+                14.0,
+            ))
+            .width(Fill),
             // Room for the arrow laid over the button.
             Space::new().width(14),
         ]
@@ -999,7 +997,27 @@ pub(super) fn font_choice(
     );
     // A stack sizes itself to its content, so the width is stated here for
     // the row to see that it can't shrink.
-    container(control).width(super::view::CONTROL_WIDTH).into()
+    let control = container(control).width(super::view::CONTROL_WIDTH);
+    // The label may be cut to fit, and how much isn't known until layout, so
+    // the full name is always on hover.
+    iced::widget::tooltip(
+        control,
+        container(text(label).size(14).color(palette.foreground)).max_width(480),
+        iced::widget::tooltip::Position::Top,
+    )
+    .padding(8)
+    .gap(4)
+    .delay(std::time::Duration::from_millis(350))
+    .style(move |_| {
+        container::Style::default()
+            .background(palette.surface)
+            .border(
+                border::rounded(crate::ui::CONTROL_RADIUS)
+                    .width(1)
+                    .color(palette.border),
+            )
+    })
+    .into()
 }
 
 const FONT_POPUP_HEIGHT: f32 = 320.0;
