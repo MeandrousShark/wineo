@@ -1580,3 +1580,85 @@ fn a_long_family_name_leaves_the_arrow_band_to_the_arrow() {
         assert_eq!(band(&app, *width), expected, "{width}");
     }
 }
+
+/// Whether the closed Font control is wrapped in a tooltip, which the tree
+/// shows by a widget that keeps state where a container keeps none.
+fn font_has_tooltip(app: &App) -> bool {
+    appearance::font_choice(font_form(app), false, Palette::DARK)
+        .as_widget()
+        .tag()
+        != iced::advanced::widget::tree::Tag::stateless()
+}
+
+#[test]
+fn the_font_control_has_a_tooltip_only_for_a_name_cut_at_its_full_width() {
+    install_wide();
+    install_no_latin();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    // The room the label has is the button less its padding, gap, and arrow.
+    assert_eq!(appearance::FONT_LABEL_ROOM, 218.0);
+    let cut = |name: &str, font: &'static str| {
+        crate::tile_title::line_width(name, 14.0, iced::Font::with_name(font))
+            > appearance::FONT_LABEL_ROOM
+    };
+    assert!(!cut(appearance::BUILT_IN_LABEL, BUILT_IN));
+    assert!(!font_has_tooltip(&app), "the built-in name fits");
+
+    edit(&mut app, Edit::Font(Some(NO_LATIN.to_owned())));
+    assert!(!cut(NO_LATIN, BUILT_IN));
+    assert!(!font_has_tooltip(&app), "a short name fits");
+
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert!(cut(WIDE, WIDE), "the fixture family is wider than the room");
+    assert!(font_has_tooltip(&app), "a cut name shows in full on hover");
+
+    edit(&mut app, Edit::FontOpen);
+    assert!(!font_has_tooltip(&app), "none while the popup is open");
+    edit(&mut app, Edit::FontClose);
+    assert!(font_has_tooltip(&app));
+}
+
+#[test]
+fn opening_the_font_popup_with_a_long_name_still_focuses_its_search() {
+    use crate::layout_probe::{lay_out, relay_out};
+    use iced::advanced::widget::{Operation, operation::Focusable};
+    use std::sync::{Arc, Mutex};
+    // Opening swaps the tooltip for a plain container, which changes the
+    // widget at the root of the control, so the tree is carried across as the
+    // runtime does it.
+    struct Focus(Arc<Mutex<Option<bool>>>);
+    impl Operation for Focus {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn focusable(
+            &mut self,
+            id: Option<&Id>,
+            _bounds: iced::Rectangle,
+            state: &mut dyn Focusable,
+        ) {
+            if id == Some(&Id::new(appearance::FONT_SEARCH_ID)) {
+                state.focus();
+                *self.0.lock().unwrap() = Some(state.is_focused());
+            } else {
+                state.unfocus();
+            }
+        }
+    }
+    install_wide();
+    let (_root, paths) = setup();
+    let mut app = open_global_app(&paths);
+    show_appearance(&mut app);
+    edit(&mut app, Edit::Font(Some(WIDE.to_owned())));
+    assert!(font_has_tooltip(&app));
+    let size = iced::Size::new(900.0, 2000.0);
+    let tree = lay_out(page_of(&app).view(&paths, Palette::DARK), size).into_tree();
+    edit(&mut app, Edit::FontOpen);
+    assert!(!font_has_tooltip(&app));
+    let mut laid = relay_out(page_of(&app).view(&paths, Palette::DARK), tree, size);
+    let found = Arc::new(Mutex::new(None));
+    laid.run_in_overlay(Box::new(Focus(found.clone())));
+    assert_eq!(*found.lock().unwrap(), Some(true), "the search takes focus");
+}

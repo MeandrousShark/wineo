@@ -134,4 +134,16 @@ mod tests {
             .into();
         assert_eq!(fitted, draw(plain, 100.0));
     }
+
+    #[test]
+    fn an_unbounded_room_draws_the_name_whole() {
+        let mut element = fit_text::<()>(NAME, Font::DEFAULT, 14.0);
+        let size = crate::layout_probe::layout(&mut element, Size::INFINITE).size();
+        let whole = crate::tile_title::line_width(NAME, 14.0, Font::DEFAULT);
+        assert!(
+            (size.width - whole).abs() < 0.01,
+            "{} vs {whole}",
+            size.width
+        );
+    }
 }

@@ -957,24 +957,20 @@ pub(super) fn font_choice(
         return super::view::locked_choice(label, palette);
     }
     let open = form.font_picker.is_some();
+    let font = Font::with_name(if form.font_in_use_draws_name {
+        in_use
+    } else {
+        crate::fonts::BUILT_IN
+    });
     let control = button(
         row![
             // A long name ends in an ellipsis wherever the control ends up,
             // since it folds narrower than usual in a small window.
-            container(crate::fit_text::fit_text(
-                label,
-                Font::with_name(if form.font_in_use_draws_name {
-                    in_use
-                } else {
-                    crate::fonts::BUILT_IN
-                }),
-                14.0,
-            ))
-            .width(Fill),
+            container(crate::fit_text::fit_text(label, font, 14.0)).width(Fill),
             // Room for the arrow laid over the button.
-            Space::new().width(14),
+            Space::new().width(FONT_ARROW_ROOM),
         ]
-        .spacing(8)
+        .spacing(FONT_GAP)
         .align_y(Center),
     )
     .padding(PICK_LIST_PADDING)
@@ -998,27 +994,29 @@ pub(super) fn font_choice(
     // A stack sizes itself to its content, so the width is stated here for
     // the row to see that it can't shrink.
     let control = container(control).width(super::view::CONTROL_WIDTH);
-    // The label may be cut to fit, and how much isn't known until layout, so
-    // the full name is always on hover.
-    iced::widget::tooltip(
-        control,
-        container(text(label).size(14).color(palette.foreground)).max_width(480),
+    // Like the runner picker, the full name is on hover only when the label
+    // is cut at the control's usual width. Folded narrower it can be cut
+    // without one, which is rare enough to leave. While the popup is open
+    // the list shows the name, so there is none.
+    if open || crate::tile_title::fit(label, FONT_LABEL_ROOM, 14.0, font) == label {
+        return control.into();
+    }
+    crate::zoom_control::with_tooltip_at(
+        control.into(),
+        label,
+        palette,
         iced::widget::tooltip::Position::Top,
     )
-    .padding(8)
-    .gap(4)
-    .delay(std::time::Duration::from_millis(350))
-    .style(move |_| {
-        container::Style::default()
-            .background(palette.surface)
-            .border(
-                border::rounded(crate::ui::CONTROL_RADIUS)
-                    .width(1)
-                    .color(palette.border),
-            )
-    })
-    .into()
 }
+
+/// The gap between the label and the arrow's room in the Font button.
+const FONT_GAP: f32 = 8.0;
+/// Room for the arrow, which lies over the button's right end.
+const FONT_ARROW_ROOM: f32 = 14.0;
+/// What the label has in the button at its usual width: the button less its
+/// padding on both sides, the gap, and the arrow's room.
+pub(crate) const FONT_LABEL_ROOM: f32 =
+    super::view::CONTROL_WIDTH - 2.0 * PICK_LIST_PADDING[1] as f32 - FONT_GAP - FONT_ARROW_ROOM;
 
 const FONT_POPUP_HEIGHT: f32 = 320.0;
 

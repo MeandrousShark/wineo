@@ -39,6 +39,7 @@ pub(crate) fn fold_row<'a, Message: 'a>(
         children,
         fills,
         min_control,
+        max_height: f32::INFINITY,
     })
 }
 
@@ -46,6 +47,8 @@ struct FoldRow<'a, Message> {
     children: Vec<Element<'a, Message>>,
     fills: bool,
     min_control: f32,
+    /// The height the parent allows, set at layout.
+    max_height: f32,
 }
 
 /// Where a laid out child goes, by its index.
@@ -66,7 +69,13 @@ impl<Message> FoldRow<'_, Message> {
         self.children[index].as_widget_mut().layout(
             &mut tree.children[index],
             renderer,
-            &layout::Limits::new(Size::ZERO, Size::new(width.max(0.0), f32::INFINITY)),
+            // Compressed in height, so a child that fills it takes its own
+            // height, as in a plain row, not the parent's whole limit.
+            &layout::Limits::with_compression(
+                Size::ZERO,
+                Size::new(width.max(0.0), self.max_height),
+                Size::new(false, true),
+            ),
         )
     }
 }
@@ -98,6 +107,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for FoldRow<'_, Messa
         limits: &layout::Limits,
     ) -> layout::Node {
         let room = limits.max().width;
+        self.max_height = limits.max().height;
         let has_note = self.children.len() == 3;
         let label = self.lay_out(tree, renderer, 0, room);
         let label_width = label.size().width;
@@ -474,5 +484,44 @@ mod tests {
         let parts = place(block(Fill, 30.0), Some(block(60, 20.0)), 300.0);
         assert_eq!((parts[1].width, parts[2].x), (300.0, 0.0));
         assert!(parts[2].y >= parts[1].y + parts[1].height);
+    }
+
+    #[test]
+    fn a_fill_control_with_a_note_keeps_its_note_beside_it_down_to_a_control_width() {
+        // Folded under the label, the field needs 260 and the note 72 more.
+        let parts = place(block(Fill, 30.0), Some(block(60, 20.0)), 332.0);
+        assert_eq!((parts[1].x, parts[1].width, parts[1].y), (0.0, 260.0, 26.0));
+        assert_eq!((parts[2].x, parts[2].y), (272.0, 31.0));
+        let parts = place(block(Fill, 30.0), Some(block(60, 20.0)), 331.0);
+        assert_eq!(
+            (parts[1].width, parts[2].x),
+            (331.0, 0.0),
+            "under the field"
+        );
+        assert_eq!(parts[2].y, 26.0 + 30.0 + 6.0);
+    }
+
+    #[test]
+    fn an_unbounded_room_puts_everything_on_one_line() {
+        let room = f32::INFINITY;
+        let parts = place(block(260, 30.0), Some(block(60, 20.0)), room);
+        assert_eq!((parts[1].x, parts[2].x), (192.0, 464.0));
+        let parts = place(block(Fill, 30.0), Some(block(60, 20.0)), room);
+        assert_eq!(
+            (parts[1].x, parts[1].width, parts[2].x),
+            (192.0, 260.0, 464.0)
+        );
+        let mut row = fold_row(block(180, 20.0), block(Fill, 30.0), None, 260.0);
+        let size = layout(&mut row, Size::new(room, 400.0)).size();
+        assert_eq!(size, Size::new(452.0, 30.0));
+    }
+
+    #[test]
+    fn a_child_that_fills_its_height_takes_its_own_height_not_the_limit() {
+        // As in a plain row, so a row in a tall page doesn't grow to fit it.
+        let tall: Element<'static, ()> = Space::new().width(260).height(Fill).into();
+        let mut row = fold_row(block(180, 20.0), tall, None, 260.0);
+        let size = layout(&mut row, Size::new(700.0, 400.0)).size();
+        assert_eq!(size.height, 20.0);
     }
 }
