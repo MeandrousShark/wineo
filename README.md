@@ -58,7 +58,7 @@ For Debian 12 and later, install the `.deb` from the latest
 repository yet, so repeat this to update:
 
 ```sh
-version=1.4.1
+version=1.5.0
 curl -LO https://github.com/MeandrousShark/wineo/releases/download/v$version/wineo_${version}_amd64.deb
 sudo apt install ./wineo_${version}_amd64.deb
 ```
@@ -131,7 +131,7 @@ later). The tarball needs no root. Its `install.sh` puts everything under
 `~/.local`, including the menu entry, completions, and man pages:
 
 ```sh
-version=1.4.1
+version=1.5.0
 curl -LO https://github.com/MeandrousShark/wineo/releases/download/v$version/wineo-$version-x86_64-linux.tar.gz
 tar -xzf wineo-$version-x86_64-linux.tar.gz
 wineo-$version-x86_64-linux/install.sh

@@ -4,6 +4,56 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.5.0 - 2026-11-11
+
+Accessibility settings, a tray icon, and hiding the window while a game runs
+(plan 0063, done).
+
+New in this release:
+
+- Settings, Appearance has an Accessibility section. **Interface size**
+  scales the whole window from 100% to 200%, applied live and saved as
+  `interface_size` under `[appearance]` in `library.toml`. **Font** sets the
+  app's text to any installed family, saved as `font`. **Motion** follows
+  the desktop's animation setting or is always full or reduced, saved as
+  `motion`; reduced snaps the grid, zoom, panels, and layout switch and
+  keeps the fades.
+- When the window runs out of room, the library toolbar folds its right end
+  into a **More** menu and search into an icon, and settings rows fold their
+  controls under the label instead of squeezing them. The window keeps at
+  least 400 by 300 interface pixels.
+- A tray icon, on by default and saved as `tray` under a new `[desktop]`
+  table, shows or brings forward the window. Its menu opens the app, adds to
+  the library, plays up to three recent games, stops what's running,
+  and quits.
+- **Closing the window** can keep the app running in the tray (`close`).
+  **When something starts** can hide the window to the tray and bring it
+  back where it was once everything stops (`on_start`), and **When
+  everything stops** can also bring back a window you closed yourself
+  (`on_stop`).
+- Global settings show the version as the last line of the General tab,
+  with the commit for a build between releases.
+- A new environment's title is the Name you typed, and a Name over the
+  120-character title limit is refused on the form.
+- The import grid's selection check is drawn as an icon, so it shows in any
+  font.
+
+Behavior changes:
+
+- One app runs at a time for each library. Starting wineo-gui again shows
+  the one that's running, from the tray too, and the new launch exits. A
+  portable folder or a custom `XDG_CONFIG_HOME` or `XDG_DATA_HOME` runs its
+  own app.
+- After any of the new settings are saved, an older wineo still reads
+  `library.toml`, but its `validate` warns about the new keys and its repair
+  of a broken file drops them.
+
+Known limits:
+
+- A click on the tray icon shows the window, but some compositors, like
+  Hyprland, don't focus it.
+- Some compositors, like Hyprland, don't enforce the minimum window size.
+
 ## 1.4.1 - 2026-11-08
 
 A layout fix in the desktop app's menus.
