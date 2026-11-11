@@ -821,7 +821,8 @@ fn every_interface_size_change_resets_the_minimum_of_the_open_window() {
     // Save keeps the size the preview already applied, so the minimum
     // already matches and nothing is sent again.
     let _ = preview(&mut app, 150);
-    let _ = app.update(Message::Settings(Event::Save));
+    let save = app.update(Message::Settings(Event::Save));
+    assert!(min_size_updates(save, main).is_empty());
     let page = page_of(&app);
     let View::Global(editor) = &page.view else {
         panic!("global form expected");

@@ -23,9 +23,7 @@ const LAUNCH: iced::Size = iced::Size::new(1200.0, 800.0);
 
 /// The smallest window the layouts hold up in, in interface pixels: below
 /// about 400 wide they break, and 300 high keeps the toolbar and a card row.
-const MIN_WIDTH: f32 = 400.0;
-const MIN_HEIGHT: f32 = 300.0;
-const MIN_SIZE: iced::Size = iced::Size::new(MIN_WIDTH, MIN_HEIGHT);
+const MIN_SIZE: iced::Size = iced::Size::new(400.0, 300.0);
 
 /// What iced multiplies the desktop's own scale by for an interface size in
 /// percent.

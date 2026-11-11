@@ -567,7 +567,7 @@ fn a_window_hidden_in_the_tray_gets_no_minimum_update_and_reopens_with_the_curre
     let _ = app.update(app.window_event(window::Event::CloseRequested));
     assert_eq!(app.main_window, None);
 
-    // The size changes with no window to tell, as a Revert can do.
+    // The size changes, however it changes, with no window to tell.
     app.appearance.interface_size = 150;
     let task = app.update(Message::Pressed);
     if let Some(stream) = iced_runtime::task::into_stream(task) {
@@ -588,12 +588,13 @@ fn a_window_hidden_in_the_tray_gets_no_minimum_update_and_reopens_with_the_curre
     while let Some(action) =
         iced::futures::executor::block_on(iced::futures::StreamExt::next(&mut stream))
     {
-        if let iced_runtime::Action::Window(Window::Open(_, settings, _)) = action {
-            opened = Some(settings);
+        if let iced_runtime::Action::Window(Window::Open(id, settings, _)) = action {
+            opened = Some((id, settings));
             break;
         }
     }
-    let settings = opened.expect("the tray's Open opens the window");
+    let (id, settings) = opened.expect("the tray's Open opens the window");
+    assert_eq!(Some(id), app.main_window);
     assert_eq!(settings.min_size, Some(iced::Size::new(600.0, 450.0)));
 }
 
