@@ -14,7 +14,7 @@ accessibility settings with Tray icon and hide on launch in 1.5.0 (plan
 0063). The rest get a plan when they come up, and the rows below have the
 details.
 
-1. Publish to the repositories in parallel (maintainer, 2026-11-11).
+1. Publish to the repositories in parallel (plan 0065).
 2. The new environment flow: kind and starting point first, Review folded
    into Details, and art chosen after Create (plan 0064).
 
