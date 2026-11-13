@@ -526,10 +526,20 @@ need_tool() {
 # Container steps. A step that's needed only once a destination has something
 # to do pulls its image then, so a run that skips everything needs no podman.
 
+# container NAME ARG...: podman run, with the container named for this run and
+# the destination, so stopping can find what's left. --init gives it a PID 1
+# that passes signals on; the kernel drops a signal with no handler that
+# reaches a container's own init from outside.
+container() {
+    local name=wineo-publish-$$-$current-$1
+    shift
+    nice -n 15 podman run --init --name "$name" "$@"
+}
+
 tool_image() {
     local kind=$1 name base packages builder status
     local lock=$work/lock-tools-$kind
-    name=localhost/wineo-publish-$kind-$$
+    name=localhost/wineo-publish-$$-tools-$kind
     # Checked and built under the lock, so concurrent callers build it once.
     lock_wait "$lock" "$BASHPID" "the ${kind^} tools image"
     # Only ever committed after the install below passed.
@@ -538,7 +548,7 @@ tool_image() {
         echo "$name"
         return
     fi
-    builder=wineo-publish-builder-$kind-$$
+    builder=wineo-publish-$$-tools-$kind
     # A holder killed mid-build leaves its container behind under this name.
     podman rm -f "$builder" >/dev/null 2>&1 || true
     case $kind in
@@ -559,7 +569,7 @@ tool_image() {
     esac
     say "$current: installing the tools into a $base image" >&2
     status=0
-    nice -n 15 podman run --name "$builder" -e STEP="tools-$kind" "$base" \
+    nice -n 15 podman run --init --name "$builder" -e STEP="tools-$kind" "$base" \
         bash -euo pipefail -c "$packages" >&2 || status=$?
     if ((status == 0)); then
         podman commit -q "$builder" "$name" >/dev/null || status=$?
@@ -579,8 +589,8 @@ remove_tool_images() {
     local kind
     command -v podman >/dev/null || return 0
     for kind in fedora ubuntu; do
-        podman rm -f "wineo-publish-builder-$kind-$$" >/dev/null 2>&1 || true
-        podman rmi -f "localhost/wineo-publish-$kind-$$" >/dev/null 2>&1 || true
+        podman rm -f "wineo-publish-$$-tools-$kind" >/dev/null 2>&1 || true
+        podman rmi -f "localhost/wineo-publish-$$-tools-$kind" >/dev/null 2>&1 || true
     done
 }
 
@@ -812,7 +822,7 @@ overlay_prepare() {
     # assume-digests keeps the DIST lines of older ebuilds, whose distfiles
     # aren't here. See check-gentoo-build.sh for the settings rootless podman
     # needs.
-    nice -n 15 podman run --rm -e STEP=gentoo-manifest -e IDENTITY="$identity" \
+    container gentoo-manifest --rm -e STEP=gentoo-manifest -e IDENTITY="$identity" \
         -e VERSION="$version" -e WINEO_GENTOO_DISTDIR=/var/cache/distfiles \
         -v "$tree:/tag:ro" \
         --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
@@ -1047,7 +1057,7 @@ copr_prepare() {
     image=$(tool_image fedora)
     # No dist tag, so the source package is plain VERSION-RELEASE, which is
     # what identifies it on COPR. Each chroot still adds its own.
-    nice -n 15 podman run --rm -e STEP=srpm -v "$top:/work/rpmbuild" "$image" \
+    container srpm --rm -e STEP=srpm -v "$top:/work/rpmbuild" "$image" \
         bash -euo pipefail -c '
         rpmbuild -bs --define "_topdir /work/rpmbuild" --define "dist %{nil}" \
             /work/rpmbuild/SPECS/wineo.spec
@@ -1072,7 +1082,7 @@ copr_upload() {
     while read -r target; do
         chroots+=(--chroot "$target-x86_64")
     done < <(targets_of copr)
-    if ! nice -n 15 podman run --rm -e STEP=copr-upload -e SRPM="/work/$name" \
+    if ! container copr-upload --rm -e STEP=copr-upload -e SRPM="/work/$name" \
         -e PROJECT="$copr_project" -v "$config:/root/.config/copr:ro" \
         -v "$(dirname "$srpm"):/work:ro" "$image" \
         bash -euo pipefail -c 'exec copr-cli build --nowait "$@" "$PROJECT" "$SRPM"' \
@@ -1108,7 +1118,7 @@ obs_status() {
     image=$(tool_image fedora)
     config=$(obs_config)
     targets=$(targets_of obs | tr '\n' ' ')
-    if ! nice -n 15 podman run --rm -e STEP=obs-status -e PROJECT="$obs_project" \
+    if ! container obs-status --rm -e STEP=obs-status -e PROJECT="$obs_project" \
         -e PACKAGE="$obs_package" -e TARGETS="$targets" \
         -v "$config:/root/.config/osc/oscrc:ro" -v "$dir:/status" "$image" \
         bash -euo pipefail -c '
@@ -1149,7 +1159,7 @@ obs_upload() {
     identity=$(identity_of obs "$target")
     image=$(tool_image fedora)
     config=$(obs_config)
-    nice -n 15 podman run --rm -e STEP=obs-upload -e PROJECT="$obs_project" \
+    container obs-upload --rm -e STEP=obs-upload -e PROJECT="$obs_project" \
         -e PACKAGE="$obs_package" -e MESSAGE="Update to $identity" \
         -v "$config:/root/.config/osc/oscrc:ro" -v "$work/obs/files:/files:ro" \
         "$image" bash -euo pipefail -c '
@@ -1215,7 +1225,7 @@ ppa_prepare() {
     # -d: the build dependencies are the series' own, and only Launchpad's
     # builder needs them. -sa: every series may carry the orig, since it's
     # byte for byte the same one.
-    nice -n 15 podman run --rm -e STEP=deb-source -e SERIES="$series" -e VERSION="$version" \
+    container "deb-source-$series" --rm -e STEP=deb-source -e SERIES="$series" -e VERSION="$version" \
         -v "$dir:/work" -w "/work/wineo-$version" "$image" \
         bash -euo pipefail -c 'dpkg-buildpackage -S -sa -d -us -uc' ||
         dest_fail "dpkg-buildpackage -S failed for $series; see the log"
@@ -1251,7 +1261,7 @@ ppa_upload() {
         dest_fail "gpg could not unlock $ppa_key; see the log"
     socket=$(gpgconf --list-dirs agent-socket)
     image=$(tool_image ubuntu)
-    nice -n 15 podman run --rm -e STEP=deb-sign -e KEY="$ppa_key" \
+    container "deb-sign-$series" --rm -e STEP=deb-sign -e KEY="$ppa_key" \
         -e CHANGES="wineo_${identity}_source.changes" \
         -v "$dir:/work" -v "$key:/signing-key.asc:ro" \
         -v "$socket:/root/.gnupg/S.gpg-agent" -w /work "$image" \

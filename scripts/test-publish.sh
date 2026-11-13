@@ -206,7 +206,7 @@ environment=()
 workdir=/tmp
 while (($# > 0)); do
     case $1 in
-        --rm) shift ;;
+        --rm | --init) shift ;;
         --name | --tmpfs) shift 2 ;;
         -e)
             environment+=("$2")
@@ -759,6 +759,12 @@ check "COPR's tools image output is missing from its log" grep -qx 'container no
 check "COPR's stderr is missing from its log" grep -qx 'container noise from rpmbuild (stderr)' "$log_dir/copr.log"
 check "the overlay's container output is missing from its log" grep -qx 'container noise from ebuild (stderr)' "$log_dir/overlay.log"
 check "a clean run printed a log: line" test "$(grep -cE '^ +log: ' "$out")" -eq 0
+
+# Every container is named for the run and the destination, and gets --init.
+check "a container ran without --init or this run's name: $(grep '^run' "$STUB/podman.log" | grep -vE '^run --init --name wineo-publish-[0-9]+-(ppa|overlay|aur|copr|obs|tools)-[a-z0-9-]+ ' | head -n 1)" \
+    test "$(grep '^run' "$STUB/podman.log" | grep -cvE '^run --init --name wineo-publish-[0-9]+-(ppa|overlay|aur|copr|obs|tools)-[a-z0-9-]+ ')" -eq 0
+check "the containers' names aren't one run's: $(grep -oE '^run --init --name wineo-publish-[0-9]+-' "$STUB/podman.log" | sort -u | tr '\n' ' ')" \
+    test "$(grep -oE '^run --init --name wineo-publish-[0-9]+-' "$STUB/podman.log" | sort -u | grep -c .)" -eq 1
 
 # A rerun skips everything.
 publish
@@ -1463,7 +1469,7 @@ check "a failed commit: a half-built image is left" \
 # The very next call after the commit. The build's first rm and the EXIT trap's
 # also name the builder, so a later match alone would prove nothing.
 check "a failed commit: the builder is left" \
-    awk 'after { found = /^rm -f wineo-publish-builder-fedora/; after = 0 } /^commit/ { after = 1 } END { exit !found }' "$STUB/podman.log"
+    awk 'after { found = /^rm -f wineo-publish-[0-9]+-tools-fedora$/; after = 0 } /^commit/ { after = 1 } END { exit !found }' "$STUB/podman.log"
 
 # osc crashes at startup without git, which no help output or stub would show.
 new_scenario
@@ -1769,7 +1775,7 @@ check "a lock that wouldn't release after a build exited $finished, not 1" test 
 check "a lock that wouldn't release after a build didn't say why: $(cat "$scenario/built.err")" \
     grep -q 'could not release the lock for the Fedora tools image' "$scenario/built.err"
 lock_scenario
-touch "$STUB/image-wineo-publish-fedora-$$"
+touch "$STUB/image-wineo-publish-$$-tools-fedora"
 finished=0
 lock_call "$scenario/there" with_hooks image "$lock_work/lock-tools-fedora" tool_image fedora || finished=$?
 check "a lock that wouldn't release for an existing image exited $finished, not 1" test "$finished" -eq 1
@@ -1785,7 +1791,7 @@ check "a lock that wouldn't release after a download didn't say why: $(cat "$sce
 # A caller that takes over a dead holder's lock clears the builder it left.
 lock_scenario
 lock_call "$scenario/a" tool_image fedora || true
-rm_line=$(grep -n '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
+rm_line=$(grep -nE '^rm -f wineo-publish-[0-9]+-tools-fedora$' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
 run_line=$(grep -n '^run' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
 check "the builder wasn't removed before the build (rm at '$rm_line', run at '$run_line')" \
     test -n "$rm_line" -a -n "$run_line" -a "${rm_line:-99}" -lt "${run_line:-0}"
