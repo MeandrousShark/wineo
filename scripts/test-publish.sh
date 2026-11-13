@@ -359,7 +359,7 @@ fi
 # A process the step leaves behind in its job's group, though the job goes on
 # to publish.
 if [[ -f $STUB/straggler-tool && $name == rpmbuild ]]; then
-    command -p sleep 30 >/dev/null 2>&1 </dev/null &
+    command -p sleep 120 >/dev/null 2>&1 </dev/null &
     echo $! >>"$STUB/straggler-pids"
 fi
 if [[ -f $STUB/fail-tool-$name ]]; then
@@ -2416,7 +2416,7 @@ wait "$stranger_job" "$stranger_tick" 2>/dev/null || true
 # stands in for that table, must be stopped. It's started through a subshell
 # that exits, so it isn't this shell's child and leaves no zombie in its group.
 new_scenario
-caught=$( (setsid "$(command -p -v sleep)" 30 </dev/null >/dev/null 2>&1 & echo $!) )
+caught=$( (setsid "$(command -p -v sleep)" 120 </dev/null >/dev/null 2>&1 & echo $!) )
 check "the stand-in for a caught launch doesn't lead a group of its own" wait_for leads "$caught"
 launch_window() (
     # shellcheck disable=SC2030,SC2031
@@ -2436,7 +2436,17 @@ launch_window() (
 )
 launch_window "$caught" >"$scenario/window.out" 2>&1 || true
 gone() { [[ ! -e /proc/$1 || $(cut -d' ' -f3 "/proc/$1/stat" 2>/dev/null) == Z ]]; }
-check "stop_all left a job caught mid-launch running" wait_for gone "$caught"
+# soon COMMAND...: true once COMMAND is, within three seconds, far short of
+# the stand-ins' own two minutes.
+soon() {
+    local i
+    for i in $(seq 30); do
+        if "$@" 2>/dev/null; then return 0; fi
+        sleep 0.1
+    done
+    return 1
+}
+check "stop_all left a job caught mid-launch running" soon gone "$caught"
 check "stop_all didn't count a job caught mid-launch: $(cat "$scenario/window.out")" \
     grep -qx 'stopped_jobs=1' "$scenario/window.out"
 kill "$caught" 2>/dev/null || true
@@ -2450,7 +2460,7 @@ check "a job's straggler: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
 stragglers=$(cat "$STUB/straggler-pids" 2>/dev/null || true)
 check "the stub left no straggler, so this proves nothing" test -n "$stragglers"
 for pid in $stragglers; do
-    check "a finished job's straggler $pid outlived the run" wait_for gone "$pid"
+    check "a finished job's straggler $pid outlived the run" soon gone "$pid"
     kill "$pid" 2>/dev/null || true
 done
 
