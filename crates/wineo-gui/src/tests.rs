@@ -692,6 +692,34 @@ fn back_from_new_returns_to_add_choices_without_closing() {
 }
 
 #[test]
+fn escape_dismisses_the_new_flow_discard_prompt_and_keeps_the_draft() {
+    let mut app = app();
+    let _ = app.update(Message::Add);
+    let generation = app.flow_generation;
+    let _ = app.flow_update(generation, flow::Event::New);
+    let generation = app.flow_generation;
+    let _ = app.flow_update(
+        generation,
+        flow::Event::Create(Box::new(flow::new::Event::Name("draft".into()))),
+    );
+    let escape = || {
+        Message::Key(
+            keyboard::Key::Named(keyboard::key::Named::Escape),
+            keyboard::Modifiers::empty(),
+            iced::event::Status::Ignored,
+        )
+    };
+    let _ = app.update(escape());
+    assert!(app.flow.as_ref().unwrap().new_leave_prompt_open());
+    let _ = app.update(escape());
+    let page = app.flow.as_ref().unwrap();
+    assert!(matches!(page, flow::Page::New(_)));
+    assert!(!page.new_leave_prompt_open());
+    let _ = app.update(escape());
+    assert!(app.flow.as_ref().unwrap().new_leave_prompt_open());
+}
+
+#[test]
 fn creation_overlay_rejects_background_library_actions() {
     let mut app = app();
     app.search = "original".into();

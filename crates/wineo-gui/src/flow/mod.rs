@@ -278,6 +278,11 @@ impl Page {
         matches!(self, Self::New(page) if page.art_fetching())
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_leave_prompt_open(&self) -> bool {
+        matches!(self, Self::New(page) if page.leave_prompt_open())
+    }
+
     /// `width` is the dialog's width, for pages that lay out by it.
     pub(crate) fn view(
         &self,

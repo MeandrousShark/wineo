@@ -1844,3 +1844,21 @@ fn a_stuck_import_is_named_and_force_stop_closes_the_window() {
     let line = app.watchdog.started().unwrap();
     assert!(line.ends_with("on a Heroic import."), "{line}");
 }
+
+#[test]
+fn a_second_back_dismisses_the_discard_prompt_and_keeps_the_draft() {
+    let root = tempdir().unwrap();
+    let mut page = grid_page(root.path());
+    page.step = Step::Sources;
+    page.source = Some(0);
+    let generation = page.generation;
+    let _ = page.update(Event::Back);
+    assert!(page.leave_prompt);
+    // Esc sends Back again, which must answer the prompt like Keep editing.
+    let _ = page.update(Event::Back);
+    assert!(!page.leave_prompt);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.step, Step::Sources);
+    assert_eq!(page.generation, generation);
+    assert!(page.take_action().is_none());
+}

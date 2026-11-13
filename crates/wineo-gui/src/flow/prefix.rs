@@ -564,6 +564,10 @@ impl Page {
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
+        // Esc answers the discard prompt like Keep editing instead of asking again.
+        if self.discard_prompt {
+            return self.update_with_key_availability(Event::KeepEditing, false);
+        }
         match self.step {
             Step::Details => {
                 if self.dirty || self.art.is_dirty() {
@@ -1273,5 +1277,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_second_back_dismisses_the_discard_prompt_and_keeps_the_draft() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = Page::new(paths(root.path())).0;
+        let _ = page.update_with_key_availability(Event::Name("draft".to_owned()), false);
+        let _ = page.update_with_key_availability(Event::Back, false);
+        assert!(page.discard_prompt);
+        // Esc sends Back again, which must answer the prompt like Keep editing.
+        let _ = page.update_with_key_availability(Event::Back, false);
+        assert!(!page.discard_prompt);
+        assert_eq!(page.name, "draft");
+        assert!(page.dirty);
+        assert_eq!(page.step, Step::Details);
+        assert!(page.take_action().is_none());
     }
 }

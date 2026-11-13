@@ -462,6 +462,11 @@ impl Page {
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
+        // Esc answers the discard prompt like Keep editing. This runs before the
+        // error and picker resets so only the prompt changes.
+        if self.leave_prompt {
+            return self.update(Event::KeepEditing);
+        }
         if self.busy() {
             return Task::none();
         }

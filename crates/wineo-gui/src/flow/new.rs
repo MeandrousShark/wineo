@@ -384,6 +384,11 @@ impl Page {
         self.art.is_fetching()
     }
 
+    #[cfg(test)]
+    pub(crate) fn leave_prompt_open(&self) -> bool {
+        self.leave_prompt
+    }
+
     pub(crate) fn cancel(&mut self, force: bool) {
         if let Some(token) = &self.token {
             if force {
@@ -414,6 +419,10 @@ impl Page {
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
+        // Esc answers the discard prompt like Keep editing instead of asking again.
+        if self.leave_prompt {
+            return self.update(Event::KeepEditing);
+        }
         self.picker_sequence = self.picker_sequence.wrapping_add(1);
         match self.stage {
             Stage::Details => {
@@ -721,7 +730,8 @@ impl Page {
         event: Event,
         key_available: bool,
     ) -> Task<Event> {
-        if self.leave_prompt && !matches!(event, Event::KeepEditing | Event::Discard) {
+        if self.leave_prompt && !matches!(event, Event::Back | Event::KeepEditing | Event::Discard)
+        {
             return Task::none();
         }
         match event {

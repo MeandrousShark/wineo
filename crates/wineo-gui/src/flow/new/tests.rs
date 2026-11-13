@@ -1106,3 +1106,32 @@ fn the_discard_prompt_keeps_the_scroll_offset_and_stays_in_view() {
         );
     }
 }
+
+#[test]
+fn a_second_back_dismisses_the_discard_prompt_and_keeps_the_draft() {
+    let mut page = page();
+    page.draft.title = "draft".to_owned();
+    let _ = page.update(Event::Back);
+    assert!(page.leave_prompt);
+    // Esc sends Back again, which must answer the prompt like Keep editing.
+    let _ = page.update(Event::Back);
+    assert!(!page.leave_prompt);
+    assert_eq!(page.draft.title, "draft");
+    assert_eq!(page.stage, Stage::Details);
+    assert!(page.take_action().is_none());
+}
+
+#[test]
+fn other_events_stay_blocked_while_the_discard_prompt_shows() {
+    let mut page = page();
+    page.draft.title = "draft".to_owned();
+    let _ = page.update(Event::Back);
+    let kind = page.draft.kind;
+    let _ = page.update(Event::Kind(if kind == Kind::Native {
+        Kind::Windows
+    } else {
+        Kind::Native
+    }));
+    assert!(page.leave_prompt);
+    assert_eq!(page.draft.kind, kind);
+}

@@ -660,6 +660,30 @@ fn leaving_after_picking_a_game_asks_first() {
 }
 
 #[test]
+fn a_second_back_dismisses_the_discard_prompt_and_keeps_the_draft() {
+    let mut fx = Fixture::new();
+    fx.native(RIMWORLD, "RimWorld", &[]);
+    let mut page = fx.page();
+    let _ = page.update(Event::Pick(0));
+    let generation = page.generation;
+    let _ = page.update(Event::Prepared(
+        generation,
+        Ok(Box::new(fx.prepared(RIMWORLD))),
+    ));
+    let _ = page.update(Event::Back);
+    let _ = page.update(Event::Back);
+    assert!(page.leave_prompt);
+    let generation = page.generation;
+    // Esc sends Back again, which must answer the prompt like Keep editing.
+    let _ = page.update(Event::Back);
+    assert!(!page.leave_prompt);
+    assert!(page.picked.is_some());
+    assert_eq!(page.generation, generation);
+    assert_eq!(page.step, Step::Games);
+    assert!(page.take_action().is_none());
+}
+
+#[test]
 fn a_portable_session_says_where_gog_games_live() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
