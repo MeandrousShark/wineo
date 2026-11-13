@@ -172,6 +172,23 @@ case $1 in
         rm -f "$STUB/image-${3##*/}"
         exit 0
         ;;
+    # Running containers are $STUB/running/NAME, holding the stub's PID.
+    ps)
+        [[ $2 == --filter && $3 == name=* && $4 == --format && $5 == '{{.Names}}' ]] || exit 64
+        for file in "$STUB"/running/*; do
+            [[ -f $file ]] || continue
+            name=${file##*/}
+            if [[ $name =~ ${3#name=} ]] && kill -0 "$(cat "$file")" 2>/dev/null; then echo "$name"; fi
+        done
+        exit 0
+        ;;
+    stop)
+        [[ $2 == -t ]] || exit 64
+        for name in "${@:4}"; do
+            kill "$(cat "$STUB/running/$name" 2>/dev/null)" 2>/dev/null || true
+        done
+        exit 0
+        ;;
     unshare)
         shift
         exec "$@"
@@ -204,10 +221,15 @@ mkdir -p "$C/tmp" "$C/etc/portage" "$C/usr/share/portage/config"
 : >"$C/usr/share/portage/config/repos.conf"
 environment=()
 workdir=/tmp
+name=''
 while (($# > 0)); do
     case $1 in
         --rm | --init) shift ;;
-        --name | --tmpfs) shift 2 ;;
+        --name)
+            name=$2
+            shift 2
+            ;;
+        --tmpfs) shift 2 ;;
         -e)
             environment+=("$2")
             shift 2
@@ -230,6 +252,11 @@ while (($# > 0)); do
     esac
 done
 shift # the image
+mkdir -p "$STUB/running"
+echo "$$" >"$STUB/running/$name"
+trap 'rm -rf "${C:?}" "$STUB/running/${name:?}"' EXIT
+# Where each container's stdin and prompts came from, by name.
+echo "$name stdin=$(readlink /proc/$$/fd/0) ssh=${GIT_SSH_COMMAND:-} prompt=${GIT_TERMINAL_PROMPT:-}" >>"$STUB/podman-env.log"
 
 # Container paths in the script become paths under C.
 in_root() {
@@ -267,6 +294,16 @@ if [[ -f $STUB/noise ]]; then
     case $name in
         rpmbuild | dpkg-buildpackage | dnf | apt-get) echo "container noise from $name" ;;
     esac
+fi
+# A tool that hangs, bounded, until it's killed. "linger" in the control
+# answers a TERM a second late, which holds the stopping up.
+if [[ -f $STUB/hang-$name ]]; then
+    echo "$$" >"$STUB/hanging-$name"
+    if grep -qx linger "$STUB/hang-$name"; then
+        trap 'touch "$STUB/termed-$name"; command -p sleep 1; exit 143' TERM
+    fi
+    for _ in $(seq 300); do command -p sleep 0.1; done
+    exit 1
 fi
 # A daemon born in the container step: it keeps every descriptor but 0-2.
 if [[ -f $STUB/daemon-tool && $name == rpmbuild ]]; then
@@ -386,9 +423,12 @@ if [[ -n ${b2sums+set} ]]; then
 fi
 EOF
 
+# Whole seconds are the script's intervals, which never really pass here. A
+# fraction is a real wait, as in stopping's poll or a test's slowed-down wait.
 cat >"$stubs/sleep" <<'EOF'
 #!/bin/bash
 echo "$1" >>"$STUB/sleep.log"
+if [[ $1 == *.* ]]; then command -p sleep "$1"; fi
 EOF
 
 # Keeps the lock it was pointed at; gentoo-ebuild.sh passes the crates' paths.
@@ -450,6 +490,8 @@ new_scenario() {
     dest=$scenario/dest
     export STUB=$scenario/stub
     mkdir -p "$STUB/assets" "$dest/control" "$scenario/state"
+    # Each run's stdin, so a background job that kept it shows.
+    : >"$scenario/stdin"
     logs_before='' run_log_dirs=() run_log_files=()
     cp -a "$base" "$repo"
     make_assets
@@ -528,24 +570,31 @@ publish_real() {
         reader_rc=0
         {
             status=0
-            script_env "$@" 2>&1 || status=$?
+            script_env "$@" <"$scenario/stdin" 2>&1 || status=$?
             echo "$status" >"$scenario/script-rc"
         } | timeout "$READER_LIMIT" cat >"$out" || reader_rc=$?
         rc=$(cat "$scenario/script-rc")
     else
-        script_env "$@" >"$out" 2>&1 || rc=$?
+        script_env "$@" <"$scenario/stdin" >"$out" 2>&1 || rc=$?
     fi
     run_finished
 }
 
 script_env() {
-    env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
+    script_cmd "$@"
+    "${cmd[@]}"
+}
+
+# script_cmd ARGS...: the script's command line into cmd, for a caller that
+# needs it to be the script's own process.
+script_cmd() {
+    cmd=(env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
         XDG_STATE_HOME="$scenario/state" \
-        WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL=0 \
+        WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL="${BUILD_INTERVAL:-0}" \
         WINEO_PUBLISH_MIRROR_LIMIT="${MIRROR_LIMIT:-30}" WINEO_PUBLISH_RUN_LIMIT="${RUN_LIMIT:-30}" \
         WINEO_PUBLISH_RELEASE_LIMIT="${RELEASE_LIMIT:-30}" WINEO_PUBLISH_COPR_LIMIT="${BUILD_LIMIT:-30}" \
         WINEO_PUBLISH_OBS_LIMIT="${BUILD_LIMIT:-30}" WINEO_PUBLISH_PPA_LIMIT="${BUILD_LIMIT:-30}" \
-        "$repo/scripts/publish-packages.sh" "$version" "$@"
+        "$repo/scripts/publish-packages.sh" "$version" "$@")
 }
 
 # The terminal's lines and this run's logs.
@@ -652,8 +701,11 @@ new_scenario
 touch "$STUB/noise"
 publish
 check "a full run: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
-check "a full run went to the wrong places, or in the wrong order: $(uploads)" \
-    test "$(uploads | awk '{ print ($2 == "overlay" ? "overlay" : $2 " " $3) }')" = "$all_nine"
+# The rest run at once, so the order is the PPA's four, then anything.
+check "a full run went to the wrong places: $(uploads)" \
+    test "$(uploads | awk '{ print ($2 == "overlay" ? "overlay" : $2 " " $3) }' | sort)" = "$(sort <<<"$all_nine")"
+check "something uploaded before the PPA's uploads were all out: $(uploads)" \
+    test "$(uploads | sed -n 1,4p | awk '{ print $2 }' | tr '\n' ' ')" = "ppa ppa ppa ppa "
 overlay_bare=$dest/remote/overlay.git
 show() { git -C "$1" show "HEAD:$2" 2>/dev/null; }
 check "the overlay lacks the ebuild" show "$overlay_bare" "games-util/wineo/wineo-$version.ebuild"
@@ -748,7 +800,9 @@ check "the prefix isn't padded to the longest name" on_terminal '^\[obs\]     up
 check "a prefixed line reached a log" test "$(cat "$log_dir"/*.log | grep -c '^\[')" -eq 0
 check "the PPA's lines are not on the terminal in full" on_terminal '^== ppa: uploading jammy$'
 check "the PPA's lines show twice on the terminal" test "$(grep -c '^== ppa: uploading jammy$' "$out")" -eq 1
-check "the PPA's lines are prefixed on the terminal" test "$(grep -c '^\[ppa\]' "$out")" -eq 0
+# Only the PPA's wait, in the background, is prefixed.
+check "the PPA's foreground lines are prefixed on the terminal" test "$(grep -c '^\[ppa\] *uploading' "$out")" -eq 0
+check "the PPA's wait has no prefixed published line, once" test "$(grep -cE '^\[ppa\] +published ' "$out")" -eq 1
 check "the PPA's log lacks its uploads" grep -qx '== ppa: uploading jammy' "$log_dir/ppa.log"
 check "the PPA's foreground output is not on the terminal" on_terminal '^container noise from dpkg-buildpackage$'
 check "the PPA's foreground output is not in its log" grep -qx 'container noise from dpkg-buildpackage' "$log_dir/ppa.log"
@@ -765,6 +819,18 @@ check "a container ran without --init or this run's name: $(grep '^run' "$STUB/p
     test "$(grep '^run' "$STUB/podman.log" | grep -cvE '^run --init --name wineo-publish-[0-9]+-(ppa|overlay|aur|copr|obs|tools)-[a-z0-9-]+ ')" -eq 0
 check "the containers' names aren't one run's: $(grep -oE '^run --init --name wineo-publish-[0-9]+-' "$STUB/podman.log" | sort -u | tr '\n' ' ')" \
     test "$(grep -oE '^run --init --name wineo-publish-[0-9]+-' "$STUB/podman.log" | sort -u | grep -c .)" -eq 1
+# Background jobs can't prompt; the PPA's foreground stage still can.
+check "a background job's container had a stdin, or could prompt: $(grep -- '-copr-srpm ' "$STUB/podman-env.log")" \
+    grep -qx 'wineo-publish-[0-9]*-copr-srpm stdin=/dev/null ssh=ssh -o BatchMode=yes prompt=0' "$STUB/podman-env.log"
+check "the PPA's foreground stage lost its stdin, or its prompts: $(grep -- '-ppa-deb-source-jammy ' "$STUB/podman-env.log")" \
+    grep -qx "wineo-publish-[0-9]*-ppa-deb-source-jammy stdin=$scenario/stdin ssh= prompt=" "$STUB/podman-env.log"
+# Walking away: once, and after the last upload.
+check "a full run didn't say once that every upload is out: $(grep -c 'every upload is out' "$out")" \
+    test "$(grep -cx '== every upload is out; stopping now loses nothing, rerun to keep waiting' "$out")" -eq 1
+last_upload=$(grep -nE '(^\[[a-z]+\] +|^== [a-z]+: )uploading ' "$out" | tail -n 1 | cut -d: -f1)
+out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1)
+check "every upload was out (line ${out_line:-none}) before the last upload (line ${last_upload:-none})" \
+    test "${out_line:-0}" -gt "${last_upload:-999999}"
 
 # A rerun skips everything.
 publish
@@ -776,6 +842,8 @@ check "a rerun printed a log: line: $(grep -E '^ +log: ' "$out")" test "$(grep -
 check "a rerun's overlay line isn't on the terminal once" \
     test "$(grep -cE '^\[overlay\] .* is already published and built, skipping$' "$out")" -eq 1
 check "a rerun: exit $rc, not 0" test "$rc" -eq 0
+check "a rerun that sent nothing said every upload is out" test "$(grep -c 'every upload is out' "$out")" -eq 0
+check "a rerun with nothing to wait on gave a summary so far" test "$(grep -c "^== only the" "$out")" -eq 0
 check "a rerun uploaded again: $(uploads | tail -n 3)" test "$(upload_count)" -eq 10
 for d in overlay aur copr obs ppa; do
     check "a rerun did not skip $d" said "^  $d +already published"
@@ -811,6 +879,7 @@ check "--only: the log lacks what the terminal shows" \
     test "$(grep -c '^container noise from \(rpmbuild\|dnf\)$' "${run_log_dirs[0]:-/nonexistent}/copr.log")" -eq 2
 check "--only: the log lacks stderr" grep -qx 'container noise from rpmbuild (stderr)' "${run_log_dirs[0]:-/nonexistent}/copr.log"
 check "--only: a destination it didn't run has a log" test "$(ls "${run_log_dirs[0]:-/nonexistent}")" = copr.log
+check "--only: it has the walking-away lines" test "$(grep -cE '^== (every upload is out|only the)' "$out")" -eq 0
 
 # Variables from the caller's environment can't route main's own lines.
 new_scenario
@@ -985,6 +1054,8 @@ check "an upload that fails: the log is named for a clean destination: $(grep '^
 check "an upload that fails: its log lacks the cause" grep -qx 'fake copr: upload refused' "${run_log_dirs[0]:-/nonexistent}/copr.log"
 check "an upload that fails: the cause reached the terminal" test "$(grep -c 'fake copr: upload refused' "$out")" -eq 0
 check "an upload that fails: a later destination isn't on the terminal" on_terminal '^\[obs\]     published '
+check "an upload that fails: every upload is out doesn't name it: $(grep 'every upload is out' "$out")" \
+    on_terminal '^== every upload is out \(copr failed\); stopping now loses nothing, rerun to keep waiting$'
 publish
 check "the retry: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
 check "the retry did not upload COPR once" test "$(upload_count ' copr ')" -eq 1
@@ -1008,6 +1079,10 @@ publish
 check "a refused PPA upload: exit $rc, not 1" test "$rc" -eq 1
 check "a refused PPA upload stopped the later ones: $(uploads)" \
     test "$(upload_count ' copr ')" -eq 1 -a "$(upload_count ' obs ')" -eq 1
+check "a refused PPA upload stopped the overlay or the AUR: $(uploads)" \
+    test "$(upload_count ' overlay ')" -eq 1 -a "$(upload_count ' aur ')" -eq 3
+check "a refused PPA upload isn't in the summary" said '^  ppa +failed: the upload of jammy failed'
+check "a refused PPA upload still waited" test "$(grep -c '^\[ppa\]' "$out")" -eq 0
 
 # A failed part-way PPA upload keeps what went, and sends only the rest.
 new_scenario
@@ -1804,6 +1879,286 @@ reached=$(bash -c 'source "$1"
     got=$(inner)
     echo "$got"' bash "$repo/scripts/publish-packages.sh" 2>&1) || rc=$?
 check "a failure in \$(...) did not stop it: $reached" test "$rc" -ne 0 -a -z "$reached"
+
+# The fan-out: background jobs, stopping them, and walking away.
+
+# wait_for COMMAND...: true once COMMAND is, within about 30 seconds.
+wait_for() {
+    local i
+    for i in $(seq 300); do
+        if "$@" 2>/dev/null; then return 0; fi
+        sleep 0.1
+    done
+    return 1
+}
+
+# stub_procs: every process still running from this scenario's script, which
+# alone gets VERSION_UNDER_TEST.
+stub_procs() {
+    python3 -I - "$STUB" <<'EOF'
+import os
+import sys
+
+stub = b"STUB=" + sys.argv[1].encode()
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as handle:
+            env = handle.read().split(b"\0")
+    except OSError:
+        continue
+    if stub in env and any(item.startswith(b"VERSION_UNDER_TEST=") for item in env):
+        print(pid)
+EOF
+}
+
+# publish_bg ARGS...: the script in the background, in a process group of its
+# own, the way a terminal runs a foreground job, so a signal to the group
+# reaches main and its foreground children. Without job control, a script
+# started with & begins with SIGINT ignored, and its trap would never run.
+# Its stdout goes to BG_OUT if that's set, which is a descriptor.
+publish_bg() {
+    out=$scenario/output
+    run_started
+    script_cmd --dest-dir "$dest" "$@"
+    set -m
+    if [[ -n ${BG_OUT:-} ]]; then
+        "${cmd[@]}" <"$scenario/stdin" 1>&"$BG_OUT" 2>"$scenario/stderr" &
+    else
+        "${cmd[@]}" <"$scenario/stdin" >"$out" 2>&1 &
+    fi
+    bg_pid=$!
+    set +m
+}
+
+# publish_join: waits for it, up to 60 seconds, then stops it, and kills
+# whatever it left running, by PID. bg_hung says it had to be stopped.
+publish_join() {
+    local i pid
+    bg_hung=0
+    for i in $(seq 600); do
+        kill -0 "$bg_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$bg_pid" 2>/dev/null; then
+        bg_hung=1
+        kill -TERM -- "-$bg_pid" 2>/dev/null || true
+        for i in $(seq 150); do
+            kill -0 "$bg_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL -- "-$bg_pid" 2>/dev/null || true
+    fi
+    rc=0
+    wait "$bg_pid" || rc=$?
+    run_finished
+    left_behind=$(stub_procs | tr '\n' ' ')
+    for pid in $left_behind; do kill -KILL "$pid" 2>/dev/null || true; done
+}
+
+work_left() { find "$scenario/work" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1; }
+
+# hang_push DEST: DEST's fake repository takes the push, and holds it.
+hang_push() {
+    local bare=$dest/remote/$1.git
+    git init -q --bare --initial-branch=main "$bare"
+    cat >"$bare/hooks/pre-receive" <<'EOF'
+#!/bin/bash
+echo "$$" >"$STUB/hanging-push"
+for _ in $(seq 300); do command -p sleep 0.1; done
+exit 1
+EOF
+    chmod +x "$bare/hooks/pre-receive"
+}
+
+# A Ctrl+C with a job in each phase: the PPA waiting on Launchpad, the overlay
+# pushing, and COPR building its source package, which answers the TERM a
+# second late. A second Ctrl+C comes while the stopping waits on it.
+new_scenario
+echo building >"$dest/control/build-ppa"
+hang_push overlay
+echo linger >"$STUB/hang-rpmbuild"
+BUILD_INTERVAL=0.05 publish_bg --skip aur --skip obs
+check "interrupted: COPR never started building" wait_for test -s "$STUB/hanging-rpmbuild"
+check "interrupted: the overlay never pushed" wait_for test -s "$STUB/hanging-push"
+check "interrupted: the PPA never waited" wait_for on_terminal '^\[ppa\] +waiting on '
+kill -INT -- "-$bg_pid" || true
+check "interrupted: COPR's build never got a TERM" wait_for test -f "$STUB/termed-rpmbuild"
+kill -INT -- "-$bg_pid" || true
+publish_join
+check "interrupted: it had to be stopped" test "$bg_hung" -eq 0
+check "interrupted: exit $rc, not 1: $(tail -n 8 "$out")" test "$rc" -eq 1
+check "interrupted: the PPA's reason is wrong: $(grep '^  ppa' "$out")" \
+    on_terminal '^  ppa +failed: interrupted while waiting; uploads are out, rerun --only ppa to keep waiting$'
+check "interrupted: the overlay's reason is wrong: $(grep '^  overlay' "$out")" \
+    on_terminal "^  overlay  failed: interrupted during upload; rerun --only overlay, and what finished uploading isn't sent again$"
+check "interrupted: COPR's reason is wrong: $(grep '^  copr' "$out")" \
+    on_terminal '^  copr +failed: interrupted before it uploaded$'
+check "interrupted: the skipped ones aren't" said '^  aur +not run \(--skip\)$'
+check "interrupted: the summary isn't there once: $(grep -c "^wineo $version:" "$out")" \
+    test "$(grep -c "^wineo $version:" "$out")" -eq 1
+check "interrupted: the work directory is left: $(work_left)" test -z "$(work_left)"
+check "interrupted: processes are left: $left_behind" test -z "$left_behind"
+check "interrupted: the stopping didn't look for the run's containers once" \
+    test "$(grep -cxF "ps --filter name=^wineo-publish-$bg_pid- --format {{.Names}}" "$STUB/podman.log")" -eq 1
+check "interrupted: the stopping didn't remove the builders" \
+    grep -qxF "rm -f wineo-publish-$bg_pid-tools-fedora wineo-publish-$bg_pid-tools-ubuntu" "$STUB/podman.log"
+check "interrupted: COPR uploaded: $(uploads)" test "$(upload_count ' copr ')" -eq 0
+
+# A Ctrl+C in the PPA's foreground stage, before anything else starts.
+new_scenario
+touch "$STUB/hang-dpkg-buildpackage"
+publish_bg --skip aur --skip obs
+check "a foreground Ctrl+C: the PPA never started building" wait_for test -s "$STUB/hanging-dpkg-buildpackage"
+kill -INT -- "-$bg_pid" || true
+publish_join
+check "a foreground Ctrl+C: it had to be stopped" test "$bg_hung" -eq 0
+check "a foreground Ctrl+C: exit $rc, not 1" test "$rc" -eq 1
+for d in ppa overlay copr; do
+    check "a foreground Ctrl+C: $d's reason is wrong: $(grep "^  $d" "$out")" \
+        on_terminal "^  $d +failed: interrupted before it uploaded$"
+done
+check "a foreground Ctrl+C: something went: $(uploads)" test -z "$(uploads)"
+check "a foreground Ctrl+C: the overlay started" test ! -e "$dest/remote/overlay.git"
+check "a foreground Ctrl+C: the work directory is left" test -z "$(work_left)"
+check "a foreground Ctrl+C: processes are left: $left_behind" test -z "$left_behind"
+
+# A hangup with the terminal gone: its reader is killed first, so every write
+# main makes fails, and the stopping must still finish.
+new_scenario
+touch "$STUB/hang-rpmbuild"
+exec {terminal}> >(exec cat >"$scenario/output")
+reader=$!
+BG_OUT=$terminal publish_bg --skip ppa --skip aur --skip obs
+exec {terminal}>&-
+check "a hangup: COPR never started building" wait_for test -s "$STUB/hanging-rpmbuild"
+kill "$reader" || true
+check "a hangup: the terminal's reader would not stop" wait_for exited "$reader"
+kill -HUP -- "-$bg_pid" || true
+publish_join
+check "a hangup: it had to be stopped" test "$bg_hung" -eq 0
+check "a hangup: exit $rc, not 1: $(tail -n 3 "$scenario/stderr")" test "$rc" -eq 1
+check "a hangup: the work directory is left" test -z "$(work_left)"
+check "a hangup: processes are left: $left_behind" test -z "$left_behind"
+
+# A job killed from outside, with nothing interrupted: its group, read from the
+# stub's own entry, is one this test's script made.
+new_scenario
+touch "$STUB/hang-rpmbuild"
+publish_bg --skip ppa --skip aur --skip obs
+check "killed from outside: COPR never started building" wait_for test -s "$STUB/hanging-rpmbuild"
+stat=$(cat "/proc/$(cat "$STUB/hanging-rpmbuild")/stat" 2>/dev/null || true)
+read -ra fields <<<"${stat##*) }"
+job_group=${fields[2]:-}
+own_group=$(cut -d' ' -f5 /proc/$$/stat)
+if [[ $job_group =~ ^[0-9]+$ && $job_group != "$bg_pid" && $job_group != "$own_group" ]]; then
+    kill -KILL -- "-$job_group" || true
+    pass
+else
+    fail "killed from outside: COPR's job has no group of its own: '$job_group'"
+fi
+publish_join
+check "killed from outside: it had to be stopped" test "$bg_hung" -eq 0
+check "killed from outside: exit $rc, not 1" test "$rc" -eq 1
+check "killed from outside: the reason is wrong: $(grep '^  copr' "$out")" \
+    on_terminal '^  copr +failed: stopped early; see the log$'
+check "killed from outside: the terminal lacks the reason" on_terminal '^\[copr\]    failed: stopped early; see the log$'
+check "killed from outside: the others stopped" said '^  overlay +published'
+check "killed from outside: the work directory is left" test -z "$(work_left)"
+check "killed from outside: processes are left: $left_behind" test -z "$left_behind"
+
+# Walking away. The PPA waits while the rest finish, and its line changes once
+# jammy builds, so the summary so far has to show the latest one.
+new_scenario
+echo building >"$dest/control/build-ppa"
+printf 'building\nbuilt\n' >"$dest/control/build-ppa-jammy"
+BUILD_INTERVAL=0.05 publish_bg
+check "walking away: no summary so far" wait_for on_terminal "^== only the ppa's wait is left:$"
+echo built >"$dest/control/build-ppa"
+publish_join
+check "walking away: it had to be stopped" test "$bg_hung" -eq 0
+check "walking away: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "walking away: every upload is out isn't there once: $(grep -c 'every upload is out' "$out")" \
+    test "$(grep -cx '== every upload is out; stopping now loses nothing, rerun to keep waiting' "$out")" -eq 1
+check "walking away: the summary so far isn't there once" test "$(grep -c "^== only the" "$out")" -eq 1
+so_far=$(sed -n "/^== only the ppa's wait is left:\$/,+5p" "$out")
+check "walking away: the summary so far is wrong: $so_far" test "$so_far" = "== only the ppa's wait is left:
+  overlay  published ($version)
+  aur      published ($version-1)
+  copr     published ($version-1)
+  obs      published ($version-1)
+  ppa      waiting on noble(building) resolute(building) stonking(building)"
+latest=$(sed -n "1,/^== only the ppa's wait is left:\$/p" "$out" | grep '^\[ppa\] *waiting on ' | tail -n 1)
+check "walking away: the summary so far isn't the PPA's latest line, '$latest'" \
+    test "$latest" = "[ppa]     waiting on noble(building) resolute(building) stonking(building)"
+out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1)
+so_far_line=$(grep -n "^== only the" "$out" | head -n 1 | cut -d: -f1)
+check "walking away: every upload was out only after the summary so far" test "${out_line:-999}" -lt "${so_far_line:-0}"
+
+# The PPA alone: every upload is out while it waits, with no job ending to wake
+# main, so only the job's signal can.
+new_scenario
+echo building >"$dest/control/build-ppa"
+BUILD_INTERVAL=0.05 publish_bg --skip overlay --skip aur --skip copr --skip obs
+check "the PPA alone: every upload is out didn't come while it waited" \
+    wait_for on_terminal '^== every upload is out; stopping now loses nothing, rerun to keep waiting$'
+echo built >"$dest/control/build-ppa"
+publish_join
+check "the PPA alone: exit $rc, not 0" test "$rc" -eq 0
+check "the PPA alone: a summary so far with nothing else run" test "$(grep -c "^== only the" "$out")" -eq 0
+
+# A terminal that's a named FIFO isn't a pipe: reopening it through /proc
+# would block once its reader is gone, and the run would never end.
+new_scenario
+mkfifo "$scenario/fifo"
+timeout 30 sed -n '/checks out$/q' <"$scenario/fifo" &
+fifo_reader=$!
+exec {terminal}>"$scenario/fifo"
+BG_OUT=$terminal publish_bg --skip ppa --skip aur --skip obs
+exec {terminal}>&-
+publish_join
+wait "$fifo_reader" || true
+check "a FIFO terminal: the run never ended" test "$bg_hung" -eq 0
+check "a FIFO terminal: the jobs didn't finish: $(uploads)" \
+    test "$(upload_count ' overlay ')" -eq 1 -a "$(upload_count ' copr ')" -eq 1
+check "a FIFO terminal: processes are left: $left_behind" test -z "$left_behind"
+
+# The AUR pushes over SSH, which a background job must not let ask for a
+# passphrase. --dest-dir turns the URL into a local path, so this calls the
+# clone on the real one, against an ssh that asks unless BatchMode says no.
+sshbin=$tmp/sshbin
+mkdir -p "$sshbin"
+cat >"$sshbin/ssh" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    if [[ $arg == BatchMode=yes ]]; then
+        echo "Permission denied (publickey)." >&2
+        exit 255
+    fi
+done
+echo "Enter passphrase for key '/home/test/.ssh/id_ed25519':" >&2
+command -p sleep 10
+exit 255
+EOF
+chmod +x "$sshbin/ssh"
+new_scenario
+ssh_script=$repo/scripts/publish-packages.sh
+ssh_clone() (
+    # shellcheck disable=SC2030,SC2031
+    PATH=$sshbin:$PATH
+    # shellcheck disable=SC1090
+    source "$ssh_script"
+    # shellcheck disable=SC2034
+    dest_dir='' work=$scenario/sshwork
+    background_env
+    start=$SECONDS
+    if clone_repo "$(aur_url wineo)" "$work/clone"; then exit 9; fi
+    echo $((SECONDS - start))
+)
+took=$(ssh_clone </dev/null) || took=cloned
+check "a background SSH clone waited for a passphrase, or worked: $took" \
+    test "$took" != cloned -a "${took:-99}" -lt 5
 
 # COPR's list, past the first page.
 
