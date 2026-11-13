@@ -22,24 +22,25 @@ fn argument_match_is_positional_and_app_id_is_whole() {
     assert!(matches_arguments(
         &args("289070"),
         "AppId=289070",
-        &path,
-        &path
+        std::slice::from_ref(&path)
     ));
     assert!(!matches_arguments(
         &args("289070"),
         "AppId=2890",
-        &path,
-        &path
+        std::slice::from_ref(&path)
     ));
     let mut misplaced = args("289070");
     misplaced.swap(1, 2);
-    assert!(!matches_arguments(&misplaced, "AppId=289070", &path, &path));
+    assert!(!matches_arguments(
+        &misplaced,
+        "AppId=289070",
+        std::slice::from_ref(&path)
+    ));
     let other = root.path().join("other/ubuntu12_32/reaper");
     assert!(!matches_arguments(
         &args("289070"),
         "AppId=289070",
-        &other,
-        &other
+        &[other]
     ));
     let alias = root.path().join("steam-alias");
     symlink(root.path(), &alias).unwrap();
@@ -49,7 +50,7 @@ fn argument_match_is_positional_and_app_id_is_whole() {
         .as_os_str()
         .as_bytes()
         .to_vec();
-    assert!(matches_arguments(&aliased, "AppId=289070", &path, &path));
+    assert!(matches_arguments(&aliased, "AppId=289070", &[path]));
 }
 
 #[test]
@@ -71,21 +72,18 @@ fn reaper_match_accepts_verified_exe_when_argv_path_differs() {
     assert!(matches_reaper(
         &process,
         "AppId=289070",
-        &expected,
-        &expected
+        std::slice::from_ref(&expected)
     ));
     assert!(!matches_reaper(
         &process,
         "AppId=2890",
-        &expected,
-        &expected
+        std::slice::from_ref(&expected)
     ));
     process.exe = Some(root.path().join("other/reaper"));
     assert!(!matches_reaper(
         &process,
         "AppId=289070",
-        &expected,
-        &expected
+        std::slice::from_ref(&expected)
     ));
 }
 
@@ -362,12 +360,12 @@ fn reaper_candidate_reads_exe_only_after_positional_match() {
     let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
     reader.exe_error = Some((10, rustix::io::Errno::MFILE.raw_os_error()));
     assert!(
-        reaper_candidate(&reader, 10, "AppId=2890", path, path)
+        reaper_candidate(&reader, 10, "AppId=2890", &[path.to_owned()])
             .unwrap()
             .is_none()
     );
     assert!(!reader.calls.borrow().contains(&"exe"));
-    let error = reaper_candidate(&reader, 10, "AppId=289070", path, path)
+    let error = reaper_candidate(&reader, 10, "AppId=289070", &[path.to_owned()])
         .err()
         .unwrap();
     assert_eq!(
@@ -381,7 +379,7 @@ fn candidate_metadata_errors_propagate() {
     let path = Path::new("/steam/ubuntu12_32/reaper");
     let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
     reader.arguments_error = Some((10, rustix::io::Errno::MFILE.raw_os_error()));
-    let error = reaper_candidate(&reader, 10, "AppId=289070", path, path)
+    let error = reaper_candidate(&reader, 10, "AppId=289070", &[path.to_owned()])
         .err()
         .unwrap();
     assert_eq!(
@@ -403,7 +401,7 @@ fn candidate_permission_errors_are_skipped() {
     let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
     reader.arguments_error = Some((10, rustix::io::Errno::ACCESS.raw_os_error()));
     assert!(
-        reaper_candidate(&reader, 10, "AppId=289070", path, path)
+        reaper_candidate(&reader, 10, "AppId=289070", &[path.to_owned()])
             .unwrap()
             .is_none()
     );
@@ -411,7 +409,7 @@ fn candidate_permission_errors_are_skipped() {
     reader.arguments_error = None;
     reader.exe_error = Some((10, rustix::io::Errno::PERM.raw_os_error()));
     assert!(
-        reaper_candidate(&reader, 10, "AppId=289070", path, path)
+        reaper_candidate(&reader, 10, "AppId=289070", &[path.to_owned()])
             .unwrap()
             .is_none()
     );
@@ -426,9 +424,10 @@ fn candidate_permission_errors_are_skipped() {
 
 /// A fake process table: a client (pid 5), reapers for apps 10 (two), 20,
 /// and 30 under it, a reaper for app 30 under a foreign parent, and bystanders.
-fn reaper_table(root: &Path) -> (FakeProc, Vec<u32>) {
-    let reaper = root.join("ubuntu12_32/reaper");
-    let client = root.join("ubuntu12_32/steam");
+/// `dir` is the client's binary folder.
+fn reaper_table(root: &Path, dir: &str) -> (FakeProc, Vec<u32>) {
+    let reaper = root.join(dir).join("reaper");
+    let client = root.join(dir).join("steam");
     let launch = |app: &str| {
         vec![
             reaper.as_os_str().as_bytes().to_vec(),
@@ -471,12 +470,19 @@ fn reaper_table(root: &Path) -> (FakeProc, Vec<u32>) {
 
 #[test]
 fn one_scan_gives_each_app_what_a_scan_for_it_alone_gives() {
+    // Steam's own folder names, not CLIENT_DIRS, so dropping one fails here.
+    for dir in ["steamrt64", "ubuntu12_32"] {
+        one_scan_matches_scans_alone(dir);
+    }
+}
+
+fn one_scan_matches_scans_alone(dir: &str) {
     let root = tempfile::tempdir().unwrap();
     let install = Install {
         kind: InstallKind::Native,
         root: root.path().to_owned(),
     };
-    let (reader, pids) = reaper_table(root.path());
+    let (reader, pids) = reaper_table(root.path(), dir);
     let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
     let all = ids(&["10", "20", "30", "40"]);
     let together = scan_reapers(&reader, pids.clone(), &install, &all, "boot").unwrap();
@@ -495,8 +501,51 @@ fn one_scan_gives_each_app_what_a_scan_for_it_alone_gives() {
     assert_eq!(together["10"][0].start_time, 110);
     assert_eq!(together["10"][0].boot_id, "boot");
 
+    // Only the client's own folders hold its reaper.
+    let (mut stray, pids) = reaper_table(root.path(), dir);
+    let elsewhere = root.path().join("bin/reaper");
+    let mut moved = stray.arguments_by_pid[&7].clone();
+    moved[0] = elsewhere.as_os_str().as_bytes().to_vec();
+    stray.arguments_by_pid.insert(7, moved);
+    stray.exe_by_pid.insert(7, elsewhere);
+    let found = scan_reapers(&stray, pids, &install, &ids(&["20"]), "boot").unwrap();
+    assert!(found["20"].is_empty(), "{dir}");
+
+    // A client in one folder with its reaper in the other still counts: both
+    // are this install's binaries, and the parent link is checked as before.
+    let other = if dir == "steamrt64" {
+        "ubuntu12_32"
+    } else {
+        "steamrt64"
+    };
+    let (mut mixed, pids) = reaper_table(root.path(), dir);
+    let client = root.path().join(other).join("steam");
+    mixed.exe_by_pid.insert(5, client.clone());
+    mixed
+        .arguments_by_pid
+        .insert(5, vec![client.as_os_str().as_bytes().to_vec()]);
+    let found = scan_reapers(&mixed, pids, &install, &ids(&["20"]), "boot").unwrap();
+    assert_eq!(found["20"].len(), 1, "{dir}");
+
+    // Through a root alias like ~/.steam/root, the processes show the
+    // canonical paths, and the binaries must exist to be resolved.
+    for binary in ["steam", "reaper"] {
+        let path = root.path().join(dir).join(binary);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+    }
+    let alias = root.path().join("alias");
+    symlink(root.path(), &alias).unwrap();
+    let aliased = Install {
+        kind: InstallKind::Native,
+        root: alias,
+    };
+    let (reader, pids) = reaper_table(root.path(), dir);
+    let found = scan_reapers(&reader, pids, &aliased, &ids(&["20"]), "boot").unwrap();
+    assert_eq!(found["20"].len(), 1, "{dir}");
+
     for app in &all {
-        let (reader, pids) = reaper_table(root.path());
+        let (reader, pids) = reaper_table(root.path(), dir);
         let alone =
             scan_reapers(&reader, pids, &install, std::slice::from_ref(app), "boot").unwrap();
         assert_eq!(alone[app], together[app], "app {app}");
@@ -511,7 +560,7 @@ fn one_scan_reads_each_process_once_however_many_apps_it_serves() {
         root: root.path().to_owned(),
     };
     let count = |ids: &[&str], what: &str| {
-        let (reader, pids) = reaper_table(root.path());
+        let (reader, pids) = reaper_table(root.path(), "ubuntu12_32");
         let ids = ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
         scan_reapers(&reader, pids, &install, &ids, "boot").unwrap();
         let calls = reader.calls.borrow();
@@ -541,12 +590,22 @@ fn missing_client_exe_keeps_the_argv_fallback() {
 
 #[test]
 fn client_match_requires_install_exe_with_limited_argv_fallback() {
+    // Steam's own folder names, not CLIENT_DIRS, so dropping one fails here.
+    for dir in ["steamrt64", "ubuntu12_32"] {
+        client_match_in(dir);
+    }
+}
+
+fn client_match_in(dir: &str) {
+    let matches_client = |install: &Install, client: &Inspected<()>| {
+        matches_client(install, &install_binaries(install, "steam"), client)
+    };
     let temp = tempfile::tempdir().unwrap();
     let mut install = Install {
         kind: InstallKind::Native,
         root: temp.path().to_owned(),
     };
-    let path = install.root().join("ubuntu12_32/steam");
+    let path = install.root().join(dir).join("steam");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, "").unwrap();
     let mut client = Inspected {
@@ -576,13 +635,20 @@ fn client_match_requires_install_exe_with_limited_argv_fallback() {
 
 #[test]
 fn only_a_live_client_of_this_install_counts_as_running() {
+    // Steam's own folder names, not CLIENT_DIRS, so dropping one fails here.
+    for dir in ["steamrt64", "ubuntu12_32"] {
+        only_a_live_client_counts(dir);
+    }
+}
+
+fn only_a_live_client_counts(dir: &str) {
     let temp = tempfile::tempdir().unwrap();
     let install = Install {
         kind: InstallKind::Native,
         root: temp.path().join("mine"),
     };
     let other = temp.path().join("other");
-    let client = |root: &Path| root.join("ubuntu12_32/steam");
+    let client = |root: &Path| root.join(dir).join("steam");
     for root in [&install.root, &other] {
         fs::create_dir_all(client(root).parent().unwrap()).unwrap();
         fs::write(client(root), "").unwrap();
@@ -604,6 +670,16 @@ fn only_a_live_client_of_this_install_counts_as_running() {
     assert!(!scan_client(&reader(7, 'S', &install.root), vec![8], &install).unwrap());
     assert!(!scan_client(&reader(7, 'Z', &install.root), vec![7], &install).unwrap());
     assert!(!scan_client(&reader(7, 'S', &install.root), Vec::new(), &install).unwrap());
+    // A `steam` binary outside the client's folders isn't the client.
+    let stray = install.root.join("bin/steam");
+    fs::create_dir_all(stray.parent().unwrap()).unwrap();
+    fs::write(&stray, "").unwrap();
+    let mut outside = reader(7, 'S', &install.root);
+    outside.exe_by_pid.insert(7, stray.clone());
+    outside
+        .arguments_by_pid
+        .insert(7, vec![stray.as_os_str().as_bytes().to_vec()]);
+    assert!(!scan_client(&outside, vec![7], &install).unwrap());
 }
 
 /// Kills a test process's group even when an assertion panics first.
