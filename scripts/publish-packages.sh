@@ -1675,7 +1675,8 @@ tell() { { (printf '%s\n' "$@"); } 2>/dev/null || true; }
 
 # walk_away: once every upload is out, stopping loses nothing, since the remote
 # builds go on and a rerun goes straight back to waiting. Each line prints at
-# most once, from the files alone, however many wake-ups came.
+# most once, from the files alone, however many wake-ups came, and only while
+# something is still waiting: with nothing left, the summary is next anyway.
 walk_away() {
     local dest result phase phase_line left=() out=1 down='' lines=()
     for dest in "${torun[@]}"; do
@@ -1689,7 +1690,7 @@ walk_away() {
         read_phase "$dest"
         [[ $phase == waiting ]] || out=0
     done
-    if ((!told_out && out)) && compgen -G "$work/uploaded-*" >/dev/null; then
+    if ((!told_out && out && ${#left[@]} > 0)) && compgen -G "$work/uploaded-*" >/dev/null; then
         told_out=1
         tell "== every upload is out${down:+ ($down failed)}; stopping now loses nothing, rerun to keep waiting"
     fi

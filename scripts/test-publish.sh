@@ -882,13 +882,14 @@ check "a background job's container had a stdin, or could prompt: $(grep -- '-co
     grep -qx 'wineo-publish-[0-9]*-copr-srpm stdin=/dev/null ssh=ssh -o BatchMode=yes prompt=0' "$STUB/podman-env.log"
 check "the PPA's foreground stage lost its stdin, or its prompts: $(grep -- '-ppa-deb-source-jammy ' "$STUB/podman-env.log")" \
     grep -qx "wineo-publish-[0-9]*-ppa-deb-source-jammy stdin=$scenario/stdin ssh= prompt=" "$STUB/podman-env.log"
-# Walking away: once, and after the last upload.
-check "a full run didn't say once that every upload is out: $(grep -c 'every upload is out' "$out")" \
-    test "$(grep -cx '== every upload is out; stopping now loses nothing, rerun to keep waiting' "$out")" -eq 1
+# Walking away: at most once, and never before the last upload. Whether it
+# comes at all depends on whether anything still waits then.
+check "a full run said more than once that every upload is out: $(grep -c 'every upload is out' "$out")" \
+    test "$(grep -c 'every upload is out' "$out")" -le 1
 last_upload=$(grep -nE '(^\[[a-z]+\] +|^== [a-z]+: )uploading ' "$out" | tail -n 1 | cut -d: -f1)
-out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1)
+out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1 || true)
 check "every upload was out (line ${out_line:-none}) before the last upload (line ${last_upload:-none})" \
-    test "${out_line:-0}" -gt "${last_upload:-999999}"
+    test "${out_line:-999999}" -gt "${last_upload:-999999}"
 
 # A rerun skips everything.
 publish
@@ -1112,8 +1113,6 @@ check "an upload that fails: the log is named for a clean destination: $(grep '^
 check "an upload that fails: its log lacks the cause" grep -qx 'fake copr: upload refused' "${run_log_dirs[0]:-/nonexistent}/copr.log"
 check "an upload that fails: the cause reached the terminal" test "$(grep -c 'fake copr: upload refused' "$out")" -eq 0
 check "an upload that fails: a later destination isn't on the terminal" on_terminal '^\[obs\]     published '
-check "an upload that fails: every upload is out doesn't name it: $(grep 'every upload is out' "$out")" \
-    on_terminal '^== every upload is out \(copr failed\); stopping now loses nothing, rerun to keep waiting$'
 publish
 check "the retry: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
 check "the retry did not upload COPR once" test "$(upload_count ' copr ')" -eq 1
@@ -2288,6 +2287,13 @@ check "walking away: the summary so far isn't the PPA's latest line, '$latest'" 
 out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1)
 so_far_line=$(grep -n "^== only the" "$out" | head -n 1 | cut -d: -f1)
 check "walking away: every upload was out only after the summary so far" test "${out_line:-999}" -lt "${so_far_line:-0}"
+
+# With nothing left to wait on once the last upload is out, there's nothing to
+# walk away from: the summary comes next.
+new_scenario
+publish --skip ppa --skip aur --skip copr --skip obs
+check "nothing left to wait on: exit $rc, not 0" test "$rc" -eq 0
+check "nothing left to wait on, and it said every upload is out" test "$(grep -c 'every upload is out' "$out")" -eq 0
 
 # The PPA alone: every upload is out while it waits, with no job ending to wake
 # main, so only the job's signal can.
