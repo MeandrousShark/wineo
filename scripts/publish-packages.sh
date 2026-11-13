@@ -409,14 +409,17 @@ record() { echo "$2" >"$work/result-$1"; }
 # forever. flock guards only the short check-and-write of the record, which
 # runs nothing but builtins, and is released before anything else runs.
 
-# proc_start PID VAR: PID's start time from /proc into VAR, or fail if it's
-# gone. comm, the second field, can hold spaces and parens, so the fields are
-# counted from after the last ")".
+# proc_start PID VAR: PID's start time from /proc into VAR, or fail if it isn't
+# running. comm, the second field, can hold spaces and parens, so the fields are
+# counted from after the last ")". A zombie keeps its start time until it's
+# reaped, so it doesn't count as running. read, not $(<...), so nothing forks
+# while the guard is held.
 proc_start() {
-    local _stat _fields
-    { _stat=$(<"/proc/$1/stat"); } 2>/dev/null || return 1
+    local _stat='' _fields
+    [[ $1 =~ ^[0-9]+$ ]] || return 1
+    { read -r -d '' _stat <"/proc/$1/stat" || [[ -n $_stat ]]; } 2>/dev/null || return 1
     read -ra _fields <<<"${_stat##*) }"
-    [[ -n ${_fields[19]:-} ]] || return 1
+    [[ -n ${_fields[19]:-} && ${_fields[0]} != [ZX] ]] || return 1
     printf -v "$2" %s "${_fields[19]}"
 }
 
@@ -431,29 +434,39 @@ lock_live() {
 }
 
 # lock_try FILE OWNER: take the lock for OWNER (a PID) if nobody live holds it.
-# Status 1 means held, 2 means OWNER isn't running.
+# Status 1 means held, 2 means OWNER isn't running, 3 means the guard or the
+# record couldn't be used. Its callers run it with errexit off (`|| status=$?`),
+# so every step that can fail is checked here.
 lock_try() {
     local file=$1 owner=$2 fd start taken=0
     proc_start "$owner" start || return 2
-    exec {fd}>>"$file.guard"
-    flock "$fd"
+    exec {fd}>>"$file.guard" || return 3
+    if ! flock "$fd"; then
+        exec {fd}>&-
+        return 3
+    fi
     if ! lock_live "$file"; then
-        echo "$owner $start" >"$file"
-        taken=1
+        if echo "$owner $start" >"$file"; then taken=1; else taken=3; fi
     fi
     exec {fd}>&-
+    ((taken != 3)) || return 3
     ((taken))
 }
 
-# lock_release FILE OWNER: free the lock if OWNER still holds it. Emptying the
-# record, not removing it, keeps everything under the guard a builtin.
+# lock_release FILE OWNER: free the lock if OWNER still holds it; status 3 as
+# for lock_try. Emptying the record, not removing it, keeps everything under the
+# guard a builtin.
 lock_release() {
-    local file=$1 owner=$2 fd pid=
-    exec {fd}>>"$file.guard"
-    flock "$fd"
-    { read -r pid _ <"$file"; } 2>/dev/null || true
-    if [[ $pid == "$owner" ]]; then : >"$file"; fi
+    local file=$1 owner=$2 fd pid='' status=0
+    exec {fd}>>"$file.guard" || return 3
+    if flock "$fd"; then
+        { read -r pid _ <"$file"; } 2>/dev/null || true
+        if [[ $pid == "$owner" ]]; then : >"$file" || status=3; fi
+    else
+        status=3
+    fi
     exec {fd}>&-
+    return "$status"
 }
 
 # lock_wait FILE OWNER WHAT: take the lock, saying so once if it has to wait.
@@ -463,7 +476,7 @@ lock_wait() {
         status=0
         lock_try "$file" "$owner" || status=$?
         ((status != 0)) || return 0
-        ((status == 1)) || return "$status"
+        ((status == 1)) || dest_fail "could not take the lock for $what ($file, status $status)"
         if ((!told)); then
             say "$current: waiting for $what" >&2
             told=1
@@ -498,6 +511,8 @@ tool_image() {
         return
     fi
     builder=wineo-publish-builder-$kind-$$
+    # A holder killed mid-build leaves its container behind under this name.
+    podman rm -f "$builder" >/dev/null 2>&1 || true
     case $kind in
         fedora)
             base=$fedora_image
@@ -525,7 +540,7 @@ tool_image() {
     if ((status != 0)); then
         podman rmi -f "$name" >/dev/null 2>&1 || true
         # Freed first so the next caller tries again and fails with its own reason.
-        lock_release "$lock" "$BASHPID"
+        lock_release "$lock" "$BASHPID" || true
         dest_fail "installing the tools into a $base image failed (exit $status); see the output above"
     fi
     lock_release "$lock" "$BASHPID"
@@ -679,7 +694,7 @@ tag_tarball() {
         fi
         if ((status != 0)); then
             rm -f "$part"
-            lock_release "$lock" "$BASHPID"
+            lock_release "$lock" "$BASHPID" || true
             dest_fail "could not download GitHub's tarball for $tag"
         fi
         chmod 644 "$part"
