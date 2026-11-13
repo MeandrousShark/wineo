@@ -486,22 +486,35 @@ lock_live() {
     [[ $now == "$start" ]]
 }
 
+# The guard's descriptor while a helper below has it open. A trap can fire inside
+# the guarded window, and what it starts (podman, whose pause process keeps
+# descriptors above 2) would inherit the open guard and hold it for good, so
+# the traps close it first, with a builtin. Every helper waits for the guard at
+# most 10 seconds, so a stuck one is a status 3, not a hang.
+lock_fd=''
+close_guard() {
+    [[ -z $lock_fd ]] || { exec {lock_fd}>&-; } 2>/dev/null || true
+    lock_fd=''
+}
+
 # lock_try FILE OWNER: take the lock for OWNER (a PID) if nobody live holds it.
 # Status 1 means held, 2 means OWNER isn't running, 3 means the guard or the
 # record couldn't be used. Its callers run it with errexit off (`|| status=$?`),
 # so every step that can fail is checked here.
 lock_try() {
-    local file=$1 owner=$2 fd start taken=0
+    local file=$1 owner=$2 start taken=0
     proc_start "$owner" start || return 2
-    exec {fd}>>"$file.guard" || return 3
-    if ! flock "$fd"; then
-        exec {fd}>&-
+    exec {lock_fd}>>"$file.guard" || return 3
+    if ! flock -w 10 "$lock_fd"; then
+        exec {lock_fd}>&-
+        lock_fd=''
         return 3
     fi
     if ! lock_live "$file"; then
         if echo "$owner $start" >"$file"; then taken=1; else taken=3; fi
     fi
-    exec {fd}>&-
+    exec {lock_fd}>&-
+    lock_fd=''
     ((taken != 3)) || return 3
     ((taken))
 }
@@ -510,16 +523,52 @@ lock_try() {
 # for lock_try. Emptying the record, not removing it, keeps everything under the
 # guard a builtin.
 lock_release() {
-    local file=$1 owner=$2 fd pid='' status=0
-    exec {fd}>>"$file.guard" || return 3
-    if flock "$fd"; then
+    local file=$1 owner=$2 pid='' status=0
+    exec {lock_fd}>>"$file.guard" || return 3
+    if flock -w 10 "$lock_fd"; then
         { read -r pid _ <"$file"; } 2>/dev/null || true
         if [[ $pid == "$owner" ]]; then : >"$file" || status=3; fi
     else
         status=3
     fi
-    exec {fd}>&-
+    exec {lock_fd}>&-
+    lock_fd=''
     return "$status"
+}
+
+# lock_hand FILE FROM TO: rewrite the record from FROM (a PID, still the process
+# that wrote it) to TO, in one step under the guard, so the lock is never free
+# in between. Status 1 means FROM doesn't hold it, 2 that TO isn't running, 3
+# that the guard or the record couldn't be used.
+lock_hand() {
+    local file=$1 from=$2 to=$3 pid='' start status=1
+    proc_start "$to" start || return 2
+    exec {lock_fd}>>"$file.guard" || return 3
+    if flock -w 10 "$lock_fd"; then
+        # A record that can't be read says nothing about who holds it. One that
+        # isn't there yet, or is empty, is simply nobody's.
+        if [[ -e $file ]] && { [[ ! -f $file ]] || [[ ! -r $file ]]; }; then
+            status=3
+        else
+            { read -r pid _ <"$file"; } 2>/dev/null || true
+            if [[ $pid == "$from" ]] && lock_live "$file"; then
+                if echo "$to $start" >"$file"; then status=0; else status=3; fi
+            fi
+        fi
+    else
+        status=3
+    fi
+    exec {lock_fd}>&-
+    lock_fd=''
+    return "$status"
+}
+
+# lock_why STATUS OWNER VAR: what a lock_try status of 2 or 3 means, into VAR.
+lock_why() {
+    case $1 in
+        2) printf -v "$3" %s "/proc/$2 couldn't be read" ;;
+        *) printf -v "$3" %s "the lock file couldn't be used" ;;
+    esac
 }
 
 # lock_wait FILE OWNER WHAT: take the lock, saying so once if it has to wait.
@@ -530,10 +579,7 @@ lock_wait() {
         lock_try "$file" "$owner" || status=$?
         ((status != 0)) || return 0
         if ((status != 1)); then
-            case $status in
-                2) why="/proc/$owner couldn't be read" ;;
-                *) why="the lock file couldn't be used" ;;
-            esac
+            lock_why "$status" "$owner" why
             dest_fail "could not take the lock for $what ($file): $why"
         fi
         if ((!told)); then
@@ -548,6 +594,42 @@ dest_fail() {
     echo "${0##*/}: $current: $*" >&2
     record "$current" "failed: $*"
     exit 1
+}
+
+# The run lock: a destination holds $state_dir/lock-DEST for the whole of its
+# run, so a second run that reaches it first doesn't publish it twice. Try once,
+# never wait: the other run is publishing it, which this one doesn't confirm.
+# Nothing here is called from a trap, which could fire inside the guarded window
+# and wait on itself. A run that dies leaves its record behind, stale, and the
+# next run takes it over.
+held_result='not run (another run is publishing it)'
+
+# lock_dest DEST OWNER: take DEST's run lock for OWNER (a PID). If it isn't
+# taken, the result is recorded and shown, and the status is 1.
+lock_dest() {
+    local dest=$1 owner=$2 status=0 file=$state_dir/lock-$1 why result current=$1
+    lock_try "$file" "$owner" || status=$?
+    ((status != 0)) || return 0
+    if ((status == 1)); then
+        result=$held_result
+    else
+        lock_why "$status" "$owner" why
+        result="failed: could not take the run lock ($file): $why"
+    fi
+    record "$dest" "$result"
+    if [[ -n ${only:-} ]]; then
+        # --only's stream has no prefix, so this reads as its own lines do.
+        if ((status == 1)); then say "$dest: $result"; else echo "${0##*/}: $dest: ${result#failed: }" >&2; fi
+    else
+        term_copy "$term_out" "$result"
+    fi
+    return 1
+}
+
+# unlock_dest DEST OWNER: free DEST's run lock after a normal end. A failure
+# changes nothing the run needs: the record goes stale with its owner.
+unlock_dest() {
+    lock_release "$state_dir/lock-$1" "$2" || true
 }
 
 need_tool() {
@@ -1589,9 +1671,28 @@ background_env() {
 # run_job DEST PART: the body of a background job. Only main writes a reason
 # for a job that ended without a result, since a killed job can't.
 run_job() {
-    local dest=$1 part=$2 result
+    local dest=$1 part=$2 result status=0
     current=$dest
     background_env
+    # The lock first, as this job's own PID. The PPA's wait takes over main's,
+    # which main took for its foreground stage, so nothing can slip in between.
+    if [[ $part == publish_wait ]]; then
+        lock_hand "$state_dir/lock-$dest" "$$" "$BASHPID" || status=$?
+        if ((status == 1)); then
+            result="failed: the run lock was lost before the wait started"
+            record "$dest" "$result"
+            term_copy "$term_out" "$result"
+            return 0
+        elif ((status != 0)); then
+            lock_why "$status" "$BASHPID" result
+            result="failed: could not take over the run lock ($state_dir/lock-$dest): $result"
+            record "$dest" "$result"
+            term_copy "$term_out" "$result"
+            return 0
+        fi
+    else
+        lock_dest "$dest" "$BASHPID" || return 0
+    fi
     set +e
     (
         set -e
@@ -1601,6 +1702,7 @@ run_job() {
         "$part" "$dest"
     ) >>"$log_dir/$dest.log" 2>&1
     set -e
+    unlock_dest "$dest" "$BASHPID"
     result=$(cat "$work/result-$dest" 2>/dev/null || true)
     [[ $result != failed* ]] || term_copy "$term_out" "$result"
 }
@@ -1813,6 +1915,7 @@ close_term() {
 # Ctrl+C, a hangup, or TERM: stop everything, then say how far each got.
 on_signal() {
     ((!stopping)) || return 0
+    close_guard
     interrupted=1
     stop_all
     close_term
@@ -1826,6 +1929,7 @@ on_exit() {
     # Before anything else, so an INT can't run on_signal in the middle of this
     # and skip the cleanup.
     trap '' INT TERM HUP
+    close_guard
     if ((!stopping)); then
         stop_all
         if ((stopped_jobs)); then
@@ -1880,7 +1984,12 @@ fan_out() {
     local dest
     if [[ " ${torun[*]} " == *" ppa "* ]]; then
         ran+=(ppa)
-        run_inline ppa publish_upload
+        # Main's, until the wait job takes it over. With nothing left to wait
+        # for, main lets it go itself.
+        if lock_dest ppa "$$"; then
+            run_inline ppa publish_upload
+            if [[ -s $work/result-ppa ]]; then unlock_dest ppa "$$"; fi
+        fi
     fi
     for dest in "${torun[@]}"; do
         if [[ $dest != ppa ]]; then
@@ -2064,7 +2173,7 @@ summarize() {
         if [[ $result != published* && $result != "already published"* && -n $log_dir && -f $log_dir/$dest.log ]]; then
             printf '  %-8s log: %s\n' '' "$log_dir/$dest.log"
         fi
-        [[ $result != failed* ]] || status=1
+        [[ $result != failed* && $result != "$held_result" ]] || status=1
     done
     [[ -z $log_dir ]] || echo "logs: $log_dir/"
     return "$status"
@@ -2166,7 +2275,12 @@ main() {
     trap on_signal INT TERM HUP
     if ((${#torun[@]} > 0)); then make_log_dir; fi
     if [[ -n $only ]]; then
-        run_inline "$only" publish_destination
+        # Main owns it, since the destination runs inline in this process's
+        # pipeline, as the PPA's foreground stage does.
+        if lock_dest "$only" "$$"; then
+            run_inline "$only" publish_destination
+            unlock_dest "$only" "$$"
+        fi
     else
         fan_out
     fi
