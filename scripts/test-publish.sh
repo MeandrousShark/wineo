@@ -2017,15 +2017,24 @@ publish_join() {
 work_left() { find "$scenario/work" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1; }
 
 # hang_push NAME [BRANCH]: the fake repository NAME holds a push until
-# $STUB/release-push exists, then takes it.
+# $STUB/release-push exists, or with $STUB/push-leader until its job's own
+# process is gone, then takes it.
 hang_push() {
     local bare=$dest/remote/$1.git
     git init -q --bare --initial-branch="${2:-main}" "$bare"
     cat >"$bare/hooks/pre-receive" <<'EOF'
 #!/bin/bash
 echo "$$" >"$STUB/hanging-push"
+stat=$(</proc/$$/stat)
+read -ra fields <<<"${stat##*) }"
+group=${fields[2]}
+echo "$group" >"$STUB/push-group"
 for _ in $(seq 300); do
     [[ ! -f $STUB/release-push ]] || exit 0
+    if [[ -f $STUB/push-leader && $(cut -d' ' -f3 "/proc/$group/stat" 2>/dev/null || echo Z) == Z ]]; then
+        command -p sleep 0.3
+        exit 0
+    fi
     command -p sleep 0.1
 done
 exit 1
@@ -2150,36 +2159,39 @@ check "killed from outside: the work directory is left" test -z "$(work_left)"
 check "killed from outside: processes are left: $left_behind" test -z "$left_behind"
 
 # Only a job's own process killed from outside, as kill PID or the OOM killer
-# would: the rest of its group, and its container, would go on publishing.
-# COPR's source package build carries on once the leader is gone, so without
-# the stopping it would upload, and write its own result over main's.
+# would: the rest of its group, and its container, would go on publishing. The
+# overlay's push goes through once its job's leader is gone, so without the
+# stopping it would publish and write its own result over main's. COPR's
+# container outlives its podman run, so only the sweep stops it.
 new_scenario
-touch "$STUB/detach"
-echo leader >"$STUB/hang-rpmbuild"
+touch "$STUB/detach" "$STUB/hang-rpmbuild" "$STUB/push-leader"
 hang_push overlay
-publish_bg --skip ppa --skip aur --skip obs
+publish_bg --skip ppa --skip aur
 check "a killed leader: COPR never started building" wait_for test -s "$STUB/hanging-rpmbuild"
-check "a killed leader: the overlay never pushed" wait_for test -s "$STUB/hanging-push"
-leader=$(cat "$STUB"/group-wineo-publish-*-copr-srpm 2>/dev/null || true)
-if [[ $leader =~ ^[0-9]+$ && $leader != "$bg_pid" && $leader != "$(cut -d' ' -f5 /proc/$$/stat)" ]]; then
-    kill -KILL "$leader" || true
-    pass
-else
-    fail "a killed leader: COPR's job has no group of its own: '$leader'"
-fi
-# Long enough for what was left of the job to upload, had it been left.
+check "a killed leader: the overlay never pushed" wait_for test -s "$STUB/push-group"
+own_group=$(cut -d' ' -f5 /proc/$$/stat)
+for leader in "$(cat "$STUB"/group-wineo-publish-*-copr-srpm 2>/dev/null || true)" "$(cat "$STUB/push-group")"; do
+    if [[ $leader =~ ^[0-9]+$ && $leader != "$bg_pid" && $leader != "$own_group" ]]; then
+        kill -KILL "$leader" || true
+        pass
+    else
+        fail "a killed leader: a job has no group of its own: '$leader'"
+    fi
+done
+# Long enough for what was left of the jobs to publish, had it been left.
 sleep 2
-touch "$STUB/release-push"
 publish_join
 check "a killed leader: it had to be stopped" test "$bg_hung" -eq 0
 check "a killed leader: exit $rc, not 1" test "$rc" -eq 1
-check "a killed leader: the reason is wrong: $(grep '^  copr' "$out")" \
-    on_terminal '^  copr +failed: it stopped early; see the log$'
-check "a killed leader: the rest of the job uploaded: $(uploads)" test "$(upload_count ' copr ')" -eq 0
-check "a killed leader: its container wasn't looked for" \
+for d in overlay copr; do
+    check "a killed leader: $d's reason is wrong: $(grep "^  $d" "$out")" \
+        on_terminal "^  $d +failed: it stopped early; see the log\$"
+    check "a killed leader: the rest of $d's job published: $(uploads)" test "$(upload_count " $d ")" -eq 0
+done
+check "a killed leader: COPR's container wasn't looked for" \
     grep -qxF "ps -a --filter name=^wineo-publish-$bg_pid-copr- --format {{.Names}} {{.State}}" "$STUB/podman.log"
-check "a killed leader: its container wasn't stopped" grep -qxF "stop -t 5 wineo-publish-$bg_pid-copr-srpm" "$STUB/podman.log"
-check "a killed leader: the overlay didn't publish" said '^  overlay +published'
+check "a killed leader: COPR's container wasn't stopped" grep -qxF "stop -t 5 wineo-publish-$bg_pid-copr-srpm" "$STUB/podman.log"
+check "a killed leader: OBS didn't publish" said '^  obs +published'
 check "a killed leader: processes are left: $left_behind" test -z "$left_behind"
 check "a killed leader: the work directory is left" test -z "$(work_left)"
 
@@ -2233,11 +2245,15 @@ lost_wake() (
     # shellcheck disable=SC2034
     torun=(copr) ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
     # shellcheck disable=SC2034
-    declare -A job_dest=()
-    # The script's own run_job, replaced as fan_out will call it.
+    declare -A job_dest=() job_start=()
+    # The script's own run_job, replaced as fan_out will call it, and its
+    # walk_away counted: main must sleep between wake-ups, not spin.
     eval "run_job() { $1 \"\$work\"; }"
+    eval "$(declare -f walk_away | sed '1s/^walk_away/counted_walk_away/')"
+    passes=0
+    eval 'walk_away() { passes=$((passes + 1)); counted_walk_away; }'
     fan_out
-    echo "fan_out ended"
+    echo "fan_out ended after $passes passes"
 )
 lost_wake stand_in >"$scenario/tick.out" 2>&1 &
 tick_pid=$!
@@ -2249,7 +2265,9 @@ done
 check "a lost wake-up waited for the job to end: $(cat "$scenario/tick.out")" test "$seen" = yes
 finish "$tick_pid"
 check "the ticker's fan-out failed ($finished): $(cat "$scenario/tick.out")" test "$finished" -eq 0
-check "the ticker's fan-out didn't end: $(cat "$scenario/tick.out")" grep -qx 'fan_out ended' "$scenario/tick.out"
+check "the ticker's fan-out didn't end: $(cat "$scenario/tick.out")" grep -q '^fan_out ended' "$scenario/tick.out"
+passes=$(sed -n 's/^fan_out ended after \([0-9]*\) passes$/\1/p' "$scenario/tick.out")
+check "main spun between wake-ups: ${passes:-no} passes" test "${passes:-999}" -lt 50
 
 # A job that wakes main and exits at once can end just as its USR1 interrupts
 # wait -n, and no later wait -n returns it. Twenty such jobs, ten times over,
@@ -2275,7 +2293,7 @@ many_jobs() (
         # shellcheck disable=SC2034
         ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
         # shellcheck disable=SC2034
-        declare -A job_dest=()
+        declare -A job_dest=() job_start=()
         eval "run_job() { $1 \"\$work\" \"\$1\" $BASHPID; }"
         fan_out
         if [[ $(cat "$work"/result-* | grep -c '^published') != 20 ]]; then echo "round $round lost a result"; fi

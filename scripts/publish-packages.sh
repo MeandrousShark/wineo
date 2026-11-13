@@ -1614,7 +1614,18 @@ launch() {
     run_job "$1" "$2" </dev/null &
     set +m
     job_dest[$!]=$1
+    proc_start "$!" "job_start[$!]" || true
     live+=("$!")
+}
+
+# job_alive PID: PID is still the job launched under it. Neither wait -n nor
+# bash's own job table can say when a job has ended: one that exits just as a
+# trapped USR1 interrupts wait -n can be reaped with its status lost, and then
+# stays "Running" in the table, where `wait PID` would block on it forever.
+# The start time keeps a reused PID from passing.
+job_alive() {
+    local now
+    proc_start "$1" now && [[ $now == "${job_start[$1]:-}" ]]
 }
 
 # end_group PID: TERM to PID's process group, a few seconds for it to empty,
@@ -1727,26 +1738,29 @@ interrupted_reason() {
 # inherits. It prints nothing, and it never takes a record lock: a trap that
 # fired inside a lock's guarded window would wait on itself.
 stop_all() {
-    local pid running=() signaled=() i busy dest
+    local pid running=() signaled=() i busy dest old_ticker
     ((!stopping)) || return 0
     stopping=1
     trap '' INT TERM HUP
     # A signal during launch can land with job control still on.
     set +m
+    old_ticker=$ticker
     stop_ticker
-    # Every job bash hasn't seen end, not just those in live: a signal can come
-    # between a launch's `&` and its PID reaching live. A reaped job's PID can
-    # be reused, so those are never signaled.
+    # A job a signal caught between a launch's `&` and its PID reaching live is
+    # only in bash's table, which lists it as running. It has only just started,
+    # so its PID can't have been reused.
     read -ra running <<<"$(jobs -rp 2>/dev/null | tr '\n' ' ')"
     for pid in ${running[@]+"${running[@]}"}; do
+        [[ $pid != "$old_ticker" && " ${live[*]:-} " != *" $pid "* ]] || continue
         stopped_jobs=1
         kill -TERM -- "-$pid" 2>/dev/null || true
         signaled+=("$pid")
     done
-    # A job whose own process is gone but whose group isn't, as in job_done.
+    # The rest by what's really running: a job that's still itself, or one
+    # whose own process is gone but whose group isn't, as in job_done. A
+    # group with a member keeps its ID from being reused.
     for pid in ${live[@]+"${live[@]}"}; do
-        [[ " ${running[*]:-} " != *" $pid "* ]] || continue
-        if kill -0 -- "-$pid" 2>/dev/null; then
+        if job_alive "$pid" || kill -0 -- "-$pid" 2>/dev/null; then
             stopped_jobs=1
             kill -TERM -- "-$pid" 2>/dev/null || true
             signaled+=("$pid")
@@ -1767,7 +1781,8 @@ stop_all() {
     done
     # Once no client is left to answer the signal and remove its own.
     if ((stopped_jobs || interrupted)); then sweep_containers "^wineo-publish-$$-"; fi
-    wait 2>/dev/null || true
+    # No wait: the groups are gone, bash reaps what's left, and a job whose
+    # status it lost would block it for good.
     live=()
     for dest in ${torun[@]+"${torun[@]}"}; do
         [[ ! -s $work/result-$dest ]] || continue
@@ -1823,28 +1838,29 @@ on_exit() {
 start_ticker() {
     sleep 10 &
     ticker=$!
+    proc_start "$ticker" "job_start[$ticker]" || true
 }
 
+# Not waited for, which could block for good as job_alive says.
 stop_ticker() {
     [[ -n $ticker ]] || return 0
-    kill "$ticker" 2>/dev/null || true
-    wait "$ticker" 2>/dev/null || true
+    if job_alive "$ticker"; then kill "$ticker" 2>/dev/null || true; fi
     ticker=''
 }
 
-# reap_ended: job_done for every live job bash has seen end, and a new ticker
-# if it has ended. wait -n alone can't be trusted with this: a job that exits
-# just as its USR1 interrupts wait -n is never returned by a later one.
+# reap_ended: job_done for every live job that has ended, and a new ticker if
+# the last one has. Each is waited for only once bash lists it as ended, since
+# one whose status it lost would block wait for good.
 reap_ended() {
     local pid running
     running=" $(jobs -rp 2>/dev/null | tr '\n' ' ') "
     for pid in "${live[@]}"; do
-        [[ $running != *" $pid "* ]] || continue
-        wait "$pid" 2>/dev/null || true
+        ! job_alive "$pid" || continue
+        [[ $running == *" $pid "* ]] || wait "$pid" 2>/dev/null || true
         job_done "$pid"
     done
-    if [[ $running != *" $ticker "* ]]; then
-        wait "$ticker" 2>/dev/null || true
+    if ! job_alive "$ticker"; then
+        [[ $running == *" $ticker "* ]] || wait "$ticker" 2>/dev/null || true
         start_ticker
     fi
 }
@@ -2049,7 +2065,7 @@ main() {
     only='' skip=() dest_dir='' log_dir='' term_out='' term_fd='' term_pipe='' current=''
     torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0
     woke=0 told_out=0 told_left=0 usr1_trapped='' ticker=''
-    declare -gA job_dest=()
+    declare -gA job_dest=() job_start=()
     (($# >= 1)) || usage
     version=$1
     shift
