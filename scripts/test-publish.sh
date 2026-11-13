@@ -803,6 +803,8 @@ check "the PPA's lines show twice on the terminal" test "$(grep -c '^== ppa: upl
 # Only the PPA's wait, in the background, is prefixed.
 check "the PPA's foreground lines are prefixed on the terminal" test "$(grep -c '^\[ppa\] *uploading' "$out")" -eq 0
 check "the PPA's wait has no prefixed published line, once" test "$(grep -cE '^\[ppa\] +published ' "$out")" -eq 1
+check "the PPA's wait printed its published line in full on the terminal" test "$(grep -c '^== ppa: published' "$out")" -eq 0
+check "the PPA's log lacks its wait's published line" grep -qx "== ppa: published $version-1ppa1" "$log_dir/ppa.log"
 check "the PPA's log lacks its uploads" grep -qx '== ppa: uploading jammy' "$log_dir/ppa.log"
 check "the PPA's foreground output is not on the terminal" on_terminal '^container noise from dpkg-buildpackage$'
 check "the PPA's foreground output is not in its log" grep -qx 'container noise from dpkg-buildpackage' "$log_dir/ppa.log"
@@ -2062,8 +2064,8 @@ publish_join
 check "killed from outside: it had to be stopped" test "$bg_hung" -eq 0
 check "killed from outside: exit $rc, not 1" test "$rc" -eq 1
 check "killed from outside: the reason is wrong: $(grep '^  copr' "$out")" \
-    on_terminal '^  copr +failed: stopped early; see the log$'
-check "killed from outside: the terminal lacks the reason" on_terminal '^\[copr\]    failed: stopped early; see the log$'
+    on_terminal '^  copr +failed: it stopped early; see the log$'
+check "killed from outside: the terminal lacks the reason" on_terminal '^\[copr\]    failed: it stopped early; see the log$'
 check "killed from outside: the others stopped" said '^  overlay +published'
 check "killed from outside: the work directory is left" test -z "$(work_left)"
 check "killed from outside: processes are left: $left_behind" test -z "$left_behind"
@@ -2090,6 +2092,11 @@ check "walking away: the summary so far is wrong: $so_far" test "$so_far" = "== 
   obs      published ($version-1)
   ppa      waiting on noble(building) resolute(building) stonking(building)"
 latest=$(sed -n "1,/^== only the ppa's wait is left:\$/p" "$out" | grep '^\[ppa\] *waiting on ' | tail -n 1)
+check "walking away: the PPA's wait printed its lines in full on the terminal" \
+    test "$(grep -cE '^== ppa: (waiting on|published)' "$out")" -eq 0
+for line in "== ppa: waiting on noble(building) resolute(building) stonking(building)" "== ppa: published $version-1ppa1"; do
+    check "walking away: the PPA's log lacks '$line'" grep -qxF "$line" "${run_log_dirs[0]:-/nonexistent}/ppa.log"
+done
 check "walking away: the summary so far isn't the PPA's latest line, '$latest'" \
     test "$latest" = "[ppa]     waiting on noble(building) resolute(building) stonking(building)"
 out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1)

@@ -1623,8 +1623,8 @@ job_done() {
     live=(${rest[@]+"${rest[@]}"})
     if [[ ! -s $work/result-$dest ]]; then
         current=$dest
-        record "$dest" "failed: stopped early; see the log"
-        term_copy "$term_out" "failed: stopped early; see the log"
+        record "$dest" "failed: it stopped early; see the log"
+        term_copy "$term_out" "failed: it stopped early; see the log"
         # Whatever killed it may have left its container running.
         sweep=1
     fi
@@ -1732,7 +1732,7 @@ stop_all() {
         if ((interrupted)); then
             record "$dest" "$(interrupted_reason "$dest")"
         else
-            record "$dest" "failed: stopped early; see the log"
+            record "$dest" "failed: it stopped early; see the log"
         fi
     done
 }
