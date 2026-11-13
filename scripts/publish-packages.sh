@@ -1832,10 +1832,27 @@ stop_ticker() {
     ticker=''
 }
 
+# reap_ended: job_done for every live job bash has seen end, and a new ticker
+# if it has ended. wait -n alone can't be trusted with this: a job that exits
+# just as its USR1 interrupts wait -n is never returned by a later one.
+reap_ended() {
+    local pid running
+    running=" $(jobs -rp 2>/dev/null | tr '\n' ' ') "
+    for pid in "${live[@]}"; do
+        [[ $running != *" $pid "* ]] || continue
+        wait "$pid" 2>/dev/null || true
+        job_done "$pid"
+    done
+    if [[ $running != *" $ticker "* ]]; then
+        wait "$ticker" 2>/dev/null || true
+        start_ticker
+    fi
+}
+
 # The three stages: the PPA's foreground stage, then everything else and the
 # PPA's wait in the background, then the wait for them all.
 fan_out() {
-    local dest reaped
+    local dest
     if [[ " ${torun[*]} " == *" ppa "* ]]; then
         ran+=(ppa)
         run_inline ppa publish_upload
@@ -1849,18 +1866,15 @@ fan_out() {
         fi
     done
     start_ticker
-    while ((${#live[@]} > 0)); do
-        reaped=''
+    while :; do
         woke=0
+        reap_ended
+        ((${#live[@]} > 0)) || break
         walk_away
         # A wake-up during walk_away would otherwise wait for the next one.
         if ((woke)); then continue; fi
-        wait -n -p reaped "${live[@]}" "$ticker" 2>/dev/null || true
-        if [[ ${reaped:-} == "$ticker" ]]; then
-            start_ticker
-        elif [[ -n ${reaped:-} ]]; then
-            job_done "$reaped"
-        fi
+        # Only a way to sleep until something happens: reap_ended says what.
+        wait -n "${live[@]}" "$ticker" 2>/dev/null || true
     done
     stop_ticker
     walk_away

@@ -2236,6 +2236,49 @@ finish "$tick_pid"
 check "the ticker's fan-out failed ($finished): $(cat "$scenario/tick.out")" test "$finished" -eq 0
 check "the ticker's fan-out didn't end: $(cat "$scenario/tick.out")" grep -qx 'fan_out ended' "$scenario/tick.out"
 
+# A job that wakes main and exits at once can end just as its USR1 interrupts
+# wait -n, and no later wait -n returns it. Twenty such jobs, ten times over,
+# lose one most runs when main trusts wait -n; main must still see them all.
+# quick_job WORK DEST MAIN
+quick_job() {
+    command -p sleep "0.0$((RANDOM % 5))"
+    echo "published (x)" >"$1/result-$2"
+    kill -USR1 "$3"
+}
+many_jobs() (
+    # shellcheck disable=SC2030,SC2031
+    PATH=$tickbin:$PATH
+    # shellcheck disable=SC1090
+    source "$tick_script"
+    trap 'woke=1' USR1
+    for round in $(seq 10); do
+        # shellcheck disable=SC2034
+        work=$scenario/many-$round log_dir=$scenario/many-$round term_out='' term_pipe='' usr1_trapped=''
+        mkdir -p "$work"
+        torun=()
+        for i in $(seq 20); do torun+=("d$i"); done
+        # shellcheck disable=SC2034
+        ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
+        # shellcheck disable=SC2034
+        declare -A job_dest=()
+        eval "run_job() { $1 \"\$work\" \"\$1\" $BASHPID; }"
+        fan_out
+        if [[ $(cat "$work"/result-* | grep -c '^published') != 20 ]]; then echo "round $round lost a result"; fi
+    done
+    echo "every round ended"
+)
+new_scenario
+many_jobs quick_job >"$scenario/many.out" 2>&1 &
+many_pid=$!
+seen=no
+for _ in $(seq 150); do
+    if grep -q 'every round ended' "$scenario/many.out"; then seen=yes && break; fi
+    sleep 0.1
+done
+check "main lost a job that exited as it woke main: $(cat "$scenario/many.out")" test "$seen" = yes
+finish "$many_pid"
+check "a round lost a result: $(cat "$scenario/many.out")" test "$(grep -c 'lost a result' "$scenario/many.out")" -eq 0
+
 # Once main has closed the terminal, bash can reuse its number for a file it
 # saves a descriptor in. A job's line must never open that.
 lock_scenario
