@@ -145,10 +145,13 @@ say() {
 # (term_pipe), the destinations have closed their copy of FD, since a daemon
 # born in a run would hold it and keep the pipe's reader waiting forever, so
 # each line reopens main's descriptor through /proc ($$ is main's PID in
-# subshells). A file's offset isn't shared that way, so only pipes do this.
+# subshells). A file's offset isn't shared that way, so only pipes do this, and
+# only while the number still names a pipe: once main has closed it, bash can
+# reuse it for a file it saves a descriptor in, which `>` would truncate.
 term_copy() {
     [[ -n $1 ]] || return 0
     if [[ -n ${term_pipe:-} ]]; then
+        [[ -p /proc/$$/fd/$1 ]] || return 0
         { (printf '%-9s %s\n' "[$current]" "$2" >"/proc/$$/fd/$1"); } 2>/dev/null || true
     else
         { (printf '%-9s %s\n' "[$current]" "$2" >&"$1"); } 2>/dev/null || true
@@ -1614,6 +1617,39 @@ launch() {
     live+=("$!")
 }
 
+# end_group PID: TERM to PID's process group, a few seconds for it to empty,
+# then SIGKILL. Only for a group that still has a member, which keeps its ID
+# from being reused.
+end_group() {
+    local i
+    kill -0 -- "-$1" 2>/dev/null || return 0
+    kill -TERM -- "-$1" 2>/dev/null || true
+    for ((i = 0; i < 50; i++)); do
+        kill -0 -- "-$1" 2>/dev/null || return 0
+        sleep 0.1 || true
+    done
+    kill -KILL -- "-$1" 2>/dev/null || true
+}
+
+# sweep_containers PATTERN: stops the containers whose names match PATTERN and
+# removes them all. -a, since a container whose podman run was killed can be
+# left created or exited as well as running.
+sweep_containers() {
+    local name state running=() all=()
+    command -v podman >/dev/null || return 0
+    while read -r name state; do
+        [[ -n $name ]] || continue
+        all+=("$name")
+        [[ $state != running ]] || running+=("$name")
+    done < <(podman ps -a --filter "name=$1" --format '{{.Names}} {{.State}}' 2>/dev/null || true)
+    if ((${#running[@]} > 0)); then
+        podman stop -t 5 "${running[@]}" >/dev/null 2>&1 || true
+    fi
+    if ((${#all[@]} > 0)); then
+        podman rm -f "${all[@]}" >/dev/null 2>&1 || true
+    fi
+}
+
 # job_done PID: the job is reaped, so it's no longer stopped through its group.
 job_done() {
     local pid=$1 dest=${job_dest[$1]} current p rest=()
@@ -1622,11 +1658,14 @@ job_done() {
     done
     live=(${rest[@]+"${rest[@]}"})
     if [[ ! -s $work/result-$dest ]]; then
+        # Only the job's own process may have died (kill PID, the OOM killer):
+        # what it started is still in its group and would go on publishing,
+        # and could write its own result over this one.
+        end_group "$pid"
+        sweep_containers "^wineo-publish-$$-$dest-"
         current=$dest
         record "$dest" "failed: it stopped early; see the log"
         term_copy "$term_out" "failed: it stopped early; see the log"
-        # Whatever killed it may have left its container running.
-        sweep=1
     fi
 }
 
@@ -1687,29 +1726,30 @@ interrupted_reason() {
 # inherits. It prints nothing, and it never takes a record lock: a trap that
 # fired inside a lock's guarded window would wait on itself.
 stop_all() {
-    local pid running signaled=() names=() i busy dest
+    local pid running=() signaled=() i busy dest
     ((!stopping)) || return 0
     stopping=1
     trap '' INT TERM HUP
-    if ((${#live[@]} > 0)); then
+    # A signal during launch can land with job control still on.
+    set +m
+    # Every job bash hasn't seen end, not just those in live: a signal can come
+    # between a launch's `&` and its PID reaching live. A reaped job's PID can
+    # be reused, so those are never signaled.
+    read -ra running <<<"$(jobs -rp 2>/dev/null | tr '\n' ' ')"
+    for pid in ${running[@]+"${running[@]}"}; do
         stopped_jobs=1
-        sweep=1
-        # Only jobs bash hasn't seen end: a reaped job's PID can be reused.
-        running=" $(jobs -rp 2>/dev/null | tr '\n' ' ') "
-        for pid in "${live[@]}"; do
-            if [[ $running == *" $pid "* ]]; then
-                kill -TERM -- "-$pid" 2>/dev/null || true
-                signaled+=("$pid")
-            fi
-        done
-    fi
-    if ((sweep || interrupted)) && command -v podman >/dev/null; then
-        mapfile -t names < <(podman ps --filter "name=^wineo-publish-$$-" --format '{{.Names}}' 2>/dev/null || true)
-        if ((${#names[@]} > 0)); then
-            podman stop -t 5 "${names[@]}" >/dev/null 2>&1 || true
+        kill -TERM -- "-$pid" 2>/dev/null || true
+        signaled+=("$pid")
+    done
+    # A job whose own process is gone but whose group isn't, as in job_done.
+    for pid in ${live[@]+"${live[@]}"}; do
+        [[ " ${running[*]:-} " != *" $pid "* ]] || continue
+        if kill -0 -- "-$pid" 2>/dev/null; then
+            stopped_jobs=1
+            kill -TERM -- "-$pid" 2>/dev/null || true
+            signaled+=("$pid")
         fi
-        podman rm -f "wineo-publish-$$-tools-fedora" "wineo-publish-$$-tools-ubuntu" >/dev/null 2>&1 || true
-    fi
+    done
     # Each group gets a few seconds to empty, then SIGKILL.
     for ((i = 0; i < 50 && ${#signaled[@]} > 0; i++)); do
         busy=()
@@ -1723,9 +1763,9 @@ stop_all() {
     for pid in ${signaled[@]+"${signaled[@]}"}; do
         kill -KILL -- "-$pid" 2>/dev/null || true
     done
-    for pid in ${live[@]+"${live[@]}"}; do
-        wait "$pid" 2>/dev/null || true
-    done
+    # Once no client is left to answer the signal and remove its own.
+    if ((stopped_jobs || interrupted)); then sweep_containers "^wineo-publish-$$-"; fi
+    wait 2>/dev/null || true
     live=()
     for dest in ${torun[@]+"${torun[@]}"}; do
         [[ ! -s $work/result-$dest ]] || continue
@@ -1759,6 +1799,9 @@ on_signal() {
 # The cleanup comes after the stopping, so nothing still running loses the
 # tool images or the work directory under it.
 on_exit() {
+    # Before anything else, so an INT can't run on_signal in the middle of this
+    # and skip the cleanup.
+    trap '' INT TERM HUP
     if ((!stopping)); then
         stop_all
         if ((stopped_jobs)); then
@@ -1966,7 +2009,7 @@ summarize() {
 
 main() {
     only='' skip=() dest_dir='' log_dir='' term_out='' term_fd='' term_pipe='' current=''
-    torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 sweep=0
+    torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0
     woke=0 told_out=0 told_left=0 usr1_trapped=''
     declare -gA job_dest=()
     (($# >= 1)) || usage
