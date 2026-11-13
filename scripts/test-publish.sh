@@ -339,6 +339,12 @@ if [[ -f $STUB/noise ]]; then
         rpmbuild | dpkg-buildpackage | dnf | apt-get) echo "container noise from $name" ;;
     esac
 fi
+# A tool that rewrites a lock's record, as another run slipping in would: the
+# control holds the record's path, then its new contents.
+if [[ -f $STUB/rewrite-lock-$name ]]; then
+    { read -r target && read -r record; } <"$STUB/rewrite-lock-$name"
+    echo "$record" >"$target"
+fi
 # A tool that hangs, bounded, until it's killed. "linger" in the control
 # answers a TERM a second late, which holds the stopping up.
 if [[ -f $STUB/hang-$name ]]; then
@@ -2617,7 +2623,7 @@ check "a background SSH clone waited for a passphrase, or worked: $took" \
 
 # The per-destination run lock. A record is "PID starttime", and it's held while
 # that process is still the one that wrote it.
-holders=()
+holders=() guard_holders=()
 # hold: a process the test started, for a lock to name. It ends by itself after
 # two minutes, and release_holder ends it sooner. Its PID is in $held.
 hold() {
@@ -2717,7 +2723,18 @@ check "a held lock with --only: exit $rc, not 1: $(tail -n 5 "$out")" test "$rc"
 check "a held lock with --only: the summary lacks the reason: $(grep '^  copr' "$out")" on_terminal "^  copr +$held_line\$"
 check "a held lock with --only: COPR uploaded: $(uploads)" test "$(upload_count ' copr ')" -eq 0
 check "a held lock with --only: the holder's record was changed" test "$(lock_owner copr)" = "$held"
+check "a held lock with --only: the line isn't the stream's own: $(grep copr "$out")" on_terminal "^== copr: $held_line\$"
+check "a held lock with --only: a prefixed line is in an unprefixed stream" test "$(grep -c '^\[copr\]' "$out")" -eq 0
 release_holder "$held"
+# One that can't be used reads like the stream's own failures.
+new_scenario
+run_locks
+mkdir -p "$locks/lock-copr"
+publish --only copr
+check "an unusable lock with --only: exit $rc, not 1" test "$rc" -eq 1
+check "an unusable lock with --only: the line is wrong: $(grep copr "$out")" \
+    on_terminal "^publish-packages.sh: copr: could not take the run lock \(.*/lock-copr\): the lock file couldn't be used\$"
+check "an unusable lock with --only: a prefixed line is in an unprefixed stream" test "$(grep -c '^\[copr\]' "$out")" -eq 0
 
 # A lock that can't be used is a failure with a reason, not "not run".
 new_scenario
@@ -2837,6 +2854,75 @@ publish --only ppa
 check "a run after an interrupted one: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
 check "a run after an interrupted one: the PPA didn't upload" test "$(upload_count ' ppa ')" -ge 1
 
+# Another run slips in between the PPA's two parts, as the foreground stage's
+# last tool ends: main mustn't release over it, and the wait mustn't take it
+# for itself. It's lost, said so, and the wait never runs.
+new_scenario
+run_locks
+hold
+printf '%s\n%s\n' "$locks/lock-ppa" "$held $(stamp "$held")" >"$STUB/rewrite-lock-dpkg-buildpackage"
+publish --skip overlay --skip aur --skip copr --skip obs
+check "a lost handoff: exit $rc, not 1: $(tail -n 5 "$out")" test "$rc" -eq 1
+check "a lost handoff: the reason is wrong: $(grep '^  ppa' "$out")" \
+    on_terminal '^  ppa +failed: the run lock was lost before the wait started$'
+check "a lost handoff: the terminal lacks the reason" on_terminal '^\[ppa\]     failed: the run lock was lost before the wait started$'
+check "a lost handoff: the wait ran" test "$(grep -c 'waiting on' "$out")" -eq 0
+check "a lost handoff: the PPA log shows its wait ran" test -z "$(grep -h 'waiting on' "${run_log_dirs[0]:-/nonexistent}"/ppa.log 2>/dev/null || true)"
+check "a lost handoff: the record was changed to '$(lock_owner ppa)'" test "$(lock_owner ppa)" = "$held"
+release_holder "$held"
+
+# A guard another process holds for good is a failure within 10 seconds, with the
+# reason, not a hang; the rest publish. The holders end by themselves after a
+# minute.
+new_scenario
+run_locks
+mkdir -p "$locks"
+for d in ppa copr; do
+    ( exec {guard_fd}>>"$locks/lock-$d.guard"; flock "$guard_fd"; exec "$(command -p -v sleep)" 60 ) &
+    holders+=("$!")
+    guard_holders[${#guard_holders[@]}]=$!
+    check "a held guard: the holder for $d never took it" wait_for refused flock -n "$locks/lock-$d.guard" true
+done
+started=$SECONDS
+publish
+took=$((SECONDS - started))
+check "a held guard: exit $rc, not 1" test "$rc" -eq 1
+check "a held guard: it took ${took}s" test "$took" -lt 45
+for d in ppa copr; do
+    check "a held guard: $d's reason is wrong: $(grep "^  $d" "$out")" \
+        on_terminal "^  $d +failed: could not take the run lock \(.*/lock-$d\): the lock file couldn't be used\$"
+    check "a held guard: $d uploaded: $(uploads)" test "$(upload_count " $d ")" -eq 0
+done
+for d in overlay aur obs; do
+    check "a held guard: $d didn't publish: $(uploads)" test "$(upload_count " $d ")" -ge 1
+done
+for pid in "${guard_holders[@]}"; do release_holder "$pid"; done
+guard_holders=()
+
+# The traps close a guard they interrupted before anything they start can inherit
+# it. A stand-in for what they stop reports whether the guard was free by then.
+# shellcheck disable=SC2034,SC2329
+trap_closes() { # on_signal or on_exit
+    local which=$1 file=$lock_work/lock-t
+    stopping=0 interrupted=0 stopped_jobs=0 torun=()
+    stop_all() {
+        if flock -n "$file.guard" true; then echo free >>"$lock_work/seen-$which"; else echo held >>"$lock_work/seen-$which"; fi
+    }
+    close_term() { :; }
+    summarize() { :; }
+    remove_tool_images() { :; }
+    remove_work() { :; }
+    exec {lock_fd}>>"$file.guard"
+    flock "$lock_fd"
+    "$which"
+}
+lock_scenario
+for which in on_signal on_exit; do
+    lock_call "$scenario/$which" trap_closes "$which" || true
+    check "$which left the guard open: $(cat "$lock_work/seen-$which" 2>/dev/null || echo 'nothing seen')" \
+        test "$(cat "$lock_work/seen-$which" 2>/dev/null)" = free
+done
+
 # lock_hand: only from the record's current owner.
 lock_scenario
 lock=$lock_work/lock-h
@@ -2888,6 +2974,11 @@ lock_call "$scenario/guard" hand "$lock" "$from"
 read -r to status <"$scenario/guard.out" || status=''
 check "lock_hand with an unusable guard returned '$status', not 3" test "$status" = 3
 check "lock_hand with an unusable guard changed the record" test "$(cat "$lock")" = "$from $(stamp "$from")"
+lock=$lock_work/lock-d
+mkdir "$lock"
+lock_call "$scenario/dir" hand "$lock" "$from"
+read -r to status <"$scenario/dir.out" || status=''
+check "lock_hand with a record that can't be read returned '$status', not 3" test "$status" = 3
 release_holder "$from"
 release_holder "$other"
 
