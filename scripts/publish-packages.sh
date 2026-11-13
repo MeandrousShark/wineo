@@ -486,22 +486,35 @@ lock_live() {
     [[ $now == "$start" ]]
 }
 
+# The guard's descriptor while a helper below has it open. A trap can fire inside
+# the guarded window, and what it starts (podman, whose pause process keeps
+# descriptors above 2) would inherit the open guard and hold it for good, so
+# the traps close it first, with a builtin. Every helper waits for the guard at
+# most 10 seconds, so a stuck one is a status 3, not a hang.
+lock_fd=''
+close_guard() {
+    [[ -z $lock_fd ]] || { exec {lock_fd}>&-; } 2>/dev/null || true
+    lock_fd=''
+}
+
 # lock_try FILE OWNER: take the lock for OWNER (a PID) if nobody live holds it.
 # Status 1 means held, 2 means OWNER isn't running, 3 means the guard or the
 # record couldn't be used. Its callers run it with errexit off (`|| status=$?`),
 # so every step that can fail is checked here.
 lock_try() {
-    local file=$1 owner=$2 fd start taken=0
+    local file=$1 owner=$2 start taken=0
     proc_start "$owner" start || return 2
-    exec {fd}>>"$file.guard" || return 3
-    if ! flock "$fd"; then
-        exec {fd}>&-
+    exec {lock_fd}>>"$file.guard" || return 3
+    if ! flock -w 10 "$lock_fd"; then
+        exec {lock_fd}>&-
+        lock_fd=''
         return 3
     fi
     if ! lock_live "$file"; then
         if echo "$owner $start" >"$file"; then taken=1; else taken=3; fi
     fi
-    exec {fd}>&-
+    exec {lock_fd}>&-
+    lock_fd=''
     ((taken != 3)) || return 3
     ((taken))
 }
@@ -510,15 +523,16 @@ lock_try() {
 # for lock_try. Emptying the record, not removing it, keeps everything under the
 # guard a builtin.
 lock_release() {
-    local file=$1 owner=$2 fd pid='' status=0
-    exec {fd}>>"$file.guard" || return 3
-    if flock "$fd"; then
+    local file=$1 owner=$2 pid='' status=0
+    exec {lock_fd}>>"$file.guard" || return 3
+    if flock -w 10 "$lock_fd"; then
         { read -r pid _ <"$file"; } 2>/dev/null || true
         if [[ $pid == "$owner" ]]; then : >"$file" || status=3; fi
     else
         status=3
     fi
-    exec {fd}>&-
+    exec {lock_fd}>&-
+    lock_fd=''
     return "$status"
 }
 
@@ -527,18 +541,25 @@ lock_release() {
 # in between. Status 1 means FROM doesn't hold it, 2 that TO isn't running, 3
 # that the guard or the record couldn't be used.
 lock_hand() {
-    local file=$1 from=$2 to=$3 fd pid='' start status=1
+    local file=$1 from=$2 to=$3 pid='' start status=1
     proc_start "$to" start || return 2
-    exec {fd}>>"$file.guard" || return 3
-    if flock "$fd"; then
-        { read -r pid _ <"$file"; } 2>/dev/null || true
-        if [[ $pid == "$from" ]] && lock_live "$file"; then
-            if echo "$to $start" >"$file"; then status=0; else status=3; fi
+    exec {lock_fd}>>"$file.guard" || return 3
+    if flock -w 10 "$lock_fd"; then
+        # A record that can't be read says nothing about who holds it. One that
+        # isn't there yet, or is empty, is simply nobody's.
+        if [[ -e $file ]] && { [[ ! -f $file ]] || [[ ! -r $file ]]; }; then
+            status=3
+        else
+            { read -r pid _ <"$file"; } 2>/dev/null || true
+            if [[ $pid == "$from" ]] && lock_live "$file"; then
+                if echo "$to $start" >"$file"; then status=0; else status=3; fi
+            fi
         fi
     else
         status=3
     fi
-    exec {fd}>&-
+    exec {lock_fd}>&-
+    lock_fd=''
     return "$status"
 }
 
@@ -596,7 +617,12 @@ lock_dest() {
         result="failed: could not take the run lock ($file): $why"
     fi
     record "$dest" "$result"
-    term_copy "$term_out" "$result"
+    if [[ -n ${only:-} ]]; then
+        # --only's stream has no prefix, so this reads as its own lines do.
+        if ((status == 1)); then say "$dest: $result"; else echo "${0##*/}: $dest: ${result#failed: }" >&2; fi
+    else
+        term_copy "$term_out" "$result"
+    fi
     return 1
 }
 
@@ -1889,6 +1915,7 @@ close_term() {
 # Ctrl+C, a hangup, or TERM: stop everything, then say how far each got.
 on_signal() {
     ((!stopping)) || return 0
+    close_guard
     interrupted=1
     stop_all
     close_term
@@ -1902,6 +1929,7 @@ on_exit() {
     # Before anything else, so an INT can't run on_signal in the middle of this
     # and skip the cleanup.
     trap '' INT TERM HUP
+    close_guard
     if ((!stopping)); then
         stop_all
         if ((stopped_jobs)); then
