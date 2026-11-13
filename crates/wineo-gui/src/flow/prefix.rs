@@ -333,7 +333,7 @@ impl Page {
             }
             Event::RetryArt => self.retry_art(),
             Event::ArtRetried(generation, result) => {
-                if generation != self.generation || self.step != Step::ArtFailed {
+                if generation != self.generation || self.step != Step::Working {
                     return Task::none();
                 }
                 self.token = None;
@@ -342,7 +342,10 @@ impl Page {
                         self.error = None;
                         self.step = Step::Finished;
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.step = Step::ArtFailed;
+                    }
                 }
                 Task::none()
             }
@@ -1293,5 +1296,54 @@ mod tests {
         assert!(page.dirty);
         assert_eq!(page.step, Step::Details);
         assert!(page.take_action().is_none());
+    }
+
+    fn art_failed_page(root: &Path) -> Page {
+        let mut page = Page::new(paths(root)).0;
+        page.imported_name = Some("imported".to_owned());
+        page.step = Step::ArtFailed;
+        page
+    }
+
+    #[test]
+    fn retry_artwork_that_succeeds_finishes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = art_failed_page(root.path());
+        let _ = page.update_with_key_availability(Event::RetryArt, false);
+        assert!(page.busy());
+        let generation = page.generation;
+        let _ = page.update_with_key_availability(Event::ArtRetried(generation, Ok(())), false);
+        assert_eq!(page.step, Step::Finished);
+        assert!(!page.busy());
+        assert!(page.error.is_none());
+    }
+
+    #[test]
+    fn retry_artwork_that_fails_returns_to_art_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = art_failed_page(root.path());
+        let _ = page.update_with_key_availability(Event::RetryArt, false);
+        let generation = page.generation;
+        let _ = page.update_with_key_availability(
+            Event::ArtRetried(generation, Err("boom".to_owned())),
+            false,
+        );
+        assert_eq!(page.step, Step::ArtFailed);
+        assert_eq!(page.error.as_deref(), Some("boom"));
+        assert!(!page.busy());
+    }
+
+    #[test]
+    fn a_stale_retry_result_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = art_failed_page(root.path());
+        let _ = page.update_with_key_availability(Event::RetryArt, false);
+        let stale = page.generation.wrapping_sub(1);
+        let _ = page
+            .update_with_key_availability(Event::ArtRetried(stale, Err("stale".to_owned())), false);
+        assert_eq!(page.step, Step::Working);
+        assert!(page.busy());
+        assert!(page.token.is_some());
+        assert!(page.error.is_none());
     }
 }
