@@ -2870,6 +2870,17 @@ check "a lost handoff: the wait ran" test "$(grep -c 'waiting on' "$out")" -eq 0
 check "a lost handoff: the PPA log shows its wait ran" test -z "$(grep -h 'waiting on' "${run_log_dirs[0]:-/nonexistent}"/ppa.log 2>/dev/null || true)"
 check "a lost handoff: the record was changed to '$(lock_owner ppa)'" test "$(lock_owner ppa)" = "$held"
 release_holder "$held"
+# Or the record is freed there: the wait mustn't take a lock it was never handed,
+# so a gap between main's release and the wait's own take would show.
+new_scenario
+run_locks
+printf '%s\n\n' "$locks/lock-ppa" >"$STUB/rewrite-lock-dpkg-buildpackage"
+publish --skip overlay --skip aur --skip copr --skip obs
+check "a freed handoff: exit $rc, not 1: $(tail -n 5 "$out")" test "$rc" -eq 1
+check "a freed handoff: the reason is wrong: $(grep '^  ppa' "$out")" \
+    on_terminal '^  ppa +failed: the run lock was lost before the wait started$'
+check "a freed handoff: the wait ran" test "$(grep -c 'waiting on' "$out")" -eq 0
+check "a freed handoff: the wait took the lock: '$(cat "$locks/lock-ppa")'" test -f "$locks/lock-ppa" -a ! -s "$locks/lock-ppa"
 
 # A guard another process holds for good is a failure within 10 seconds, with the
 # reason, not a hang; the rest publish. The holders end by themselves after a
