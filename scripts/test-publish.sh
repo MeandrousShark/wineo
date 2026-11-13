@@ -1301,7 +1301,10 @@ check "a failed commit: exit $rc, not 1" test "$rc" -eq 1
 check "a failed commit: the reason is missing" said "^  copr +failed: installing the tools"
 check "a failed commit: a half-built image is left" \
     test "$(find "$STUB" -name 'image-*' | grep -c . || true)" -eq 0
-check "a failed commit: the builder is left" grep -q '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log"
+# The very next call after the commit. The build's first rm and the EXIT trap's
+# also name the builder, so a later match alone would prove nothing.
+check "a failed commit: the builder is left" \
+    awk 'after { found = /^rm -f wineo-publish-builder-fedora/; after = 0 } /^commit/ { after = 1 } END { exit !found }' "$STUB/podman.log"
 
 # osc crashes at startup without git, which no help output or stub would show.
 new_scenario
