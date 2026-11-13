@@ -4,6 +4,18 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.5.1 - 2026-11-12
+
+Two fixes in the desktop app's Add flows.
+
+- Esc on a "Discard this draft?" prompt now keeps editing, like the Keep
+  editing button, in New environment, Import prefix, Clone, Heroic import,
+  and GOG import. Before, it did nothing or asked again. Clicking Back
+  while the prompt shows does the same.
+- In Import prefix, Retry artwork after a failed art copy finishes instead
+  of staying on the working page, and a retry that fails again shows its
+  error with Retry and Skip.
+
 ## 1.5.0 - 2026-11-11
 
 Accessibility settings, a tray icon, and hiding the window while a game runs
