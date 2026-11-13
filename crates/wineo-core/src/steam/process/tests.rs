@@ -511,6 +511,39 @@ fn one_scan_matches_scans_alone(dir: &str) {
     let found = scan_reapers(&stray, pids, &install, &ids(&["20"]), "boot").unwrap();
     assert!(found["20"].is_empty(), "{dir}");
 
+    // A client in one folder with its reaper in the other still counts: both
+    // are this install's binaries, and the parent link is checked as before.
+    let other = if dir == "steamrt64" {
+        "ubuntu12_32"
+    } else {
+        "steamrt64"
+    };
+    let (mut mixed, pids) = reaper_table(root.path(), dir);
+    let client = root.path().join(other).join("steam");
+    mixed.exe_by_pid.insert(5, client.clone());
+    mixed
+        .arguments_by_pid
+        .insert(5, vec![client.as_os_str().as_bytes().to_vec()]);
+    let found = scan_reapers(&mixed, pids, &install, &ids(&["20"]), "boot").unwrap();
+    assert_eq!(found["20"].len(), 1, "{dir}");
+
+    // Through a root alias like ~/.steam/root, the processes show the
+    // canonical paths, and the binaries must exist to be resolved.
+    for binary in ["steam", "reaper"] {
+        let path = root.path().join(dir).join(binary);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+    }
+    let alias = root.path().join("alias");
+    symlink(root.path(), &alias).unwrap();
+    let aliased = Install {
+        kind: InstallKind::Native,
+        root: alias,
+    };
+    let (reader, pids) = reaper_table(root.path(), dir);
+    let found = scan_reapers(&reader, pids, &aliased, &ids(&["20"]), "boot").unwrap();
+    assert_eq!(found["20"].len(), 1, "{dir}");
+
     for app in &all {
         let (reader, pids) = reaper_table(root.path(), dir);
         let alone =
@@ -557,12 +590,22 @@ fn missing_client_exe_keeps_the_argv_fallback() {
 
 #[test]
 fn client_match_requires_install_exe_with_limited_argv_fallback() {
+    // Steam's own folder names, not CLIENT_DIRS, so dropping one fails here.
+    for dir in ["steamrt64", "ubuntu12_32"] {
+        client_match_in(dir);
+    }
+}
+
+fn client_match_in(dir: &str) {
+    let matches_client = |install: &Install, client: &Inspected<()>| {
+        matches_client(install, &install_binaries(install, "steam"), client)
+    };
     let temp = tempfile::tempdir().unwrap();
     let mut install = Install {
         kind: InstallKind::Native,
         root: temp.path().to_owned(),
     };
-    let path = install.root().join("ubuntu12_32/steam");
+    let path = install.root().join(dir).join("steam");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, "").unwrap();
     let mut client = Inspected {

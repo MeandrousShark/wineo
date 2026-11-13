@@ -72,6 +72,7 @@ fn scan_reapers<R: ProcessReader>(
     boot_id: &str,
 ) -> io::Result<HashMap<String, Vec<Reaper>>> {
     let accepted = install_binaries(install, "reaper");
+    let clients = install_binaries(install, "steam");
     let app_args: Vec<String> = app_ids.iter().map(|id| format!("AppId={id}")).collect();
     let mut found: HashMap<String, Vec<Reaper>> = app_ids
         .iter()
@@ -91,7 +92,7 @@ fn scan_reapers<R: ProcessReader>(
         let Some(parent) = client_candidate(reader, process.stat.ppid)? else {
             continue;
         };
-        if !matches_client(install, &parent)
+        if !matches_client(install, &clients, &parent)
             || !current_child(reader, &process, parent.stat, &parent.fd)?
         {
             continue;
@@ -131,9 +132,10 @@ fn scan_client<R: ProcessReader>(
     pids: Vec<u32>,
     install: &Install,
 ) -> io::Result<bool> {
+    let clients = install_binaries(install, "steam");
     for pid in pids {
         if let Some(process) = client_candidate(reader, pid)?
-            && matches_client(install, &process)
+            && matches_client(install, &clients, &process)
         {
             return Ok(true);
         }
@@ -609,18 +611,17 @@ fn install_binaries(install: &Install, name: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn matches_client<F>(install: &Install, process: &Inspected<F>) -> bool {
-    let accepted = install_binaries(install, "steam");
+/// `clients` is `install_binaries(install, "steam")`, built once per scan.
+fn matches_client<F>(install: &Install, clients: &[PathBuf], process: &Inspected<F>) -> bool {
     let argv_matches = || {
         process
             .arguments
             .first()
-            .is_some_and(|argument| matches_path(Path::new(OsStr::from_bytes(argument)), &accepted))
+            .is_some_and(|argument| matches_path(Path::new(OsStr::from_bytes(argument)), clients))
     };
     match &process.exe {
         Some(exe) => {
-            matches_path(exe, &accepted)
-                || (install.kind() == InstallKind::Flatpak && argv_matches())
+            matches_path(exe, clients) || (install.kind() == InstallKind::Flatpak && argv_matches())
         }
         None => argv_matches(),
     }
