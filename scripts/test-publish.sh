@@ -350,9 +350,17 @@ if [[ -f $STUB/hang-$name ]]; then
     exit 1
 fi
 # A daemon born in the container step: it keeps every descriptor but 0-2.
+# It starts a session of its own, as podman's pause process and gpg-agent do,
+# so it isn't part of its job's group.
 if [[ -f $STUB/daemon-tool && $name == rpmbuild ]]; then
-    command -p sleep 60 >/dev/null 2>&1 </dev/null &
+    setsid "$(command -p -v sleep)" 60 >/dev/null 2>&1 </dev/null &
     echo $! >>"$STUB/daemon-pids"
+fi
+# A process the step leaves behind in its job's group, though the job goes on
+# to publish.
+if [[ -f $STUB/straggler-tool && $name == rpmbuild ]]; then
+    command -p sleep 30 >/dev/null 2>&1 </dev/null &
+    echo $! >>"$STUB/straggler-pids"
 fi
 if [[ -f $STUB/fail-tool-$name ]]; then
     cat "$STUB/fail-tool-$name"
@@ -2432,6 +2440,19 @@ check "stop_all left a job caught mid-launch running" wait_for gone "$caught"
 check "stop_all didn't count a job caught mid-launch: $(cat "$scenario/window.out")" \
     grep -qx 'stopped_jobs=1' "$scenario/window.out"
 kill "$caught" 2>/dev/null || true
+
+# A job that publishes, but leaves a process behind in its group: main ends it
+# with the run, before the work directory goes.
+new_scenario
+touch "$STUB/straggler-tool"
+publish --skip ppa --skip aur --skip obs
+check "a job's straggler: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+stragglers=$(cat "$STUB/straggler-pids" 2>/dev/null || true)
+check "the stub left no straggler, so this proves nothing" test -n "$stragglers"
+for pid in $stragglers; do
+    check "a finished job's straggler $pid outlived the run" wait_for gone "$pid"
+    kill "$pid" 2>/dev/null || true
+done
 
 # Once main has closed the terminal, bash can reuse its number for a file it
 # saves a descriptor in. A job's line must never open that.

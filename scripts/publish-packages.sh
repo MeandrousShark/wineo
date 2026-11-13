@@ -1874,7 +1874,7 @@ reap_ended() {
 # The three stages: the PPA's foreground stage, then everything else and the
 # PPA's wait in the background, then the wait for them all.
 fan_out() {
-    local dest
+    local dest pid
     if [[ " ${torun[*]} " == *" ppa "* ]]; then
         ran+=(ppa)
         run_inline ppa publish_upload
@@ -1897,6 +1897,12 @@ fan_out() {
         if ((woke)); then continue; fi
         # Only a way to sleep until something happens: reap_ended says what.
         wait -n "${live[@]}" "$ticker" 2>/dev/null || true
+    done
+    # Whatever a finished job left in its group would outlive the run and the
+    # work directory under it. A group with a member left can't have its ID
+    # reused, so this reaches only what the job started.
+    for pid in "${!job_dest[@]}"; do
+        end_group "$pid"
     done
     stop_ticker
     walk_away
