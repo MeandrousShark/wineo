@@ -1679,6 +1679,7 @@ job_done() {
         [[ $p == "$pid" ]] || rest+=("$p")
     done
     live=(${rest[@]+"${rest[@]}"})
+    done_with[$pid]=1
 }
 
 # tell LINE...: main's own lines while jobs run. Like term_copy, it never fails:
@@ -1749,10 +1750,12 @@ stop_all() {
     stop_ticker
     # A job a signal caught between a launch's `&` and its PID reaching live is
     # only in bash's table, which lists it as running. It has only just started,
-    # so its PID can't have been reused.
+    # so its PID can't have been reused. Everything else in the table that isn't
+    # live is a job or ticker main has finished with, whose status bash may have
+    # lost (see job_alive): its PID may be someone else's by now.
     read -ra running <<<"$(jobs -rp 2>/dev/null | tr '\n' ' ')"
     for pid in ${running[@]+"${running[@]}"}; do
-        [[ $pid != "$old_ticker" && " ${live[*]:-} " != *" $pid "* ]] || continue
+        [[ $pid != "$old_ticker" && -z ${done_with[$pid]:-} && " ${live[*]:-} " != *" $pid "* ]] || continue
         stopped_jobs=1
         kill -TERM -- "-$pid" 2>/dev/null || true
         signaled+=("$pid")
@@ -1846,6 +1849,7 @@ start_ticker() {
 stop_ticker() {
     [[ -n $ticker ]] || return 0
     if job_alive "$ticker"; then kill "$ticker" 2>/dev/null || true; fi
+    done_with[$ticker]=1
     ticker=''
 }
 
@@ -1862,6 +1866,7 @@ reap_ended() {
     done
     if ! job_alive "$ticker"; then
         [[ $running == *" $ticker "* ]] || wait "$ticker" 2>/dev/null || true
+        done_with[$ticker]=1
         start_ticker
     fi
 }
@@ -2066,7 +2071,7 @@ main() {
     only='' skip=() dest_dir='' log_dir='' term_out='' term_fd='' term_pipe='' current=''
     torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0
     woke=0 told_out=0 told_left=0 usr1_trapped='' ticker=''
-    declare -gA job_dest=() job_start=()
+    declare -gA job_dest=() job_start=() done_with=()
     (($# >= 1)) || usage
     version=$1
     shift

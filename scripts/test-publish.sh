@@ -2245,7 +2245,7 @@ lost_wake() (
     # shellcheck disable=SC2034
     torun=(copr) ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
     # shellcheck disable=SC2034
-    declare -A job_dest=() job_start=()
+    declare -A job_dest=() job_start=() done_with=()
     # The script's own run_job, replaced as fan_out will call it, and its
     # walk_away counted: main must sleep between wake-ups, not spin.
     eval "run_job() { $1 \"\$work\"; }"
@@ -2298,7 +2298,7 @@ many_jobs() (
         # shellcheck disable=SC2034
         ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
         # shellcheck disable=SC2034
-        declare -A job_dest=() job_start=()
+        declare -A job_dest=() job_start=() done_with=()
         # Once every job has started and main is waiting.
         go=$(($(now_us) + 300000))
         eval "run_job() { $1 \"\$work\" \"\$1\" $BASHPID; }"
@@ -2318,6 +2318,47 @@ done
 check "main lost a job that exited as it woke main: $(cat "$scenario/many.out")" test "$seen" = yes
 finish "$many_pid"
 check "a round lost a result: $(cat "$scenario/many.out")" test "$(grep -c 'lost a result' "$scenario/many.out")" -eq 0
+
+# A job or ticker main has finished with can stay "Running" in bash's table
+# when bash lost its status, and by the time stop_all runs its PID may lead
+# someone else's process group. Two such strangers here, sessions of their own,
+# go through job_done and the ticker's replacement, and then a jobs that still
+# lists them stands in for the stale table. stop_all must signal neither.
+new_scenario
+stale_script=$repo/scripts/publish-packages.sh
+setsid "$(command -p -v sleep)" 30 </dev/null >/dev/null 2>&1 &
+stranger_job=$!
+setsid "$(command -p -v sleep)" 30 </dev/null >/dev/null 2>&1 &
+stranger_tick=$!
+# They're live group leaders, or this proves nothing.
+leads() { [[ $(cut -d' ' -f5 "/proc/$1/stat" 2>/dev/null) == "$1" ]]; }
+check "the stand-in strangers don't lead groups of their own" wait_for leads "$stranger_job"
+check "the stand-in strangers don't lead groups of their own" wait_for leads "$stranger_tick"
+stale_table() (
+    # shellcheck disable=SC1090
+    source "$stale_script"
+    # shellcheck disable=SC2034
+    work=$scenario/stalework log_dir=$scenario/stalework term_out='' term_pipe='' usr1_trapped=''
+    mkdir -p "$work"
+    echo "published (x)" >"$work/result-copr"
+    # shellcheck disable=SC2034
+    torun=(copr) ran=(copr) live=("$1") stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0
+    # shellcheck disable=SC2034
+    declare -A job_dest=([$1]=copr) job_start=([$2]=0) done_with=()
+    eval "jobs() { printf '%s\\n' $1 $2; }"
+    job_done "$1"
+    # shellcheck disable=SC2034
+    ticker=$2
+    reap_ended
+    stop_all
+    echo "stop_all ended"
+)
+stale_table "$stranger_job" "$stranger_tick" >"$scenario/stale.out" 2>&1 || true
+check "stop_all didn't end: $(cat "$scenario/stale.out")" grep -qx 'stop_all ended' "$scenario/stale.out"
+check "stop_all signaled a finished job's PID, now a stranger's group" kill -0 "$stranger_job"
+check "stop_all signaled a replaced ticker's PID, now a stranger's group" kill -0 "$stranger_tick"
+kill "$stranger_job" "$stranger_tick" 2>/dev/null || true
+wait "$stranger_job" "$stranger_tick" 2>/dev/null || true
 
 # Once main has closed the terminal, bash can reuse its number for a file it
 # saves a descriptor in. A job's line must never open that.
