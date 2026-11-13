@@ -2880,7 +2880,7 @@ check "a freed handoff: exit $rc, not 1: $(tail -n 5 "$out")" test "$rc" -eq 1
 check "a freed handoff: the reason is wrong: $(grep '^  ppa' "$out")" \
     on_terminal '^  ppa +failed: the run lock was lost before the wait started$'
 check "a freed handoff: the wait ran" test "$(grep -c 'waiting on' "$out")" -eq 0
-check "a freed handoff: the wait took the lock: '$(cat "$locks/lock-ppa")'" test -f "$locks/lock-ppa" -a ! -s "$locks/lock-ppa"
+check "a freed handoff: the wait took the lock: '$(cat "$locks/lock-ppa")'" test -f "$locks/lock-ppa" -a -z "$(lock_owner ppa)"
 
 # A guard another process holds for good is a failure within 10 seconds, with the
 # reason, not a hang; the rest publish. The holders end by themselves after a
