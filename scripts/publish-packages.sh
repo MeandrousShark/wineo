@@ -140,10 +140,19 @@ say() {
 
 # term_copy FD LINE: LINE to the terminal's descriptor, prefixed with the
 # destination, in one short write. It never fails: after a hangup the terminal
-# is gone, and that must not stop a job.
+# is gone, and that must not stop a job. The write is in a subshell so a SIGPIPE
+# from a pipe with no reader kills only that. When the terminal is a pipe
+# (term_pipe), the destinations have closed their copy of FD, since a daemon
+# born in a run would hold it and keep the pipe's reader waiting forever, so
+# each line reopens main's descriptor through /proc ($$ is main's PID in
+# subshells). A file's offset isn't shared that way, so only pipes do this.
 term_copy() {
     [[ -n $1 ]] || return 0
-    { printf '%-9s %s\n' "[$current]" "$2" >&"$1"; } 2>/dev/null || true
+    if [[ -n ${term_pipe:-} ]]; then
+        { (printf '%-9s %s\n' "[$current]" "$2" >"/proc/$$/fd/$1"); } 2>/dev/null || true
+    else
+        { (printf '%-9s %s\n' "[$current]" "$2" >&"$1"); } 2>/dev/null || true
+    fi
 }
 
 is_destination() {
@@ -1460,6 +1469,12 @@ make_log_dir() {
     mkdir -m 700 "$log_dir"
 }
 
+# A destination's own copy of the terminal descriptor, closed when the terminal
+# is a pipe, so nothing the destination starts can hold it. See term_copy.
+drop_term_out() {
+    [[ -z $term_pipe ]] || exec {term_out}>&-
+}
+
 # Every destination's output, containers included, goes to its own log. The PPA
 # and --only also show it all on the terminal, so a failed step sits next to
 # the passphrase prompt or the command being retried. The others show only
@@ -1472,9 +1487,12 @@ run_destination() {
     # Not in an `if`: that would turn errexit off for all of it.
     set +e
     if [[ -n $only || $dest == ppa ]]; then
+        # Relies on daemons detaching fds 0-2 (gpg, ssh, and podman do): one that
+        # didn't would hold tee open after the destination ends.
         (
             set -e
             term_fd=''
+            drop_term_out
             echo "== $dest"
             publish_destination "$dest"
         ) 2>&1 | tee -a "$log"
@@ -1483,6 +1501,7 @@ run_destination() {
         (
             set -e
             term_fd=$term_out
+            drop_term_out
             echo "== $dest"
             publish_destination "$dest"
         ) >>"$log" 2>&1
@@ -1665,7 +1684,7 @@ summarize() {
 }
 
 main() {
-    only='' skip=() dest_dir='' log_dir='' term_out=''
+    only='' skip=() dest_dir='' log_dir='' term_out='' term_fd='' term_pipe='' current=''
     (($# >= 1)) || usage
     version=$1
     shift
@@ -1737,6 +1756,7 @@ main() {
     # A copy of the terminal for the destinations' say lines, taken before any
     # of them has its stdout sent to a log. Not /dev/tty: a run in CI has none.
     exec {term_out}>&1
+    if [[ -p /dev/fd/$term_out ]]; then term_pipe=1; fi
     local dest
     for dest in "${destinations[@]}"; do
         if [[ -n $only && $dest != "$only" ]]; then
@@ -1747,6 +1767,8 @@ main() {
             run_destination "$dest"
         fi
     done
+    # podman unshare in the EXIT trap can leave a process that would hold a pipe.
+    exec {term_out}>&-
     summarize
 }
 

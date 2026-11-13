@@ -268,6 +268,11 @@ if [[ -f $STUB/noise ]]; then
         rpmbuild | dpkg-buildpackage | dnf | apt-get) echo "container noise from $name" ;;
     esac
 fi
+# A daemon born in the container step: it keeps every descriptor but 0-2.
+if [[ -f $STUB/daemon-tool && $name == rpmbuild ]]; then
+    command -p sleep 60 >/dev/null 2>&1 </dev/null &
+    echo $! >>"$STUB/daemon-pids"
+fi
 if [[ -f $STUB/fail-tool-$name ]]; then
     cat "$STUB/fail-tool-$name"
     exit 1
@@ -517,14 +522,30 @@ publish_real() {
     out=$scenario/output
     rc=0
     run_started
+    if [[ -n ${READER_LIMIT:-} ]]; then
+        # The terminal is a pipe, read by a reader that ends when every writer
+        # has closed it, or after READER_LIMIT seconds (status 124).
+        reader_rc=0
+        {
+            status=0
+            script_env "$@" 2>&1 || status=$?
+            echo "$status" >"$scenario/script-rc"
+        } | timeout "$READER_LIMIT" cat >"$out" || reader_rc=$?
+        rc=$(cat "$scenario/script-rc")
+    else
+        script_env "$@" >"$out" 2>&1 || rc=$?
+    fi
+    run_finished
+}
+
+script_env() {
     env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
         XDG_STATE_HOME="$scenario/state" \
         WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL=0 \
         WINEO_PUBLISH_MIRROR_LIMIT="${MIRROR_LIMIT:-30}" WINEO_PUBLISH_RUN_LIMIT="${RUN_LIMIT:-30}" \
         WINEO_PUBLISH_RELEASE_LIMIT="${RELEASE_LIMIT:-30}" WINEO_PUBLISH_COPR_LIMIT="${BUILD_LIMIT:-30}" \
         WINEO_PUBLISH_OBS_LIMIT="${BUILD_LIMIT:-30}" WINEO_PUBLISH_PPA_LIMIT="${BUILD_LIMIT:-30}" \
-        "$repo/scripts/publish-packages.sh" "$version" "$@" >"$out" 2>&1 || rc=$?
-    run_finished
+        "$repo/scripts/publish-packages.sh" "$version" "$@"
 }
 
 # The terminal's lines and this run's logs.
@@ -745,6 +766,9 @@ check "a rerun made ${#run_log_dirs[@]} log directories, not 1" test "${#run_log
 check "a rerun shares the first run's log directory" test "${run_log_dirs[0]:-}" != "$first_log_dir"
 check "a rerun's said read the first run's logs" test "$(said '^== overlay: uploading' && echo yes || echo no)" = no
 check "a rerun's said can't read its own logs" said '^== overlay: .* is already published and built'
+check "a rerun printed a log: line: $(grep -E '^ +log: ' "$out")" test "$(grep -cE '^ +log: ' "$out")" -eq 0
+check "a rerun's overlay line isn't on the terminal once" \
+    test "$(grep -cE '^\[overlay\] .* is already published and built, skipping$' "$out")" -eq 1
 check "a rerun: exit $rc, not 0" test "$rc" -eq 0
 check "a rerun uploaded again: $(uploads | tail -n 3)" test "$(upload_count)" -eq 10
 for d in overlay aur copr obs ppa; do
@@ -781,6 +805,34 @@ check "--only: the log lacks what the terminal shows" \
     test "$(grep -c '^container noise from \(rpmbuild\|dnf\)$' "${run_log_dirs[0]:-/nonexistent}/copr.log")" -eq 2
 check "--only: the log lacks stderr" grep -qx 'container noise from rpmbuild (stderr)' "${run_log_dirs[0]:-/nonexistent}/copr.log"
 check "--only: a destination it didn't run has a log" test "$(ls "${run_log_dirs[0]:-/nonexistent}")" = copr.log
+
+# Variables from the caller's environment can't route main's own lines.
+new_scenario
+term_fd=1 current=zzz publish --only overlay
+check "an inherited term_fd and current: exit $rc, not 0" test "$rc" -eq 0
+check "an inherited term_fd and current prefixed a line: $(grep zzz "$out" | head -n 2)" test "$(grep -c zzz "$out")" -eq 0
+
+# A daemon started during a run doesn't hold the terminal's pipe, so its reader
+# sees the end of the output. Every destination closes its copy of the pipe, and
+# writes its lines through main's.
+new_scenario
+touch "$STUB/daemon-tool"
+READER_LIMIT=25 publish --skip ppa --skip aur --skip obs
+daemon_pids=$(cat "$STUB/daemon-pids" 2>/dev/null || true)
+check "the stub left no daemon, so this proves nothing" test -n "$daemon_pids"
+for pid in $daemon_pids; do
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 100); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    check "the daemon $pid would not stop" test ! -d "/proc/$pid"
+done
+check "a daemon held the terminal's pipe: the reader ended with $reader_rc" test "$reader_rc" -eq 0
+check "a piped run: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "a piped run lost COPR's prefixed lines" on_terminal '^\[copr\]    published '
+check "a piped run lost the overlay's prefixed lines" on_terminal '^\[overlay\] published '
+check "a piped run lost the summary" said '^  copr +published'
 
 # Failures before anything is published.
 
@@ -1567,6 +1619,22 @@ lock_call "$scenario/closed" closed_terminal || true
 check "a closed terminal ended the job: $(cat "$scenario/closed.err")" grep -qx after "$scenario/closed.out"
 check "a closed terminal kept say from its own output" grep -qx '== copr: hello' "$scenario/closed.out"
 check "a closed terminal's error reached stderr: $(cat "$scenario/closed.err")" test ! -s "$scenario/closed.err"
+# A pipe with no reader raises SIGPIPE on the write, which must not end the job.
+dead_reader() {
+    exec 7> >(:)
+    # shellcheck disable=SC2034
+    term_fd=7
+    local i
+    for i in $(seq 20); do
+        say "copr: line $i"
+        sleep 0.05
+    done
+    echo after
+}
+lock_call "$scenario/dead" dead_reader || true
+check "a terminal pipe with no reader ended the job: $(cat "$scenario/dead.err")" grep -qx after "$scenario/dead.out"
+check "a terminal pipe with no reader kept say from its own output" \
+    test "$(grep -c '^== copr: line' "$scenario/dead.out")" -eq 20
 lock_call "$scenario/open" open_terminal
 check "say's terminal copy has the wrong form: $(cat "$scenario/terminal-copy" 2>/dev/null)" \
     test "$(cat "$scenario/terminal-copy")" = "[copr]    hello"
