@@ -2397,7 +2397,13 @@ stale_table() (
     # shellcheck disable=SC2034
     declare -A job_dest=([$1]=copr) job_start=([$2]=0) done_with=()
     eval "jobs() { printf '%s\\n' $1 $2; }"
+    # At reap time the group is still the job's own, and job_done ends it. The
+    # stranger stands for its PID taken by someone else later, so it's spared
+    # here and only main's record of the PID is kept.
+    eval "$(declare -f end_group | sed '1s/^end_group/kept_end_group/')"
+    eval 'end_group() { :; }'
     job_done "$1"
+    eval "$(declare -f kept_end_group | sed '1s/^kept_end_group/end_group/')"
     # shellcheck disable=SC2034
     ticker=$2
     reap_ended
@@ -2452,17 +2458,24 @@ check "stop_all didn't count a job caught mid-launch: $(cat "$scenario/window.ou
 kill "$caught" 2>/dev/null || true
 
 # A job that publishes, but leaves a process behind in its group: main ends it
-# with the run, before the work directory goes.
+# when it reaps the job, while OBS is still waiting on its build.
 new_scenario
 touch "$STUB/straggler-tool"
-publish --skip ppa --skip aur --skip obs
-check "a job's straggler: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+echo building >"$dest/control/build-obs"
+BUILD_INTERVAL=0.05 publish_bg --skip ppa --skip aur
+check "a job's straggler: COPR never published" wait_for on_terminal '^\[copr\]    published '
 stragglers=$(cat "$STUB/straggler-pids" 2>/dev/null || true)
 check "the stub left no straggler, so this proves nothing" test -n "$stragglers"
 for pid in $stragglers; do
-    check "a finished job's straggler $pid outlived the run" soon gone "$pid"
-    kill "$pid" 2>/dev/null || true
+    check "a finished job's straggler $pid outlived its job's reaping" soon gone "$pid"
 done
+check "a job's straggler: OBS was done before the check, so this proves nothing" \
+    test "$(grep -c '^\[obs\] *published' "$out")" -eq 0
+echo built >"$dest/control/build-obs"
+publish_join
+check "a job's straggler: it had to be stopped" test "$bg_hung" -eq 0
+check "a job's straggler: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+for pid in $stragglers; do kill "$pid" 2>/dev/null || true; done
 
 # Once main has closed the terminal, bash can reuse its number for a file it
 # saves a descriptor in. A job's line must never open that.

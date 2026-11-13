@@ -1664,12 +1664,15 @@ sweep_containers() {
 # job_done PID: the job is reaped, so it's no longer stopped through its group.
 job_done() {
     local pid=$1 dest=${job_dest[$1]} current p rest=()
+    # Whatever is left in the job's group: what a job that published left
+    # behind would outlive the run and its work directory, and if only the
+    # job's own process died (kill PID, the OOM killer), the rest would go on
+    # publishing and could write its own result over main's. Now, not later:
+    # a group with a member has kept its ID since the leader exited, at most a
+    # tick ago, while one that emptied long since may have had it reused. Still
+    # in live while this runs, so a Ctrl+C now stops its group too.
+    end_group "$pid"
     if [[ ! -s $work/result-$dest ]]; then
-        # Only the job's own process may have died (kill PID, the OOM killer):
-        # what it started is still in its group and would go on publishing,
-        # and could write its own result over this one. Still in live while
-        # this runs, so a Ctrl+C now stops its group too.
-        end_group "$pid"
         sweep_containers "^wineo-publish-$$-$dest-"
         current=$dest
         record "$dest" "failed: it stopped early; see the log"
@@ -1874,7 +1877,7 @@ reap_ended() {
 # The three stages: the PPA's foreground stage, then everything else and the
 # PPA's wait in the background, then the wait for them all.
 fan_out() {
-    local dest pid
+    local dest
     if [[ " ${torun[*]} " == *" ppa "* ]]; then
         ran+=(ppa)
         run_inline ppa publish_upload
@@ -1897,12 +1900,6 @@ fan_out() {
         if ((woke)); then continue; fi
         # Only a way to sleep until something happens: reap_ended says what.
         wait -n "${live[@]}" "$ticker" 2>/dev/null || true
-    done
-    # Whatever a finished job left in its group would outlive the run and the
-    # work directory under it. A group with a member left can't have its ID
-    # reused, so this reaches only what the job started.
-    for pid in "${!job_dest[@]}"; do
-        end_group "$pid"
     done
     stop_ticker
     walk_away
