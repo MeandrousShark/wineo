@@ -2866,8 +2866,8 @@ check "a lost handoff: exit $rc, not 1: $(tail -n 5 "$out")" test "$rc" -eq 1
 check "a lost handoff: the reason is wrong: $(grep '^  ppa' "$out")" \
     on_terminal '^  ppa +failed: the run lock was lost before the wait started$'
 check "a lost handoff: the terminal lacks the reason" on_terminal '^\[ppa\]     failed: the run lock was lost before the wait started$'
-check "a lost handoff: the wait ran" test "$(grep -c 'waiting on' "$out")" -eq 0
-check "a lost handoff: the PPA log shows its wait ran" test -z "$(grep -h 'waiting on' "${run_log_dirs[0]:-/nonexistent}"/ppa.log 2>/dev/null || true)"
+check "a lost handoff: the wait went on to publish: $(grep '^  ppa' "$out")" refused on_terminal '^  ppa +published'
+check "a lost handoff: the PPA's log has its wait's published line" refused grep -q "^== ppa: published" "${run_log_dirs[0]:-/nonexistent}/ppa.log"
 check "a lost handoff: the record was changed to '$(lock_owner ppa)'" test "$(lock_owner ppa)" = "$held"
 release_holder "$held"
 # Or the record is freed there: the wait mustn't take a lock it was never handed,
@@ -2879,7 +2879,8 @@ publish --skip overlay --skip aur --skip copr --skip obs
 check "a freed handoff: exit $rc, not 1: $(tail -n 5 "$out")" test "$rc" -eq 1
 check "a freed handoff: the reason is wrong: $(grep '^  ppa' "$out")" \
     on_terminal '^  ppa +failed: the run lock was lost before the wait started$'
-check "a freed handoff: the wait ran" test "$(grep -c 'waiting on' "$out")" -eq 0
+check "a freed handoff: the wait went on to publish: $(grep '^  ppa' "$out")" refused on_terminal '^  ppa +published'
+check "a freed handoff: the PPA's log has its wait's published line" refused grep -q "^== ppa: published" "${run_log_dirs[0]:-/nonexistent}/ppa.log"
 check "a freed handoff: the wait took the lock: '$(cat "$locks/lock-ppa")'" test -f "$locks/lock-ppa" -a -z "$(lock_owner ppa)"
 
 # A guard another process holds for good is a failure within 10 seconds, with the
@@ -2912,7 +2913,7 @@ guard_holders=()
 
 # The traps close a guard they interrupted before anything they start can inherit
 # it. A stand-in for what they stop reports whether the guard was free by then.
-# shellcheck disable=SC2034,SC2329
+# shellcheck disable=SC2034,SC2317,SC2329
 trap_closes() { # on_signal or on_exit
     local which=$1 file=$lock_work/lock-t
     stopping=0 interrupted=0 stopped_jobs=0 torun=()
