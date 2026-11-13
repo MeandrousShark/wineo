@@ -145,10 +145,13 @@ say() {
 # (term_pipe), the destinations have closed their copy of FD, since a daemon
 # born in a run would hold it and keep the pipe's reader waiting forever, so
 # each line reopens main's descriptor through /proc ($$ is main's PID in
-# subshells). A file's offset isn't shared that way, so only pipes do this.
+# subshells). A file's offset isn't shared that way, so only pipes do this, and
+# only while the number still names a pipe: once main has closed it, bash can
+# reuse it for a file it saves a descriptor in, which `>` would truncate.
 term_copy() {
     [[ -n $1 ]] || return 0
     if [[ -n ${term_pipe:-} ]]; then
+        [[ -p /proc/$$/fd/$1 ]] || return 0
         { (printf '%-9s %s\n' "[$current]" "$2" >"/proc/$$/fd/$1"); } 2>/dev/null || true
     else
         { (printf '%-9s %s\n' "[$current]" "$2" >&"$1"); } 2>/dev/null || true
@@ -422,7 +425,35 @@ srcinfo_values() { sed -nE "s/^\s*$1 = //p" "$2"; }
 
 # Everything below needs a run: version, root, work, and so on.
 
-record() { echo "$2" >"$work/result-$1"; }
+record() {
+    echo "$2" >"$work/result-$1"
+    notify_main
+}
+
+# notify_main: wakes main, which then reads every phase and result file again,
+# so signals that merge lose nothing. usr1_trapped is set only once main traps
+# USR1, which would end it otherwise; main itself never needs waking.
+notify_main() {
+    [[ -n ${usr1_trapped:-} && $BASHPID != "$$" ]] || return 0
+    kill -USR1 "$$" 2>/dev/null || true
+}
+
+# set_phase DEST PHASE [LINE]: what DEST's job is doing, for the walking-away
+# lines and the interrupted reasons: preparing, uploading (from just before its
+# first upload), or waiting, with its latest "waiting on" line. Moved into
+# place, so main never reads half of it.
+set_phase() {
+    printf '%s\n' "$2" ${3:+"$3"} >"$work/phase-$1.new"
+    mv -f "$work/phase-$1.new" "$work/phase-$1"
+    notify_main
+}
+
+# read_phase DEST: DEST's phase and line into phase and phase_line. A job that
+# hasn't written one yet is preparing.
+read_phase() {
+    phase=preparing phase_line=''
+    { { read -r phase && read -r phase_line; } <"$work/phase-$1"; } 2>/dev/null || true
+}
 
 # Record locks. A lock is a file holding its owner's PID and that process's
 # start time, never an open descriptor: one held across a command is inherited
@@ -526,10 +557,20 @@ need_tool() {
 # Container steps. A step that's needed only once a destination has something
 # to do pulls its image then, so a run that skips everything needs no podman.
 
+# container NAME ARG...: podman run, with the container named for this run and
+# the destination, so stopping can find what's left. --init gives it a PID 1
+# that passes signals on; the kernel drops a signal with no handler that
+# reaches a container's own init from outside.
+container() {
+    local name=wineo-publish-$$-$current-$1
+    shift
+    nice -n 15 podman run --init --name "$name" "$@"
+}
+
 tool_image() {
     local kind=$1 name base packages builder status
     local lock=$work/lock-tools-$kind
-    name=localhost/wineo-publish-$kind-$$
+    name=localhost/wineo-publish-$$-tools-$kind
     # Checked and built under the lock, so concurrent callers build it once.
     lock_wait "$lock" "$BASHPID" "the ${kind^} tools image"
     # Only ever committed after the install below passed.
@@ -538,7 +579,7 @@ tool_image() {
         echo "$name"
         return
     fi
-    builder=wineo-publish-builder-$kind-$$
+    builder=wineo-publish-$$-tools-$kind
     # A holder killed mid-build leaves its container behind under this name.
     podman rm -f "$builder" >/dev/null 2>&1 || true
     case $kind in
@@ -559,7 +600,7 @@ tool_image() {
     esac
     say "$current: installing the tools into a $base image" >&2
     status=0
-    nice -n 15 podman run --name "$builder" -e STEP="tools-$kind" "$base" \
+    nice -n 15 podman run --init --name "$builder" -e STEP="tools-$kind" "$base" \
         bash -euo pipefail -c "$packages" >&2 || status=$?
     if ((status == 0)); then
         podman commit -q "$builder" "$name" >/dev/null || status=$?
@@ -579,8 +620,8 @@ remove_tool_images() {
     local kind
     command -v podman >/dev/null || return 0
     for kind in fedora ubuntu; do
-        podman rm -f "wineo-publish-builder-$kind-$$" >/dev/null 2>&1 || true
-        podman rmi -f "localhost/wineo-publish-$kind-$$" >/dev/null 2>&1 || true
+        podman rm -f "wineo-publish-$$-tools-$kind" >/dev/null 2>&1 || true
+        podman rmi -f "localhost/wineo-publish-$$-tools-$kind" >/dev/null 2>&1 || true
     done
 }
 
@@ -812,7 +853,7 @@ overlay_prepare() {
     # assume-digests keeps the DIST lines of older ebuilds, whose distfiles
     # aren't here. See check-gentoo-build.sh for the settings rootless podman
     # needs.
-    nice -n 15 podman run --rm -e STEP=gentoo-manifest -e IDENTITY="$identity" \
+    container gentoo-manifest --rm -e STEP=gentoo-manifest -e IDENTITY="$identity" \
         -e VERSION="$version" -e WINEO_GENTOO_DISTDIR=/var/cache/distfiles \
         -v "$tree:/tag:ro" \
         --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
@@ -1047,7 +1088,7 @@ copr_prepare() {
     image=$(tool_image fedora)
     # No dist tag, so the source package is plain VERSION-RELEASE, which is
     # what identifies it on COPR. Each chroot still adds its own.
-    nice -n 15 podman run --rm -e STEP=srpm -v "$top:/work/rpmbuild" "$image" \
+    container srpm --rm -e STEP=srpm -v "$top:/work/rpmbuild" "$image" \
         bash -euo pipefail -c '
         rpmbuild -bs --define "_topdir /work/rpmbuild" --define "dist %{nil}" \
             /work/rpmbuild/SPECS/wineo.spec
@@ -1072,7 +1113,7 @@ copr_upload() {
     while read -r target; do
         chroots+=(--chroot "$target-x86_64")
     done < <(targets_of copr)
-    if ! nice -n 15 podman run --rm -e STEP=copr-upload -e SRPM="/work/$name" \
+    if ! container copr-upload --rm -e STEP=copr-upload -e SRPM="/work/$name" \
         -e PROJECT="$copr_project" -v "$config:/root/.config/copr:ro" \
         -v "$(dirname "$srpm"):/work:ro" "$image" \
         bash -euo pipefail -c 'exec copr-cli build --nowait "$@" "$PROJECT" "$SRPM"' \
@@ -1108,7 +1149,7 @@ obs_status() {
     image=$(tool_image fedora)
     config=$(obs_config)
     targets=$(targets_of obs | tr '\n' ' ')
-    if ! nice -n 15 podman run --rm -e STEP=obs-status -e PROJECT="$obs_project" \
+    if ! container obs-status --rm -e STEP=obs-status -e PROJECT="$obs_project" \
         -e PACKAGE="$obs_package" -e TARGETS="$targets" \
         -v "$config:/root/.config/osc/oscrc:ro" -v "$dir:/status" "$image" \
         bash -euo pipefail -c '
@@ -1149,7 +1190,7 @@ obs_upload() {
     identity=$(identity_of obs "$target")
     image=$(tool_image fedora)
     config=$(obs_config)
-    nice -n 15 podman run --rm -e STEP=obs-upload -e PROJECT="$obs_project" \
+    container obs-upload --rm -e STEP=obs-upload -e PROJECT="$obs_project" \
         -e PACKAGE="$obs_package" -e MESSAGE="Update to $identity" \
         -v "$config:/root/.config/osc/oscrc:ro" -v "$work/obs/files:/files:ro" \
         "$image" bash -euo pipefail -c '
@@ -1215,7 +1256,7 @@ ppa_prepare() {
     # -d: the build dependencies are the series' own, and only Launchpad's
     # builder needs them. -sa: every series may carry the orig, since it's
     # byte for byte the same one.
-    nice -n 15 podman run --rm -e STEP=deb-source -e SERIES="$series" -e VERSION="$version" \
+    container "deb-source-$series" --rm -e STEP=deb-source -e SERIES="$series" -e VERSION="$version" \
         -v "$dir:/work" -w "/work/wineo-$version" "$image" \
         bash -euo pipefail -c 'dpkg-buildpackage -S -sa -d -us -uc' ||
         dest_fail "dpkg-buildpackage -S failed for $series; see the log"
@@ -1251,7 +1292,7 @@ ppa_upload() {
         dest_fail "gpg could not unlock $ppa_key; see the log"
     socket=$(gpgconf --list-dirs agent-socket)
     image=$(tool_image ubuntu)
-    nice -n 15 podman run --rm -e STEP=deb-sign -e KEY="$ppa_key" \
+    container "deb-sign-$series" --rm -e STEP=deb-sign -e KEY="$ppa_key" \
         -e CHANGES="wineo_${identity}_source.changes" \
         -v "$dir:/work" -v "$key:/signing-key.asc:ro" \
         -v "$socket:/root/.gnupg/S.gpg-agent" -w /work "$image" \
@@ -1337,6 +1378,7 @@ wait_for_builds() {
         line=${waiting[*]:-its status}
         if [[ $line != "$last" ]]; then
             say "$dest: waiting on $line"
+            set_phase "$dest" waiting "waiting on $line"
             last=$line
         fi
         if ((SECONDS - start >= limit)); then
@@ -1349,10 +1391,37 @@ wait_for_builds() {
     done
 }
 
-publish_destination() {
+# build_link DEST: where DEST's remote builds show, and how long to wait on
+# them, into the caller's link and limit.
+build_link() {
+    case $1 in
+        copr)
+            link=https://copr.fedorainfracloud.org/coprs/$copr_project/builds/
+            limit=$copr_limit
+            ;;
+        obs)
+            link=$(obs_url)
+            limit=$obs_limit
+            ;;
+        ppa)
+            link=https://launchpad.net/~meandrous-shark/+archive/ubuntu/wineo/+builds
+            limit=$ppa_limit
+            ;;
+        *)
+            link=''
+            limit=0
+            ;;
+    esac
+}
+
+# The upload part: the status, then everything prepared, then the uploads. It
+# records a result only when there's nothing left to wait for, which is how the
+# wait part knows.
+publish_upload() {
     local dest=$1 target state label all_built=1 failed=() unknown=() absent=() pending=()
     local limit link total=0 unit status states expected marked
     current=$dest
+    set_phase "$dest" preparing
     label=$(identity_label "$dest")
     if [[ $dest == obs ]]; then obs_ready; fi
 
@@ -1386,24 +1455,7 @@ publish_destination() {
         record "$dest" "already published ($label)"
         return 0
     fi
-    case $dest in
-        copr)
-            link=https://copr.fedorainfracloud.org/coprs/$copr_project/builds/
-            limit=$copr_limit
-            ;;
-        obs)
-            link=$(obs_url)
-            limit=$obs_limit
-            ;;
-        ppa)
-            link=https://launchpad.net/~meandrous-shark/+archive/ubuntu/wineo/+builds
-            limit=$ppa_limit
-            ;;
-        *)
-            link=''
-            limit=0
-            ;;
-    esac
+    build_link "$dest"
     if ((${#failed[@]} > 0)); then
         dest_fail "$label already failed to build on ${failed[*]} ($link). Fix the recipe, bump its revision, and run --only $dest"
     fi
@@ -1426,6 +1478,7 @@ publish_destination() {
         for unit in "${pending[@]}"; do
             prepare_of "$dest" "$unit"
         done
+        set_phase "$dest" uploading
         for unit in "${pending[@]}"; do
             say "$dest: uploading $unit"
             # Not with `|| dest_fail`: that would turn errexit off inside it,
@@ -1442,6 +1495,8 @@ publish_destination() {
                 [[ -s $work/result-$dest ]] || record "$dest" "failed: the upload of $unit failed; see the log"
                 exit 1
             fi
+            # Something went out in this run, for "every upload is out".
+            : >"$work/uploaded-$dest"
             if has_remote_build "$dest"; then
                 while read -r target; do
                     [[ $unit == all || $unit == "$target" ]] || continue
@@ -1452,11 +1507,29 @@ publish_destination() {
         done
     fi
 
+}
+
+# The wait part. Run in a job of its own for the PPA, so it sets everything
+# dest_fail and the wait need again.
+publish_wait() {
+    local dest=$1 label limit link
+    current=$dest
+    [[ ! -s $work/result-$dest ]] || return 0
+    label=$(identity_label "$dest")
+    build_link "$dest"
     if has_remote_build "$dest"; then
+        set_phase "$dest" waiting
         wait_for_builds "$dest" "$limit" "$link"
     fi
     say "$dest: published $label"
     record "$dest" "published ($label)"
+}
+
+# Two statements, never `&&` or inside an `if`: either turns errexit off for
+# all of it.
+publish_destination() {
+    publish_upload "$1"
+    publish_wait "$1"
 }
 
 # The log directory is made when the first destination starts, so a run the
@@ -1475,47 +1548,361 @@ drop_term_out() {
     [[ -z $term_pipe ]] || exec {term_out}>&-
 }
 
-# Every destination's output, containers included, goes to its own log. The PPA
-# and --only also show it all on the terminal, so a failed step sits next to
-# the passphrase prompt or the command being retried. The others show only
-# their say lines, prefixed, and a failure's reason, through term_out.
-run_destination() {
-    local dest=$1 status result log
+# Every destination's output, containers included, goes to its own log. The
+# PPA's foreground stage and --only also show it all on the terminal, so a
+# failed step sits next to the passphrase prompt or the command being retried.
+# The background jobs show only their say lines, prefixed, and a failure's
+# reason, through term_out.
+
+# run_inline DEST PART: PART (publish_upload or publish_destination) of DEST in
+# the foreground, tee'd to its log.
+run_inline() {
+    local dest=$1 part=$2 status
     current=$dest
     make_log_dir
-    log=$log_dir/$dest.log
     # Not in an `if`: that would turn errexit off for all of it.
     set +e
-    if [[ -n $only || $dest == ppa ]]; then
-        # Relies on daemons detaching fds 0-2 (gpg, ssh, and podman do): one that
-        # didn't would hold tee open after the destination ends.
-        (
-            set -e
-            term_fd=''
-            drop_term_out
-            echo "== $dest"
-            publish_destination "$dest"
-        ) 2>&1 | tee -a "$log"
-        status=${PIPESTATUS[0]}
-    else
-        (
-            set -e
-            term_fd=$term_out
-            drop_term_out
-            echo "== $dest"
-            publish_destination "$dest"
-        ) >>"$log" 2>&1
-        status=$?
-    fi
+    # Relies on daemons detaching fds 0-2 (gpg, ssh, and podman do): one that
+    # didn't would hold tee open after the destination ends.
+    (
+        set -e
+        term_fd=''
+        drop_term_out
+        echo "== $dest"
+        "$part" "$dest"
+    ) 2>&1 | tee -a "$log_dir/$dest.log"
+    status=${PIPESTATUS[0]}
     set -e
     if ((status != 0)) && [[ ! -s $work/result-$dest ]]; then
         record "$dest" "failed: it stopped early; see the log"
     fi
-    if [[ -z $only && $dest != ppa ]]; then
-        result=$(cat "$work/result-$dest" 2>/dev/null || true)
-        [[ $result != failed* ]] || term_copy "$term_out" "$result"
+    current=''
+}
+
+# background_env: nothing in the background can prompt, so a missing credential
+# fails at once instead of hanging. For background jobs only, so --only aur can
+# still ask for the key's passphrase.
+background_env() {
+    export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes'
+}
+
+# run_job DEST PART: the body of a background job. Only main writes a reason
+# for a job that ended without a result, since a killed job can't.
+run_job() {
+    local dest=$1 part=$2 result
+    current=$dest
+    background_env
+    set +e
+    (
+        set -e
+        term_fd=$term_out
+        drop_term_out
+        [[ $part == publish_wait ]] || echo "== $dest"
+        "$part" "$dest"
+    ) >>"$log_dir/$dest.log" 2>&1
+    set -e
+    result=$(cat "$work/result-$dest" 2>/dev/null || true)
+    [[ $result != failed* ]] || term_copy "$term_out" "$result"
+}
+
+# launch DEST PART: DEST in the background, in a process group of its own,
+# which the terminal's signals don't reach and which doesn't ignore SIGINT, as
+# a job started with job control off would. Job control is on only for the
+# launch, so main's own commands and wait behave as before.
+launch() {
+    set -m
+    run_job "$1" "$2" </dev/null &
+    set +m
+    job_dest[$!]=$1
+    proc_start "$!" "job_start[$!]" || true
+    live+=("$!")
+}
+
+# job_alive PID: PID is still the job launched under it. Neither wait -n nor
+# bash's own job table can say when a job has ended: one that exits just as a
+# trapped USR1 interrupts wait -n can be reaped with its status lost, and then
+# stays "Running" in the table, where `wait PID` would block on it forever.
+# The start time keeps a reused PID from passing.
+job_alive() {
+    local now
+    proc_start "$1" now && [[ $now == "${job_start[$1]:-}" ]]
+}
+
+# end_group PID: TERM to PID's process group, a few seconds for it to empty,
+# then SIGKILL. Only for a group that still has a member, which keeps its ID
+# from being reused.
+end_group() {
+    local i
+    kill -0 -- "-$1" 2>/dev/null || return 0
+    kill -TERM -- "-$1" 2>/dev/null || true
+    for ((i = 0; i < 50; i++)); do
+        kill -0 -- "-$1" 2>/dev/null || return 0
+        sleep 0.1 || true
+    done
+    kill -KILL -- "-$1" 2>/dev/null || true
+}
+
+# sweep_containers PATTERN: stops the containers whose names match PATTERN and
+# removes them all. -a, since a container whose podman run was killed can be
+# left created or exited as well as running.
+sweep_containers() {
+    local name state running=() all=()
+    command -v podman >/dev/null || return 0
+    while read -r name state; do
+        [[ -n $name ]] || continue
+        all+=("$name")
+        [[ $state != running ]] || running+=("$name")
+    done < <(podman ps -a --filter "name=$1" --format '{{.Names}} {{.State}}' 2>/dev/null || true)
+    if ((${#running[@]} > 0)); then
+        podman stop -t 5 "${running[@]}" >/dev/null 2>&1 || true
     fi
-    return 0
+    if ((${#all[@]} > 0)); then
+        podman rm -f "${all[@]}" >/dev/null 2>&1 || true
+    fi
+}
+
+# job_done PID: the job is reaped, so it's no longer stopped through its group.
+job_done() {
+    local pid=$1 dest=${job_dest[$1]} current p rest=()
+    # Whatever is left in the job's group: what a job that published left
+    # behind would outlive the run and its work directory, and if only the
+    # job's own process died (kill PID, the OOM killer), the rest would go on
+    # publishing and could write its own result over main's. Now, not later:
+    # a group with a member has kept its ID since the leader exited, at most a
+    # tick ago, while one that emptied long since may have had it reused. Still
+    # in live while this runs, so a Ctrl+C now stops its group too.
+    end_group "$pid"
+    if [[ ! -s $work/result-$dest ]]; then
+        sweep_containers "^wineo-publish-$$-$dest-"
+        current=$dest
+        record "$dest" "failed: it stopped early; see the log"
+        term_copy "$term_out" "failed: it stopped early; see the log"
+    fi
+    for p in "${live[@]}"; do
+        [[ $p == "$pid" ]] || rest+=("$p")
+    done
+    live=(${rest[@]+"${rest[@]}"})
+    done_with[$pid]=1
+}
+
+# tell LINE...: main's own lines while jobs run. Like term_copy, it never fails:
+# after a hangup, or with a pipe that lost its reader, the write does.
+tell() { { (printf '%s\n' "$@"); } 2>/dev/null || true; }
+
+# walk_away: once every upload is out, stopping loses nothing, since the remote
+# builds go on and a rerun goes straight back to waiting. Each line prints at
+# most once, from the files alone, however many wake-ups came, and only while
+# something is still waiting: with nothing left, the summary is next anyway.
+walk_away() {
+    local dest result phase phase_line left=() out=1 down='' lines=()
+    for dest in "${torun[@]}"; do
+        result=''
+        { read -r result <"$work/result-$dest"; } 2>/dev/null || true
+        if [[ -n $result ]]; then
+            [[ $result != failed* ]] || down+=${down:+, }$dest
+            continue
+        fi
+        left+=("$dest")
+        read_phase "$dest"
+        [[ $phase == waiting ]] || out=0
+    done
+    if ((!told_out && out && ${#left[@]} > 0)) && compgen -G "$work/uploaded-*" >/dev/null; then
+        told_out=1
+        tell "== every upload is out${down:+ ($down failed)}; stopping now loses nothing, rerun to keep waiting"
+    fi
+    if ((told_left || ${#left[@]} != 1 || ${#ran[@]} < 2)); then return 0; fi
+    read_phase "${left[0]}"
+    [[ $phase == waiting ]] || return 0
+    told_left=1
+    lines=("== only the ${left[0]}'s wait is left:")
+    for dest in "${ran[@]}"; do
+        [[ $dest != "${left[0]}" ]] || continue
+        result=''
+        { read -r result <"$work/result-$dest"; } 2>/dev/null || true
+        lines+=("$(printf '  %-8s %s' "$dest" "$result")")
+    done
+    lines+=("$(printf '  %-8s %s' "${left[0]}" "${phase_line:-waiting}")")
+    tell "${lines[@]}"
+}
+
+# interrupted_reason DEST: a reason from how far DEST got.
+interrupted_reason() {
+    local phase phase_line
+    read_phase "$1"
+    case $phase in
+        waiting) echo "failed: interrupted while waiting; uploads are out, rerun --only $1 to keep waiting" ;;
+        uploading) echo "failed: interrupted during upload; rerun --only $1, and what finished uploading isn't sent again" ;;
+        *) echo "failed: interrupted before it uploaded" ;;
+    esac
+}
+
+# stop_all: ends every job still running, the whole of its process group, then
+# any of this run's containers that are left, and records a reason for every
+# destination that has none. It runs once, so a second Ctrl+C or EXIT after
+# INT does nothing, and with INT, TERM, and HUP ignored, which what it runs
+# inherits. It prints nothing, and it never takes a record lock: a trap that
+# fired inside a lock's guarded window would wait on itself.
+stop_all() {
+    local pid running=() signaled=() i busy dest old_ticker
+    ((!stopping)) || return 0
+    stopping=1
+    trap '' INT TERM HUP
+    # A signal during launch can land with job control still on.
+    set +m
+    old_ticker=$ticker
+    stop_ticker
+    # A job a signal caught between a launch's `&` and its PID reaching live is
+    # only in bash's table, which lists it as running. It has only just started,
+    # so its PID can't have been reused. Everything else in the table that isn't
+    # live is a job or ticker main has finished with, whose status bash may have
+    # lost (see job_alive): its PID may be someone else's by now.
+    read -ra running <<<"$(jobs -rp 2>/dev/null | tr '\n' ' ')"
+    for pid in ${running[@]+"${running[@]}"}; do
+        [[ $pid != "$old_ticker" && -z ${done_with[$pid]:-} && " ${live[*]:-} " != *" $pid "* ]] || continue
+        stopped_jobs=1
+        kill -TERM -- "-$pid" 2>/dev/null || true
+        signaled+=("$pid")
+    done
+    # The rest by what's really running: a job that's still itself, or one
+    # whose own process is gone but whose group isn't, as in job_done. A
+    # group with a member keeps its ID from being reused.
+    for pid in ${live[@]+"${live[@]}"}; do
+        if job_alive "$pid" || kill -0 -- "-$pid" 2>/dev/null; then
+            stopped_jobs=1
+            kill -TERM -- "-$pid" 2>/dev/null || true
+            signaled+=("$pid")
+        fi
+    done
+    # Each group gets a few seconds to empty, then SIGKILL.
+    for ((i = 0; i < 50 && ${#signaled[@]} > 0; i++)); do
+        busy=()
+        for pid in "${signaled[@]}"; do
+            if kill -0 -- "-$pid" 2>/dev/null; then busy+=("$pid"); fi
+        done
+        signaled=(${busy[@]+"${busy[@]}"})
+        ((${#signaled[@]} > 0)) || break
+        sleep 0.1 || true
+    done
+    for pid in ${signaled[@]+"${signaled[@]}"}; do
+        kill -KILL -- "-$pid" 2>/dev/null || true
+    done
+    # Once no client is left to answer the signal and remove its own.
+    if ((stopped_jobs || interrupted)); then sweep_containers "^wineo-publish-$$-"; fi
+    # No wait: the groups are gone, bash reaps what's left, and a job whose
+    # status it lost would block it for good.
+    live=()
+    for dest in ${torun[@]+"${torun[@]}"}; do
+        [[ ! -s $work/result-$dest ]] || continue
+        if ((interrupted)); then
+            record "$dest" "$(interrupted_reason "$dest")"
+        else
+            record "$dest" "failed: it stopped early; see the log"
+        fi
+    done
+}
+
+# close_term: main's copy of the terminal, closed once nothing writes to it, so
+# nothing the cleanup starts (podman unshare) can hold a pipe open.
+close_term() {
+    if [[ -n $term_out ]]; then
+        { exec {term_out}>&-; } 2>/dev/null || true
+        term_out=''
+    fi
+}
+
+# Ctrl+C, a hangup, or TERM: stop everything, then say how far each got.
+on_signal() {
+    ((!stopping)) || return 0
+    interrupted=1
+    stop_all
+    close_term
+    { (summarize); } 2>/dev/null || true
+    exit 1
+}
+
+# The cleanup comes after the stopping, so nothing still running loses the
+# tool images or the work directory under it.
+on_exit() {
+    # Before anything else, so an INT can't run on_signal in the middle of this
+    # and skip the cleanup.
+    trap '' INT TERM HUP
+    if ((!stopping)); then
+        stop_all
+        if ((stopped_jobs)); then
+            close_term
+            { (summarize); } 2>/dev/null || true
+        fi
+    fi
+    close_term
+    remove_tool_images
+    remove_work
+}
+
+# The ticker wakes main every 10 seconds. A USR1 that comes after the woke
+# check but before wait -n blocks is otherwise lost until the next one, which
+# can be a whole build interval away. It's in main's process group, so it's
+# never one of the jobs.
+start_ticker() {
+    sleep 10 &
+    ticker=$!
+    proc_start "$ticker" "job_start[$ticker]" || true
+}
+
+# Not waited for, which could block for good as job_alive says.
+stop_ticker() {
+    [[ -n $ticker ]] || return 0
+    if job_alive "$ticker"; then kill "$ticker" 2>/dev/null || true; fi
+    done_with[$ticker]=1
+    ticker=''
+}
+
+# reap_ended: job_done for every live job that has ended, and a new ticker if
+# the last one has. Each is waited for only once bash lists it as ended, since
+# one whose status it lost would block wait for good.
+reap_ended() {
+    local pid running
+    running=" $(jobs -rp 2>/dev/null | tr '\n' ' ') "
+    for pid in "${live[@]}"; do
+        ! job_alive "$pid" || continue
+        [[ $running == *" $pid "* ]] || wait "$pid" 2>/dev/null || true
+        job_done "$pid"
+    done
+    if ! job_alive "$ticker"; then
+        [[ $running == *" $ticker "* ]] || wait "$ticker" 2>/dev/null || true
+        done_with[$ticker]=1
+        start_ticker
+    fi
+}
+
+# The three stages: the PPA's foreground stage, then everything else and the
+# PPA's wait in the background, then the wait for them all.
+fan_out() {
+    local dest
+    if [[ " ${torun[*]} " == *" ppa "* ]]; then
+        ran+=(ppa)
+        run_inline ppa publish_upload
+    fi
+    for dest in "${torun[@]}"; do
+        if [[ $dest != ppa ]]; then
+            ran+=("$dest")
+            launch "$dest" publish_destination
+        elif [[ ! -s $work/result-ppa ]]; then
+            launch ppa publish_wait
+        fi
+    done
+    start_ticker
+    while :; do
+        woke=0
+        reap_ended
+        ((${#live[@]} > 0)) || break
+        walk_away
+        # A wake-up during walk_away would otherwise wait for the next one.
+        if ((woke)); then continue; fi
+        # Only a way to sleep until something happens: reap_ended says what.
+        wait -n "${live[@]}" "$ticker" 2>/dev/null || true
+    done
+    stop_ticker
+    walk_away
 }
 
 # Checks before anything is published.
@@ -1685,6 +2072,9 @@ summarize() {
 
 main() {
     only='' skip=() dest_dir='' log_dir='' term_out='' term_fd='' term_pipe='' current=''
+    torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0
+    woke=0 told_out=0 told_left=0 usr1_trapped='' ticker=''
+    declare -gA job_dest=() job_start=() done_with=()
     (($# >= 1)) || usage
     version=$1
     shift
@@ -1729,7 +2119,7 @@ main() {
     local parent=${WINEO_PUBLISH_WORK:-${dest_dir:-${XDG_CACHE_HOME:-$HOME/.cache}/wineo-publish}}
     mkdir -p "$parent"
     work=$(mktemp -d "$parent/work.XXXXXX")
-    trap 'remove_tool_images; remove_work' EXIT
+    trap on_exit EXIT
     assets=$work/assets
     recipes=$work/recipes
     source_tree=$work/source
@@ -1756,19 +2146,33 @@ main() {
     # A copy of the terminal for the destinations' say lines, taken before any
     # of them has its stdout sent to a log. Not /dev/tty: a run in CI has none.
     exec {term_out}>&1
-    if [[ -p /dev/fd/$term_out ]]; then term_pipe=1; fi
-    local dest
+    # A named FIFO isn't a pipe here: opening one through /proc blocks while it
+    # has no reader, where an anonymous pipe's open doesn't.
+    local target dest
+    target=$(readlink "/proc/$$/fd/$term_out" 2>/dev/null) || target=''
+    if [[ $target == pipe:* ]]; then term_pipe=1; fi
     for dest in "${destinations[@]}"; do
         if [[ -n $only && $dest != "$only" ]]; then
             record "$dest" "not run (--only $only)"
         elif [[ " ${skip[*]:-} " == *" $dest "* ]]; then
             record "$dest" "not run (--skip)"
         else
-            run_destination "$dest"
+            torun+=("$dest")
         fi
     done
-    # podman unshare in the EXIT trap can leave a process that would hold a pipe.
-    exec {term_out}>&-
+    # Before anything can send a USR1, which would end main untrapped.
+    trap 'woke=1' USR1
+    usr1_trapped=1
+    trap on_signal INT TERM HUP
+    if ((${#torun[@]} > 0)); then make_log_dir; fi
+    if [[ -n $only ]]; then
+        run_inline "$only" publish_destination
+    else
+        fan_out
+    fi
+    # Only once every job is reaped, since they write through it. podman
+    # unshare in the EXIT trap can leave a process that would hold a pipe.
+    close_term
     summarize
 }
 
