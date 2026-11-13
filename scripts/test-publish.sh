@@ -125,7 +125,14 @@ while (($# > 0)); do
     esac
 done
 case $url in
-    */archive/refs/tags/*) [[ -f $STUB/no-tag-tarball ]] && exit 22; cp "$STUB/tag.tar.gz" "$out" ;;
+    */archive/refs/tags/*)
+        [[ ! -f $STUB/no-tag-tarball ]] || exit 22
+        if [[ -f $STUB/half-tag-tarball ]]; then
+            head -c 100 "$STUB/tag.tar.gz" >"$out"
+            exit 18
+        fi
+        cp "$STUB/tag.tar.gz" "$out"
+        ;;
     */license-mapping.conf) : >"$out" ;;
     *copr*/build/list*)
         offset=${url##*offset=}
@@ -172,6 +179,22 @@ case $1 in
     run) shift ;;
     *) exit 1 ;;
 esac
+
+# Hooks for the lock tests. hold-run: say the build started, then wait (bounded)
+# until the test removes the file. run-fails: fail with 2 plus the number of
+# runs so far, so each caller's own failure is told apart. daemon-run: leave a
+# sleep behind that keeps whatever descriptors it was started with.
+if [[ -f $STUB/hold-run ]]; then
+    touch "$STUB/run-started"
+    for _ in $(seq 100); do
+        [[ ! -f $STUB/hold-run ]] || sleep 0.1
+    done
+fi
+if [[ -f $STUB/run-fails ]]; then exit $((2 + $(grep -c '^run' "$STUB/podman.log"))); fi
+if [[ -f $STUB/daemon-run ]]; then
+    sleep 30 &
+    echo $! >"$STUB/daemon-pid"
+fi
 
 # C stands in for the container's root, with each mount a symlink in it.
 export C
@@ -234,8 +257,8 @@ name=${0##*/}
 args=()
 for arg in "$@"; do args+=("${arg//$C/}"); done
 mkdir -p "$STUB/calls"
-count=$(find "$STUB/calls" -type f | wc -l)
-printf '%s\n' "$name" "${args[@]}" >"$STUB/calls/$(printf %04d "$count")"
+# mktemp, not a count of the files there, so calls at the same moment can't collide.
+printf '%s\n' "$name" "${args[@]}" >"$(mktemp "$STUB/calls/call.XXXXXX")"
 echo "$name" >>"$STUB/tools.log"
 if [[ -f $STUB/fail-tool-$name ]]; then
     cat "$STUB/fail-tool-$name"
@@ -1278,7 +1301,10 @@ check "a failed commit: exit $rc, not 1" test "$rc" -eq 1
 check "a failed commit: the reason is missing" said "^  copr +failed: installing the tools"
 check "a failed commit: a half-built image is left" \
     test "$(find "$STUB" -name 'image-*' | grep -c . || true)" -eq 0
-check "a failed commit: the builder is left" grep -q '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log"
+# The very next call after the commit. The build's first rm and the EXIT trap's
+# also name the builder, so a later match alone would prove nothing.
+check "a failed commit: the builder is left" \
+    awk 'after { found = /^rm -f wineo-publish-builder-fedora/; after = 0 } /^commit/ { after = 1 } END { exit !found }' "$STUB/podman.log"
 
 # osc crashes at startup without git, which no help output or stub would show.
 new_scenario
@@ -1291,6 +1317,222 @@ check "the Ubuntu tools changed" called apt-get install -y --no-install-recommen
 
 check "the Ubuntu image was not reused across series" \
     test "$(grep -c '^commit' "$STUB/podman.log")" -eq 1
+
+# Record locks around the shared prepare steps. Each caller is a subshell of
+# this one, so $$ is shared the way it is across the script's own $(...) calls.
+# Real sleep, so a waiting caller really waits and a stub can hold a build.
+lockbin=$tmp/lockbin
+mkdir -p "$lockbin"
+ln -s "$stubs/podman" "$lockbin/podman"
+ln -s "$stubs/curl" "$lockbin/curl"
+ln -s "$(command -p -v sleep)" "$lockbin/sleep"
+
+# lock_call NAME FUNCTION ARG...: the script's FUNCTION in a fresh subshell,
+# output in NAME.out and NAME.err. Run it with & to make it concurrent.
+lock_call() {
+    local name=$1
+    shift
+    (
+        PATH=$lockbin:$PATH
+        export WINEO_PUBLISH_INTERVAL=0.05
+        # shellcheck disable=SC1090
+        source "$lock_script"
+        # shellcheck disable=SC2034
+        work=$lock_work current=copr dest_dir=
+        "$@"
+    ) >"$name.out" 2>"$name.err"
+}
+# poll COMMAND...: true once COMMAND is, within about ten seconds.
+poll() {
+    local i
+    for i in $(seq 100); do
+        if "$@" 2>/dev/null; then return 0; fi
+        sleep 0.1
+    done
+    return 1
+}
+# finish PID: waits for a background caller for up to 30 seconds, then kills it.
+# Its status is in $finished.
+finish() {
+    local i
+    for i in $(seq 300); do
+        kill -0 "$1" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$1" 2>/dev/null; then kill "$1"; fi
+    finished=0
+    wait "$1" || finished=$?
+}
+lock_scenario() {
+    new_scenario
+    lock_script=$repo/scripts/publish-packages.sh
+    lock_work=$scenario/lockwork
+    mkdir -p "$lock_work"
+}
+
+# Two callers at once build the image once: the second waits for the first.
+lock_scenario
+touch "$STUB/hold-run"
+lock_call "$scenario/a" tool_image fedora &
+first=$!
+check "the first caller never started building" poll test -f "$STUB/run-started"
+lock_call "$scenario/b" tool_image fedora &
+second=$!
+check "the second caller did not wait for the Fedora tools image: $(cat "$scenario/b.err")" \
+    poll grep -q 'waiting for the Fedora tools image' "$scenario/b.err"
+rm -f "$STUB/hold-run"
+finish "$first"
+check "the first caller failed ($finished): $(cat "$scenario/a.err")" test "$finished" -eq 0
+finish "$second"
+check "the second caller failed ($finished): $(cat "$scenario/b.err")" test "$finished" -eq 0
+check "the image was built $(grep -c '^run' "$STUB/podman.log") times, not once" \
+    test "$(grep -c '^run' "$STUB/podman.log")" -eq 1
+check "the two callers got different images" test "$(cat "$scenario/a.out")" = "$(cat "$scenario/b.out")"
+check "the first caller waited" test "$(grep -c 'waiting for' "$scenario/a.err" || true)" -eq 0
+
+# A failed build frees the lock: the caller waiting behind it tries again and
+# fails with its own exit status.
+lock_scenario
+touch "$STUB/hold-run" "$STUB/run-fails"
+lock_call "$scenario/a" tool_image fedora &
+first=$!
+check "the first caller never started building" poll test -f "$STUB/run-started"
+lock_call "$scenario/b" tool_image fedora &
+second=$!
+check "the second caller did not wait: $(cat "$scenario/b.err")" \
+    poll grep -q 'waiting for the Fedora tools image' "$scenario/b.err"
+rm -f "$STUB/hold-run"
+finish "$first"
+check "the first caller exited $finished, not 1" test "$finished" -eq 1
+finish "$second"
+check "the second caller exited $finished, not 1" test "$finished" -eq 1
+check "the first failure isn't its own: $(cat "$scenario/a.err")" grep -q 'failed (exit 3)' "$scenario/a.err"
+check "the second failure isn't its own: $(cat "$scenario/b.err")" grep -q 'failed (exit 4)' "$scenario/b.err"
+check "the failed build left an image" test "$(find "$STUB" -name 'image-*' | grep -c . || true)" -eq 0
+
+# A lock whose owner is gone, or whose PID has another start time, is taken
+# over; one held by a live process isn't.
+lock_scenario
+lock=$lock_work/lock-x
+sleep 0.01 &
+gone=$!
+wait "$gone"
+echo "$gone 12345" >"$lock"
+# BASHPID is the caller's own, so it takes the lock through a function.
+take() { lock_try "$1" "$BASHPID"; }
+lock_call "$scenario/dead" take "$lock" || true
+check "a dead owner's lock wasn't taken over: $(cat "$scenario/dead.err")" test -s "$lock"
+check "the dead owner's record is still there: $(cat "$lock")" test "$(cut -d' ' -f1 "$lock")" != "$gone"
+echo "$$ 1" >"$lock"
+lock_call "$scenario/reused" take "$lock" || true
+check "a reused PID's lock wasn't taken over: $(cat "$lock")" test "$(cut -d' ' -f1 "$lock")" != "$$"
+live_holder() ( # the shell running this holds the lock, and take is another process's
+    # shellcheck disable=SC1090
+    source "$lock_script"
+    held_start=
+    proc_start "$$" held_start
+    echo "$$ $held_start" >"$lock"
+    rc=0
+    (lock_try "$lock" "$BASHPID") || rc=$?
+    [[ $rc -eq 1 ]]
+)
+check "a live owner's lock was taken over" live_holder
+echo garbage >"$lock"
+lock_call "$scenario/garbled" take "$lock" || true
+check "a garbled record wasn't taken over: $(cat "$lock")" test "$(cut -d' ' -f1 "$lock")" != garbage
+
+# comm can hold spaces and parens, and the start time is still field 22. The
+# process names itself from a builtin's wait, so nothing depends on the binary
+# and nothing is left behind when it's killed.
+odd_comm="odd) (name 1"
+mkfifo "$tmp/odd.fifo"
+# shellcheck disable=SC2016
+bash -c 'printf %s "$2" >/proc/$$/comm; exec 3<>"$1"; read -r -t 30 -u 3 || true' _ "$tmp/odd.fifo" "$odd_comm" &
+odd_pid=$!
+comm_is() { [[ $(<"/proc/$1/comm") == "$2" ]]; }
+check "the process never took the name '$odd_comm'" poll comm_is "$odd_pid" "$odd_comm"
+start_of() {
+    local start
+    proc_start "$1" start
+    echo "$start"
+}
+lock_call "$scenario/odd" start_of "$odd_pid" || true
+want=$(python3 -I -c 'import sys; print(open(sys.argv[1]).read().rsplit(")", 1)[1].split()[19])' "/proc/$odd_pid/stat")
+check "proc_start read '$(cat "$scenario/odd.out")' for a process named '$odd_comm', not $want" \
+    test "$(cat "$scenario/odd.out")" = "$want"
+kill "$odd_pid"
+wait "$odd_pid" || true
+
+# A PID that isn't a number is no process, and neither is a zombie.
+refused() { ! "$@"; }
+check "proc_start took an empty PID" refused lock_call "$scenario/empty" start_of ""
+check "proc_start took a PID with text in it" refused lock_call "$scenario/text" start_of "1/../$$"
+python3 -I -c '
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+print(pid, flush=True)
+time.sleep(30)
+' >"$tmp/zombie.pid" &
+parent=$!
+check "no zombie was made" poll test -s "$tmp/zombie.pid"
+zombie=$(<"$tmp/zombie.pid")
+is_zombie() { [[ $(cut -d' ' -f3 "/proc/$1/stat") == Z ]]; }
+check "the child of the python script isn't a zombie" poll is_zombie "$zombie"
+check "proc_start took a zombie for a running process" refused lock_call "$scenario/zombie" start_of "$zombie"
+kill "$parent"
+wait "$parent" || true
+
+# A daemon the build leaves running doesn't keep the lock held.
+lock_scenario
+touch "$STUB/daemon-run"
+lock_call "$scenario/a" tool_image fedora || true
+check "the build left no daemon" poll test -s "$STUB/daemon-pid"
+daemon=$(cat "$STUB/daemon-pid")
+check "the daemon isn't running, so this proves nothing" kill -0 "$daemon"
+lock_call "$scenario/b" tool_image fedora &
+second=$!
+finish "$second"
+check "the next caller failed ($finished): $(cat "$scenario/b.err")" test "$finished" -eq 0
+check "the daemon held the lock: $(cat "$scenario/b.err")" test "$(grep -c 'waiting for' "$scenario/b.err" || true)" -eq 0
+kill "$daemon"
+exited() { ! kill -0 "$1"; }
+check "the daemon would not stop" poll exited "$daemon"
+
+# A download that fails half way leaves no tarball, and the next caller fetches it again.
+lock_scenario
+touch "$STUB/half-tag-tarball"
+finished=0
+lock_call "$scenario/a" tag_tarball || finished=$?
+check "a half download exited $finished, not 1" test "$finished" -eq 1
+check "a half download didn't say why: $(cat "$scenario/a.err")" grep -q 'could not download' "$scenario/a.err"
+check "a half download left a tarball: $(find "$lock_work" -type f | tr '\n' ' ')" \
+    test -z "$(find "$lock_work" -type f ! -name 'lock-*' ! -name 'result-*')"
+rm "$STUB/half-tag-tarball"
+lock_call "$scenario/b" tag_tarball
+check "the next caller got $(cat "$scenario/b.out"), not the tarball" \
+    test "$(cat "$scenario/b.out")" = "$lock_work/wineo-$version.gh.tar.gz"
+check "the next caller's tarball isn't whole" cmp "$STUB/tag.tar.gz" "$lock_work/wineo-$version.gh.tar.gz"
+check "the next caller didn't download again" test "$(grep -c 'archive/refs/tags' "$STUB/curl.log")" -eq 2
+
+# A lock that can't be written fails with a reason, and nothing is built.
+lock_scenario
+mkdir "$lock_work/lock-tools-fedora"
+finished=0
+lock_call "$scenario/a" tool_image fedora || finished=$?
+check "an unwritable lock exited $finished, not 1" test "$finished" -eq 1
+check "an unwritable lock didn't say why: $(cat "$scenario/a.err")" \
+    grep -q 'could not take the lock for the Fedora tools image' "$scenario/a.err"
+check "an unwritable lock still built the image" refused grep -q '^run' "$STUB/podman.log"
+
+# A caller that takes over a dead holder's lock clears the builder it left.
+lock_scenario
+lock_call "$scenario/a" tool_image fedora || true
+rm_line=$(grep -n '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
+run_line=$(grep -n '^run' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
+check "the builder wasn't removed before the build (rm at '$rm_line', run at '$run_line')" \
+    test -n "$rm_line" -a -n "$run_line" -a "${rm_line:-99}" -lt "${run_line:-0}"
 
 # A failure inside $(...) has to stop the function it's in, as tool_image and
 # tag_tarball rely on. Bash doesn't do that by default.

@@ -402,6 +402,89 @@ srcinfo_values() { sed -nE "s/^\s*$1 = //p" "$2"; }
 
 record() { echo "$2" >"$work/result-$1"; }
 
+# Record locks. A lock is a file holding its owner's PID and that process's
+# start time, never an open descriptor: one held across a command is inherited
+# by everything the command starts, and some of that outlives the run
+# (gpg-agent, podman's pause process, an ssh master) and would hold the lock
+# forever. flock guards only the short check-and-write of the record, which
+# runs nothing but builtins, and is released before anything else runs.
+
+# proc_start PID VAR: PID's start time from /proc into VAR, or fail if it isn't
+# running. comm, the second field, can hold spaces and parens, so the fields are
+# counted from after the last ")". A zombie keeps its start time until it's
+# reaped, so it doesn't count as running. read, not $(<...), so nothing forks
+# while the guard is held.
+proc_start() {
+    local _stat='' _fields
+    [[ $1 =~ ^[0-9]+$ ]] || return 1
+    { read -r -d '' _stat <"/proc/$1/stat" || [[ -n $_stat ]]; } 2>/dev/null || return 1
+    read -ra _fields <<<"${_stat##*) }"
+    [[ -n ${_fields[19]:-} && ${_fields[0]} != [ZX] ]] || return 1
+    printf -v "$2" %s "${_fields[19]}"
+}
+
+# lock_live FILE: the record names a process that is still the one that wrote
+# it. An empty or garbled record names nobody.
+lock_live() {
+    local pid start now
+    { read -r pid start <"$1"; } 2>/dev/null || return 1
+    [[ $pid =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || return 1
+    proc_start "$pid" now || return 1
+    [[ $now == "$start" ]]
+}
+
+# lock_try FILE OWNER: take the lock for OWNER (a PID) if nobody live holds it.
+# Status 1 means held, 2 means OWNER isn't running, 3 means the guard or the
+# record couldn't be used. Its callers run it with errexit off (`|| status=$?`),
+# so every step that can fail is checked here.
+lock_try() {
+    local file=$1 owner=$2 fd start taken=0
+    proc_start "$owner" start || return 2
+    exec {fd}>>"$file.guard" || return 3
+    if ! flock "$fd"; then
+        exec {fd}>&-
+        return 3
+    fi
+    if ! lock_live "$file"; then
+        if echo "$owner $start" >"$file"; then taken=1; else taken=3; fi
+    fi
+    exec {fd}>&-
+    ((taken != 3)) || return 3
+    ((taken))
+}
+
+# lock_release FILE OWNER: free the lock if OWNER still holds it; status 3 as
+# for lock_try. Emptying the record, not removing it, keeps everything under the
+# guard a builtin.
+lock_release() {
+    local file=$1 owner=$2 fd pid='' status=0
+    exec {fd}>>"$file.guard" || return 3
+    if flock "$fd"; then
+        { read -r pid _ <"$file"; } 2>/dev/null || true
+        if [[ $pid == "$owner" ]]; then : >"$file" || status=3; fi
+    else
+        status=3
+    fi
+    exec {fd}>&-
+    return "$status"
+}
+
+# lock_wait FILE OWNER WHAT: take the lock, saying so once if it has to wait.
+lock_wait() {
+    local file=$1 owner=$2 what=$3 told=0 status
+    while true; do
+        status=0
+        lock_try "$file" "$owner" || status=$?
+        ((status != 0)) || return 0
+        ((status == 1)) || dest_fail "could not take the lock for $what ($file, status $status)"
+        if ((!told)); then
+            say "$current: waiting for $what" >&2
+            told=1
+        fi
+        sleep "$interval"
+    done
+}
+
 dest_fail() {
     echo "${0##*/}: $current: $*" >&2
     record "$current" "failed: $*"
@@ -417,13 +500,19 @@ need_tool() {
 
 tool_image() {
     local kind=$1 name base packages builder status
+    local lock=$work/lock-tools-$kind
     name=localhost/wineo-publish-$kind-$$
+    # Checked and built under the lock, so concurrent callers build it once.
+    lock_wait "$lock" "$BASHPID" "the ${kind^} tools image"
     # Only ever committed after the install below passed.
     if podman image exists "$name" 2>/dev/null; then
+        lock_release "$lock" "$BASHPID"
         echo "$name"
         return
     fi
     builder=wineo-publish-builder-$kind-$$
+    # A holder killed mid-build leaves its container behind under this name.
+    podman rm -f "$builder" >/dev/null 2>&1 || true
     case $kind in
         fedora)
             base=$fedora_image
@@ -450,8 +539,11 @@ tool_image() {
     podman rm -f "$builder" >/dev/null 2>&1 || true
     if ((status != 0)); then
         podman rmi -f "$name" >/dev/null 2>&1 || true
+        # Freed first so the next caller tries again and fails with its own reason.
+        lock_release "$lock" "$BASHPID" || true
         dest_fail "installing the tools into a $base image failed (exit $status); see the output above"
     fi
+    lock_release "$lock" "$BASHPID"
     echo "$name"
 }
 
@@ -588,16 +680,27 @@ aur_recipe() {
 # GitHub's generated tarball for the tag: the wineo recipe's source and the
 # ebuild's. It isn't a Release asset, so SHA256SUMS can't vouch for it.
 tag_tarball() {
-    local file=$work/wineo-$version.gh.tar.gz
+    local file=$work/wineo-$version.gh.tar.gz lock=$work/lock-tag-tarball part status=0
+    lock_wait "$lock" "$BASHPID" "GitHub's tag tarball"
     if [[ ! -f $file ]]; then
+        # Moved into place only once whole, so an existing file never is a
+        # partial one, which the AUR would pin the sha256 of.
+        part=$(mktemp "$work/tag-tarball.XXXXXX")
         if [[ -n $dest_dir && -n ${WINEO_PUBLISH_TAG_TARBALL:-} ]]; then
-            cp "$WINEO_PUBLISH_TAG_TARBALL" "$file"
+            cp "$WINEO_PUBLISH_TAG_TARBALL" "$part" || status=$?
         else
-            curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$file" \
-                "https://github.com/$repo/archive/refs/tags/$tag.tar.gz" ||
-                dest_fail "could not download GitHub's tarball for $tag"
+            curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$part" \
+                "https://github.com/$repo/archive/refs/tags/$tag.tar.gz" || status=$?
         fi
+        if ((status != 0)); then
+            rm -f "$part"
+            lock_release "$lock" "$BASHPID" || true
+            dest_fail "could not download GitHub's tarball for $tag"
+        fi
+        chmod 644 "$part"
+        mv "$part" "$file"
     fi
+    lock_release "$lock" "$BASHPID"
     echo "$file"
 }
 
@@ -1535,7 +1638,7 @@ main() {
     if [[ -n $only ]] && ((${#skip[@]} > 0)); then usage; fi
 
     local tool
-    for tool in gh git jq curl tar xz sha256sum cargo python3; do
+    for tool in gh git jq curl tar xz sha256sum cargo python3 flock; do
         command -v "$tool" >/dev/null || die "$tool not found"
     done
 
