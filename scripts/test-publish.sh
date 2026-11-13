@@ -340,24 +340,14 @@ if [[ -f $STUB/noise ]]; then
     esac
 fi
 # A tool that hangs, bounded, until it's killed. "linger" in the control
-# answers a TERM a second late, which holds the stopping up. "leader" carries
-# on as usual once its job's own process is gone, as the rest of a job whose
-# leader was killed would.
+# answers a TERM a second late, which holds the stopping up.
 if [[ -f $STUB/hang-$name ]]; then
     echo "$$" >"$STUB/hanging-$name"
     if grep -qx linger "$STUB/hang-$name"; then
         trap 'touch "$STUB/termed-$name"; command -p sleep 1; exit 143' TERM
     fi
-    leader_gone() { [[ $(cut -d' ' -f3 "/proc/$JOB_GROUP/stat" 2>/dev/null || echo Z) == Z ]]; }
-    for _ in $(seq 300); do
-        if grep -qx leader "$STUB/hang-$name" && leader_gone; then
-            command -p sleep 0.3
-            rm -f "$STUB/hang-$name"
-            break
-        fi
-        command -p sleep 0.1
-    done
-    [[ ! -f $STUB/hang-$name ]] || exit 1
+    for _ in $(seq 300); do command -p sleep 0.1; done
+    exit 1
 fi
 # A daemon born in the container step: it keeps every descriptor but 0-2.
 if [[ -f $STUB/daemon-tool && $name == rpmbuild ]]; then
@@ -2017,8 +2007,9 @@ publish_join() {
 work_left() { find "$scenario/work" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1; }
 
 # hang_push NAME [BRANCH]: the fake repository NAME holds a push until
-# $STUB/release-push exists, or with $STUB/push-leader until its job's own
-# process is gone, then takes it.
+# $STUB/release-push exists, or with $STUB/push-leader until three seconds
+# after its job's own process is gone, then takes it. Three seconds is long
+# enough for main, even on a slow runner, to have ended the job's group.
 hang_push() {
     local bare=$dest/remote/$1.git
     git init -q --bare --initial-branch="${2:-main}" "$bare"
@@ -2032,7 +2023,7 @@ echo "$group" >"$STUB/push-group"
 for _ in $(seq 300); do
     [[ ! -f $STUB/release-push ]] || exit 0
     if [[ -f $STUB/push-leader && $(cut -d' ' -f3 "/proc/$group/stat" 2>/dev/null || echo Z) == Z ]]; then
-        command -p sleep 0.3
+        command -p sleep 3
         exit 0
     fi
     command -p sleep 0.1
@@ -2162,11 +2153,13 @@ check "killed from outside: processes are left: $left_behind" test -z "$left_beh
 # would: the rest of its group, and its container, would go on publishing. The
 # overlay's push goes through once its job's leader is gone, so without the
 # stopping it would publish and write its own result over main's. COPR's
-# container outlives its podman run, so only the sweep stops it.
+# container outlives its podman run, so only the sweep stops it. OBS waits on
+# its build until the test lets it go, so main is still there to be overwritten.
 new_scenario
 touch "$STUB/detach" "$STUB/hang-rpmbuild" "$STUB/push-leader"
+echo building >"$dest/control/build-obs"
 hang_push overlay
-publish_bg --skip ppa --skip aur
+BUILD_INTERVAL=0.05 publish_bg --skip ppa --skip aur
 check "a killed leader: COPR never started building" wait_for test -s "$STUB/hanging-rpmbuild"
 check "a killed leader: the overlay never pushed" wait_for test -s "$STUB/push-group"
 own_group=$(cut -d' ' -f5 /proc/$$/stat)
@@ -2179,7 +2172,8 @@ for leader in "$(cat "$STUB"/group-wineo-publish-*-copr-srpm 2>/dev/null || true
     fi
 done
 # Long enough for what was left of the jobs to publish, had it been left.
-sleep 2
+sleep 5
+echo built >"$dest/control/build-obs"
 publish_join
 check "a killed leader: it had to be stopped" test "$bg_hung" -eq 0
 check "a killed leader: exit $rc, not 1" test "$rc" -eq 1
@@ -2224,6 +2218,48 @@ EOF
 chmod +x "$tickbin/sleep"
 new_scenario
 tick_script=$repo/scripts/publish-packages.sh
+
+# The function-level fan-outs below run in sessions of their own. A function run
+# with & forks twice, so $! isn't the shell doing the work, and the jobs it
+# launches get process groups of their own, but nothing leaves the session: a
+# test that fails can still clean up all of it, by PID.
+# in_session OUT FUNCTION ARG...: FUNCTION in the background, in a new session
+# whose ID is $!, with its output in OUT.
+in_session() {
+    local out=$1
+    shift
+    setsid bash -c '"$@"' _ "$@" >"$out" 2>&1 &
+}
+# session_procs SID: every process in session SID.
+session_procs() {
+    python3 -I - "$1" <<'EOF'
+import os
+import sys
+
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        with open(f"/proc/{pid}/stat") as handle:
+            fields = handle.read().rsplit(")", 1)[1].split()
+    except OSError:
+        continue
+    if fields[3] == sys.argv[1] and fields[0] != "Z":
+        print(pid)
+EOF
+}
+# end_session SID: kills what's left of session SID, by PID; left_behind says
+# what even that didn't end.
+end_session() {
+    local pid
+    for _ in 1 2 3; do
+        for pid in $(session_procs "$1"); do kill -KILL "$pid" 2>/dev/null || true; done
+        [[ -n $(session_procs "$1") ]] || break
+        sleep 0.1
+    done
+    left_behind=$(session_procs "$1" | tr '\n' ' ')
+}
+
 # stand_in WORK: the stand-in job. Its phase changes after the first tick, and
 # it sends no USR1.
 stand_in() {
@@ -2236,7 +2272,7 @@ stand_in() {
 # lost_wake JOB: fan_out on one destination, with run_job replaced by JOB.
 lost_wake() (
     # shellcheck disable=SC2030,SC2031
-    PATH=$tickbin:$PATH
+    PATH=$tickbin:$stubs:$PATH
     # shellcheck disable=SC1090
     source "$tick_script"
     # shellcheck disable=SC2034
@@ -2255,7 +2291,9 @@ lost_wake() (
     fan_out
     echo "fan_out ended after $passes passes"
 )
-lost_wake stand_in >"$scenario/tick.out" 2>&1 &
+export -f lost_wake stand_in
+export scenario tickbin tick_script stubs
+in_session "$scenario/tick.out" lost_wake stand_in
 tick_pid=$!
 seen=no
 for _ in $(seq 50); do
@@ -2264,7 +2302,9 @@ for _ in $(seq 50); do
 done
 check "a lost wake-up waited for the job to end: $(cat "$scenario/tick.out")" test "$seen" = yes
 finish "$tick_pid"
+end_session "$tick_pid"
 check "the ticker's fan-out failed ($finished): $(cat "$scenario/tick.out")" test "$finished" -eq 0
+check "the ticker's fan-out left processes: $left_behind" test -z "$left_behind"
 check "the ticker's fan-out didn't end: $(cat "$scenario/tick.out")" grep -q '^fan_out ended' "$scenario/tick.out"
 passes=$(sed -n 's/^fan_out ended after \([0-9]*\) passes$/\1/p' "$scenario/tick.out")
 check "main spun between wake-ups: ${passes:-no} passes" test "${passes:-999}" -lt 50
@@ -2285,7 +2325,7 @@ quick_job() {
 }
 many_jobs() (
     # shellcheck disable=SC2030,SC2031
-    PATH=$tickbin:$PATH
+    PATH=$tickbin:$stubs:$PATH
     # shellcheck disable=SC1090
     source "$tick_script"
     trap 'woke=1' USR1
@@ -2308,16 +2348,19 @@ many_jobs() (
     echo "every round ended"
 )
 new_scenario
-many_jobs quick_job >"$scenario/many.out" 2>&1 &
+export -f many_jobs quick_job now_us
+in_session "$scenario/many.out" many_jobs quick_job
 many_pid=$!
 seen=no
-for _ in $(seq 150); do
+for _ in $(seq 300); do
     if grep -q 'every round ended' "$scenario/many.out"; then seen=yes && break; fi
     sleep 0.1
 done
 check "main lost a job that exited as it woke main: $(cat "$scenario/many.out")" test "$seen" = yes
 finish "$many_pid"
+end_session "$many_pid"
 check "a round lost a result: $(cat "$scenario/many.out")" test "$(grep -c 'lost a result' "$scenario/many.out")" -eq 0
+check "the lost-job test left processes: $left_behind" test -z "$left_behind"
 
 # A job or ticker main has finished with can stay "Running" in bash's table
 # when bash lost its status, and by the time stop_all runs its PID may lead
