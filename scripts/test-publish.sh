@@ -2090,6 +2090,21 @@ check "a foreground Ctrl+C: the overlay started" test ! -e "$dest/remote/overlay
 check "a foreground Ctrl+C: the work directory is left" test -z "$(work_left)"
 check "a foreground Ctrl+C: processes are left: $left_behind" test -z "$left_behind"
 
+# TERM to main alone, as `kill PID` sends it, while the jobs run in the
+# background.
+new_scenario
+touch "$STUB/hang-rpmbuild"
+publish_bg --skip ppa --skip aur --skip obs
+check "a TERM: COPR never started building" wait_for test -s "$STUB/hanging-rpmbuild"
+kill -TERM "$bg_pid" || true
+publish_join
+check "a TERM: it had to be stopped" test "$bg_hung" -eq 0
+check "a TERM: exit $rc, not 1" test "$rc" -eq 1
+check "a TERM: COPR's reason is wrong: $(grep '^  copr' "$out")" \
+    on_terminal '^  copr +failed: interrupted before it uploaded$'
+check "a TERM: the work directory is left" test -z "$(work_left)"
+check "a TERM: processes are left: $left_behind" test -z "$left_behind"
+
 # A hangup with the terminal gone: its reader is killed first, so every write
 # main makes fails, and the stopping must still finish.
 new_scenario
@@ -2298,28 +2313,43 @@ lock_call "$scenario/piped" reused "$saved" || true
 exec {saved}>&-
 check "a job's line didn't reach a pipe under main's terminal number" wait_for grep -qx '\[copr\]    hello' "$scenario/piped"
 
-# Walking away. The PPA waits while the rest finish, and its line changes once
-# jammy builds, so the summary so far has to show the latest one.
+# Walking away. Every other destination is held where the test can let it go:
+# the overlay's and the AUR's pushes, and COPR's build, while OBS fails its
+# upload. Meanwhile jammy builds, so the PPA's line changes, and only then do
+# the rest go, so the summary so far has to show the PPA's latest line.
 new_scenario
 echo building >"$dest/control/build-ppa"
-printf 'building\nbuilt\n' >"$dest/control/build-ppa-jammy"
+echo building >"$dest/control/build-copr"
+touch "$dest/control/fail-upload-obs"
+hang_push overlay
+for package in wineo wineo-bin wineo-git; do hang_push "$package" master; done
 BUILD_INTERVAL=0.05 publish_bg
+check "walking away: the PPA never waited" \
+    wait_for on_terminal '^\[ppa\]     waiting on jammy\(building\) noble\(building\) resolute\(building\) stonking\(building\)$'
+echo built >"$dest/control/build-ppa-jammy"
+check "walking away: the PPA's line never changed" \
+    wait_for on_terminal '^\[ppa\]     waiting on noble\(building\) resolute\(building\) stonking\(building\)$'
+check "walking away: the overlay never pushed" wait_for test -s "$STUB/hanging-push"
+check "walking away: every upload was out with pushes held" test "$(grep -c 'every upload is out' "$out")" -eq 0
+check "walking away: a summary so far with the rest still going" test "$(grep -c "^== only the" "$out")" -eq 0
+touch "$STUB/release-push"
+echo built >"$dest/control/build-copr"
 check "walking away: no summary so far" wait_for on_terminal "^== only the ppa's wait is left:$"
 echo built >"$dest/control/build-ppa"
 publish_join
 check "walking away: it had to be stopped" test "$bg_hung" -eq 0
-check "walking away: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
-check "walking away: every upload is out isn't there once: $(grep -c 'every upload is out' "$out")" \
-    test "$(grep -cx '== every upload is out; stopping now loses nothing, rerun to keep waiting' "$out")" -eq 1
+check "walking away: exit $rc, not 1: $(tail -n 3 "$out")" test "$rc" -eq 1
+check "walking away: every upload is out isn't there once, naming OBS: $(grep 'every upload is out' "$out")" \
+    test "$(grep -cx '== every upload is out (obs failed); stopping now loses nothing, rerun to keep waiting' "$out")" -eq 1
 check "walking away: the summary so far isn't there once" test "$(grep -c "^== only the" "$out")" -eq 1
 so_far=$(sed -n "/^== only the ppa's wait is left:\$/,+5p" "$out")
 check "walking away: the summary so far is wrong: $so_far" test "$so_far" = "== only the ppa's wait is left:
   overlay  published ($version)
   aur      published ($version-1)
   copr     published ($version-1)
-  obs      published ($version-1)
+  obs      failed: the upload of all failed; see the log
   ppa      waiting on noble(building) resolute(building) stonking(building)"
-latest=$(sed -n "1,/^== only the ppa's wait is left:\$/p" "$out" | grep '^\[ppa\] *waiting on ' | tail -n 1)
+latest=$(sed -n "1,/^== only the ppa's wait is left:\$/p" "$out" | grep '^\[ppa\] *waiting on ' | tail -n 1 || true)
 check "walking away: the PPA's wait printed its lines in full on the terminal" \
     test "$(grep -cE '^== ppa: (waiting on|published)' "$out")" -eq 0
 for line in "== ppa: waiting on noble(building) resolute(building) stonking(building)" "== ppa: published $version-1ppa1"; do
@@ -2327,8 +2357,8 @@ for line in "== ppa: waiting on noble(building) resolute(building) stonking(buil
 done
 check "walking away: the summary so far isn't the PPA's latest line, '$latest'" \
     test "$latest" = "[ppa]     waiting on noble(building) resolute(building) stonking(building)"
-out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1)
-so_far_line=$(grep -n "^== only the" "$out" | head -n 1 | cut -d: -f1)
+out_line=$(grep -n 'every upload is out' "$out" | head -n 1 | cut -d: -f1 || true)
+so_far_line=$(grep -n "^== only the" "$out" | head -n 1 | cut -d: -f1 || true)
 check "walking away: every upload was out only after the summary so far" test "${out_line:-999}" -lt "${so_far_line:-0}"
 
 # With nothing left to wait on once the last upload is out, there's nothing to
