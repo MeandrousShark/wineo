@@ -1359,7 +1359,33 @@ wait_for_builds() {
     done
 }
 
-publish_destination() {
+# build_link DEST: where DEST's remote builds show, and how long to wait on
+# them, into the caller's link and limit.
+build_link() {
+    case $1 in
+        copr)
+            link=https://copr.fedorainfracloud.org/coprs/$copr_project/builds/
+            limit=$copr_limit
+            ;;
+        obs)
+            link=$(obs_url)
+            limit=$obs_limit
+            ;;
+        ppa)
+            link=https://launchpad.net/~meandrous-shark/+archive/ubuntu/wineo/+builds
+            limit=$ppa_limit
+            ;;
+        *)
+            link=''
+            limit=0
+            ;;
+    esac
+}
+
+# The upload part: the status, then everything prepared, then the uploads. It
+# records a result only when there's nothing left to wait for, which is how the
+# wait part knows.
+publish_upload() {
     local dest=$1 target state label all_built=1 failed=() unknown=() absent=() pending=()
     local limit link total=0 unit status states expected marked
     current=$dest
@@ -1396,24 +1422,7 @@ publish_destination() {
         record "$dest" "already published ($label)"
         return 0
     fi
-    case $dest in
-        copr)
-            link=https://copr.fedorainfracloud.org/coprs/$copr_project/builds/
-            limit=$copr_limit
-            ;;
-        obs)
-            link=$(obs_url)
-            limit=$obs_limit
-            ;;
-        ppa)
-            link=https://launchpad.net/~meandrous-shark/+archive/ubuntu/wineo/+builds
-            limit=$ppa_limit
-            ;;
-        *)
-            link=''
-            limit=0
-            ;;
-    esac
+    build_link "$dest"
     if ((${#failed[@]} > 0)); then
         dest_fail "$label already failed to build on ${failed[*]} ($link). Fix the recipe, bump its revision, and run --only $dest"
     fi
@@ -1462,11 +1471,28 @@ publish_destination() {
         done
     fi
 
+}
+
+# The wait part. Run in a job of its own for the PPA, so it sets everything
+# dest_fail and the wait need again.
+publish_wait() {
+    local dest=$1 label limit link
+    current=$dest
+    [[ ! -s $work/result-$dest ]] || return 0
+    label=$(identity_label "$dest")
+    build_link "$dest"
     if has_remote_build "$dest"; then
         wait_for_builds "$dest" "$limit" "$link"
     fi
     say "$dest: published $label"
     record "$dest" "published ($label)"
+}
+
+# Two statements, never `&&` or inside an `if`: either turns errexit off for
+# all of it.
+publish_destination() {
+    publish_upload "$1"
+    publish_wait "$1"
 }
 
 # The log directory is made when the first destination starts, so a run the
