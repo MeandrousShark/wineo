@@ -260,6 +260,14 @@ mkdir -p "$STUB/calls"
 # mktemp, not a count of the files there, so calls at the same moment can't collide.
 printf '%s\n' "$name" "${args[@]}" >"$(mktemp "$STUB/calls/call.XXXXXX")"
 echo "$name" >>"$STUB/tools.log"
+# What dnf, apt, and the builders print. Only these write to stdout, since the
+# host reads the other tools' stdout.
+if [[ -f $STUB/noise ]]; then
+    echo "container noise from $name (stderr)" >&2
+    case $name in
+        rpmbuild | dpkg-buildpackage | dnf | apt-get) echo "container noise from $name" ;;
+    esac
+fi
 if [[ -f $STUB/fail-tool-$name ]]; then
     cat "$STUB/fail-tool-$name"
     exit 1
@@ -437,6 +445,7 @@ new_scenario() {
     dest=$scenario/dest
     export STUB=$scenario/stub
     mkdir -p "$STUB/assets" "$dest/control" "$scenario/state"
+    logs_before='' run_log_dirs=() run_log_files=()
     cp -a "$base" "$repo"
     make_assets
     cp "$repo/packaging/debian/changelog" "$STUB/orig-changelog"
@@ -484,9 +493,30 @@ publish() {
     publish_real --dest-dir "$dest" "$@"
 }
 
+# log_dirs: every run's log directory so far in this scenario.
+log_dirs() {
+    ls -d "$dest/state/$version/logs"/*/ "$scenario/state/wineo-publish/$version/logs"/*/ 2>/dev/null || true
+}
+
+# run_started and run_finished: tell this run's log directory from any earlier
+# run's in the same scenario, which share a state directory.
+run_started() { logs_before=$(log_dirs); }
+run_finished() {
+    local dir file
+    run_log_dirs=() run_log_files=()
+    while read -r dir; do
+        [[ -n $dir ]] || continue
+        run_log_dirs+=("${dir%/}")
+        for file in "$dir"*.log; do
+            [[ ! -f $file ]] || run_log_files+=("$file")
+        done
+    done < <(comm -13 <(printf '%s\n' "$logs_before") <(log_dirs))
+}
+
 publish_real() {
     out=$scenario/output
     rc=0
+    run_started
     env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
         XDG_STATE_HOME="$scenario/state" \
         WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL=0 \
@@ -494,9 +524,15 @@ publish_real() {
         WINEO_PUBLISH_RELEASE_LIMIT="${RELEASE_LIMIT:-30}" WINEO_PUBLISH_COPR_LIMIT="${BUILD_LIMIT:-30}" \
         WINEO_PUBLISH_OBS_LIMIT="${BUILD_LIMIT:-30}" WINEO_PUBLISH_PPA_LIMIT="${BUILD_LIMIT:-30}" \
         "$repo/scripts/publish-packages.sh" "$version" "$@" >"$out" 2>&1 || rc=$?
+    run_finished
 }
 
-said() { grep -qE -- "$1" "$out"; }
+# The terminal's lines and this run's logs.
+said() { grep -qE -- "$1" "$out" ${run_log_files[@]+"${run_log_files[@]}"}; }
+# Only the terminal's.
+on_terminal() { grep -qE -- "$1" "$out"; }
+# Only this run's logs.
+in_logs() { ((${#run_log_files[@]} > 0)) && grep -qE -- "$1" "${run_log_files[@]}"; }
 uploads() { cat "$dest/uploads.log" 2>/dev/null || true; }
 upload_count() { uploads | grep -c "${1:-.}" || true; }
 
@@ -506,7 +542,8 @@ expect_refused() {
     check "$name: exit $rc, not 1" test "$rc" -eq 1
     check "$name: no reason matching '$reason' in: $(tail -n 3 "$out")" said "$reason"
     check "$name: something was uploaded: $(uploads)" test -z "$(uploads)"
-    check "$name: a destination ran" test "$(grep -c '^== overlay$' "$out")" -eq 0
+    check "$name: a log directory was made: ${run_log_dirs[*]:-}" test "${#run_log_dirs[@]}" -eq 0
+    check "$name: a destination ran" test "$(grep -c '^\[overlay\]' "$out")" -eq 0
 }
 
 # called TOOL ARG...: some call had exactly these arguments.
@@ -591,6 +628,7 @@ check "a bad version: exit $rc, not 2" test "$rc" -eq 2
 # A full run.
 
 new_scenario
+touch "$STUB/noise"
 publish
 check "a full run: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
 check "a full run went to the wrong places, or in the wrong order: $(uploads)" \
@@ -665,8 +703,48 @@ for line in "overlay +published \($version\)" "aur +published \($version-1\)" \
     check "the summary lacks '$line'" said "^  $line$"
 done
 
+# The terminal, and each destination's log.
+check "a full run made ${#run_log_dirs[@]} log directories, not 1" test "${#run_log_dirs[@]}" -eq 1
+log_dir=${run_log_dirs[0]:-/nonexistent}
+first_log_dir=$log_dir
+check "the log directory's mode is $(stat -c %a "$log_dir"), not 700" test "$(stat -c %a "$log_dir")" = 700
+check "the log directory's name is not a stamp and a PID: ${log_dir##*/}" \
+    grep -qxE '[0-9]{8}-[0-9]{6}-[0-9]+' <<<"${log_dir##*/}"
+check "the log directory is not under the state directory: $log_dir" \
+    test "$(dirname "$log_dir")" = "$dest/state/$version/logs"
+check "the log path was not printed" on_terminal "^logs: $log_dir/$"
+for d in ppa overlay aur copr obs; do
+    check "$d has no log, or it doesn't open with its header" grep -qx "== $d" "$log_dir/$d.log"
+done
+for d in overlay aur copr obs; do
+    check "the terminal lacks $d's prefixed result" on_terminal "^\[$d\] +published "
+    check "the terminal shows $d's header, which belongs in its log" test "$(grep -c "^== $d\$" "$out")" -eq 0
+    check "$d's published line is not once on the terminal" test "$(grep -cE "^\[$d\] +published " "$out")" -eq 1
+    check "$d's log lacks its published line, or holds the prefix" grep -qx "== $d: published .*" "$log_dir/$d.log"
+done
+check "the terminal lacks copr's prefixed upload line" on_terminal '^\[copr\]    uploading all$'
+check "the prefix isn't padded to the longest name" on_terminal '^\[obs\]     uploading all$'
+check "a prefixed line reached a log" test "$(cat "$log_dir"/*.log | grep -c '^\[')" -eq 0
+check "the PPA's lines are not on the terminal in full" on_terminal '^== ppa: uploading jammy$'
+check "the PPA's lines show twice on the terminal" test "$(grep -c '^== ppa: uploading jammy$' "$out")" -eq 1
+check "the PPA's lines are prefixed on the terminal" test "$(grep -c '^\[ppa\]' "$out")" -eq 0
+check "the PPA's log lacks its uploads" grep -qx '== ppa: uploading jammy' "$log_dir/ppa.log"
+check "the PPA's foreground output is not on the terminal" on_terminal '^container noise from dpkg-buildpackage$'
+check "the PPA's foreground output is not in its log" grep -qx 'container noise from dpkg-buildpackage' "$log_dir/ppa.log"
+check "COPR's container output reached the terminal" test "$(grep -c 'container noise from \(rpmbuild\|dnf\)' "$out")" -eq 0
+check "the overlay's container output reached the terminal" test "$(grep -c 'container noise from \(ebuild\|pkgcheck\)' "$out")" -eq 0
+check "COPR's builder output is missing from its log" grep -qx 'container noise from rpmbuild' "$log_dir/copr.log"
+check "COPR's tools image output is missing from its log" grep -qx 'container noise from dnf' "$log_dir/copr.log"
+check "COPR's stderr is missing from its log" grep -qx 'container noise from rpmbuild (stderr)' "$log_dir/copr.log"
+check "the overlay's container output is missing from its log" grep -qx 'container noise from ebuild (stderr)' "$log_dir/overlay.log"
+check "a clean run printed a log: line" test "$(grep -cE '^ +log: ' "$out")" -eq 0
+
 # A rerun skips everything.
 publish
+check "a rerun made ${#run_log_dirs[@]} log directories, not 1" test "${#run_log_dirs[@]}" -eq 1
+check "a rerun shares the first run's log directory" test "${run_log_dirs[0]:-}" != "$first_log_dir"
+check "a rerun's said read the first run's logs" test "$(said '^== overlay: uploading' && echo yes || echo no)" = no
+check "a rerun's said can't read its own logs" said '^== overlay: .* is already published and built'
 check "a rerun: exit $rc, not 0" test "$rc" -eq 0
 check "a rerun uploaded again: $(uploads | tail -n 3)" test "$(upload_count)" -eq 10
 for d in overlay aur copr obs ppa; do
@@ -685,6 +763,24 @@ check "started early: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
 check "started early: it did not wait for each" \
     test "$(grep -c '^== waiting for' "$out")" -ge 3
 check "started early: the upload is missing" test "$(upload_count overlay)" -eq 1
+
+# --only streams everything to the terminal, and writes the log too.
+new_scenario
+touch "$STUB/noise"
+publish --only copr
+check "--only: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "--only: the destination's header is not on the terminal" on_terminal '^== copr$'
+check "--only: its say lines are not on the terminal, once each" test "$(grep -c '^== copr: published ' "$out")" -eq 1
+check "--only: it has a prefixed copy" test "$(grep -c '^\[' "$out")" -eq 0
+check "--only: the container output is not on the terminal" \
+    test "$(grep -c '^container noise from \(rpmbuild\|dnf\)$' "$out")" -eq 2
+check "--only: the log path was not printed" on_terminal "^logs: ${run_log_dirs[0]:-/nonexistent}/$"
+check "--only: it made ${#run_log_dirs[@]} log directories, not 1" test "${#run_log_dirs[@]}" -eq 1
+check "--only: the log lacks the header" grep -qx '== copr' "${run_log_dirs[0]:-/nonexistent}/copr.log"
+check "--only: the log lacks what the terminal shows" \
+    test "$(grep -c '^container noise from \(rpmbuild\|dnf\)$' "${run_log_dirs[0]:-/nonexistent}/copr.log")" -eq 2
+check "--only: the log lacks stderr" grep -qx 'container noise from rpmbuild (stderr)' "${run_log_dirs[0]:-/nonexistent}/copr.log"
+check "--only: a destination it didn't run has a log" test "$(ls "${run_log_dirs[0]:-/nonexistent}")" = copr.log
 
 # Failures before anything is published.
 
@@ -822,6 +918,15 @@ check "an upload that fails: the reason is missing" said "^  copr +failed: the u
 check "an upload that fails: it counts as uploaded: $(uploads)" test "$(upload_count ' copr ')" -eq 0
 check "an upload that fails: the later ones stopped" test "$(upload_count ' obs ')" -eq 1
 check "an upload that fails: the summary lost the others" said "^  obs +published"
+check "an upload that fails: the terminal lacks the reason" \
+    on_terminal '^\[copr\]    failed: the upload of all failed'
+check "an upload that fails: the summary lacks its log" \
+    on_terminal "^           log: ${run_log_dirs[0]:-/nonexistent}/copr.log\$"
+check "an upload that fails: the log is named for a clean destination: $(grep '^ \+log: ' "$out")" \
+    test "$(grep -cE '^ +log: ' "$out")" -eq 1
+check "an upload that fails: its log lacks the cause" grep -qx 'fake copr: upload refused' "${run_log_dirs[0]:-/nonexistent}/copr.log"
+check "an upload that fails: the cause reached the terminal" test "$(grep -c 'fake copr: upload refused' "$out")" -eq 0
+check "an upload that fails: a later destination isn't on the terminal" on_terminal '^\[obs\]     published '
 publish
 check "the retry: exit $rc, not 0: $(tail -n 5 "$out")" test "$rc" -eq 0
 check "the retry did not upload COPR once" test "$(upload_count ' copr ')" -eq 1
@@ -913,9 +1018,11 @@ new_scenario
 printf 'building\nbuilt\n' >"$dest/control/build-copr"
 out=$scenario/output
 rc=0
+run_started
 env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
     WINEO_PUBLISH_WORK="$scenario/work" "$repo/scripts/publish-packages.sh" "$version" \
     --only copr --dest-dir "$dest" >"$out" 2>&1 || rc=$?
+run_finished
 check "the default pace: exit $rc, not 0" test "$rc" -eq 0
 check "the default pace is not five minutes: $(sort -u "$STUB/sleep.log" 2>/dev/null | tr '\n' ' ')" \
     test "$(sort -u "$STUB/sleep.log" 2>/dev/null)" = 300
@@ -1440,6 +1547,29 @@ check "a live owner's lock was taken over" live_holder
 echo garbage >"$lock"
 lock_call "$scenario/garbled" take "$lock" || true
 check "a garbled record wasn't taken over: $(cat "$lock")" test "$(cut -d' ' -f1 "$lock")" != garbage
+
+# The terminal's copy of a say line never fails a job: after a hangup its
+# descriptor is gone.
+closed_terminal() {
+    # shellcheck disable=SC2034
+    term_fd=99
+    say "copr: hello"
+    echo after
+}
+open_terminal() {
+    exec 7>"$scenario/terminal-copy"
+    # shellcheck disable=SC2034
+    term_fd=7
+    say "copr: hello"
+}
+lock_call "$scenario/closed" closed_terminal || true
+check "a closed terminal ended the job: $(cat "$scenario/closed.err")" grep -qx after "$scenario/closed.out"
+check "a closed terminal kept say from its own output" grep -qx '== copr: hello' "$scenario/closed.out"
+check "a closed terminal's error reached stderr: $(cat "$scenario/closed.err")" test ! -s "$scenario/closed.err"
+lock_call "$scenario/open" open_terminal
+check "say's terminal copy has the wrong form: $(cat "$scenario/terminal-copy" 2>/dev/null)" \
+    test "$(cat "$scenario/terminal-copy")" = "[copr]    hello"
+check "say's own output has the prefix" grep -qx '== copr: hello' "$scenario/open.out"
 
 # comm can hold spaces and parens, and the start time is still field 22. The
 # process names itself from a builtin's wait, so nothing depends on the binary

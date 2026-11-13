@@ -131,7 +131,20 @@ die() {
     exit 1
 }
 
-say() { echo "== $*"; }
+# say MESSAGE: a progress line. A destination's run also gets a prefixed copy on
+# the terminal, through term_fd, while its stdout and stderr go to its log.
+say() {
+    echo "== $*"
+    term_copy "${term_fd:-}" "${1#"${current:-}: "}"
+}
+
+# term_copy FD LINE: LINE to the terminal's descriptor, prefixed with the
+# destination, in one short write. It never fails: after a hangup the terminal
+# is gone, and that must not stop a job.
+term_copy() {
+    [[ -n $1 ]] || return 0
+    { printf '%-9s %s\n' "[$current]" "$2" >&"$1"; } 2>/dev/null || true
+}
 
 is_destination() {
     local d
@@ -541,7 +554,7 @@ tool_image() {
         podman rmi -f "$name" >/dev/null 2>&1 || true
         # Freed first so the next caller tries again and fails with its own reason.
         lock_release "$lock" "$BASHPID" || true
-        dest_fail "installing the tools into a $base image failed (exit $status); see the output above"
+        dest_fail "installing the tools into a $base image failed (exit $status); see the log"
     fi
     lock_release "$lock" "$BASHPID"
     echo "$name"
@@ -811,7 +824,7 @@ MAKECONF
         (cd /overlay/games-util/wineo && ebuild "wineo-$IDENTITY.ebuild" manifest)
         cd /overlay
         pkgcheck scan --repo wineo --exit error
-    ' || dest_fail "gentoo-ebuild.sh, ebuild manifest, or pkgcheck failed; see the output above"
+    ' || dest_fail "gentoo-ebuild.sh, ebuild manifest, or pkgcheck failed; see the log"
 
     size=$(stat -c %s "$tarball")
     grep -q "^DIST $name $size " "$package_dir/Manifest" ||
@@ -1023,7 +1036,7 @@ copr_prepare() {
         bash -euo pipefail -c '
         rpmbuild -bs --define "_topdir /work/rpmbuild" --define "dist %{nil}" \
             /work/rpmbuild/SPECS/wineo.spec
-    ' || dest_fail "rpmbuild -bs failed; see the output above"
+    ' || dest_fail "rpmbuild -bs failed; see the log"
     srpm=$top/SRPMS/wineo-$identity.src.rpm
     [[ -f $srpm ]] || dest_fail "rpmbuild didn't write $(basename "$srpm")"
 }
@@ -1052,7 +1065,7 @@ copr_upload() {
         if copr_auth_failed "$output"; then
             dest_fail "COPR refused the login. COPR tokens expire: get a new one from $copr_token_url and save it in $config"
         fi
-        dest_fail "copr-cli build failed; see the output above"
+        dest_fail "copr-cli build failed; see the log"
     fi
 }
 
@@ -1190,7 +1203,7 @@ ppa_prepare() {
     nice -n 15 podman run --rm -e STEP=deb-source -e SERIES="$series" -e VERSION="$version" \
         -v "$dir:/work" -w "/work/wineo-$version" "$image" \
         bash -euo pipefail -c 'dpkg-buildpackage -S -sa -d -us -uc' ||
-        dest_fail "dpkg-buildpackage -S failed for $series; see the output above"
+        dest_fail "dpkg-buildpackage -S failed for $series; see the log"
     [[ -f $dir/wineo_${identity}_source.changes ]] ||
         dest_fail "dpkg-buildpackage didn't write wineo_${identity}_source.changes"
     rm -rf "$dir/wineo-$version"
@@ -1220,7 +1233,7 @@ ppa_upload() {
     # for here, and the agent holds it for the signing in there.
     if tty_name=$(tty 2>/dev/null); then export GPG_TTY=$tty_name; fi
     gpg --local-user "$ppa_key" --clear-sign </dev/null >/dev/null ||
-        dest_fail "gpg could not unlock $ppa_key; see the output above"
+        dest_fail "gpg could not unlock $ppa_key; see the log"
     socket=$(gpgconf --list-dirs agent-socket)
     image=$(tool_image ubuntu)
     nice -n 15 podman run --rm -e STEP=deb-sign -e KEY="$ppa_key" \
@@ -1232,7 +1245,7 @@ ppa_upload() {
         gpg --batch --quiet --import /signing-key.asc
         debsign --no-conf -k"$KEY" "$CHANGES"
         exec dput "$@" "$CHANGES"
-    ' bash "${dput_args[@]}" || dest_fail "signing or dput failed for $series; see the output above"
+    ' bash "${dput_args[@]}" || dest_fail "signing or dput failed for $series; see the log"
 }
 
 # The seams: fake or real, and nothing else differs.
@@ -1411,7 +1424,7 @@ publish_destination() {
             set -e
             if ((status != 0)); then
                 # A seam that said why has already recorded it.
-                [[ -s $work/result-$dest ]] || record "$dest" "failed: the upload of $unit failed; see the output above"
+                [[ -s $work/result-$dest ]] || record "$dest" "failed: the upload of $unit failed; see the log"
                 exit 1
             fi
             if has_remote_build "$dest"; then
@@ -1431,19 +1444,51 @@ publish_destination() {
     record "$dest" "published ($label)"
 }
 
+# The log directory is made when the first destination starts, so a run the
+# checks refuse leaves none. The stamp is to the second and the PID is this
+# script's, so two runs never share one.
+make_log_dir() {
+    [[ -z $log_dir ]] || return 0
+    mkdir -p "$state_dir/logs"
+    log_dir=$state_dir/logs/$(date +%Y%m%d-%H%M%S)-$$
+    mkdir -m 700 "$log_dir"
+}
+
+# Every destination's output, containers included, goes to its own log. The PPA
+# and --only also show it all on the terminal, so a failed step sits next to
+# the passphrase prompt or the command being retried. The others show only
+# their say lines, prefixed, and a failure's reason, through term_out.
 run_destination() {
-    local dest=$1 status
-    say "$dest"
+    local dest=$1 status result log
+    current=$dest
+    make_log_dir
+    log=$log_dir/$dest.log
     # Not in an `if`: that would turn errexit off for all of it.
     set +e
-    (
-        set -e
-        publish_destination "$dest"
-    )
-    status=$?
+    if [[ -n $only || $dest == ppa ]]; then
+        (
+            set -e
+            term_fd=''
+            echo "== $dest"
+            publish_destination "$dest"
+        ) 2>&1 | tee -a "$log"
+        status=${PIPESTATUS[0]}
+    else
+        (
+            set -e
+            term_fd=$term_out
+            echo "== $dest"
+            publish_destination "$dest"
+        ) >>"$log" 2>&1
+        status=$?
+    fi
     set -e
     if ((status != 0)) && [[ ! -s $work/result-$dest ]]; then
-        record "$dest" "failed: it stopped early; see the output above"
+        record "$dest" "failed: it stopped early; see the log"
+    fi
+    if [[ -z $only && $dest != ppa ]]; then
+        result=$(cat "$work/result-$dest" 2>/dev/null || true)
+        [[ $result != failed* ]] || term_copy "$term_out" "$result"
     fi
     return 0
 }
@@ -1604,13 +1649,17 @@ summarize() {
     for dest in "${destinations[@]}"; do
         result=$(cat "$work/result-$dest" 2>/dev/null || echo "not run")
         printf '  %-8s %s\n' "$dest" "$result"
+        if [[ $result != published* && $result != "already published"* && -n $log_dir && -f $log_dir/$dest.log ]]; then
+            printf '  %-8s log: %s\n' '' "$log_dir/$dest.log"
+        fi
         [[ $result != failed* ]] || status=1
     done
+    [[ -z $log_dir ]] || echo "logs: $log_dir/"
     return "$status"
 }
 
 main() {
-    only='' skip=() dest_dir=''
+    only='' skip=() dest_dir='' log_dir='' term_out=''
     (($# >= 1)) || usage
     version=$1
     shift
@@ -1679,6 +1728,9 @@ main() {
     check_tree
     say "the Release for $tag checks out"
 
+    # A copy of the terminal for the destinations' say lines, taken before any
+    # of them has its stdout sent to a log. Not /dev/tty: a run in CI has none.
+    exec {term_out}>&1
     local dest
     for dest in "${destinations[@]}"; do
         if [[ -n $only && $dest != "$only" ]]; then
