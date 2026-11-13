@@ -1438,22 +1438,48 @@ echo garbage >"$lock"
 lock_call "$scenario/garbled" take "$lock" || true
 check "a garbled record wasn't taken over: $(cat "$lock")" test "$(cut -d' ' -f1 "$lock")" != garbage
 
-# comm can hold spaces and parens, and the start time is still field 22.
-odd="$tmp/odd) (name 1"
-cp "$(command -p -v sleep)" "$odd"
-"$odd" 30 &
+# comm can hold spaces and parens, and the start time is still field 22. The
+# process names itself from a builtin's wait, so nothing depends on the binary
+# and nothing is left behind when it's killed.
+odd_comm="odd) (name 1"
+mkfifo "$tmp/odd.fifo"
+# shellcheck disable=SC2016
+bash -c 'printf %s "$2" >/proc/$$/comm; exec 3<>"$1"; read -r -t 30 -u 3 || true' _ "$tmp/odd.fifo" "$odd_comm" &
 odd_pid=$!
+comm_is() { [[ $(<"/proc/$1/comm") == "$2" ]]; }
+check "the process never took the name '$odd_comm'" poll comm_is "$odd_pid" "$odd_comm"
 start_of() {
     local start
     proc_start "$1" start
     echo "$start"
 }
-lock_call "$scenario/odd" start_of "$odd_pid"
+lock_call "$scenario/odd" start_of "$odd_pid" || true
 want=$(python3 -I -c 'import sys; print(open(sys.argv[1]).read().rsplit(")", 1)[1].split()[19])' "/proc/$odd_pid/stat")
-check "proc_start read $(cat "$scenario/odd.out") for a process named 'odd) (name', not $want" \
+check "proc_start read '$(cat "$scenario/odd.out")' for a process named '$odd_comm', not $want" \
     test "$(cat "$scenario/odd.out")" = "$want"
 kill "$odd_pid"
 wait "$odd_pid" || true
+
+# A PID that isn't a number is no process, and neither is a zombie.
+refused() { ! "$@"; }
+check "proc_start took an empty PID" refused lock_call "$scenario/empty" start_of ""
+check "proc_start took a PID with text in it" refused lock_call "$scenario/text" start_of "1/../$$"
+python3 -I -c '
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+print(pid, flush=True)
+time.sleep(30)
+' >"$tmp/zombie.pid" &
+parent=$!
+check "no zombie was made" poll test -s "$tmp/zombie.pid"
+zombie=$(<"$tmp/zombie.pid")
+is_zombie() { [[ $(cut -d' ' -f3 "/proc/$1/stat") == Z ]]; }
+check "the child of the python script isn't a zombie" poll is_zombie "$zombie"
+check "proc_start took a zombie for a running process" refused lock_call "$scenario/zombie" start_of "$zombie"
+kill "$parent"
+wait "$parent" || true
 
 # A daemon the build leaves running doesn't keep the lock held.
 lock_scenario
@@ -1474,8 +1500,10 @@ check "the daemon would not stop" poll exited "$daemon"
 # A download that fails half way leaves no tarball, and the next caller fetches it again.
 lock_scenario
 touch "$STUB/half-tag-tarball"
+finished=0
 lock_call "$scenario/a" tag_tarball || finished=$?
-check "a half download didn't fail: $(cat "$scenario/a.out")" grep -q 'could not download' "$scenario/a.err"
+check "a half download exited $finished, not 1" test "$finished" -eq 1
+check "a half download didn't say why: $(cat "$scenario/a.err")" grep -q 'could not download' "$scenario/a.err"
 check "a half download left a tarball: $(find "$lock_work" -type f | tr '\n' ' ')" \
     test -z "$(find "$lock_work" -type f ! -name 'lock-*' ! -name 'result-*')"
 rm "$STUB/half-tag-tarball"
@@ -1484,6 +1512,24 @@ check "the next caller got $(cat "$scenario/b.out"), not the tarball" \
     test "$(cat "$scenario/b.out")" = "$lock_work/wineo-$version.gh.tar.gz"
 check "the next caller's tarball isn't whole" cmp "$STUB/tag.tar.gz" "$lock_work/wineo-$version.gh.tar.gz"
 check "the next caller didn't download again" test "$(grep -c 'archive/refs/tags' "$STUB/curl.log")" -eq 2
+
+# A lock that can't be written fails with a reason, and nothing is built.
+lock_scenario
+mkdir "$lock_work/lock-tools-fedora"
+finished=0
+lock_call "$scenario/a" tool_image fedora || finished=$?
+check "an unwritable lock exited $finished, not 1" test "$finished" -eq 1
+check "an unwritable lock didn't say why: $(cat "$scenario/a.err")" \
+    grep -q 'could not take the lock for the Fedora tools image' "$scenario/a.err"
+check "an unwritable lock still built the image" refused grep -q '^run' "$STUB/podman.log"
+
+# A caller that takes over a dead holder's lock clears the builder it left.
+lock_scenario
+lock_call "$scenario/a" tool_image fedora || true
+rm_line=$(grep -n '^rm -f wineo-publish-builder-fedora' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
+run_line=$(grep -n '^run' "$STUB/podman.log" | head -n 1 | cut -d: -f1)
+check "the builder wasn't removed before the build (rm at '$rm_line', run at '$run_line')" \
+    test -n "$rm_line" -a -n "$run_line" -a "${rm_line:-99}" -lt "${run_line:-0}"
 
 # A failure inside $(...) has to stop the function it's in, as tool_image and
 # tag_tarball rely on. Bash doesn't do that by default.
