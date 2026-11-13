@@ -2403,6 +2403,36 @@ check "stop_all signaled a replaced ticker's PID, now a stranger's group" kill -
 kill "$stranger_job" "$stranger_tick" 2>/dev/null || true
 wait "$stranger_job" "$stranger_tick" 2>/dev/null || true
 
+# A job a signal catches between a launch's & and its PID reaching live is
+# only in bash's table. A stand-in leading its own group, listed by a jobs that
+# stands in for that table, must be stopped. It's started through a subshell
+# that exits, so it isn't this shell's child and leaves no zombie in its group.
+new_scenario
+caught=$( (setsid "$(command -p -v sleep)" 30 </dev/null >/dev/null 2>&1 & echo $!) )
+check "the stand-in for a caught launch doesn't lead a group of its own" wait_for leads "$caught"
+launch_window() (
+    # shellcheck disable=SC2030,SC2031
+    PATH=$stubs:$PATH
+    # shellcheck disable=SC1090
+    source "$stale_script"
+    # shellcheck disable=SC2034
+    work=$scenario/windowwork log_dir=$scenario/windowwork term_out='' term_pipe='' usr1_trapped=''
+    mkdir -p "$work"
+    # shellcheck disable=SC2034
+    torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
+    # shellcheck disable=SC2034
+    declare -A job_dest=() job_start=() done_with=()
+    eval "jobs() { printf '%s\\n' $1; }"
+    stop_all
+    echo "stopped_jobs=$stopped_jobs"
+)
+launch_window "$caught" >"$scenario/window.out" 2>&1 || true
+gone() { [[ ! -e /proc/$1 || $(cut -d' ' -f3 "/proc/$1/stat" 2>/dev/null) == Z ]]; }
+check "stop_all left a job caught mid-launch running" wait_for gone "$caught"
+check "stop_all didn't count a job caught mid-launch: $(cat "$scenario/window.out")" \
+    grep -qx 'stopped_jobs=1' "$scenario/window.out"
+kill "$caught" 2>/dev/null || true
+
 # Once main has closed the terminal, bash can reuse its number for a file it
 # saves a descriptor in. A job's line must never open that.
 lock_scenario
