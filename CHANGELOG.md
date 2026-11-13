@@ -4,6 +4,16 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.5.2 - 2026-11-13
+
+A fix for Steam games after Steam's 64-bit client update.
+
+- Steam's updated client runs from `steamrt64/` instead of `ubuntu12_32/`,
+  and wineo stopped seeing it and the games it starts. A Steam launch
+  waited a full minute, then said Steam didn't start the game even when it
+  was running, and Stop couldn't reach it. wineo now finds the client and
+  its games in either folder.
+
 ## 1.5.1 - 2026-11-12
 
 Two fixes in the desktop app's Add flows.
