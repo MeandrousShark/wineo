@@ -1732,6 +1732,7 @@ stop_all() {
     trap '' INT TERM HUP
     # A signal during launch can land with job control still on.
     set +m
+    stop_ticker
     # Every job bash hasn't seen end, not just those in live: a signal can come
     # between a launch's `&` and its PID reaching live. A reaped job's PID can
     # be reused, so those are never signaled.
@@ -1814,6 +1815,22 @@ on_exit() {
     remove_work
 }
 
+# The ticker wakes main every 10 seconds. A USR1 that comes after the woke
+# check but before wait -n blocks is otherwise lost until the next one, which
+# can be a whole build interval away. It's in main's process group, so it's
+# never one of the jobs.
+start_ticker() {
+    sleep 10 &
+    ticker=$!
+}
+
+stop_ticker() {
+    [[ -n $ticker ]] || return 0
+    kill "$ticker" 2>/dev/null || true
+    wait "$ticker" 2>/dev/null || true
+    ticker=''
+}
+
 # The three stages: the PPA's foreground stage, then everything else and the
 # PPA's wait in the background, then the wait for them all.
 fan_out() {
@@ -1830,15 +1847,21 @@ fan_out() {
             launch ppa publish_wait
         fi
     done
+    start_ticker
     while ((${#live[@]} > 0)); do
+        reaped=''
         woke=0
         walk_away
         # A wake-up during walk_away would otherwise wait for the next one.
         if ((woke)); then continue; fi
-        reaped=''
-        wait -n -p reaped "${live[@]}" 2>/dev/null || true
-        [[ -z ${reaped:-} ]] || job_done "$reaped"
+        wait -n -p reaped "${live[@]}" "$ticker" 2>/dev/null || true
+        if [[ ${reaped:-} == "$ticker" ]]; then
+            start_ticker
+        elif [[ -n ${reaped:-} ]]; then
+            job_done "$reaped"
+        fi
     done
+    stop_ticker
     walk_away
 }
 
@@ -2010,7 +2033,7 @@ summarize() {
 main() {
     only='' skip=() dest_dir='' log_dir='' term_out='' term_fd='' term_pipe='' current=''
     torun=() ran=() live=() stopping=0 interrupted=0 stopped_jobs=0
-    woke=0 told_out=0 told_left=0 usr1_trapped=''
+    woke=0 told_out=0 told_left=0 usr1_trapped='' ticker=''
     declare -gA job_dest=()
     (($# >= 1)) || usage
     version=$1

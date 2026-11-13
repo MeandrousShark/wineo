@@ -478,12 +478,13 @@ fi
 EOF
 
 # Whole seconds are the script's intervals, which never really pass here. A
-# fraction is a real wait, as in stopping's poll or a test's slowed-down wait.
-# exec, so whoever kills it kills the real sleep.
+# fraction is a real wait, as in stopping's poll or a test's slowed-down wait,
+# and so is the fan-out's 10-second ticker, which main ends itself. exec, so
+# whoever kills it kills the real sleep.
 cat >"$stubs/sleep" <<'EOF'
 #!/bin/bash
 echo "$1" >>"$STUB/sleep.log"
-if [[ $1 == *.* ]]; then exec "$(command -p -v sleep)" "$1"; fi
+if [[ $1 == *.* || $1 == 10 ]]; then exec "$(command -p -v sleep)" "$1"; fi
 EOF
 
 # Keeps the lock it was pointed at; gentoo-ebuild.sh passes the crates' paths.
@@ -2182,6 +2183,59 @@ check "main killed: the reason is wrong: $(grep '^  copr' "$out")" \
     on_terminal '^  copr +failed: it stopped early; see the log$'
 check "main killed: processes are left: $left_behind" test -z "$left_behind"
 check "main killed: the work directory is left" test -z "$(work_left)"
+
+# A phase change whose USR1 is lost still reaches main, through the ticker. A
+# stand-in job here sends none at all, changing its phase after the first tick,
+# so only a ticker that keeps going wakes main for it. The ticker's 10 seconds
+# are 1 here.
+tickbin=$tmp/tickbin
+mkdir -p "$tickbin"
+cat >"$tickbin/sleep" <<'EOF'
+#!/bin/bash
+if [[ $1 == 10 ]]; then set -- 1; fi
+exec "$(command -p -v sleep)" "$1"
+EOF
+chmod +x "$tickbin/sleep"
+new_scenario
+tick_script=$repo/scripts/publish-packages.sh
+# stand_in WORK: the stand-in job. Its phase changes after the first tick, and
+# it sends no USR1.
+stand_in() {
+    command -p sleep 2.5
+    printf 'waiting\n' >"$1/phase-copr"
+    : >"$1/uploaded-copr"
+    command -p sleep 4
+    echo "published (x)" >"$1/result-copr"
+}
+# lost_wake JOB: fan_out on one destination, with run_job replaced by JOB.
+lost_wake() (
+    # shellcheck disable=SC2030,SC2031
+    PATH=$tickbin:$PATH
+    # shellcheck disable=SC1090
+    source "$tick_script"
+    # shellcheck disable=SC2034
+    work=$scenario/tickwork log_dir=$scenario/tickwork term_out='' term_pipe='' usr1_trapped=''
+    mkdir -p "$work"
+    # shellcheck disable=SC2034
+    torun=(copr) ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
+    # shellcheck disable=SC2034
+    declare -A job_dest=()
+    # The script's own run_job, replaced as fan_out will call it.
+    eval "run_job() { $1 \"\$work\"; }"
+    fan_out
+    echo "fan_out ended"
+)
+lost_wake stand_in >"$scenario/tick.out" 2>&1 &
+tick_pid=$!
+seen=no
+for _ in $(seq 50); do
+    if grep -q 'every upload is out' "$scenario/tick.out"; then seen=yes && break; fi
+    sleep 0.1
+done
+check "a lost wake-up waited for the job to end: $(cat "$scenario/tick.out")" test "$seen" = yes
+finish "$tick_pid"
+check "the ticker's fan-out failed ($finished): $(cat "$scenario/tick.out")" test "$finished" -eq 0
+check "the ticker's fan-out didn't end: $(cat "$scenario/tick.out")" grep -qx 'fan_out ended' "$scenario/tick.out"
 
 # Once main has closed the terminal, bash can reuse its number for a file it
 # saves a descriptor in. A job's line must never open that.
