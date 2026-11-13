@@ -2270,11 +2270,16 @@ passes=$(sed -n 's/^fan_out ended after \([0-9]*\) passes$/\1/p' "$scenario/tick
 check "main spun between wake-ups: ${passes:-no} passes" test "${passes:-999}" -lt 50
 
 # A job that wakes main and exits at once can end just as its USR1 interrupts
-# wait -n, and no later wait -n returns it. Twenty such jobs, ten times over,
-# lose one most runs when main trusts wait -n; main must still see them all.
-# quick_job WORK DEST MAIN
+# wait -n, and then neither a later wait -n nor bash's own job table may ever
+# show it ended. Twenty such jobs end at the same moment, while main sits in
+# wait -n, ten times over; main must still see them all.
+now_us() { echo "${EPOCHREALTIME//[.,]/}"; }
+# quick_job WORK DEST MAIN: ends at the moment in go, in microseconds. It
+# sleeps until just before, then spins, so the twenty end together.
 quick_job() {
-    command -p sleep "0.0$((RANDOM % 5))"
+    local left=$((go - $(now_us) - 20000))
+    if ((left > 0)); then command -p sleep "$((left / 1000000)).$(printf '%06d' $((left % 1000000)))"; fi
+    while (($(now_us) < go)); do :; done
     echo "published (x)" >"$1/result-$2"
     kill -USR1 "$3"
 }
@@ -2294,6 +2299,8 @@ many_jobs() (
         ran=() live=() stopping=0 interrupted=0 stopped_jobs=0 woke=0 told_out=0 told_left=0 ticker=''
         # shellcheck disable=SC2034
         declare -A job_dest=() job_start=()
+        # Once every job has started and main is waiting.
+        go=$(($(now_us) + 300000))
         eval "run_job() { $1 \"\$work\" \"\$1\" $BASHPID; }"
         fan_out
         if [[ $(cat "$work"/result-* | grep -c '^published') != 20 ]]; then echo "round $round lost a result"; fi

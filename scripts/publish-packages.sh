@@ -1664,20 +1664,21 @@ sweep_containers() {
 # job_done PID: the job is reaped, so it's no longer stopped through its group.
 job_done() {
     local pid=$1 dest=${job_dest[$1]} current p rest=()
-    for p in "${live[@]}"; do
-        [[ $p == "$pid" ]] || rest+=("$p")
-    done
-    live=(${rest[@]+"${rest[@]}"})
     if [[ ! -s $work/result-$dest ]]; then
         # Only the job's own process may have died (kill PID, the OOM killer):
         # what it started is still in its group and would go on publishing,
-        # and could write its own result over this one.
+        # and could write its own result over this one. Still in live while
+        # this runs, so a Ctrl+C now stops its group too.
         end_group "$pid"
         sweep_containers "^wineo-publish-$$-$dest-"
         current=$dest
         record "$dest" "failed: it stopped early; see the log"
         term_copy "$term_out" "failed: it stopped early; see the log"
     fi
+    for p in "${live[@]}"; do
+        [[ $p == "$pid" ]] || rest+=("$p")
+    done
+    live=(${rest[@]+"${rest[@]}"})
 }
 
 # tell LINE...: main's own lines while jobs run. Like term_copy, it never fails:
