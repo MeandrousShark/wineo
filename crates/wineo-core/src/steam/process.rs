@@ -71,10 +71,7 @@ fn scan_reapers<R: ProcessReader>(
     app_ids: &[String],
     boot_id: &str,
 ) -> io::Result<HashMap<String, Vec<Reaper>>> {
-    let expected = install.root().join("ubuntu12_32/reaper");
-    let canonical = fs::canonicalize(install.root())
-        .unwrap_or_else(|_| install.root().to_owned())
-        .join("ubuntu12_32/reaper");
+    let accepted = install_binaries(install, "reaper");
     let app_args: Vec<String> = app_ids.iter().map(|id| format!("AppId={id}")).collect();
     let mut found: HashMap<String, Vec<Reaper>> = app_ids
         .iter()
@@ -88,9 +85,7 @@ fn scan_reapers<R: ProcessReader>(
         if !launches_wanted_app(reader, pid, app_args.as_slice()) {
             continue;
         }
-        let Some(process) =
-            reaper_candidate(reader, pid, app_args.as_slice(), &expected, &canonical)?
-        else {
+        let Some(process) = reaper_candidate(reader, pid, app_args.as_slice(), &accepted)? else {
             continue;
         };
         let Some(parent) = client_candidate(reader, process.stat.ppid)? else {
@@ -187,8 +182,7 @@ fn reaper_candidate<R: ProcessReader, W: WantedApps + ?Sized>(
     reader: &R,
     pid: u32,
     wanted: &W,
-    expected: &Path,
-    canonical: &Path,
+    accepted: &[PathBuf],
 ) -> io::Result<Option<Inspected<R::Fd>>> {
     let Some(mut process) = inspect_stat(reader, pid)? else {
         return Ok(None);
@@ -211,15 +205,14 @@ fn reaper_candidate<R: ProcessReader, W: WantedApps + ?Sized>(
     // Equal to a wanted argument, which is valid text.
     let app_arg = String::from_utf8_lossy(&arguments[2]).into_owned();
     process.arguments = arguments;
-    if !matches_arguments(&process.arguments, &app_arg, expected, canonical) {
+    if !matches_arguments(&process.arguments, &app_arg, accepted) {
         process.exe = match reader.exe(pid) {
             Ok(exe) => exe,
             Err(error) if permission_denied(&error) => return Ok(None),
             Err(error) => return Err(error),
         };
     }
-    if !matches_reaper(&process, &app_arg, expected, canonical) || !still_current(reader, &process)?
-    {
+    if !matches_reaper(&process, &app_arg, accepted) || !still_current(reader, &process)? {
         return Ok(None);
     }
     Ok(Some(process))
@@ -597,56 +590,63 @@ fn still_current<R: ProcessReader>(reader: &R, process: &Inspected<R::Fd>) -> io
         }))
 }
 
-fn matches_client<F>(install: &Install, process: &Inspected<F>) -> bool {
-    let expected = install.root().join("ubuntu12_32/steam");
-    let canonical = fs::canonicalize(install.root())
-        .unwrap_or_else(|_| install.root().to_owned())
-        .join("ubuntu12_32/steam");
-    let argv_matches = || {
-        process.arguments.first().is_some_and(|argument| {
-            matches_path(
-                Path::new(OsStr::from_bytes(argument)),
-                &expected,
-                &canonical,
-            )
+/// The client's binary folders: the 64-bit client first, then the 32-bit one
+/// that installs not yet moved to it still run from.
+const CLIENT_DIRS: [&str; 2] = ["steamrt64", "ubuntu12_32"];
+
+/// Every path the client binary `name` of this install can run from, through
+/// the root as given and through its canonical target.
+fn install_binaries(install: &Install, name: &str) -> Vec<PathBuf> {
+    let canonical = fs::canonicalize(install.root()).unwrap_or_else(|_| install.root().to_owned());
+    CLIENT_DIRS
+        .iter()
+        .flat_map(|dir| {
+            [
+                install.root().join(dir).join(name),
+                canonical.join(dir).join(name),
+            ]
         })
+        .collect()
+}
+
+fn matches_client<F>(install: &Install, process: &Inspected<F>) -> bool {
+    let accepted = install_binaries(install, "steam");
+    let argv_matches = || {
+        process
+            .arguments
+            .first()
+            .is_some_and(|argument| matches_path(Path::new(OsStr::from_bytes(argument)), &accepted))
     };
     match &process.exe {
         Some(exe) => {
-            matches_path(exe, &expected, &canonical)
+            matches_path(exe, &accepted)
                 || (install.kind() == InstallKind::Flatpak && argv_matches())
         }
         None => argv_matches(),
     }
 }
 
-fn matches_path(path: &Path, expected: &Path, canonical: &Path) -> bool {
-    path == expected
-        || path == canonical
-        || fs::canonicalize(path).is_ok_and(|path| path == canonical)
+fn matches_path(path: &Path, accepted: &[PathBuf]) -> bool {
+    accepted.iter().any(|candidate| candidate == path)
+        || fs::canonicalize(path).is_ok_and(|path| accepted.contains(&path))
 }
 
-fn matches_arguments(args: &[Vec<u8>], app_arg: &str, expected: &Path, canonical: &Path) -> bool {
+fn matches_arguments(args: &[Vec<u8>], app_arg: &str, accepted: &[PathBuf]) -> bool {
     args.len() >= 3 && args[1] == b"SteamLaunch" && args[2] == app_arg.as_bytes() && {
         let path = PathBuf::from(OsStr::from_bytes(&args[0]));
-        matches_path(&path, expected, canonical)
+        matches_path(&path, accepted)
     }
 }
 
-fn matches_reaper<F>(
-    process: &Inspected<F>,
-    app_arg: &str,
-    expected: &Path,
-    canonical: &Path,
-) -> bool {
-    matches_arguments(&process.arguments, app_arg, expected, canonical)
+fn matches_reaper<F>(process: &Inspected<F>, app_arg: &str, accepted: &[PathBuf]) -> bool {
+    matches_arguments(&process.arguments, app_arg, accepted)
         || (process.arguments.len() >= 3
             && process.arguments[1] == b"SteamLaunch"
             && process.arguments[2] == app_arg.as_bytes()
             && process
                 .exe
                 .as_deref()
-                .is_some_and(|path| matches_path(path, expected, canonical)))
+                .is_some_and(|path| matches_path(path, accepted)))
 }
 
 fn read_arguments(pid: u32) -> io::Result<Option<Vec<Vec<u8>>>> {
