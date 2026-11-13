@@ -2990,6 +2990,26 @@ mkdir "$lock"
 lock_call "$scenario/dir" hand "$lock" "$from"
 read -r to status <"$scenario/dir.out" || status=''
 check "lock_hand with a record that can't be read returned '$status', not 3" test "$status" = 3
+# A guard another process holds fails both helpers within 10 seconds, not never.
+lock=$lock_work/lock-w
+echo "$from $(stamp "$from")" >"$lock"
+( exec {guard_fd}>>"$lock.guard"; flock "$guard_fd"; exec "$(command -p -v sleep)" 60 ) &
+guard_holder=$!
+holders+=("$guard_holder")
+check "a held guard: the holder never took it" wait_for refused flock -n "$lock.guard" true
+started=$SECONDS
+lock_call "$scenario/wait-hand" hand "$lock" "$from" &
+waiting_hand=$!
+release_status=0
+lock_call "$scenario/wait-release" lock_release "$lock" "$from" || release_status=$?
+wait "$waiting_hand" || true
+took=$((SECONDS - started))
+read -r to status <"$scenario/wait-hand.out" || status=''
+check "lock_hand with a held guard returned '$status', not 3" test "$status" = 3
+check "lock_release with a held guard returned $release_status, not 3" test "$release_status" -eq 3
+check "a held guard held them up ${took}s" test "$took" -lt 25
+check "a held guard: the record was changed: $(cat "$lock")" test "$(cat "$lock")" = "$from $(stamp "$from")"
+release_holder "$guard_holder"
 release_holder "$from"
 release_holder "$other"
 
