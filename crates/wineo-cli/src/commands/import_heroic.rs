@@ -426,7 +426,7 @@ fn source_guided<I: Input, W: Write>(
     }
 }
 
-fn list(paths: &Paths, global: &GlobalConfig, source: &HeroicSource) -> anyhow::Result<ExitCode> {
+fn list(paths: &Paths, global: &GlobalConfig, source: &HeroicSource) -> anyhow::Result<()> {
     let listing = listing(paths, global, source)?;
     println!(
         "Heroic source: {} ({:?})",
@@ -455,7 +455,7 @@ fn list(paths: &Paths, global: &GlobalConfig, source: &HeroicSource) -> anyhow::
             print_issue("  issue", &issue);
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn guided<I: Input, W: Write>(

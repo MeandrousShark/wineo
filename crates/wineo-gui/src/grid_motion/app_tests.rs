@@ -186,8 +186,8 @@ fn leaving_cards_stay_where_they_were_take_no_input_and_hold_the_height() {
     // "keep-00" springs from where it was, and the leaving cards follow in
     // the order they were shown.
     assert_eq!(bounds_at(&node, &[0]), before.slots[9]);
-    for index in 0..9 {
-        assert_eq!(bounds_at(&node, &[1 + index]), before.slots[index]);
+    for (index, slot) in before.slots.iter().take(9).enumerate() {
+        assert_eq!(bounds_at(&node, &[1 + index]), *slot);
     }
     // The scroll height holds until the fades end.
     assert_eq!(node.bounds().height, before.height);
