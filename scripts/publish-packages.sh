@@ -484,12 +484,18 @@ lock_release() {
 
 # lock_wait FILE OWNER WHAT: take the lock, saying so once if it has to wait.
 lock_wait() {
-    local file=$1 owner=$2 what=$3 told=0 status
+    local file=$1 owner=$2 what=$3 told=0 status why
     while true; do
         status=0
         lock_try "$file" "$owner" || status=$?
         ((status != 0)) || return 0
-        ((status == 1)) || dest_fail "could not take the lock for $what ($file, status $status)"
+        if ((status != 1)); then
+            case $status in
+                2) why="/proc/$owner couldn't be read" ;;
+                *) why="the lock file couldn't be used" ;;
+            esac
+            dest_fail "could not take the lock for $what ($file): $why"
+        fi
         if ((!told)); then
             say "$current: waiting for $what" >&2
             told=1
@@ -519,7 +525,7 @@ tool_image() {
     lock_wait "$lock" "$BASHPID" "the ${kind^} tools image"
     # Only ever committed after the install below passed.
     if podman image exists "$name" 2>/dev/null; then
-        lock_release "$lock" "$BASHPID"
+        lock_release "$lock" "$BASHPID" || dest_fail "could not release the lock for the ${kind^} tools image ($lock)"
         echo "$name"
         return
     fi
@@ -556,7 +562,7 @@ tool_image() {
         lock_release "$lock" "$BASHPID" || true
         dest_fail "installing the tools into a $base image failed (exit $status); see the log"
     fi
-    lock_release "$lock" "$BASHPID"
+    lock_release "$lock" "$BASHPID" || dest_fail "could not release the lock for the ${kind^} tools image ($lock)"
     echo "$name"
 }
 
@@ -713,7 +719,7 @@ tag_tarball() {
         chmod 644 "$part"
         mv "$part" "$file"
     fi
-    lock_release "$lock" "$BASHPID"
+    lock_release "$lock" "$BASHPID" || dest_fail "could not release the lock for GitHub's tag tarball ($lock)"
     echo "$file"
 }
 

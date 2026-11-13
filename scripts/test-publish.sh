@@ -1440,6 +1440,7 @@ lock_call() {
     local name=$1
     shift
     (
+        # shellcheck disable=SC2030
         PATH=$lockbin:$PATH
         export WINEO_PUBLISH_INTERVAL=0.05
         # shellcheck disable=SC1090
@@ -1655,6 +1656,63 @@ check "an unwritable lock exited $finished, not 1" test "$finished" -eq 1
 check "an unwritable lock didn't say why: $(cat "$scenario/a.err")" \
     grep -q 'could not take the lock for the Fedora tools image' "$scenario/a.err"
 check "an unwritable lock still built the image" refused grep -q '^run' "$STUB/podman.log"
+check "an unwritable lock didn't say what it means: $(cat "$scenario/a.err")" \
+    grep -q "the lock file couldn't be used" "$scenario/a.err"
+finished=0
+lock_call "$scenario/gone" lock_wait "$lock_work/lock-x" 99999999 "the thing" || finished=$?
+check "a lock for a missing owner exited $finished, not 1" test "$finished" -eq 1
+check "a lock for a missing owner didn't say what it means: $(cat "$scenario/gone.err")" \
+    grep -q "/proc/99999999 couldn't be read" "$scenario/gone.err"
+
+# A lock that can't be released after a good build fails with a reason, rather
+# than exiting without one. A wrapper turns the lock's guard file into a
+# directory when the build commits, the image is looked up, or a download
+# finishes, so the release that follows can't open it.
+hooks=$tmp/hooks
+mkdir -p "$hooks"
+cat >"$hooks/podman" <<EOF
+#!/bin/bash
+if [[ \$1 == "\${BREAK_ON:-}" ]]; then
+    rm -f "\$BREAK_GUARD.guard"
+    mkdir "\$BREAK_GUARD.guard"
+fi
+exec "$stubs/podman" "\$@"
+EOF
+cat >"$hooks/curl" <<'EOF'
+#!/bin/bash
+while (($# > 0)); do
+    [[ $1 != -o ]] || out=$2
+    shift
+done
+cp "$STUB/tag.tar.gz" "$out"
+rm -f "$BREAK_GUARD.guard"
+mkdir "$BREAK_GUARD.guard"
+EOF
+chmod +x "$hooks/podman" "$hooks/curl"
+# with_hooks BREAK_ON GUARD_LOCK COMMAND...
+with_hooks() {
+    # shellcheck disable=SC2031
+    BREAK_ON=$1 BREAK_GUARD=$2 PATH=$hooks:$PATH "${@:3}"
+}
+lock_scenario
+finished=0
+lock_call "$scenario/built" with_hooks commit "$lock_work/lock-tools-fedora" tool_image fedora || finished=$?
+check "a lock that wouldn't release after a build exited $finished, not 1" test "$finished" -eq 1
+check "a lock that wouldn't release after a build didn't say why: $(cat "$scenario/built.err")" \
+    grep -q 'could not release the lock for the Fedora tools image' "$scenario/built.err"
+lock_scenario
+touch "$STUB/image-wineo-publish-fedora-$$"
+finished=0
+lock_call "$scenario/there" with_hooks image "$lock_work/lock-tools-fedora" tool_image fedora || finished=$?
+check "a lock that wouldn't release for an existing image exited $finished, not 1" test "$finished" -eq 1
+check "a lock that wouldn't release for an existing image didn't say why: $(cat "$scenario/there.err")" \
+    grep -q 'could not release the lock for the Fedora tools image' "$scenario/there.err"
+lock_scenario
+finished=0
+lock_call "$scenario/tar" with_hooks curl "$lock_work/lock-tag-tarball" tag_tarball || finished=$?
+check "a lock that wouldn't release after a download exited $finished, not 1" test "$finished" -eq 1
+check "a lock that wouldn't release after a download didn't say why: $(cat "$scenario/tar.err")" \
+    grep -q "could not release the lock for GitHub's tag tarball" "$scenario/tar.err"
 
 # A caller that takes over a dead holder's lock clears the builder it left.
 lock_scenario
