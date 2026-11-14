@@ -836,12 +836,12 @@ choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
 
-New environment opens on a choice page with five rows, under **Windows**
-(Run an installer, Existing install, Empty) and **Native Linux** (Existing
-install, Empty). Pick one with a click, the arrows and Enter, its number
+New environment opens on a choice page with five rows in two sections,
+**Windows** (Run an installer, Existing install, Empty) and **Native Linux**
+(Existing install, Empty), each its own grouped surface under its heading. Pick one with a click, the arrows and Enter, its number
 key, or Ctrl+Enter on the focused row. Details is titled with the pick, like
-"New environment - Windows installer", and **Change** returns to the choice
-page, as Back does, with the draft kept and that row focused. Picking
+"New environment - Windows installer", and **Back** returns to the choice
+page with the draft kept and that row focused. Picking
 another row keeps the Name and environment name, but clears the path, since
 an installer and a program are different files. Back from the choice page
 asks before discarding a draft only if you typed or changed something on
