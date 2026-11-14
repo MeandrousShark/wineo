@@ -512,8 +512,14 @@ column change halfway through a zoom never jumps.
 
 ## Reviews and management pages
 
-New-environment reviews use one grouped summary with Application, Source,
-and Runtime sections as applicable. Render the frozen reviewed data directly.
+New environment's Summary uses one grouped surface with Application, Source,
+and Runtime sections as applicable, checked live as the draft settles
+rather than frozen on a review page. While a check runs, keep the last
+Summary in place, dimmed under "Checking...", so it never blanks or
+reflows, and keep the forward action off with its reason beside it until
+the check matches the draft. Notes that change what the forward action does
+repeat beside it in the pinned strip, so they're seen without scrolling.
+Other flows' review pages still render their frozen reviewed data directly.
 Warnings and missing prerequisites stay prominent below the summary. Long
 paths stay complete and wrap or scroll. Each step of an Add, import, or
 clone page that can go back has the same shape: Back alone in a row at the

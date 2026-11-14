@@ -845,7 +845,21 @@ page, as Back does, with the draft kept and that row focused. Picking
 another row keeps the Name and environment name, but clears the path, since
 an installer and a program are different files. Back from the choice page
 asks before discarding a draft only if you typed or changed something on
-Details; the row you picked and the art checkbox don't count. Installer setup sets up DXVK and
+Details; the row you picked and the art checkbox don't count.
+
+Details has no separate review page. A **Summary** at its bottom shows the
+Application, Source, and Runtime rows and any notes, checked on its own
+when Details opens and a moment after you stop typing. While a check runs,
+the last Summary stays in place, dimmed, under "Checking...". **Create** is
+pinned at the bottom left, and stays off with the reason beside it while a
+check runs, while a runner or component is missing, or while a field needs
+fixing; reasons for fields you haven't touched yet ("Enter a name") stay
+quiet. Once it's ready, the notes that change what Create does, like
+registering an existing prefix in place, show beside it. Downloads run on
+their own page and come back to Details, and the finished page's **Back to
+details** returns there with the draft.
+
+Installer setup sets up DXVK and
 vkd3d-proton in the prefix before the installer runs, then scans installed
 programs once it's done, even if it exited with an error, so you can choose
 the game's target rather than registering the installer. A canceled
@@ -860,7 +874,7 @@ Origins" becomes `assassins-creed-origins`. The derived name shows under
 the field; **Edit**
 lets you choose a different one, up to 64 characters. The installer log can
 be selected and copied like the panel's log. When the chosen runner isn't
-installed, the review offers **Download GE-Proton** or **Download
+installed, the Summary offers **Download GE-Proton** or **Download
 Proton-CachyOS**. It already shows what that Proton build will use, 64-bit,
 the prefix it adopts, and the template components Proton leaves out, so
 only the runner row changes after the download. Prefix imports can copy a Wine prefix or Proton
