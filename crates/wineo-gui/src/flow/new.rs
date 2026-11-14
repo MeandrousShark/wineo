@@ -1948,38 +1948,24 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
     } else {
         global.defaults.runner.clone()
     };
+    // A missing runner is one more note on the same check. Every download
+    // offered for it installs a Proton build, so it's treated as Proton for
+    // the architecture, the prefix layout, and the omitted components. That
+    // keeps the Review from changing after a download except for the runner.
     let runner = match runners.resolve(&runner_name) {
-        Ok(runner) => runner,
+        Ok(runner) => Some(runner),
         Err(error)
             if matches!(
                 &error,
                 CoreError::UnknownRunner { .. } | CoreError::ProgramNotFound("wine" | "wineserver")
             ) || matches!(&error, CoreError::RunnerAlias { reason, .. } if reason.starts_with("no compatible stable release")) =>
         {
-            let prefix = NewEnvironment {
-                name: name.to_owned(),
-                dir: (!draft.prefix.is_empty()).then(|| draft.prefix.clone()),
-                arch: draft.arch,
-                template: template.clone(),
-                gog_id: None,
-                title: None,
-            }
-            .prefix_dir(paths, &global)
-            .map_err(|error| error.to_string())?;
-            return Ok(Review {
-                runner: None,
-                runner_row: None,
-                template,
-                arch: draft.arch.unwrap_or(global.defaults.arch),
-                prefix: Some(prefix),
-                adopted: false,
-                omitted_components: false,
-                prerequisite: Some(Prerequisite::Runner(runner_name)),
-            });
+            None
         }
         Err(error) => return Err(error.to_string()),
     };
-    let arch = if runner.is_proton() {
+    let proton = runner.as_ref().is_none_or(Runner::is_proton);
+    let arch = if proton {
         Arch::Win64
     } else {
         draft
@@ -1987,7 +1973,9 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
             .or_else(|| template.as_ref().and_then(|template| template.arch))
             .unwrap_or(global.defaults.arch)
     };
-    create::check_arch(&runner, Some(arch)).map_err(|error| error.to_string())?;
+    if let Some(runner) = &runner {
+        create::check_arch(runner, Some(arch)).map_err(|error| error.to_string())?;
+    }
     let prefix = NewEnvironment {
         name: name.to_owned(),
         dir: (!draft.prefix.is_empty()).then(|| draft.prefix.clone()),
@@ -1998,7 +1986,10 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
     }
     .prefix_dir(paths, &global)
     .map_err(|error| error.to_string())?;
-    let actual = runner.wine_prefix(&prefix);
+    let actual = match &runner {
+        Some(runner) => runner.wine_prefix(&prefix),
+        None => prefix.join("pfx"),
+    };
     if draft.source == Source::Installer {
         let installer = if wineo_core::winpath::is_windows_path(&draft.path) {
             wineo_core::winpath::to_unix(&actual, &draft.path)
@@ -2026,35 +2017,42 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
             ));
         }
     }
-    let omitted_components = template
-        .as_ref()
-        .is_some_and(|template| template.for_runner(&runner).1);
-    let prerequisite = if let Some(template) = &template {
-        let (template, _) = template.for_runner(&runner);
-        let wanted = Wanted {
-            dxvk: template.dxvk,
-            vkd3d: template.vkd3d,
-        };
-        match install::check_available(paths, &global, name, &runner, &wanted) {
-            Ok(()) => None,
-            Err(CoreError::NoBuilds { component, .. }) => Some(Prerequisite::Component {
-                provider: component_provider(component)?,
-                version: None,
-            }),
-            Err(CoreError::UnknownBuild {
-                component, name, ..
-            }) => Some(Prerequisite::Component {
-                provider: component_provider(component)?,
-                version: Some(name),
-            }),
-            Err(error) => return Err(error.to_string()),
-        }
-    } else {
-        None
+    let omitted_components = template.as_ref().is_some_and(|template| match &runner {
+        Some(runner) => template.for_runner(runner).1,
+        None => template.dxvk.is_some() || template.vkd3d.is_some(),
+    });
+    let prerequisite = match &runner {
+        None => Some(Prerequisite::Runner(runner_name)),
+        Some(runner) => match &template {
+            Some(template) => {
+                let (template, _) = template.for_runner(runner);
+                let wanted = Wanted {
+                    dxvk: template.dxvk,
+                    vkd3d: template.vkd3d,
+                };
+                match install::check_available(paths, &global, name, runner, &wanted) {
+                    Ok(()) => None,
+                    Err(CoreError::NoBuilds { component, .. }) => Some(Prerequisite::Component {
+                        provider: component_provider(component)?,
+                        version: None,
+                    }),
+                    Err(CoreError::UnknownBuild {
+                        component, name, ..
+                    }) => Some(Prerequisite::Component {
+                        provider: component_provider(component)?,
+                        version: Some(name),
+                    }),
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            None => None,
+        },
     };
     Ok(Review {
-        runner_row: Some(runner_label::resolved(paths, &runner)),
-        runner: Some(runner),
+        runner_row: runner
+            .as_ref()
+            .map(|runner| runner_label::resolved(paths, runner)),
+        runner,
         template,
         arch,
         prefix: Some(prefix),
