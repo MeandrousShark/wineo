@@ -255,16 +255,17 @@ pub(crate) fn games(count: usize) -> String {
 const MIN_SHARE: f32 = 0.02;
 
 /// How far from the middle, in stops, a cover is all trapezoid: the flat
-/// rectangle fades out only within this, so the covers a glide carries
+/// rectangle fades out only short of this, so the covers a glide carries
 /// past the middle show its ghost for a moment, not all the way across.
-const TURN_BAND: f32 = 0.25;
+const TURN_BAND: f32 = 0.3;
 
 /// How much of a cover draws in its tilted outline, the trapezoid, rather
-/// than flat: all of it a quarter stop from the middle and beyond, whether
-/// its warp is here or not, easing in and out between that and flat in the
-/// middle.
+/// than flat: none within a landing's overshoot of the middle, so the
+/// cover it lands on never turns as it swings past, all of it from
+/// `TURN_BAND` out, whether its warp is here or not, and easing between.
 pub(crate) fn tilted_share(tilt: f32) -> f32 {
-    let x = (tilt.abs() / TURN_BAND).min(1.0);
+    use crate::coverflow::MAX_OVERSHOOT;
+    let x = ((tilt.abs() - MAX_OVERSHOOT) / (TURN_BAND - MAX_OVERSHOOT)).clamp(0.0, 1.0);
     let share = x * x * (3.0 - 2.0 * x);
     if share < MIN_SHARE { 0.0 } else { share }
 }

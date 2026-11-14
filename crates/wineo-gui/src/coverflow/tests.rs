@@ -2948,15 +2948,77 @@ fn a_dim_side_cover_shows_the_background_through_it_not_the_cover_behind() {
 }
 
 #[test]
-fn a_cover_is_all_trapezoid_a_quarter_stop_from_the_middle() {
+fn a_single_step_lands_with_its_middle_flat_through_the_overshoot() {
+    let (_root, mut app) = with_art(9, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    red_warps(
+        &mut app,
+        &["game-00", "game-01", "game-02", "game-03"],
+        Tilt::Left,
+    );
+    red_warps(&mut app, &["game-06", "game-07", "game-08"], Tilt::Right);
+    // The cover it lands on is green, with its warp for the way it comes.
+    let green = image::Handle::from_rgba(330, 495, [0, 200, 0, 255].repeat(330 * 495));
+    let key = (art_of(&app, "game-05"), artwork::Kind::Grid);
+    app.images.insert(key.clone(), false, green.clone());
+    let warp = crate::tilt::warp(&green, Tilt::Right).unwrap();
+    app.images
+        .insert_tilted(key.clone(), false, Tilt::Right, warp);
+    frame(&mut app, &mut clock, 200);
+    app.motion.system_reduced = false;
+    key_down(&mut app, Named::ArrowRight);
+    assert_eq!(app.strip.target(), 5);
+    // To the far end of its swing past the stop.
+    let mut peak = app.strip.position();
+    for _ in 0..200 {
+        frame(&mut app, &mut clock, 4);
+        let position = app.strip.position();
+        if position < peak && peak > 5.0 {
+            break;
+        }
+        peak = position;
+    }
+    let position = app.strip.position();
+    assert!(position > 5.05, "swung past by {}", position - 5.0);
+    let landed = cover(&geometry(position, 9, WIDE), 5);
+    assert!(landed.tilt < -0.05, "{landed:?}");
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    // Flat: its square corners are its own art, all four.
+    let b = landed.bounds;
+    for corner in [
+        Point::new(b.x + 2.0, b.y + 2.0),
+        Point::new(b.x + b.width - 3.0, b.y + 2.0),
+        Point::new(b.x + 2.0, b.y + b.height - 3.0),
+        Point::new(b.x + b.width - 3.0, b.y + b.height - 3.0),
+    ] {
+        let seen = pixel(&pixels, corner);
+        assert!(seen[1] > 190 && seen[0] < 20, "{corner:?}: {seen:?}");
+    }
+    // Nor is it turned the other way ever wanted, so nothing fades in.
+    assert!(!app.visible_tilts.contains(&(key.clone(), Tilt::Left)));
+    assert!(!app.warping.contains(&(key.clone(), false, Tilt::Left)));
+    assert!(
+        !app.strip_tilts()
+            .iter()
+            .any(|(k, _, t)| *k == key && *t == Tilt::Left)
+    );
+}
+
+#[test]
+fn a_cover_is_flat_within_an_overshoot_and_all_trapezoid_from_0_3_out() {
     use crate::coverflow_widget::tilted_share;
-    // Flat in the middle, a sliver still flat, eased in between, and all
-    // turned from a quarter stop out.
-    assert_eq!(tilted_share(0.0), 0.0);
-    assert_eq!(tilted_share(0.01), 0.0);
-    assert_eq!(tilted_share(0.125), 0.5);
-    assert!(tilted_share(0.05) < 0.125 && tilted_share(-0.2) > 0.875);
-    for tilt in [0.25, -0.5, 1.0, -3.0] {
+    // Flat as far out as a landing swings, eased in over the next 0.15,
+    // and all turned from 0.3 out.
+    for tilt in [0.0, 0.01, -0.1, MAX_OVERSHOOT, -MAX_OVERSHOOT] {
+        assert_eq!(tilted_share(tilt), 0.0, "{tilt}");
+    }
+    assert!((tilted_share(0.225) - 0.5).abs() < 1e-3);
+    assert!(tilted_share(0.17) < 0.125 && tilted_share(-0.28) > 0.875);
+    for tilt in [0.3, -0.5, 1.0, -3.0] {
         assert_eq!(tilted_share(tilt), 1.0, "{tilt}");
     }
     let (_root, mut app) = with_art(9, WIDE);

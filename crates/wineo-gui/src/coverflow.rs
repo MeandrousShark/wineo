@@ -338,8 +338,9 @@ pub(crate) const WARP_FADE: Duration = TITLE_FADE;
 /// wait ahead of the large cover where the strip stops. A speed rather
 /// than a step, so a faster display doesn't ask more.
 const FLY_BY: f32 = NEIGHBORS as f32 * 60.0;
-/// How far past its stop the strip may swing as it lands, in stops.
-const MAX_OVERSHOOT: f32 = 0.15;
+/// How far past its stop the strip may swing as it lands, in stops. A
+/// cover this close to the middle draws flat, so a landing never turns it.
+pub(crate) const MAX_OVERSHOOT: f32 = 0.15;
 /// How long the strip's size must hold before its large covers decode for
 /// it, so a window being dragged bigger doesn't decode at every step.
 pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(250);
@@ -972,8 +973,14 @@ impl App {
                 grid.clone()
             };
             let dimmed = card.not_installed();
+            // Only a side it's carried past the flat zone around the middle
+            // on, so a landing's swing past its stop asks for nothing.
             let at = stop as f32;
-            for (tilt, wanted) in [(Tilt::Left, at < high), (Tilt::Right, at > low)] {
+            let sides = [
+                (Tilt::Left, high - at > MAX_OVERSHOOT),
+                (Tilt::Right, at - low > MAX_OVERSHOOT),
+            ];
+            for (tilt, wanted) in sides {
                 if !wanted {
                     continue;
                 }
