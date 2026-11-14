@@ -2753,12 +2753,66 @@ fn a_dim_side_cover_shows_the_background_through_it_not_the_cover_behind() {
 }
 
 #[test]
-fn a_cover_barely_turned_draws_flat_and_square() {
+fn a_cover_is_all_trapezoid_a_quarter_stop_from_the_middle() {
     use crate::coverflow_widget::tilted_share;
+    // Flat in the middle, a sliver still flat, eased in between, and all
+    // turned from a quarter stop out.
+    assert_eq!(tilted_share(0.0), 0.0);
     assert_eq!(tilted_share(0.01), 0.0);
-    assert_eq!(tilted_share(-0.015), 0.0);
-    assert_eq!(tilted_share(0.5), 0.5);
-    assert_eq!(tilted_share(-3.0), 1.0);
+    assert_eq!(tilted_share(0.125), 0.5);
+    assert!(tilted_share(0.05) < 0.125 && tilted_share(-0.2) > 0.875);
+    for tilt in [0.25, -0.5, 1.0, -3.0] {
+        assert_eq!(tilted_share(tilt), 1.0, "{tilt}");
+    }
+    let (_root, mut app) = with_art(9, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    red_warps(
+        &mut app,
+        &["game-00", "game-01", "game-02", "game-03"],
+        Tilt::Left,
+    );
+    red_warps(
+        &mut app,
+        &["game-05", "game-06", "game-07", "game-08"],
+        Tilt::Right,
+    );
+    // The middle is green, and its warp too.
+    let green = image::Handle::from_rgba(330, 495, [0, 200, 0, 255].repeat(330 * 495));
+    let key = (art_of(&app, "game-04"), artwork::Kind::Grid);
+    app.images.insert(key.clone(), false, green.clone());
+    let warp = crate::tilt::warp(&green, Tilt::Left).unwrap();
+    app.images.insert_tilted(key, false, Tilt::Left, warp);
+    frame(&mut app, &mut clock, 200);
+    let render = |app: &App, at: Point| {
+        let mut element = app.strip_view();
+        pixel(&crate::layout_probe::render(&mut element, WIDE), at)
+    };
+    // At rest it's flat, its art filling its square corner.
+    let b = cover(&geometry(4.0, 9, WIDE), 4).bounds;
+    let corner = render(&app, Point::new(b.x + 3.0, b.y + 3.0));
+    assert!(corner[1] > 150 && corner[0] < 60, "{corner:?}");
+    // Halfway to the next stop, it's turned all the way: no rectangle of
+    // its flat art fading around the trapezoid.
+    app.motion.system_reduced = false;
+    key_down(&mut app, Named::ArrowRight);
+    for _ in 0..100 {
+        if app.strip.position() >= 4.4 {
+            break;
+        }
+        frame(&mut app, &mut clock, 4);
+    }
+    let position = app.strip.position();
+    assert!(position < 4.75, "{position}");
+    let turning = cover(&geometry(position, 9, WIDE), 4);
+    assert!(turning.tilt.abs() < 0.75, "{turning:?}");
+    let b = turning.bounds;
+    let corner = render(&app, Point::new(b.x + 2.0, b.y + 2.0));
+    assert!(corner[1] < 60, "{corner:?}");
+    let inside = render(&app, b.center());
+    assert!(inside[1] > 100, "its warp: {inside:?}");
 }
 
 #[test]

@@ -254,12 +254,19 @@ pub(crate) fn games(count: usize) -> String {
 /// sliver of trapezoid doesn't show.
 const MIN_SHARE: f32 = 0.02;
 
+/// How far from the middle, in stops, a cover is all trapezoid: the flat
+/// rectangle fades out only within this, so the covers a glide carries
+/// past the middle show its ghost for a moment, not all the way across.
+const TURN_BAND: f32 = 0.25;
+
 /// How much of a cover draws in its tilted outline, the trapezoid, rather
-/// than flat: all of it once turned, whether its warp is here or not, and
-/// between the two only as it crosses the middle.
+/// than flat: all of it a quarter stop from the middle and beyond, whether
+/// its warp is here or not, easing in and out between that and flat in the
+/// middle.
 pub(crate) fn tilted_share(tilt: f32) -> f32 {
-    let turned = tilt.abs().min(1.0);
-    if turned < MIN_SHARE { 0.0 } else { turned }
+    let x = (tilt.abs() / TURN_BAND).min(1.0);
+    let share = x * x * (3.0 - 2.0 * x);
+    if share < MIN_SHARE { 0.0 } else { share }
 }
 
 /// How much of the blank card a warp fading in at `warped`, drawn at
