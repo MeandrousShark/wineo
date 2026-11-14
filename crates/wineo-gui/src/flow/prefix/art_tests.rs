@@ -22,7 +22,7 @@ fn fake_runner(paths: &Paths) {
     let root = paths.default_runner_root().join("fake-wine").join("bin");
     fs::create_dir_all(&root).unwrap();
     for program in ["wine", "wineserver"] {
-        write_script(&root.join(program), "#!/bin/sh\nexit 0\n");
+        write_script(root.join(program), "#!/bin/sh\nexit 0\n");
     }
 }
 
