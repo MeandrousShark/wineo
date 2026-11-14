@@ -1412,11 +1412,11 @@ fn the_fetch_waits_for_target_and_runs_once_it_closes() {
     // Confirm's target lands, then the fetch runs.
     let (mut page, calls) = registered(true);
     page.stage = Stage::Working;
-    let _ = page.update(Event::TargetAdded(page.generation, Ok(Vec::new())));
+    let task = page.update(Event::TargetAdded(page.generation, Ok(Vec::new())));
     assert!(page.fetching);
-    let task = page.start_fetch();
     drive(&mut page, task, true);
     assert_eq!(call_count(&calls), 1);
+    assert_eq!(page.stage, Stage::Finished);
 }
 
 #[test]
@@ -1530,5 +1530,94 @@ fn closing_while_fetching_asks_nothing_and_cancels_the_fetch() {
     let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
     assert!(!app.close_prompt);
     assert!(app.exiting);
+    assert!(token.is_canceled());
+}
+
+/// The app with a SteamGridDB key, on the New page that `page` is.
+fn app_with_key(page: Page) -> crate::App {
+    let mut app = crate::tests::app();
+    let _ = app.update(crate::Message::SteamGridDbKeyPresenceLoaded(1, true));
+    assert!(app.steamgriddb_available);
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    app
+}
+
+fn new_page(app: &crate::App) -> &Page {
+    match &app.flow {
+        Some(crate::flow::Page::New(page)) => page,
+        _ => panic!("not on the New page"),
+    }
+}
+
+#[test]
+fn ctrl_enter_on_review_keeps_the_fetch_the_checkbox_shows() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    page.draft.title = "Hollow Knight".to_owned();
+    page.stage = Stage::Review;
+    page.review = Some(Review {
+        runner: None,
+        runner_row: None,
+        template: None,
+        arch: Arch::Win64,
+        prefix: None,
+        adopted: false,
+        omitted_components: false,
+        prerequisite: None,
+    });
+    let mut app = app_with_key(page);
+    assert!(app.flow.as_ref().unwrap().fetch_checked(true));
+    // The creation's task comes back unrun.
+    let _ = app.update(crate::Message::Key(
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+        iced::keyboard::Modifiers::CTRL,
+        iced::event::Status::Ignored,
+    ));
+    let page = new_page(&app);
+    assert_eq!(page.stage, Stage::Working);
+    assert!(page.fetch_art, "Create kept the checkbox as it showed");
+}
+
+/// Whether every way the window can close cancels a fetch that isn't busy.
+#[test]
+fn a_close_that_waits_still_cancels_the_fetch() {
+    // Waiting on a library.toml write, with nothing to ask about.
+    let (mut page, _) = registered(true);
+    let _ = page.finish();
+    let token = page.fetch_token.clone().unwrap();
+    let mut app = app_with_key(page);
+    // The flow covers the library, so the write started before it opened.
+    let flow = app.flow.take();
+    let _ = app.update(crate::Message::Sort(
+        crate::sort_control::Event::FlipDirection,
+    ));
+    app.flow = flow;
+    assert!(app.library_writes_pending());
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.closing && app.close_quietly && !app.exiting);
+    assert!(token.is_canceled());
+
+    // Waiting on foreground work the close prompt asked to stop.
+    let (mut page, _) = registered(true);
+    let _ = page.finish();
+    let token = page.fetch_token.clone().unwrap();
+    let mut app = app_with_key(page);
+    app.operation = Some(crate::Operation {
+        name: "other".into(),
+        kind: crate::OperationKind::Start,
+        token: Some(Token::new()),
+        cancelled: false,
+        status: "Starting...".into(),
+        install_done: None,
+        installing: false,
+        after_hook: false,
+    });
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.close_prompt);
+    assert!(!token.is_canceled(), "the prompt can still be taken back");
+    let _ = app.update(crate::Message::CancelAndClose);
+    assert!(app.closing && !app.exiting);
     assert!(token.is_canceled());
 }

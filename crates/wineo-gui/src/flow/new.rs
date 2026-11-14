@@ -512,17 +512,20 @@ impl Page {
         Task::none()
     }
 
-    pub(crate) fn submit(&mut self) -> Task<Event> {
+    /// Ctrl+Enter. `key_available` matters, since Create captures the fetch
+    /// checkbox as it shows.
+    pub(crate) fn submit(&mut self, key_available: bool) -> Task<Event> {
         if self.busy() || self.leave_prompt {
             return Task::none();
         }
-        match self.stage {
-            Stage::Details => self.update(Event::Next),
-            Stage::Review => self.update(Event::Create),
-            Stage::Target => self.update(Event::AddTarget),
-            Stage::Finished => self.update(Event::ToLibrary),
-            Stage::Working => Task::none(),
-        }
+        let event = match self.stage {
+            Stage::Details => Event::Next,
+            Stage::Review => Event::Create,
+            Stage::Target => Event::AddTarget,
+            Stage::Finished => Event::ToLibrary,
+            Stage::Working => return Task::none(),
+        };
+        self.update_with_key_availability(event, key_available)
     }
 
     fn edited(&mut self) {

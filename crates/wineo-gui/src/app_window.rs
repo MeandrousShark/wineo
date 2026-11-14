@@ -133,10 +133,6 @@ impl App {
         // Messages run until the loop stops, so late results must drop.
         self.exiting = true;
         self.steam_auto.cancel();
-        // A New page fetching art isn't busy, so nothing asked to wait on it.
-        if let Some(flow) = &self.flow {
-            flow.cancel_fetch();
-        }
         let work = self.abandoned_work();
         self.watchdog.start(&work);
         self.close_then_exit()
@@ -161,6 +157,11 @@ impl App {
     /// this one. Only the first call starts them; every exit path waits on
     /// the same result.
     pub(crate) fn start_leaving(&mut self) {
+        // A New page fetching art isn't busy, so no close waits on it or
+        // cancels it, and every way out comes through here.
+        if let Some(flow) = &self.flow {
+            flow.cancel_fetch();
+        }
         if self.left {
             return;
         }

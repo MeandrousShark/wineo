@@ -424,8 +424,17 @@ impl Page {
         }
     }
 
-    pub(crate) fn submit(&mut self) -> Task<Event> {
-        on_page!(self, page => page.submit().map(Event::from), Choose => self.update(Event::New, false))
+    pub(crate) fn submit(&mut self, key_available: bool) -> Task<Event> {
+        match self {
+            Self::New(page) => page.submit(key_available).map(Event::from),
+            Self::Prefix(page) => page.submit().map(Event::from),
+            Self::Clone(page) => page.submit().map(Event::from),
+            Self::Heroic(page) => page.submit().map(Event::from),
+            Self::Steam(page) => page.submit().map(Event::from),
+            Self::Gog(page) => page.submit().map(Event::from),
+            Self::GogUpdate(page) => page.submit().map(Event::from),
+            Self::Choose(_) => self.update(Event::New, key_available),
+        }
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
