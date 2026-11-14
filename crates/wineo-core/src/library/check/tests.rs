@@ -242,7 +242,7 @@ fn layout_is_a_known_view_key_and_a_bad_value_is_reported() {
     let inspection = inspect_text("[view]\nlayout = \"table\"\n");
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
-        ["library.toml: view.layout: expected one of grid, list, found \"table\""]
+        ["library.toml: view.layout: expected one of grid, list, coverflow, found \"table\""]
     );
     assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
     let inspection = inspect_text("[view]\nlayout = true\n");
@@ -468,7 +468,7 @@ not_tags = 5
             r#"library.toml: presets."Couch co-op".favorites_first: expected true or false, found 1"#,
             r#"library.toml: presets."Couch co-op".show_hidden: expected true or false, found "no""#,
             r#"library.toml: presets."Couch co-op".group: expected one of none, recent, tag, source, state, found "genre""#,
-            r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, found true"#,
+            r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, coverflow, found true"#,
             r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
             r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,
             r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found 3"#,

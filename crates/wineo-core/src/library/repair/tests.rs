@@ -935,7 +935,19 @@ fn repair_keeps_a_valid_layout_and_drops_an_invalid_one() {
         crate::library::ViewLayout::List
     );
 
-    for bad in ["\"table\"", "true", "3"] {
+    // Any text is kept as written, whether or not this wineo knows it.
+    let fixture = Fixture::new();
+    fixture.write("[view]\nlayout = \"table\"\ndescending = true\nthis is broken\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Recovered);
+    assert!(fixture.read().contains("layout = \"table\""));
+    let view = load(&fixture.paths).view;
+    assert_eq!(
+        (view.layout, view.descending),
+        (crate::library::ViewLayout::Grid, true)
+    );
+
+    for bad in ["true", "3"] {
         let fixture = Fixture::new();
         fixture.write(&format!(
             "[view]\nlayout = {bad}\ndescending = true\nthis is broken\n"
