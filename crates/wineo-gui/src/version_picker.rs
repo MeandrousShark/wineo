@@ -169,6 +169,7 @@ impl Picker {
         ListRows {
             list: BUILD_LIST,
             ids: self.rows().iter().map(|row| build_id(&row.build)).collect(),
+            focus: None,
         }
     }
 

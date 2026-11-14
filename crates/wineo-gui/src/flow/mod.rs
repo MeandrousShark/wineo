@@ -69,6 +69,10 @@ pub(crate) enum Action {
     },
     /// Leaves the dialog for Settings, at the Steam Web API key row.
     SteamKey,
+    /// Leaves for the library and opens the Art page for `name`.
+    Art {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -273,9 +277,10 @@ impl Page {
         }
     }
 
+    /// Whether New's Details shows the fetch checkbox, and it's on.
     #[cfg(test)]
-    pub(crate) fn art_fetching(&self) -> bool {
-        matches!(self, Self::New(page) if page.art_fetching())
+    pub(crate) fn fetch_checked(&self, key_available: bool) -> bool {
+        matches!(self, Self::New(page) if page.fetch_checked(key_available))
     }
 
     #[cfg(test)]
@@ -382,6 +387,7 @@ impl Page {
             Self::Choose(_) => Some(ListRows {
                 list: CHOICE_LIST,
                 ids: CHOICE_IDS.map(str::to_owned).to_vec(),
+                focus: None,
             }),
             Self::New(page) => page.rows(),
             Self::Heroic(page) => page.rows(),
@@ -412,8 +418,26 @@ impl Page {
         on_page!(self, page => page.cancel(force), Choose => {})
     }
 
-    pub(crate) fn submit(&mut self) -> Task<Event> {
-        on_page!(self, page => page.submit().map(Event::from), Choose => self.update(Event::New, false))
+    /// Stops an art fetch that doesn't count as busy, as the window closes.
+    pub(crate) fn cancel_fetch(&self) {
+        match self {
+            Self::New(page) => page.cancel_fetch(),
+            Self::Prefix(page) => page.cancel_fetch(),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn submit(&mut self, key_available: bool) -> Task<Event> {
+        match self {
+            Self::New(page) => page.submit(key_available).map(Event::from),
+            Self::Prefix(page) => page.submit(key_available).map(Event::from),
+            Self::Clone(page) => page.submit().map(Event::from),
+            Self::Heroic(page) => page.submit().map(Event::from),
+            Self::Steam(page) => page.submit().map(Event::from),
+            Self::Gog(page) => page.submit().map(Event::from),
+            Self::GogUpdate(page) => page.submit().map(Event::from),
+            Self::Choose(_) => self.update(Event::New, key_available),
+        }
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {

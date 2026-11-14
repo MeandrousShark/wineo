@@ -111,10 +111,12 @@ dialog that confirms Remove uses danger, like the context menu row. Back
 buttons say **Back**, with no arrow. Lists of choices, like **Add**'s or a
 program list, use quiet full-width rows in one grouped surface, not
 buttons. The rows take keyboard focus with the usual outline, on Add, New's
-program list, Heroic's and GOG's lists, and the version picker (plan
-0056): the first row has focus when a list
-appears, Up and Down move between rows and stop at the ends, Enter or Space
-chooses, and Ctrl+Enter still submits the dialog without choosing the row.
+choice page and program list, Heroic's and GOG's lists, and the version
+picker (plan 0056): the first row has focus when a list appears, or the row
+that opened the next page when you come back to it, Up and Down move between rows and stop at the ends, Enter or Space
+chooses, and Ctrl+Enter still submits the dialog without choosing the row,
+except on a page that has no forward action, like New's choice page, where
+it opens the focused row.
 A runner offer's No and Yes leave Ctrl+Enter alone the same way, but this
 isn't every control's default: left uncaptured outside a flow, Ctrl+Enter
 reaches the Library's Enter binding. When a list changes, focus stays on the same row if it is still there and
@@ -510,8 +512,14 @@ column change halfway through a zoom never jumps.
 
 ## Reviews and management pages
 
-New-environment reviews use one grouped summary with Application, Source,
-and Runtime sections as applicable. Render the frozen reviewed data directly.
+New environment's Summary uses one grouped surface with Application, Source,
+and Runtime sections as applicable, checked live as the draft settles
+rather than frozen on a review page. While a check runs, keep the last
+Summary in place, dimmed under "Checking...", so it never blanks or
+reflows, and keep the forward action off with its reason beside it until
+the check matches the draft. Notes that change what the forward action does
+repeat beside it in the pinned strip, so they're seen without scrolling.
+Other flows' review pages still render their frozen reviewed data directly.
 Warnings and missing prerequisites stay prominent below the summary. Long
 paths stay complete and wrap or scroll. Each step of an Add, import, or
 clone page that can go back has the same shape: Back alone in a row at the

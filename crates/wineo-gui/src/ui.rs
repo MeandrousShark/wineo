@@ -290,20 +290,50 @@ pub(crate) fn list_group<'a, M: Clone + 'a>(
     rows: impl IntoIterator<Item = ListRow<'a, M>>,
     palette: Palette,
 ) -> Element<'a, M> {
+    grouped_rows(list, [(None, rows.into_iter().collect())], palette)
+}
+
+/// `list_group` with its rows in groups under muted labels, still in one
+/// surface, so Up and Down walk on from one group into the next.
+pub(crate) fn labeled_list_group<'a, M: Clone + 'a>(
+    list: &'static str,
+    groups: impl IntoIterator<Item = (String, Vec<ListRow<'a, M>>)>,
+    palette: Palette,
+) -> Element<'a, M> {
+    grouped_rows(
+        list,
+        groups.into_iter().map(|(label, rows)| (Some(label), rows)),
+        palette,
+    )
+}
+
+fn grouped_rows<'a, M: Clone + 'a>(
+    list: &'static str,
+    groups: impl IntoIterator<Item = (Option<String>, Vec<ListRow<'a, M>>)>,
+    palette: Palette,
+) -> Element<'a, M> {
     let mut column = Column::new().width(Fill);
     let mut ids = Vec::new();
-    for (index, row) in rows.into_iter().enumerate() {
-        if index > 0 {
-            column = column.push(separator(palette));
+    for (label, rows) in groups {
+        if let Some(label) = label {
+            column = column.push(
+                container(text(label).size(12).color(palette.muted))
+                    .padding(iced::Padding::from([4, 12]).top(if ids.is_empty() { 6 } else { 14 })),
+            );
         }
-        let press = row.enabled.then(|| row.on_press.clone());
-        column = column.push(crate::focus_button::row(
-            row.row.on_press_maybe(press).into(),
-            row.enabled,
-            row.id.clone(),
-            row.on_press,
-        ));
-        ids.push((row.id, row.enabled));
+        for (index, row) in rows.into_iter().enumerate() {
+            if index > 0 {
+                column = column.push(separator(palette));
+            }
+            let press = row.enabled.then(|| row.on_press.clone());
+            column = column.push(crate::focus_button::row(
+                row.row.on_press_maybe(press).into(),
+                row.enabled,
+                row.id.clone(),
+                row.on_press,
+            ));
+            ids.push((row.id, row.enabled));
+        }
     }
     crate::focus_button::rows(
         list,

@@ -18,12 +18,17 @@
 # the folder yourself and run this again.
 #
 # Layout of a portable root (see crates/wineo-core/src/paths.rs):
+#   config/config.toml              only the runner root, set to runners/
 #   config/environments/NAME.toml   the games
 #   config/library.toml             favorites, hidden, added dates, [view]
 #   stats/NAME.jsonl                playtime and last played
 #   art/NAME/                       posters (grid.png and art.toml)
 #   prefixes/NAME                   minimal fake Wine prefixes
 #   games/NAME.sh                   native stubs
+#   runners/fake/bin/               a fake Wine runner named "fake"
+#   installers/setup.exe            a fake installer the fake runner runs
+#   import/legacy-app/              a standalone fake prefix for Import prefix
+#   prefixes/adopt-me               a prefix with no environment, for New to adopt
 # Every path inside a config is relative to DIR, so the folder can move.
 #
 # Each game below has a `# source:` comment saying what it covers, and the
@@ -116,6 +121,74 @@ trap 'exit 1' HUP INT TERM
 config=$root/config
 mkdir -p "$config/environments" "$root/games" "$root/stats" "$root/art" "$root/prefixes"
 
+# Runners stay in the host's data folder even in a portable root, so the
+# runner root points inside DIR instead. There's no default runner: the other
+# games keep theirs, and New environment's installer items pick "fake" under
+# Additional wine options.
+printf 'schema_version = 1\n\n[defaults]\nrunner_root = "runners"\n' >"$config/config.toml"
+
+# A fake Wine runner for New environment's installer, Target, and Clean up
+# installer items. It builds a bare prefix and runs an installer that is a
+# shell script; every other call succeeds without doing anything.
+mkdir -p "$root/runners/fake/bin" "$root/installers"
+cat >"$root/runners/fake/bin/wine" <<'WINE'
+#!/bin/sh
+case $1 in
+    wineboot)
+        if [ "${2:-}" = --init ]; then
+            # wineo finds C: and Z: paths through these links, like real Wine.
+            mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+            ln -sfn ../drive_c "$WINEPREFIX/dosdevices/c:"
+            ln -sfn / "$WINEPREFIX/dosdevices/z:"
+            printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
+            printf 'WINE REGISTRY Version 2\n' >"$WINEPREFIX/user.reg"
+        fi
+        ;;
+    *.exe) [ -f "$1" ] && exec sh "$1" ;;
+esac
+exit 0
+WINE
+printf '#!/bin/sh\nexit 0\n' >"$root/runners/fake/bin/wineserver"
+chmod +x "$root/runners/fake/bin/wine" "$root/runners/fake/bin/wineserver"
+
+# The fake installer: "installs" a game named after the prefix's folder,
+# which is the environment's name unless its prefix folder was overridden.
+cat >"$root/installers/setup.exe" <<'SETUP'
+#!/bin/sh
+name=$(basename "$WINEPREFIX")
+mkdir -p "$WINEPREFIX/drive_c/Games/$name"
+: >"$WINEPREFIX/drive_c/Games/$name/game.exe"
+echo "Installed $name"
+SETUP
+
+# Covers Import prefix (plan 0064): a prefix outside prefixes/, so no game is
+# made from it and it stays for Import prefix's Browse to find. The marker in
+# system.reg says win64, so the review doesn't stop to ask for an architecture,
+# and the drive link is the one the prefixes above have. Pick the "fake"
+# runner for it, then the import, the fetch checkbox's states, and Finished
+# with its Choose artwork... button can all be tried without a real prefix.
+import_prefix=$root/import/legacy-app
+mkdir -p "$import_prefix/dosdevices" "$import_prefix/drive_c/Program Files/Legacy App"
+printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
+    >"$import_prefix/system.reg"
+printf 'WINE REGISTRY Version 2\n' >"$import_prefix/user.reg"
+printf 'WINE REGISTRY Version 2\n' >"$import_prefix/userdef.reg"
+ln -s ../drive_c "$import_prefix/dosdevices/c:"
+: >"$import_prefix/drive_c/Program Files/Legacy App/app.exe"
+
+# Covers New environment's Summary (plan 0064): a compatible prefix where a
+# new environment named adopt-me would go, with no environment of its own. On
+# Windows, Empty, type "Adopt Me" and pick the "fake" runner under Additional
+# wine options: the Summary notes the prefix will be registered in place, and
+# so does the strip beside Create.
+adopt_prefix=$root/prefixes/adopt-me
+mkdir -p "$adopt_prefix/dosdevices" "$adopt_prefix/drive_c"
+printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
+    >"$adopt_prefix/system.reg"
+printf 'WINE REGISTRY Version 2\n' >"$adopt_prefix/user.reg"
+printf 'WINE REGISTRY Version 2\n' >"$adopt_prefix/userdef.reg"
+ln -s ../drive_c "$adopt_prefix/dosdevices/c:"
+
 # 40x60 posters in three color bands, enough to tell cards apart. Embedded so
 # no image tool is needed and the bytes never change.
 posters=(
@@ -158,11 +231,13 @@ daily() {
 #   art=0..5                 a poster from the embedded list
 #   noprefix                 leave a Wine game's prefix unbuilt
 #   run=sleep                a native stub that sleeps 600 s instead of exiting
+#   target=TEXT              the default target's desktop entry name, which the
+#                            card shows when there's no title (no quote or backslash)
 add() {
     local name=$1
     shift
     local kind=wine title='' tags='' gog_id='' heroic_id='' store='' app_id='' added=''
-    local sessions='' imported='' art='' prefix=1 favorite=0 hidden=0 run=''
+    local sessions='' imported='' art='' prefix=1 favorite=0 hidden=0 run='' target=''
     local arg tag first
     for arg in "$@"; do
         case $arg in
@@ -178,6 +253,7 @@ add() {
             imported=*) imported=${arg#imported=} ;;
             art=*) art=${arg#art=} ;;
             run=*) run=${arg#run=} ;;
+            target=*) target=${arg#target=} ;;
             noprefix) prefix=0 ;;
             favorite) favorite=1 ;;
             hidden) hidden=1 ;;
@@ -187,6 +263,8 @@ add() {
     [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "bug: bad name $name"
     if [[ -e $config/environments/$name.toml ]]; then die "bug: $name is listed twice"; fi
     [[ $title != *[\"\\]* ]] || die "bug: $name's title needs TOML escaping"
+    [[ $target != *[\"\\]* ]] || die "bug: $name's target name needs TOML escaping"
+    [[ -z $target || $kind != steam ]] || die "bug: $name is a Steam game, which has no targets"
     games=$((games + 1))
 
     {
@@ -241,6 +319,10 @@ add() {
                 echo 'default = true'
                 ;;
         esac
+        if [[ -n $target ]]; then
+            echo "name = \"$target\""
+            echo 'desktop = true'
+        fi
     } >"$config/environments/$name.toml"
 
     if [[ $kind == wine && $prefix == 1 ]]; then
@@ -452,6 +534,15 @@ add wine-mixed-case-tags tags="Game Co-Op RPG" added=2026-09-15T09:00:00Z
 
 # source: Windows; tags: eight, more than a card can show
 add wine-many-tags tags="game rpg co-op indie retro sim strategy action" added=2026-09-16T09:00:00Z
+
+# source: Windows; tags: one; Art page seed: Change searches for the title with its apostrophe and colon, not the name
+add wine-assassins-creed-origins tags=game title="Assassin's Creed: Origins" added=2026-09-16T10:00:00Z
+
+# source: Windows; tags: none; no title, so the card shows the default target's desktop name, and the Art page searches for it
+add wine-target-named target="Shadow Tactics: Blades of the Shogun" added=2026-09-16T11:00:00Z
+
+# source: Windows; tags: none; a title and a target desktop name ("Launcher") that differ: the card and the Art page search use the title
+add wine-title-over-target title="Hollow Knight" target="Launcher" added=2026-09-16T12:00:00Z
 
 # source: Windows; tags: none; favorite and hidden
 add wine-favorite-hidden favorite hidden added=2026-09-17T09:00:00Z

@@ -407,6 +407,9 @@ pub(crate) struct App {
     /// `[view] coverflow_fullscreen`, as saved.
     coverflow_fullscreen: bool,
     close_prompt: bool,
+    /// A number key or Esc whose press reached an open flow, so its repeats
+    /// are dropped even after the flow closes.
+    flow_held_key: Option<keyboard::Key>,
     /// A close waiting only on sort writes, which shows no prompt.
     close_quietly: bool,
     closing: bool,
@@ -565,6 +568,8 @@ pub(crate) enum Message {
     PopTick(u64, Instant),
     DetailsTick(u64, Instant),
     Key(keyboard::Key, keyboard::Modifiers, iced::event::Status),
+    /// A held key's repeat, which is a `Key` unless a flow drops it.
+    KeyRepeat(keyboard::Key, keyboard::Modifiers, iced::event::Status),
     Modifiers(keyboard::Modifiers),
     KeyWithFocus(
         keyboard::Key,
@@ -855,6 +860,7 @@ impl App {
             fullscreen: fullscreen::Owner::Nobody,
             coverflow_fullscreen: false,
             close_prompt: false,
+            flow_held_key: None,
             close_quietly: false,
             closing: false,
             removal: None,
@@ -1323,6 +1329,9 @@ impl App {
             self.feature_notice = None;
         }
         self.import_toast.expire(Instant::now());
+        let Some(message) = self.unrepeated(message) else {
+            return Task::none();
+        };
         if self.message_blocked(&message) {
             return Task::none();
         }
@@ -1821,6 +1830,8 @@ impl App {
                 self.pad_hint = None;
                 Task::none()
             }
+            // `update_message` turns every repeat into a `Key` or drops it.
+            Message::KeyRepeat(..) => Task::none(),
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
                 key,
                 modifiers,
@@ -2390,9 +2401,16 @@ fn focus_input(event: iced::Event) -> Option<Message> {
 
 pub(crate) fn event_message(event: iced::Event, status: iced::event::Status) -> Option<Message> {
     match event {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-            Some(Message::Key(key, modifiers, status))
-        }
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            repeat,
+            ..
+        }) => Some(if repeat {
+            Message::KeyRepeat(key, modifiers, status)
+        } else {
+            Message::Key(key, modifiers, status)
+        }),
         iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
             Some(Message::Modifiers(modifiers))
         }
