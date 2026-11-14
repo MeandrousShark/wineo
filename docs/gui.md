@@ -951,8 +951,17 @@ A failed fetch shows on the finished page with **Retry artwork** and **Skip
 artwork**. The finished page's **Choose artwork...** opens the new card's
 Art page, without launching it.
 
-Import prefix and Heroic's single-game import show clickable poster, icon,
-hero, and logo previews. Click a placeholder or preview to browse for a
+Import prefix works the same way: the same checkbox and notes on Details,
+and the fetch runs once the import is registered, searching for the Name as
+typed, with **Skip**. The import refreshes the desktop entry either way. If
+the fetch or the entry fails, the page says which, with **Retry artwork**
+and **Skip artwork**; Retry fetches again only if the fetch itself failed.
+The finished page lists what the fetch couldn't find and offers **Choose
+artwork...** beside **Set up targets**; local art files go through the Art
+page's **Browse...**.
+
+Heroic's single-game import shows clickable poster, icon, hero, and logo
+previews. Click a placeholder or preview to browse for a
 file; use **Remove** to drop it. File paths are an optional fallback.
 Manual files work without a SteamGridDB key or network access. Fetching uses
 the global **Art to fetch** switches: after you search and choose a match,
