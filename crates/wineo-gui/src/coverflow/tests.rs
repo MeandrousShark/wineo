@@ -2620,20 +2620,26 @@ fn a_long_glide_warps_the_covers_it_leaves_and_passes_both_ways() {
     assert_eq!(stops_of(&app.strip_art())[..3], [5, 6, 4]);
 }
 
-#[test]
-fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
-    // Four digits, so the strip's order is the names'.
-    let (_root, mut app) = boot();
+/// 2000 games with art, named with four digits so the strip's order is
+/// the names', resting on `game-{at}` in full motion with the panel shut.
+fn huge_at(at: usize) -> (tempfile::TempDir, App) {
+    let (root, mut app) = boot();
     let cards = (0..2000)
         .map(|index| art_card(&format!("game-{index:04}")))
         .collect();
     let _ = app.update(Message::Loaded(Ok(cards)));
     let _ = app.switch_layout(ViewLayout::Coverflow);
     let _ = app.update(Message::Strip(Event::Measured(WIDE)));
-    let mut clock = crate::clock::Fake::start();
-    select(&mut app, "game-0005");
+    select(&mut app, &format!("game-{at:04}"));
     let _ = app.update(Message::ClosePanel);
     app.motion.system_reduced = false;
+    (root, app)
+}
+
+#[test]
+fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
+    let (_root, mut app) = huge_at(5);
+    let mut clock = crate::clock::Fake::start();
     key_down(&mut app, Named::End);
     assert_eq!(app.strip.target(), 1999);
     // What's on screen and six more ahead where it sets out, and six
@@ -2666,6 +2672,33 @@ fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
             assert!(stops.contains(&stop), "{stop} at {position}");
         }
     }
+}
+
+#[test]
+fn a_jump_back_across_a_huge_library_holds_the_same_mirrored() {
+    let sorted = |mut stops: Vec<usize>| {
+        stops.sort_unstable();
+        stops
+    };
+    // Home from near the end: what's on screen and six more ahead, the
+    // way it's heading, and six around where it lands.
+    let (_root, mut app) = huge_at(1994);
+    key_down(&mut app, Named::Home);
+    assert_eq!(app.strip.target(), 0);
+    let stops = stops_of(&app.strip_art());
+    assert_eq!(stops[..3], [1994, 1993, 1995], "ahead before behind");
+    let ahead = NEIGHBORS + 1 + PREWARM;
+    let wanted: Vec<usize> = (0..=PREWARM).chain(1994 - ahead..=1999).collect();
+    assert_eq!(sorted(stops), wanted);
+    // PageUp from there: a page back, every stop between held.
+    let (_root, mut app) = huge_at(1994);
+    key_down(&mut app, Named::PageUp);
+    let target = app.strip.target();
+    assert_eq!(target, 1994 - app.covers_per_screen());
+    let stops = stops_of(&app.strip_art());
+    assert_eq!(stops[..3], [1994, 1993, 1995]);
+    let wanted: Vec<usize> = (target - PREWARM..=1999).collect();
+    assert_eq!(sorted(stops), wanted);
 }
 
 #[test]
