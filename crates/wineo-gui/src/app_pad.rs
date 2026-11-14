@@ -216,6 +216,19 @@ impl App {
         Some(pad::glyph::bar(hints, style, self.palette))
     }
 
+    /// A tool run started, by its button, Enter, or any other route: its
+    /// window takes the pad, like a game's. Every route goes through
+    /// `update`, which asks after each message.
+    pub(crate) fn sync_tool_starts(&mut self) {
+        let mut started = false;
+        for page in self.tool_pages.values_mut() {
+            started |= page.take_started();
+        }
+        if started {
+            self.close_pad_gate();
+        }
+    }
+
     /// The saved `[input]`, from the global Settings page's base whenever it
     /// reads `library.toml`. The reader starts the first time it's on.
     pub(crate) fn sync_input(&mut self) {

@@ -383,17 +383,11 @@ impl App {
             return Task::none();
         };
         let event_name = name.clone();
-        let was_busy = page.busy();
         let task = page
             .update(&self.paths, event)
             .map(move |event| Message::Tool(event_name.clone(), kind, event));
-        let started = !was_busy && page.busy();
         let action = page.take_action();
         let outcome = page.take_outcome();
-        // A tool's window takes the pad, like a game's.
-        if started {
-            self.close_pad_gate();
-        }
         let navigation = match action {
             Some(tools_page::Action::Back) => {
                 self.tool_page = None;

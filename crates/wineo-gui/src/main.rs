@@ -1206,6 +1206,7 @@ impl App {
         self.sync_font();
         self.sync_desktop();
         self.sync_input();
+        self.sync_tool_starts();
         let fullscreen = self.sync_coverflow_fullscreen();
         if self.tray.service && self.desktop.tray {
             self.sync_tray_menu();

@@ -134,6 +134,8 @@ pub(crate) struct Page {
     picker_generation: u64,
     pending_action: Option<Action>,
     outcome: bool,
+    /// A run started since the app last asked, by any route.
+    started: bool,
 }
 
 impl Page {
@@ -163,6 +165,7 @@ impl Page {
             picker_generation: 0,
             pending_action: None,
             outcome: false,
+            started: false,
         };
         let task = if kind == Kind::Winetricks {
             page.refresh(paths)
@@ -212,6 +215,11 @@ impl Page {
 
     pub(crate) fn take_outcome(&mut self) -> bool {
         std::mem::take(&mut self.outcome)
+    }
+
+    /// Whether a run started since the last call.
+    pub(crate) fn take_started(&mut self) -> bool {
+        std::mem::take(&mut self.started)
     }
 
     pub(crate) fn submit(&mut self, paths: &Paths) -> Task<Event> {
@@ -410,6 +418,7 @@ impl Page {
         let generation = self.generation;
         let token = Token::new();
         self.token = Some(token.clone());
+        self.started = true;
         self.status = Some("Preparing...".into());
         self.result = None;
         self.output.clear();

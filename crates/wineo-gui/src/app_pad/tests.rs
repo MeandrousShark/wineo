@@ -218,8 +218,9 @@ fn a_launch_or_a_steam_request_shuts_the_gate() {
 
 #[test]
 fn a_tool_run_shuts_the_gate() {
-    // Every tool run goes through `tool_update`, whatever the kind; Run
-    // program's own check needs a real runner, so winetricks stands in.
+    // Every route to a run goes through the page's own start, whatever the
+    // kind; Run program's check needs a real runner, so winetricks stands
+    // in.
     use crate::tools_page::{Event, Kind};
     for start in [Event::OpenWinetricks, Event::InstallMissing] {
         let (home, mut app) = ready();
@@ -245,6 +246,29 @@ fn a_tool_run_shuts_the_gate() {
         assert!(app.tool_pages[&("alpha".to_owned(), Kind::Winetricks)].busy());
         assert!(app.pad_gate_open());
     }
+}
+
+#[test]
+fn enter_on_a_tool_page_starts_the_run_and_shuts_the_gate() {
+    use crate::tools_page::{Event, Kind};
+    let (home, mut app) = ready();
+    for card in &mut app.cards {
+        card.prefix = Some(home.path().join("prefix"));
+    }
+    let _ = app.update(Message::OpenTool("alpha".into(), Kind::Winetricks));
+    for event in [Event::Verb("corefonts".into()), Event::AddVerb] {
+        let _ = app.update(Message::Tool("alpha".into(), Kind::Winetricks, event));
+    }
+    assert!(app.pad_gate_open());
+    // Enter with no field focused goes through the page's own submit, not
+    // `tool_update`.
+    let _ = app.update(Message::Key(
+        Key::Named(Named::Enter),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+    ));
+    assert!(app.tool_pages[&("alpha".to_owned(), Kind::Winetricks)].busy());
+    assert!(!app.pad_gate_open());
 }
 
 #[test]
