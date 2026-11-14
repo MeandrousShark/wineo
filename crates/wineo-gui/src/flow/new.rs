@@ -94,7 +94,7 @@ const STARTS: [Start; 5] = [
         id: "new-native-empty",
         title: "Empty",
         detail: "Register it, add a target later.",
-        heading: "New environment - Empty native Linux",
+        heading: "New environment - Empty Native Linux",
     },
 ];
 

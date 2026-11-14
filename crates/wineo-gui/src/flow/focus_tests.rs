@@ -374,3 +374,18 @@ fn back_and_change_land_on_the_row_details_came_from() {
     let (now, _) = focused(&app, tree);
     assert_eq!(now, [Id::from(ids[3].clone())], "Change");
 }
+
+#[test]
+fn ctrl_enter_opens_nothing_with_no_row_focused() {
+    let (mut app, tree) = new_at(3);
+    let mut laid = relaid(&app, tree);
+    laid.run(Box::new(
+        iced::advanced::widget::operation::focusable::unfocus::<()>(),
+    ));
+    assert!(laid.focused().is_empty());
+    let tree = laid.into_tree();
+    let (published, tree, task) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::CTRL);
+    assert!(published.is_empty(), "{published:?}");
+    let _ = settle(&mut app, tree, task);
+    assert!(choosing(&app));
+}
