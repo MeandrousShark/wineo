@@ -265,6 +265,26 @@ fn the_holder_of_a_picked_button_takes_its_own_default_when_free() {
     assert_eq!(button(&page, PadAction::Mark), Some(PadButton::X));
 }
 
+#[test]
+fn a_hand_written_default_is_no_change_after_a_swap_back_or_reset() {
+    let (_root, paths) = setup();
+    // Favorite on Y is its own default, written out by hand.
+    write_library(
+        &paths,
+        "schema_version = 1\n\n[input.buttons]\nfavorite = \"y\"\n",
+    );
+    let mut page = global_page(&paths);
+    assert!(!page.is_dirty());
+    form(&mut page).assign(PadAction::Favorite, PadButton::A);
+    assert_eq!(page.changes(), 1);
+    form(&mut page).assign(PadAction::Favorite, PadButton::Y);
+    assert_eq!(page.changes(), 0);
+    assert!(global_editor(&page).form.library_edits().input.is_none());
+    let _ = page.update(&paths, Event::ResetButtons);
+    assert_eq!(page.changes(), 0);
+    assert!(global_editor(&page).form.library_edits().is_empty());
+}
+
 mod app {
     //! The capture in the app: pad presses go to the waiting row first.
 

@@ -333,7 +333,7 @@ impl Form {
             + usize::from(self.draft.desktop.close != self.loaded.desktop.close)
             + usize::from(self.draft.desktop.on_start != self.loaded.desktop.on_start)
             + usize::from(self.draft.desktop.on_stop != self.loaded.desktop.on_stop)
-            + usize::from(self.draft.input != self.loaded.input)
+            + usize::from(!same_input(&self.draft.input, &self.loaded.input))
     }
     /// What to save to `library.toml`, if anything changed there.
     pub(crate) fn library_edits(&self) -> super::load::LibraryEdits {
@@ -341,7 +341,8 @@ impl Form {
             auto_import: self.auto_import_edit(),
             desktop: (self.draft.desktop != self.loaded.desktop).then_some(self.draft.desktop),
             coverflow_fullscreen: self.coverflow_fullscreen_edit(),
-            input: (self.draft.input != self.loaded.input).then(|| self.draft.input.clone()),
+            input: (!same_input(&self.draft.input, &self.loaded.input))
+                .then(|| self.draft.input.clone()),
         }
     }
     /// What to save for `coverflow_fullscreen`, if it changed.
@@ -461,6 +462,20 @@ impl Form {
         }
         edits
     }
+}
+
+/// Whether two `[input]`s save the same. A remap onto an action's own
+/// button, which a hand edit can write, is the same as none.
+fn same_input(a: &wineo_core::library::Input, b: &wineo_core::library::Input) -> bool {
+    let changed = |input: &wineo_core::library::Input| -> BTreeMap<PadAction, PadButton> {
+        input
+            .buttons
+            .iter()
+            .filter(|(action, button)| **button != action.default_button())
+            .map(|(action, button)| (*action, *button))
+            .collect()
+    };
+    a.controller == b.controller && changed(a) == changed(b)
 }
 
 pub(crate) struct Editor {
