@@ -3248,6 +3248,16 @@ fn canceling_a_download_returns_to_details_and_checks_again() {
         ));
         assert_eq!(page.stage, Stage::Details, "{how}");
         assert!(page.token.is_none(), "{how}");
+        // A cancel the user chose is no error line under the Summary.
+        assert!(page.error.is_none(), "{how}");
+        assert!(
+            labeled(
+                &texts(&page, iced::Size::new(900.0, 720.0)),
+                "Download canceled"
+            )
+            .is_empty(),
+            "{how}"
+        );
         assert_ne!(page.check_sequence, checks, "{how}");
         assert!(page.checking, "{how}");
         land(&mut page, missing_runner());
@@ -3258,5 +3268,559 @@ fn canceling_a_download_returns_to_details_and_checks_again() {
             )),
             "{how}: the download is offered again"
         );
+    }
+}
+
+// Plan 0064 step 6: the remaining fixes.
+
+/// Which of Working's stop buttons `page` shows.
+fn stop_buttons(page: &Page) -> Vec<&'static str> {
+    let shown = texts(page, iced::Size::new(900.0, 720.0));
+    ["Cancel", "Force stop", "Skip"]
+        .into_iter()
+        .filter(|label| !labeled(&shown, label).is_empty())
+        .collect()
+}
+
+/// The target step, reached from a registered environment with
+/// `programs` installed programs to pick from.
+fn on_target(fetch: bool, programs: usize) -> (Page, Calls) {
+    let (mut page, calls) = registered(fetch);
+    let report = page.report.as_mut().unwrap();
+    report.offer_programs = true;
+    report.programs = (0..programs)
+        .map(|index| {
+            (
+                format!("Program {index}"),
+                format!("C:\\Games\\Game\\program-{index}.exe"),
+            )
+        })
+        .collect();
+    page.stage = Stage::Working;
+    let report = page.report.clone().unwrap();
+    let _ = page.update(Event::Done(page.generation, report));
+    assert_eq!(page.stage, Stage::Target);
+    (page, calls)
+}
+
+#[test]
+fn cancel_shows_only_where_it_works() {
+    // Creation sets a token, so it can be canceled, then forced.
+    let mut creating = summarized(ready_review());
+    let _ = creating.update_with_key_availability(Event::Create, false);
+    assert_eq!(creating.stage, Stage::Working);
+    assert_eq!(stop_buttons(&creating), ["Cancel"]);
+    let _ = creating.update(Event::Cancel);
+    assert_eq!(stop_buttons(&creating), ["Force stop"]);
+
+    // So does a download.
+    let mut downloading = summarized(missing_runner());
+    let _ = downloading.update(Event::Download(Provider::GeProton));
+    assert_eq!(downloading.stage, Stage::Working);
+    assert_eq!(stop_buttons(&downloading), ["Cancel"]);
+
+    // Add target sets none, so there's nothing for Cancel or Esc to stop.
+    let (mut adding, _) = on_target(false, 1);
+    adding.target_path = "C:\\Games\\Game\\program-0.exe".to_owned();
+    let _ = adding.update(Event::AddTarget);
+    assert_eq!(adding.stage, Stage::Working);
+    assert_eq!(adding.status, "Adding target...");
+    assert_eq!(stop_buttons(&adding), Vec::<&str>::new());
+    let status = adding.status.clone();
+    let _ = adding.back();
+    assert_eq!(adding.status, status, "Esc has nothing to cancel either");
+
+    // Neither does Clean up installer.
+    let (mut cleaning, _) = registered(false);
+    cleaning.report.as_mut().unwrap().cleanup_resolved = false;
+    let _ = cleaning.finish();
+    assert_eq!(cleaning.stage, Stage::Finished);
+    let _ = cleaning.update(Event::CleanUp);
+    assert_eq!(cleaning.stage, Stage::Working);
+    assert_eq!(cleaning.status, "Cleaning up installer...");
+    assert_eq!(stop_buttons(&cleaning), Vec::<&str>::new());
+
+    // The art fetch keeps its Skip.
+    let (mut fetching, _) = registered(true);
+    let _ = fetching.finish();
+    assert!(fetching.fetching);
+    assert_eq!(stop_buttons(&fetching), ["Skip"]);
+}
+
+#[test]
+fn a_canceled_download_shows_no_error_but_a_failed_one_does() {
+    let size = iced::Size::new(900.0, 720.0);
+    let mut page = summarized(missing_runner());
+    let _ = page.update(Event::Download(Provider::GeProton));
+    let _ = page.update(Event::Cancel);
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Err("Download canceled".to_owned()),
+    ));
+    assert_eq!(page.stage, Stage::Details);
+    assert!(page.error.is_none());
+    assert!(labeled(&texts(&page, size), "Download canceled").is_empty());
+
+    let mut page = summarized(missing_runner());
+    let _ = page.update(Event::Download(Provider::GeProton));
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Err("offline".to_owned()),
+    ));
+    assert_eq!(labeled(&texts(&page, size), "offline").len(), 1);
+}
+
+/// A page on Details whose environment name is already taken.
+fn page_with_existing_environment(name: &str) -> Page {
+    let page = page();
+    let config = page.paths.environment_config(name);
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(config, "schema_version = 1\n").unwrap();
+    page
+}
+
+fn settings_for(name: &str) -> String {
+    format!("Settings {{ name: {name:?}, launch: false }}")
+}
+
+#[test]
+fn open_existing_with_edits_asks_before_dropping_the_draft() {
+    let mut page = page_with_existing_environment("hades");
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let _ = page.update(Event::OpenExisting);
+    assert_eq!(page.stage, Stage::Details);
+    assert!(page.leave_prompt, "a typed name is an edit");
+    assert!(page.take_action().is_none(), "nothing left yet");
+
+    // Keep editing keeps the draft, and the way out is forgotten.
+    let _ = page.update(Event::KeepEditing);
+    assert!(!page.leave_prompt);
+    assert_eq!(page.draft.title, "Hades");
+    assert!(page.take_action().is_none());
+    // Esc is Back, which answers the prompt like Keep editing.
+    let _ = page.update(Event::OpenExisting);
+    assert!(page.leave_prompt);
+    let _ = page.update(Event::Back);
+    assert!(!page.leave_prompt);
+    assert_eq!(page.stage, Stage::Details, "Esc stays on Details");
+    assert!(page.take_action().is_none());
+
+    // Discard goes to that environment's Settings, not the Add choices.
+    let _ = page.update(Event::OpenExisting);
+    let _ = page.update(Event::Discard);
+    assert!(!page.leave_prompt);
+    assert_eq!(
+        format!("{:?}", page.take_action().unwrap()),
+        settings_for("hades")
+    );
+}
+
+#[test]
+fn a_discard_from_the_choice_page_still_goes_to_the_add_choices() {
+    let mut page = page_with_existing_environment("hades");
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let _ = page.update(Event::OpenExisting);
+    let _ = page.update(Event::KeepEditing);
+    // Back from the choice page asks too, and its Discard isn't Settings.
+    let _ = page.update(Event::Change);
+    let _ = page.update(Event::Back);
+    assert!(page.leave_prompt);
+    let _ = page.update(Event::Discard);
+    assert_eq!(format!("{:?}", page.take_action().unwrap()), "Choose");
+}
+
+#[test]
+fn open_existing_without_edits_leaves_without_asking() {
+    // A name needs typing, which is an edit, so nothing but an unnamed
+    // draft has none: the environment file under the empty name stands in.
+    let mut page = page_with_existing_environment("");
+    assert!(!page.has_edits());
+    let _ = page.update(Event::OpenExisting);
+    assert!(!page.leave_prompt);
+    assert_eq!(
+        format!("{:?}", page.take_action().unwrap()),
+        settings_for("")
+    );
+}
+
+#[test]
+fn a_check_lands_while_open_existing_asks() {
+    let mut page = page_with_existing_environment("hades");
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let waiting = page.check_sequence;
+    let _ = page.update(Event::OpenExisting);
+    assert!(page.leave_prompt);
+    // Its wait still starts the check, and the check still lands.
+    let task = page.update(Event::Settled(waiting));
+    assert!(
+        is_none(task),
+        "the name is taken, so there's nothing to run"
+    );
+    let _ = page.update(Event::Checked(
+        waiting,
+        Box::new(page.draft.clone()),
+        Ok(Box::new(adopting())),
+    ));
+    assert!(page.leave_prompt);
+    assert!(!page.checking);
+    let _ = page.update(Event::KeepEditing);
+    assert!(
+        page.summary
+            .as_ref()
+            .unwrap()
+            .found
+            .as_ref()
+            .unwrap()
+            .adopted
+    );
+    assert!(
+        page.checked().is_ok(),
+        "the landed check is what Create sees"
+    );
+}
+
+#[test]
+fn the_architecture_choice_clears_the_override() {
+    // The list's choices publish what the page needs.
+    assert_eq!(format!("{:?}", ArchPick::Default.event()), "ArchDefault");
+    assert_eq!(
+        format!("{:?}", ArchPick::Arch(Arch::Win32).event()),
+        "Arch(Win32)"
+    );
+    assert_eq!(
+        ArchPick::Default.to_string(),
+        "Use template or global default"
+    );
+
+    let mut page = page();
+    assert!(!page.has_edits());
+    let _ = page.update(Event::Arch(Arch::Win32));
+    assert_eq!(page.draft.arch, Some(Arch::Win32));
+    assert!(page.has_edits());
+    // Back to unset is the default again, so it's no edit.
+    let _ = page.update(Event::ArchDefault);
+    assert_eq!(page.draft.arch, None);
+    assert!(!page.has_edits());
+}
+
+#[test]
+fn the_summary_shows_the_template_or_global_architecture_once_cleared() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    fake_runner(&paths);
+    let global = GlobalConfig::load(&paths).unwrap().defaults.arch;
+    let other = if global == Arch::Win64 {
+        Arch::Win32
+    } else {
+        Arch::Win64
+    };
+    let mut page = offer_page(&paths);
+    let _ = page.update(Event::Name("Hollow Knight".to_owned()));
+    let _ = page.update(Event::Runner("fake".to_owned()));
+    let _ = page.update(Event::Arch(other));
+    settle(&mut page);
+    let arch = |page: &Page| page.checked().map(|review| review.arch);
+    assert_eq!(arch(&page), Ok(other), "{:?}", page.summary);
+    let _ = page.update(Event::ArchDefault);
+    settle(&mut page);
+    assert_eq!(arch(&page), Ok(global));
+    let shown = texts(&page, iced::Size::new(900.0, 4000.0));
+    assert!(
+        !labeled(&shown, &global.to_string()).is_empty(),
+        "{shown:?}"
+    );
+}
+
+/// The pixels of the Environment name override's box on a page whose
+/// override was cleared after typing `title`.
+fn cleared_override_box(title: &str) -> Vec<u8> {
+    let size = iced::Size::new(600.0, 900.0);
+    let mut page = page();
+    let _ = page.update(Event::Name(title.to_owned()));
+    let _ = page.update(Event::EditEnvironment);
+    let _ = page.update(Event::EnvironmentName("typed".to_owned()));
+    let _ = page.update(Event::EnvironmentName(String::new()));
+    assert_eq!(page.draft.environment.as_deref(), Some(""));
+    let label = last_labeled(&texts(&page, size), "Environment name");
+    let mut view = page.view_with_key_availability(Palette::DARK, true);
+    let pixels = crate::layout_probe::render(&mut view, size);
+    // The input sits right under its label.
+    let (top, rows) = ((label.y + label.height) as usize, 30);
+    let (left, columns) = (label.x as usize, 260);
+    let stride = size.width as usize * 4;
+    (top..top + rows)
+        .flat_map(|y| pixels[y * stride + left * 4..y * stride + (left + columns) * 4].to_vec())
+        .collect()
+}
+
+#[test]
+fn a_cleared_override_shows_the_derived_name_as_its_placeholder() {
+    assert_eq!(
+        Draft {
+            title: "Hollow Knight".to_owned(),
+            ..Draft::default()
+        }
+        .environment_placeholder(),
+        "hollow-knight"
+    );
+    assert_eq!(
+        Draft::default().environment_placeholder(),
+        "Environment name"
+    );
+
+    // The box is drawn with it: two titles give two boxes, and the same
+    // title gives the same one.
+    let knight = cleared_override_box("Hollow Knight");
+    assert_eq!(knight, cleared_override_box("Hollow Knight"));
+    assert_ne!(knight, cleared_override_box("Hades"));
+}
+
+#[test]
+fn the_key_strings_are_neutral_where_they_are_not_about_games() {
+    let size = iced::Size::new(900.0, 720.0);
+    assert_eq!(NAME_HINT, "Name");
+
+    // The target step, its error, its working status, and Finished.
+    let (mut page, _) = on_target(false, 1);
+    let shown = texts(&page, size);
+    for expected in [
+        "Choose a target",
+        "Choose the program to run. The installer itself is not a target.",
+    ] {
+        assert_eq!(labeled(&shown, expected).len(), 1, "{expected}");
+    }
+    let _ = page.update(Event::AddTarget);
+    assert_eq!(labeled(&texts(&page, size), "Choose a program").len(), 1);
+    page.target_path = "C:\\Games\\Game\\program-0.exe".to_owned();
+    let _ = page.update(Event::AddTarget);
+    assert_eq!(labeled(&texts(&page, size), "Adding target...").len(), 1);
+
+    let (mut page, _) = registered(false);
+    page.report.as_mut().unwrap().playable = true;
+    let _ = page.finish();
+    assert_eq!(
+        labeled(&texts(&page, size), "Launch it when this page closes").len(),
+        1
+    );
+
+    // Nothing in what a new environment shows says "game" where it isn't one.
+    for page in [page, summarized(ready_review())] {
+        for (text, _) in texts(&page, size) {
+            for old in ["game target", "game executable", "Launch game", "Game name"] {
+                assert!(!text.contains(old), "{text}");
+            }
+        }
+    }
+}
+
+/// Esc, as the window delivers it.
+fn esc() -> iced::keyboard::Key {
+    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
+}
+
+fn app_on(page: Page) -> crate::App {
+    let mut app = crate::tests::app();
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    app
+}
+
+#[test]
+fn esc_on_the_choice_page_leaves_for_the_add_choices() {
+    let mut app = app_on(choosing());
+    let _ = app.update(pressed(esc(), false));
+    assert!(matches!(app.flow, Some(crate::flow::Page::Choose(_))));
+}
+
+#[test]
+fn esc_on_details_goes_back_to_the_choice_page_keeping_the_draft() {
+    let mut page = page();
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let mut app = app_on(page);
+    let _ = app.update(pressed(esc(), false));
+    let page = new_page(&app);
+    assert!(page.choosing());
+    assert_eq!(page.draft.title, "Hades");
+}
+
+#[test]
+fn esc_answers_the_discard_prompt_on_the_choice_page_and_on_details() {
+    // On the choice page, Esc opens the prompt and the next one closes it.
+    let mut page = page();
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let mut app = app_on(page);
+    let _ = app.update(pressed(esc(), false));
+    let _ = app.update(pressed(esc(), false));
+    assert!(new_page(&app).leave_prompt_open());
+    let _ = app.update(pressed(esc(), false));
+    let page = new_page(&app);
+    assert!(!page.leave_prompt_open());
+    assert!(page.choosing());
+    assert_eq!(page.draft.title, "Hades");
+
+    // On Details, where Open existing opens it, Esc closes it and stays.
+    let mut page = page_with_existing_environment("hades");
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let _ = page.update(Event::OpenExisting);
+    let mut app = app_on(page);
+    assert!(new_page(&app).leave_prompt_open());
+    let _ = app.update(pressed(esc(), false));
+    let page = new_page(&app);
+    assert!(!page.leave_prompt_open());
+    assert_eq!(page.details_for(), Some((Kind::Windows, Source::Empty)));
+}
+
+#[test]
+fn esc_during_the_fetch_skips_it() {
+    let (mut page, _) = registered(true);
+    let _ = page.finish();
+    let token = page.fetch_token.clone().unwrap();
+    let mut app = app_on(page);
+    let _ = app.update(pressed(esc(), false));
+    assert!(token.is_canceled());
+    assert_eq!(new_page(&app).status, "Skipping artwork...");
+}
+
+#[test]
+fn esc_on_target_skips_the_target_and_starts_the_fetch() {
+    let (page, _) = on_target(true, 1);
+    let mut app = app_on(page);
+    let _ = app.update(pressed(esc(), false));
+    let page = new_page(&app);
+    assert_eq!(page.stage, Stage::Working);
+    assert!(page.fetching && page.art_started);
+
+    // Without the fetch, it goes straight to Finished.
+    let (page, _) = on_target(false, 1);
+    let mut app = app_on(page);
+    let _ = app.update(pressed(esc(), false));
+    assert_eq!(new_page(&app).stage, Stage::Finished);
+}
+
+#[test]
+fn esc_on_finished_leaves_for_the_library() {
+    let (mut page, _) = registered(false);
+    let _ = page.finish();
+    assert_eq!(page.stage, Stage::Finished);
+    let mut app = app_on(page);
+    let _ = app.update(pressed(esc(), false));
+    assert!(app.flow.is_none());
+}
+
+/// Target's controls, found by their labels, in a dialog of `size`: Back
+/// alone above the scrolling content, Confirm and Skip for now pinned under
+/// it at the left.
+fn assert_target_shape(page: &Page, size: iced::Size, case: &str) {
+    use crate::layout_probe::{probe, within};
+    let inset = iced::Rectangle::new(
+        iced::Point::new(24.0, 24.0),
+        iced::Size::new(size.width - 48.0, size.height - 48.0),
+    );
+    let mut view = page.view_with_key_availability(Palette::DARK, true);
+    let probe = probe(&mut view, size);
+    let spilled = probe.outside(iced::Rectangle::with_size(size));
+    assert!(spilled.is_empty(), "{case}: {spilled:?}");
+    assert_eq!(probe.scrollables.len(), 1, "{case}");
+    let (viewport, _) = probe.scrollables[0];
+    assert!(viewport.height > 0.0, "{case}: {viewport:?}");
+    let shown = texts(page, size);
+    let back = last_labeled(&shown, "Back");
+    assert!(within(back, inset), "{case}: {back:?}");
+    assert!(back.y + back.height <= viewport.y, "{case}: {back:?}");
+    assert!(back.y < inset.y + 32.0, "{case}: Back at the top, {back:?}");
+    let title = last_labeled(&shown, "Choose a target");
+    assert!(
+        title.y >= viewport.y,
+        "{case}: the title scrolls, {title:?}"
+    );
+    let confirm = last_labeled(&shown, "Confirm");
+    let skip = last_labeled(&shown, "Skip for now");
+    for (label, bounds) in [("Confirm", confirm), ("Skip for now", skip)] {
+        assert!(within(bounds, inset), "{case}: {label}: {bounds:?}");
+        assert!(
+            bounds.y >= viewport.y + viewport.height,
+            "{case}: {label} is pinned, {bounds:?}"
+        );
+    }
+    // The page is centered once the dialog is wider than its content.
+    let left = ((size.width - frame::PAGE_MAX_WIDTH) / 2.0).max(inset.x);
+    assert!(
+        confirm.x - left < 30.0,
+        "{case}: Confirm at the left, {confirm:?}"
+    );
+    assert!(
+        skip.x >= confirm.x + confirm.width || skip.y >= confirm.y + confirm.height,
+        "{case}: Skip for now beside or under Confirm, {skip:?}"
+    );
+}
+
+#[test]
+fn target_has_back_alone_at_the_top_and_its_actions_pinned_at_the_bottom_left() {
+    for programs in [0, 1, 40] {
+        let (page, _) = on_target(false, programs);
+        for (width, height) in [(280.0, 240.0), (400.0, 300.0), (900.0, 720.0)] {
+            let size = iced::Size::new(width, height);
+            assert_target_shape(
+                &page,
+                size,
+                &format!("{programs} programs at {width}x{height}"),
+            );
+        }
+        let size = iced::Size::new(900.0, 720.0);
+        assert_eq!(click_label(&page, size, "Back"), ["Back"]);
+        assert_eq!(click_label(&page, size, "Confirm"), ["AddTarget"]);
+        assert_eq!(click_label(&page, size, "Skip for now"), ["SkipTarget"]);
+    }
+}
+
+#[test]
+fn back_on_target_skips_the_target_and_the_fetch_runs_once_after_it() {
+    let (mut page, calls) = on_target(true, 1);
+    assert_eq!(call_count(&calls), 0);
+    let size = iced::Size::new(900.0, 720.0);
+    // The click publishes Back, which does what Esc does.
+    assert_eq!(click_label(&page, size, "Back"), ["Back"]);
+    let task = page.update(Event::Back);
+    assert!(page.fetching);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 1);
+    assert_eq!(page.stage, Stage::Finished);
+
+    // Without a fetch, Back goes to Finished at once, with no target added.
+    let (mut page, calls) = on_target(false, 1);
+    let _ = page.update(Event::Back);
+    assert_eq!(page.stage, Stage::Finished);
+    assert_eq!(call_count(&calls), 0);
+    assert!(!page.report.as_ref().unwrap().playable);
+}
+
+#[test]
+fn the_fetch_and_finished_pages_fit_small_dialogs() {
+    use crate::layout_probe::probe;
+    let (mut fetching, _) = registered(true);
+    // The creation log stays under the fetch's status.
+    for line in 0..40 {
+        let _ = fetching.append_log(&format!("Installer line {line} with some words to wrap\n"));
+    }
+    let _ = fetching.finish();
+    assert!(fetching.fetching);
+    let (mut finished, _) = registered(false);
+    let report = finished.report.as_mut().unwrap();
+    report.playable = true;
+    report.notes = vec!["A note about the creation that runs long ".repeat(4)];
+    let _ = finished.finish();
+    assert_eq!(finished.stage, Stage::Finished);
+    for (label, page) in [("fetch", &fetching), ("finished", &finished)] {
+        for (width, height) in [(280.0, 240.0), (400.0, 300.0)] {
+            let size = iced::Size::new(width, height);
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, size);
+            assert!(!probe.scrollables.is_empty(), "{label} at {width}x{height}");
+            let spilled = probe.outside(iced::Rectangle::with_size(size));
+            assert!(
+                spilled.is_empty(),
+                "{label} at {width}x{height}: {spilled:?}"
+            );
+        }
     }
 }
