@@ -27,6 +27,7 @@
 #   games/NAME.sh                   native stubs
 #   runners/fake/bin/               a fake Wine runner named "fake"
 #   installers/setup.exe            a fake installer the fake runner runs
+#   import/legacy-app/              a standalone fake prefix for Import prefix
 # Every path inside a config is relative to DIR, so the folder can move.
 #
 # Each game below has a `# source:` comment saying what it covers, and the
@@ -158,6 +159,21 @@ mkdir -p "$WINEPREFIX/drive_c/Games/$name"
 : >"$WINEPREFIX/drive_c/Games/$name/game.exe"
 echo "Installed $name"
 SETUP
+
+# Covers Import prefix (plan 0064): a prefix outside prefixes/, so no game is
+# made from it and it stays for Import prefix's Browse to find. The marker in
+# system.reg says win64, so the review doesn't stop to ask for an architecture,
+# and the drive link is the one the prefixes above have. Pick the "fake"
+# runner for it, then the import, the fetch checkbox's states, and Finished
+# with its Choose artwork... button can all be tried without a real prefix.
+import_prefix=$root/import/legacy-app
+mkdir -p "$import_prefix/dosdevices" "$import_prefix/drive_c/Program Files/Legacy App"
+printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
+    >"$import_prefix/system.reg"
+printf 'WINE REGISTRY Version 2\n' >"$import_prefix/user.reg"
+printf 'WINE REGISTRY Version 2\n' >"$import_prefix/userdef.reg"
+ln -s ../drive_c "$import_prefix/dosdevices/c:"
+: >"$import_prefix/drive_c/Program Files/Legacy App/app.exe"
 
 # 40x60 posters in three color bands, enough to tell cards apart. Embedded so
 # no image tool is needed and the bytes never change.
