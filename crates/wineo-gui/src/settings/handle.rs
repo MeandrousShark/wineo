@@ -535,6 +535,8 @@ impl Page {
                         disk.appearance = snapshot.texts.appearance;
                         disk.auto_import = snapshot.texts.auto_import;
                         disk.desktop = snapshot.texts.desktop;
+                        disk.coverflow_fullscreen = snapshot.texts.coverflow_fullscreen;
+                        disk.input = snapshot.texts.input;
                         disk.themes = snapshot.texts.themes;
                     }
                 } else {
