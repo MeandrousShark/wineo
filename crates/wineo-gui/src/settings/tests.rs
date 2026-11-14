@@ -3884,4 +3884,6 @@ mod key_rows;
 
 mod desktop;
 
+mod input;
+
 mod narrow_rows;

@@ -97,6 +97,11 @@ pub(crate) struct Values {
     pub(crate) auto_import: bool,
     /// `[desktop]` in `library.toml`, saved on its own the same way.
     pub(crate) desktop: wineo_core::library::Desktop,
+    /// `[view] coverflow_fullscreen`, and `[input]` with its buttons: also
+    /// `library.toml`'s, read here so the toolbar's `[view]` writes and
+    /// another window's don't look like an outside change to this form.
+    pub(crate) coverflow_fullscreen: bool,
+    pub(crate) input: wineo_core::library::Input,
 }
 
 impl Values {
@@ -124,6 +129,8 @@ impl Values {
             external_runners: config.external_runners,
             auto_import: false,
             desktop: wineo_core::library::Desktop::default(),
+            coverflow_fullscreen: false,
+            input: wineo_core::library::Input::default(),
             env: config
                 .env
                 .iter()
@@ -223,8 +230,9 @@ impl Form {
     pub(crate) fn revert(&mut self) {
         self.draft = self.loaded.clone();
     }
-    /// The new base can differ in `auto_import` or `[desktop]` alone, from
-    /// another window, and an untouched control follows it.
+    /// The new base can differ in `auto_import`, `[desktop]`,
+    /// `coverflow_fullscreen`, or `[input]` alone, from another window, and
+    /// an untouched control follows it.
     pub(crate) fn rebase(&mut self, values: Values) {
         if self.draft.auto_import == self.loaded.auto_import {
             self.draft.auto_import = values.auto_import;
@@ -240,6 +248,15 @@ impl Form {
         }
         if self.draft.desktop.on_stop == self.loaded.desktop.on_stop {
             self.draft.desktop.on_stop = values.desktop.on_stop;
+        }
+        if self.draft.coverflow_fullscreen == self.loaded.coverflow_fullscreen {
+            self.draft.coverflow_fullscreen = values.coverflow_fullscreen;
+        }
+        if self.draft.input.controller == self.loaded.input.controller {
+            self.draft.input.controller = values.input.controller;
+        }
+        if self.draft.input.buttons == self.loaded.input.buttons {
+            self.draft.input.buttons = values.input.buttons.clone();
         }
         self.loaded = values;
     }

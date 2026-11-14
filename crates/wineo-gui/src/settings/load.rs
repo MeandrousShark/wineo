@@ -101,10 +101,13 @@ pub(crate) struct Texts {
     /// table counts, since favorites and the library's view write the file
     /// too.
     pub(crate) appearance: Option<Appearance>,
-    /// `[steam] auto_import` and `[desktop]` as read, on the global page,
-    /// which are the only other parts of that file the page shows.
+    /// `[steam] auto_import`, `[desktop]`, `[view] coverflow_fullscreen`, and
+    /// `[input]` with its buttons, as read, on the global page, which are the
+    /// only other parts of that file the page shows.
     pub(crate) auto_import: Option<bool>,
     pub(crate) desktop: Option<library::Desktop>,
+    pub(crate) coverflow_fullscreen: Option<bool>,
+    pub(crate) input: Option<library::Input>,
     /// The custom theme files as read, on the global page.
     pub(crate) themes: Option<Themes>,
 }
@@ -117,6 +120,8 @@ impl Texts {
             appearance: None,
             auto_import: None,
             desktop: None,
+            coverflow_fullscreen: None,
+            input: None,
             themes: None,
         }
     }
@@ -128,6 +133,8 @@ impl Texts {
             appearance: Some(library.appearance),
             auto_import: Some(library.steam.auto_import),
             desktop: Some(library.desktop),
+            coverflow_fullscreen: Some(library.view.coverflow_fullscreen),
+            input: Some(library.input),
             themes: Some(themes::list(paths)),
         }
     }
@@ -165,6 +172,8 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
             let mut values = global::Values::from_config(&config, texts.global.as_deref());
             values.auto_import = texts.auto_import.unwrap_or_default();
             values.desktop = texts.desktop.unwrap_or_default();
+            values.coverflow_fullscreen = texts.coverflow_fullscreen.unwrap_or_default();
+            values.input = texts.input.clone().unwrap_or_default();
             let (runners, _) = runner_choices(paths, &config, &config.defaults.runner);
             Content::Global(Box::new(GlobalLoaded {
                 values,
