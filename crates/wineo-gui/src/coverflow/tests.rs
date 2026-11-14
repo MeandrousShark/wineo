@@ -1557,3 +1557,74 @@ fn selecting_a_game_from_a_page_leaves_the_card() {
     assert_eq!(app.header_cursor(), None);
     assert_eq!(middle(&app), "c-2");
 }
+
+/// a-0 in a; b-0 in b and c; b-1 in b; c-1 in c when `other`; with a and
+/// b collapsed, so the card for b sits beside what c shows.
+fn card_and_its_game_elsewhere(other: bool) -> (tempfile::TempDir, App) {
+    let (root, mut app) = boot();
+    app.group = wineo_core::library::GroupBy::Tag;
+    let mut games = vec![
+        ("a-0", vec!["a"]),
+        ("b-0", vec!["b", "c"]),
+        ("b-1", vec!["b"]),
+    ];
+    if other {
+        games.push(("c-1", vec!["c"]));
+    }
+    let cards = games
+        .into_iter()
+        .map(|(name, tags)| {
+            let mut card = card(name, State::Inactive, 0);
+            card.tags = tags.into_iter().map(str::to_owned).collect();
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    in_coverflow(&mut app);
+    collapse(&mut app, "a");
+    collapse(&mut app, "b");
+    press(&mut app, Named::Home);
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-0");
+    (root, app)
+}
+
+fn pick(app: &mut App) {
+    let task = app.update(Message::Random(crate::random_pick::Event::Pick));
+    for message in crate::sort_control::tests::answers(app, task) {
+        let _ = app.update(message);
+    }
+}
+
+#[test]
+fn r_on_a_card_counts_nothing_as_current() {
+    let (_root, app) = card_and_its_game_elsewhere(true);
+    // b-0 is the card's game but also shows in c; it isn't skipped.
+    let picks: std::collections::BTreeSet<String> = (0..64)
+        .filter_map(|seed| app.random_choice(&mut fastrand::Rng::with_seed(seed)))
+        .collect();
+    assert_eq!(
+        picks.into_iter().collect::<Vec<_>>(),
+        ["b-0", "c-1"],
+        "both shown games can come up"
+    );
+}
+
+#[test]
+fn r_on_a_card_lands_on_its_only_game_with_the_panel_open_or_shut() {
+    for open in [true, false] {
+        let (_root, mut app) = card_and_its_game_elsewhere(false);
+        if open {
+            app.panel_open = true;
+        } else {
+            let _ = app.update(Message::ClosePanel);
+        }
+        assert!(app.panel_hidden_by_card() || !open);
+        pick(&mut app);
+        assert_eq!(selected(&app), "b-0", "open {open}");
+        assert_eq!(middle(&app), "b-0", "open {open}");
+        assert!(!app.panel_hidden_by_card(), "open {open}");
+        assert!(app.panel_open, "open {open}");
+    }
+}

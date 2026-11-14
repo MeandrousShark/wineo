@@ -276,13 +276,22 @@ impl App {
                 launchable: self.random_launchable(card),
             })
             .collect();
-        choose(&entries, self.selected.as_deref(), self.random_pool, rng).map(str::to_owned)
+        // A collapsed section's card isn't a game, so nothing is current.
+        let current = if self.panel_hidden_by_card() {
+            None
+        } else {
+            self.selected.as_deref()
+        };
+        choose(&entries, current, self.random_pool, rng).map(str::to_owned)
     }
 
     fn pick_random(&mut self) -> Task<Message> {
         let Some(name) = self.random_choice(&mut fastrand::Rng::new()) else {
             return Task::none();
         };
+        // The pick lands on its game, even the one a card's selection
+        // stood for.
+        self.leave_header();
         // Selecting the open panel's own card would close it, and a pick
         // only ever opens.
         let select = if self.panel_open && self.selected.as_deref() == Some(&name) {
