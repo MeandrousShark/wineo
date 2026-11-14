@@ -527,11 +527,17 @@ Library's size.
   inset 10% top and bottom, cropped to the 2:3 middle. The tilt is a warp
   made once per cover on the decode thread and cached left and right, never
   drawn per frame. A cover crossfades from flat to tilted as it turns.
-  Covers are square, since tiny-skia ignores image corner radius, and the
-  shapes behind and over a tilted cover are trapezoids so no square corner
-  shows over its neighbors.
-- Anything over a cover (badges, dimming, the caption) gets its own layer,
-  since both renderers draw a layer's quads before its images. A cover
+  Covers are square, since tiny-skia ignores image corner radius.
+- Everything about a cover follows one outline each frame: the trapezoid
+  once its warp is what's drawn, the rectangle before that. Name cards and
+  section stacks turn with the strip. The trapezoid fills are SVGs made at
+  each cover's own aspect, since both renderers scale an SVG evenly to its
+  longer side and ignore `preserveAspectRatio`.
+- Dimming isn't a layer over the cover: its colors mix toward the
+  background and its art drops in opacity over an opaque background.
+  Badges and the caption get their own layers, since both renderers draw a
+  layer's quads before its images, and each cover's art draws in a layer
+  its own size, since tiny-skia clips an image only to its layer. A cover
   carries only the mark check and the favorite star, drawn as on a grid
   card, with the grid's gray and fade for not installed or hidden.
 - The caption is the title and one state line in a 64 px band, 12 px under
@@ -544,9 +550,11 @@ Library's size.
   above the strip as a button that collapses it.
 - The middle cover and its two neighbors decode at the middle's size in
   physical pixels, rounded up to 240 px steps and at most 1440 px tall, with
-  the grid poster shown until it arrives. That decode and every warp wait
+  the grid poster shown until it arrives. That decode and its warps wait
   until the strip rests, and a result for a cover that has moved away is
-  dropped. A cover that comes on screen mid-glide draws flat until then. A
+  dropped. Grid-size warps are made during glides too, for the stops within
+  six of the target, so a cover arriving on screen is already tilted; one
+  that arrives late for a cover on screen fades in over 150 ms. A
   resize moves the covers at once but asks for the larger decode only after
   250 ms without another resize.
 - Motion: the position follows the grid cards' spring, stepped by elapsed
@@ -554,7 +562,7 @@ Library's size.
   0.15 of a cover. A held key or stick glides through without stopping. The
   middle title crossfades over 150 ms. Reduced motion, a covered strip, and
   switching into coverflow snap; the title still fades. Frames are asked for
-  only while something moves.
+  only while something moves or a title or warp fades.
 
 ## Controller hints and remapping
 
