@@ -28,6 +28,7 @@
 #   runners/fake/bin/               a fake Wine runner named "fake"
 #   installers/setup.exe            a fake installer the fake runner runs
 #   import/legacy-app/              a standalone fake prefix for Import prefix
+#   prefixes/adopt-me               a prefix with no environment, for New to adopt
 # Every path inside a config is relative to DIR, so the folder can move.
 #
 # Each game below has a `# source:` comment saying what it covers, and the
@@ -174,6 +175,19 @@ printf 'WINE REGISTRY Version 2\n' >"$import_prefix/user.reg"
 printf 'WINE REGISTRY Version 2\n' >"$import_prefix/userdef.reg"
 ln -s ../drive_c "$import_prefix/dosdevices/c:"
 : >"$import_prefix/drive_c/Program Files/Legacy App/app.exe"
+
+# Covers New environment's Summary (plan 0064): a compatible prefix where a
+# new environment named adopt-me would go, with no environment of its own. On
+# Windows, Empty, type "Adopt Me" and pick the "fake" runner under Additional
+# wine options: the Summary notes the prefix will be registered in place, and
+# so does the strip beside Create.
+adopt_prefix=$root/prefixes/adopt-me
+mkdir -p "$adopt_prefix/dosdevices" "$adopt_prefix/drive_c"
+printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
+    >"$adopt_prefix/system.reg"
+printf 'WINE REGISTRY Version 2\n' >"$adopt_prefix/user.reg"
+printf 'WINE REGISTRY Version 2\n' >"$adopt_prefix/userdef.reg"
+ln -s ../drive_c "$adopt_prefix/dosdevices/c:"
 
 # 40x60 posters in three color bands, enough to tell cards apart. Embedded so
 # no image tool is needed and the bytes never change.

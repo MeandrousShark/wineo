@@ -31,6 +31,120 @@ fn switch(page: &mut Page, kind: Kind, source: Source) {
     assert_eq!(page.stage, Stage::Details);
 }
 
+/// A check that found the runner installed and nothing missing.
+fn ready_review() -> Review {
+    Review {
+        runner: None,
+        runner_row: Some("fake".to_owned()),
+        template: None,
+        arch: Arch::Win64,
+        prefix: Some(PathBuf::from("/prefixes/test-game")),
+        adopted: false,
+        omitted_components: false,
+        prerequisite: None,
+    }
+}
+
+/// Lands `review` as the check of the draft as it is now.
+fn land(page: &mut Page, review: Review) {
+    let _ = page.update(Event::Checked(
+        page.check_sequence,
+        Box::new(page.draft.clone()),
+        Ok(Box::new(review)),
+    ));
+    assert!(!page.checking);
+}
+
+/// The draft stays put after its last edit: the check that wait starts runs.
+fn settle(page: &mut Page) {
+    let task = page.update(Event::Settled(page.check_sequence));
+    drive(page, task, true);
+}
+
+/// Whether `task` does nothing at all.
+fn is_none(task: Task<Event>) -> bool {
+    iced_runtime::task::into_stream(task).is_none()
+}
+
+/// Runs an edit's wait with tokio's clock paused, so it passes at once, and
+/// says what it published and how long it waited.
+fn waited(task: Task<Event>) -> (Vec<Event>, Duration) {
+    use iced::futures::StreamExt;
+    let mut stream = iced_runtime::task::into_stream(task).expect("an edit starts a wait");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let start = tokio::time::Instant::now();
+        let mut events = Vec::new();
+        while let Some(action) = stream.next().await {
+            if let iced_runtime::Action::Output(event) = action {
+                events.push(event);
+            }
+        }
+        (events, start.elapsed())
+    })
+}
+
+/// Each text `page` shows laid out in `size`, with its bounds, in tree order.
+fn texts(page: &Page, size: iced::Size) -> Vec<(String, iced::Rectangle)> {
+    use iced::advanced::widget::Operation;
+    use std::sync::Mutex;
+    struct Texts(Arc<Mutex<Vec<(String, iced::Rectangle)>>>);
+    impl Operation for Texts {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn text(&mut self, _id: Option<&iced::widget::Id>, bounds: iced::Rectangle, text: &str) {
+            self.0.lock().unwrap().push((text.to_owned(), bounds));
+        }
+    }
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let mut laid =
+        crate::layout_probe::lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+    laid.run(Box::new(Texts(found.clone())));
+    found.lock().unwrap().clone()
+}
+
+/// The bounds of each text reading `label`, in tree order.
+fn labeled(texts: &[(String, iced::Rectangle)], label: &str) -> Vec<iced::Rectangle> {
+    texts
+        .iter()
+        .filter(|(text, _)| text == label)
+        .map(|(_, bounds)| *bounds)
+        .collect()
+}
+
+/// The last text reading `label`. The pinned strip comes after the body, so
+/// a reason shown in both is the strip's.
+fn last_labeled(texts: &[(String, iced::Rectangle)], label: &str) -> iced::Rectangle {
+    *labeled(texts, label)
+        .last()
+        .unwrap_or_else(|| panic!("no {label:?} in {texts:?}"))
+}
+
+/// What a click on the control labelled `label` publishes, as debug text. A
+/// disabled button publishes nothing.
+fn click_label(page: &Page, size: iced::Size, label: &str) -> Vec<String> {
+    let at = last_labeled(&texts(page, size), label).center();
+    let mut laid =
+        crate::layout_probe::lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+    let cursor = iced::mouse::Cursor::Available(at);
+    let left = iced::mouse::Button::Left;
+    let mut published = laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+        cursor,
+    );
+    published.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+        cursor,
+    ));
+    published.iter().map(|event| format!("{event:?}")).collect()
+}
+
 #[test]
 fn installer_log_stays_capped_and_mirrored_in_the_view() {
     let mut page = page();
@@ -127,14 +241,24 @@ fn target_programs_fit_narrow_and_small_dialogs() {
 }
 
 #[test]
-fn back_from_review_preserves_details() {
-    let mut page = page();
-    page.draft.title = "test-game".to_owned();
-    page.draft.path = "/games/test.exe".to_owned();
-    page.stage = Stage::Review;
-    let _ = page.back();
+fn back_from_details_keeps_the_draft_and_checks_it_again() {
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Executable));
+    let _ = page.update(Event::Name("test-game".to_owned()));
+    let _ = page.update(Event::Path("/games/test.exe".to_owned()));
+    let size = iced::Size::new(900.0, 720.0);
+    assert_eq!(click_label(&page, size, "Back"), ["Back"]);
+    let _ = page.update(Event::Back);
+    assert_eq!(page.stage, Stage::Choose);
+    let left = page.check_sequence;
+    let check = page.update(Event::Start(Kind::Windows, Source::Executable));
     assert_eq!(page.stage, Stage::Details);
+    assert_eq!(page.draft.title, "test-game");
     assert_eq!(page.draft.path, "/games/test.exe");
+    // At once, under a new number, without waiting for an edit.
+    assert!(!is_none(check), "Details checks the kept draft as it opens");
+    assert_ne!(page.check_sequence, left);
+    assert!(page.checking);
 }
 
 #[test]
@@ -423,9 +547,10 @@ fn a_name_at_the_title_limit_is_written_as_the_title() {
     // The name can't come from letters like these, so it is typed.
     let _ = page.update(Event::EnvironmentName("long-title".to_owned()));
     assert_eq!(page.validate(), Ok(()));
-    let _ = page.update(Event::Next);
-    assert!(page.error.is_none());
-    assert!(page.reviewing.is_some());
+    // The check gets past the fields to the worker.
+    let _ = page.update(Event::Settled(page.check_sequence));
+    assert_eq!(page.problem(), None);
+    assert!(page.checking);
 
     let draft = Draft {
         title: title.clone(),
@@ -446,18 +571,20 @@ fn a_name_over_the_title_limit_is_refused_until_it_is_shortened() {
     let message = format!("Invalid title: can't be longer than {TITLE_MAX_CHARS} characters.");
     assert_eq!(page.validate().unwrap_err(), message);
 
-    let _ = page.update(Event::Next);
-    assert_eq!(page.error.as_deref(), Some(message.as_str()));
-    assert_eq!(page.stage, Stage::Details);
-    assert!(page.reviewing.is_none());
-    // Create has no review to act on, and starting it anyway re-checks the Name.
+    // The Summary says so once the draft settles, without the worker, and
+    // Create stays off with the reason beside it.
+    let task = page.update(Event::Settled(page.check_sequence));
+    assert!(is_none(task));
+    let refused = Err(Hold::Problem(Problem::Error(message.clone())));
+    assert_eq!(page.checked().map(|_| ()), refused);
     let _ = page.update(Event::Create);
     assert_eq!(page.stage, Stage::Details);
-    page.stage = Stage::Review;
+    // A review in hand doesn't help: Create checks the Name again.
+    land(&mut page, ready_review());
     let _ = page.update(Event::Create);
-    assert_eq!(page.error.as_deref(), Some(message.as_str()));
+    assert_eq!(page.stage, Stage::Details);
     assert!(!page.busy());
-    page.stage = Stage::Details;
+    assert_eq!(page.checked().map(|_| ()), refused);
 
     // Whitespace around the Name doesn't count toward the limit.
     let _ = page.update(Event::Name(format!(" {} ", "a".repeat(TITLE_MAX_CHARS))));
@@ -806,8 +933,14 @@ fn answering_the_offer_saves_it_hides_it_and_relists_runners() {
     );
 }
 
+/// The Summary's runner row, if its last check found one.
+fn runner_row(page: &Page) -> Option<String> {
+    let review = page.summary.as_ref()?.found.as_ref().ok()?;
+    review.runner_row.clone()
+}
+
 #[test]
-fn a_late_answer_keeps_the_review_and_rechecks_a_pending_one() {
+fn a_late_answer_to_the_offer_always_rechecks_the_summary() {
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
@@ -822,36 +955,46 @@ fn a_late_answer_keeps_the_review_and_rechecks_a_pending_one() {
     let _ = page.update(Event::Offer(false));
     assert_eq!(page.offer_sequence, sequence);
 
-    // Next is clicked and its review lands before the answer does.
-    let _ = page.update(Event::Next);
-    let _ = page.update(Event::Reviewed(
-        page.generation,
-        prepare(&paths, &page.draft).map(Box::new),
-    ));
-    assert_eq!(page.stage, Stage::Review);
-    let _ = page.update(Event::Offered(sequence, answer_offer(&paths, true)));
-    assert_eq!(page.stage, Stage::Review);
-    assert!(page.review.is_some());
+    // The draft settles and its check lands before the answer does, so it
+    // read the old setting and doesn't see Steam's build.
+    settle(&mut page);
+    assert!(!page.checking);
+    assert_ne!(runner_row(&page).as_deref(), Some("GE-Proton11-3 (Steam)"));
+    let before = page.check_sequence;
+    let task = page.update(Event::Offered(sequence, answer_offer(&paths, true)));
     assert!(!page.answering);
+    assert_ne!(page.check_sequence, before, "the answer checks again");
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    assert!(
+        page.summary.is_some(),
+        "the last Summary stays while it runs"
+    );
+    drive(&mut page, task, true);
+    assert_eq!(
+        runner_row(&page).as_deref(),
+        Some("GE-Proton11-3 (Steam)"),
+        "{:?}",
+        page.summary
+    );
 
-    // A review still being prepared when the answer lands is redone, so
-    // it can't read the old setting.
+    // A check still running when the answer lands is dropped, so it can't
+    // show the old setting.
     fs::remove_file(paths.global_config()).unwrap();
     let mut page = offer_page(&paths);
     let _ = page.update(Event::Template("gaming".to_owned()));
     let _ = page.update(Event::Name("Hades".to_owned()));
     let _ = page.update(Event::Offer(true));
-    let _ = page.update(Event::Next);
-    let stale = page.generation;
+    let _ = page.update(Event::Settled(page.check_sequence));
+    assert!(page.checking);
+    let stale = page.check_sequence;
+    let old = prepare(&paths, &page.draft).map(Box::new);
     let _ = page.update(Event::Offered(
         page.offer_sequence,
         answer_offer(&paths, true),
     ));
-    assert_ne!(page.generation, stale);
-    assert_eq!(page.reviewing, Some(page.generation));
-    let old = prepare(&paths, &page.draft).map(Box::new);
-    let _ = page.update(Event::Reviewed(stale, old));
-    assert_eq!(page.stage, Stage::Details);
+    assert_ne!(page.check_sequence, stale);
+    let _ = page.update(Event::Checked(stale, Box::new(page.draft.clone()), old));
+    assert!(page.checking, "the old setting's check didn't land");
     // A reply from an earlier answer is ignored.
     let _ = page.update(Event::Offered(
         page.offer_sequence.wrapping_sub(1),
@@ -1097,66 +1240,137 @@ fn a_target_step_with_no_programs_focuses_no_row() {
     assert!(laid.focused().is_empty());
 }
 
-fn reviewed(prerequisite: Option<Prerequisite>) -> Page {
-    let mut page = page();
-    page.draft.title = "Test game".to_owned();
-    page.draft.path = format!("/games/{}/test.exe", "a-long-folder/".repeat(12));
-    page.stage = Stage::Review;
-    page.review = Some(Review {
-        runner: None,
-        runner_row: Some("fake".to_owned()),
-        template: None,
-        arch: Arch::Win64,
-        prefix: Some(PathBuf::from("/prefixes/test-game")),
-        adopted: false,
-        omitted_components: false,
-        prerequisite,
-    });
+/// Details for a game with a long path, its check landed with `review`.
+fn summarized(review: Review) -> Page {
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Executable));
+    let _ = page.update(Event::Name("Test game".to_owned()));
+    let _ = page.update(Event::Path(format!(
+        "/games/{}/test.exe",
+        "a-long-folder/".repeat(12)
+    )));
+    land(&mut page, review);
     page
 }
 
-/// Back sits alone at the top, the content scrolls under it, and the forward
-/// action is alone in the pinned strip at the bottom, even in a short dialog.
+fn missing_runner() -> Review {
+    Review {
+        runner_row: None,
+        prerequisite: Some(Prerequisite::Runner("GE-Proton-Latest".to_owned())),
+        ..ready_review()
+    }
+}
+
+fn adopting() -> Review {
+    Review {
+        adopted: true,
+        omitted_components: true,
+        ..ready_review()
+    }
+}
+
+/// Back sits alone at the top, the content scrolls under it, and Create is
+/// at the left of the pinned strip at the bottom, with why it's off or what
+/// it will do beside it, even in a short dialog. Each is found by its label.
 #[test]
-fn back_is_at_the_top_and_the_forward_action_is_pinned_at_the_bottom() {
-    use crate::layout_probe::{assert_back_on_top_and_forward_pinned, click_at, probe};
-    // What the pinned button publishes; Create is disabled until the runner
-    // it needs is downloaded.
+fn back_is_at_the_top_and_create_is_pinned_at_the_bottom_with_its_reason() {
+    use crate::layout_probe::{probe, within};
+    let mut checking = summarized(ready_review());
+    let _ = checking.update(Event::Name("Test game 2".to_owned()));
     let pages = [
-        ("details", page(), Some("Next")),
-        ("review", reviewed(None), Some("Create")),
+        ("untouched", page(), vec!["Enter a name"], None),
+        ("checking", checking, vec!["Checking..."], None),
         (
-            "review with a missing runner",
-            reviewed(Some(Prerequisite::Runner("GE-Proton-Latest".to_owned()))),
+            "missing runner",
+            summarized(missing_runner()),
+            vec!["Runner GE-Proton-Latest isn't installed"],
             None,
         ),
+        ("ready", summarized(ready_review()), vec![], Some("Create")),
+        (
+            "ready with notes",
+            summarized(adopting()),
+            vec![
+                "This will register the existing prefix in place. \
+                 Proton's own DXVK and vkd3d-proton replace the template's.",
+            ],
+            Some("Create"),
+        ),
     ];
-    for (label, page, forward) in &pages {
-        for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+    let mut occupied = summarized(ready_review());
+    let error = format!(
+        "{}/prefixes/test-game is occupied and is not a compatible prefix",
+        "/a-very-long-folder-name".repeat(6)
+    );
+    occupied.summary.as_mut().unwrap().found = Err(Problem::Error(error.clone()));
+    let mut pages = Vec::from(pages);
+    // The strip cuts it; the Summary has all of it.
+    let pinned = cut(error.clone());
+    assert!(pinned.ends_with("...") && pinned.chars().count() == PINNED_REASON_MAX + 3);
+    pages.push(("a long error", occupied, vec![pinned.as_str()], None));
+    for (label, page, beside, publishes) in &pages {
+        for (width, height) in [
+            (280.0, 240.0),
+            (400.0, 300.0),
+            (900.0, 240.0),
+            (900.0, 720.0),
+        ] {
+            let size = iced::Size::new(width, height);
+            let case = format!("{label} at {width}x{height}");
             let inset = iced::Rectangle::new(
                 iced::Point::new(24.0, 24.0),
                 iced::Size::new(width - 48.0, height - 48.0),
             );
             let mut view = page.view_with_key_availability(Palette::DARK, true);
-            let probe = probe(&mut view, iced::Size::new(width, height));
-            let case = format!("{label} at {width}x{height}");
-            assert_back_on_top_and_forward_pinned(&probe, inset, &case);
+            let probe = probe(&mut view, size);
+            let spilled = probe.outside(iced::Rectangle::with_size(size));
+            assert!(spilled.is_empty(), "{case}: {spilled:?}");
+            assert_eq!(probe.scrollables.len(), 1, "{case}");
+            let (viewport, _) = probe.scrollables[0];
+            assert!(viewport.height > 0.0, "{case}: {viewport:?}");
+            let texts = texts(page, size);
+            let back = last_labeled(&texts, "Back");
+            let create = last_labeled(&texts, "Create");
+            assert!(within(back, inset), "{case}: {back:?}");
+            assert!(back.y < inset.y + 32.0, "{case}: Back at the top, {back:?}");
+            assert!(back.y + back.height <= viewport.y, "{case}: {back:?}");
+            assert!(within(create, inset), "{case}: {create:?}");
+            assert!(
+                create.y >= viewport.y + viewport.height,
+                "{case}: {create:?}"
+            );
+            // The strip's padding and the button's.
+            assert!(
+                create.x - inset.x < 30.0,
+                "{case}: Create at the left, {create:?}"
+            );
+            for text in beside {
+                let note = last_labeled(&texts, text);
+                assert!(within(note, inset), "{case}: {text}: {note:?}");
+                assert!(
+                    note.y >= viewport.y + viewport.height,
+                    "{case}: {text} is pinned, {note:?}"
+                );
+                assert!(
+                    note.x >= create.x + create.width || note.y >= create.y + create.height,
+                    "{case}: {text} beside or under Create, {note:?}"
+                );
+            }
         }
         let size = iced::Size::new(900.0, 720.0);
-        let view = || page.view_with_key_availability(Palette::DARK, true);
-        assert_eq!(click_at(view(), size, &[0, 0, 0]), ["Back"], "{label}");
-        let expected: Vec<&str> = forward.iter().copied().collect();
-        assert_eq!(click_at(view(), size, &[0, 2, 0]), expected, "{label}");
+        assert_eq!(click_label(page, size, "Back"), ["Back"], "{label}");
+        let expected: Vec<&str> = publishes.iter().copied().collect();
+        assert_eq!(click_label(page, size, "Create"), expected, "{label}");
     }
 }
 
 /// The discard prompt shares Back's slot ahead of the scroll body, so showing
-/// and dismissing it keeps the body's scroll offset.
+/// and dismissing it keeps the body's scroll offset. Today it opens on the
+/// choice page, but the slot covers Details too.
 #[test]
 fn the_discard_prompt_keeps_the_scroll_offset_and_stays_in_view() {
-    use crate::layout_probe::{bounds_at, lay_out, probe, relay_out, within};
-    let mut page = page();
-    page.draft.title = "draft".to_owned();
+    use crate::layout_probe::{lay_out, probe, relay_out, within};
+    let mut page = summarized(adopting());
     let size = iced::Size::new(900.0, 300.0);
     let mut laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
     let over_body = iced::mouse::Cursor::Available(iced::Point::new(450.0, 150.0));
@@ -1184,25 +1398,36 @@ fn the_discard_prompt_keeps_the_scroll_offset_and_stays_in_view() {
 
     drop(laid);
     page.leave_prompt = true;
-    for (width, height) in [(280.0, 240.0), (900.0, 240.0), (900.0, 720.0)] {
+    for (width, height) in [
+        (280.0, 240.0),
+        (400.0, 300.0),
+        (900.0, 240.0),
+        (900.0, 720.0),
+    ] {
+        let size = iced::Size::new(width, height);
         let inset = iced::Rectangle::new(
             iced::Point::new(24.0, 24.0),
             iced::Size::new(width - 48.0, height - 48.0),
         );
         let mut view = page.view_with_key_availability(Palette::DARK, true);
-        let probe = probe(&mut view, iced::Size::new(width, height));
+        let probe = probe(&mut view, size);
         let case = format!("{width}x{height}");
-        let prompt = bounds_at(&probe.node, &[0, 0, 0]);
-        let back = bounds_at(&probe.node, &[0, 0, 1]);
+        let texts = texts(&page, size);
+        let prompt = last_labeled(&texts, "Discard this new environment draft?");
+        let back = last_labeled(&texts, "Back");
         assert!(within(prompt, inset), "{case}: {prompt:?}");
         assert!(within(back, inset), "{case}: {back:?}");
         assert!(
             prompt.y + prompt.height <= back.y + 0.01,
             "{case}: {prompt:?} should be above {back:?}"
         );
-        for button in 0..2 {
-            let bounds = bounds_at(&probe.node, &[0, 0, 0, 1, button]);
-            assert!(within(bounds, inset), "{case}: {bounds:?}");
+        for button in ["Keep editing", "Discard"] {
+            let bounds = last_labeled(&texts, button);
+            assert!(within(bounds, inset), "{case}: {button} {bounds:?}");
+            assert!(
+                bounds.y + bounds.height <= back.y + 0.01,
+                "{case}: {button}"
+            );
         }
         let (viewport, _) = probe.scrollables[0];
         assert!(
@@ -1210,6 +1435,9 @@ fn the_discard_prompt_keeps_the_scroll_offset_and_stays_in_view() {
             "{case}: {viewport:?} should stay under {back:?}"
         );
     }
+    let size = iced::Size::new(900.0, 720.0);
+    assert_eq!(click_label(&page, size, "Keep editing"), ["KeepEditing"]);
+    assert_eq!(click_label(&page, size, "Discard"), ["Discard"]);
 }
 
 #[test]
@@ -1367,9 +1595,8 @@ fn the_fetch_runs_after_creation_outside_the_create_lock() {
         switch(&mut page, kind, Source::Empty);
         let _ = page.update(Event::Name("Hollow Knight".to_owned()));
         let _ = page.update(Event::Runner("fake".to_owned()));
-        let task = page.update(Event::Next);
-        drive(&mut page, task, true);
-        assert_eq!(page.stage, Stage::Review, "{kind}: {:?}", page.error);
+        settle(&mut page);
+        assert!(page.checked().is_ok(), "{kind}: {:?}", page.summary);
         let task = page.update_with_key_availability(Event::Create, true);
         drive(&mut page, task, true);
         assert_eq!(page.stage, Stage::Finished, "{kind}");
@@ -1495,21 +1722,11 @@ fn retry_artwork_fetches_again_through_the_same_skip() {
     assert_eq!(call_count(&retried), 2);
 }
 
-/// Presses Create on a reviewed `page` with the key `key_available`, lands
+/// Presses Create on Details, checked, with the key `key_available`, lands
 /// a registered creation, and runs whatever finishing starts.
 fn create_and_register(page: &mut Page, key_available: bool) {
     page.draft.title = "Hollow Knight".to_owned();
-    page.stage = Stage::Review;
-    page.review = Some(Review {
-        runner: None,
-        runner_row: None,
-        template: None,
-        arch: Arch::Win64,
-        prefix: None,
-        adopted: false,
-        omitted_components: false,
-        prerequisite: None,
-    });
+    land(page, ready_review());
     // The creation itself never runs; its result is landed below.
     let _ = page.update_with_key_availability(Event::Create, key_available);
     assert_eq!(page.stage, Stage::Working);
@@ -1538,6 +1755,8 @@ fn the_checkbox_is_on_by_default_and_toggling_it_is_not_an_edit() {
     assert!(!page.leave_prompt);
     assert!(matches!(page.take_action(), Some(Action::Choose)));
 
+    // The same page, opened again, creates with the checkbox as it was left.
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
     let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
     page.fetcher = fetcher;
     create_and_register(&mut page, true);
@@ -1746,23 +1965,13 @@ fn new_page(app: &crate::App) -> &Page {
 }
 
 #[test]
-fn ctrl_enter_on_review_keeps_the_fetch_the_checkbox_shows() {
+fn ctrl_enter_on_details_keeps_the_fetch_the_checkbox_shows() {
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
     let mut page = offer_page(&paths);
     page.draft.title = "Hollow Knight".to_owned();
-    page.stage = Stage::Review;
-    page.review = Some(Review {
-        runner: None,
-        runner_row: None,
-        template: None,
-        arch: Arch::Win64,
-        prefix: None,
-        adopted: false,
-        omitted_components: false,
-        prerequisite: None,
-    });
+    land(&mut page, ready_review());
     let mut app = app_with_key(page);
     assert!(app.flow.as_ref().unwrap().fetch_checked(true));
     // The creation's task comes back unrun.
@@ -2228,19 +2437,45 @@ fn leaving_details_drops_its_running_check_and_picker() {
         let paths =
             Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
         let mut page = offer_page(&paths);
+        // An edit whose wait is still pending.
         let _ = page.update(Event::Name("Hades".to_owned()));
-        let _ = page.update(Event::Next);
-        let checking = page.generation;
-        assert_eq!(page.reviewing, Some(checking));
+        let waiting = page.check_sequence;
+        let _ = page.update(leave.clone());
+        assert!(
+            is_none(page.update(Event::Settled(waiting))),
+            "{leave:?}: no check starts off Details"
+        );
+        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+        let opened = page.check_sequence;
+        assert!(is_none(page.update(Event::Settled(waiting))), "{leave:?}");
+        assert_eq!(page.check_sequence, opened, "{leave:?}");
+
+        // A check still running.
+        let _ = page.update(Event::Name("Hades 2".to_owned()));
+        let _ = page.update(Event::Settled(page.check_sequence));
+        let checking = page.check_sequence;
+        assert!(page.checking);
         let _ = page.update(Event::Browse);
         let browsing = page.picker_sequence;
         let _ = page.update(leave.clone());
-        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
-        let _ = page.update(Event::Reviewed(
+        let shown = |page: &Page| page.summary.as_ref().map(|s| s.draft.title.clone());
+        let before = shown(&page);
+        let _ = page.update(Event::Checked(
             checking,
+            Box::new(page.draft.clone()),
             prepare(&paths, &page.draft).map(Box::new),
         ));
-        assert_eq!(page.stage, Stage::Details, "{leave:?}: no jump to Review");
+        assert_eq!(shown(&page), before, "{leave:?}: nothing lands off Details");
+        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+        let _ = page.update(Event::Checked(
+            checking,
+            Box::new(page.draft.clone()),
+            prepare(&paths, &page.draft).map(Box::new),
+        ));
+        assert!(
+            page.checking,
+            "{leave:?}: only the check Details opened with lands"
+        );
         let _ = page.update(Event::Picked(
             browsing,
             Ok(Some(PathBuf::from("/games/hades.exe"))),
@@ -2251,30 +2486,15 @@ fn leaving_details_drops_its_running_check_and_picker() {
 
 #[test]
 fn details_title_has_change_and_the_choice_page_shows_no_details_error() {
-    use crate::layout_probe::{click_at, lay_out};
     let size = iced::Size::new(900.0, 720.0);
-    // The page, then Back's slot and the scroll body, its padding, then
-    // the body's children.
-    let body = [0, 1, 0, 0];
     let mut page = page();
-    let view = || page.view_with_key_availability(Palette::DARK, true);
-    let change = [&body[..], &[0, 1]].concat();
-    assert_eq!(click_at(view(), size, &change), ["Change"]);
+    assert_eq!(click_label(&page, size, "Change"), ["Change"]);
 
-    page.error = Some("Name needs letters or digits.".to_owned());
-    let children = |page: &Page| {
-        let laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
-        let mut layout = iced::advanced::Layout::new(&laid.node);
-        for index in body {
-            layout = layout.children().nth(index).unwrap();
-        }
-        layout.children().count()
-    };
-    // The title, the form, and the error.
-    assert_eq!(children(&page), 3);
+    let error = "Could not open the file picker";
+    page.error = Some(error.to_owned());
+    assert_eq!(labeled(&texts(&page, size), error).len(), 1);
     let _ = page.update(Event::Change);
-    // The title and the rows.
-    assert_eq!(children(&page), 2);
+    assert!(labeled(&texts(&page, size), error).is_empty());
 }
 
 #[test]
@@ -2290,35 +2510,753 @@ fn a_held_ctrl_enter_submits_once() {
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
     let mut page = offer_page(&paths);
-    page.draft.title = "Hollow Knight".to_owned();
+    let _ = page.update(Event::Name("Hollow Knight".to_owned()));
+    let checking = page.check_sequence;
+    let draft = Box::new(page.draft.clone());
     let mut app = app_with_key(page);
+    // Pressed while the Summary checks: nothing, and nothing kept for later.
     let _ = app.update(ctrl_enter(false));
-    let checking = new_page(&app).generation;
-    assert_eq!(new_page(&app).reviewing, Some(checking), "Next");
+    assert_eq!(new_page(&app).stage, Stage::Details);
     // The check lands while the key is still down.
-    let review = Review {
-        runner: None,
-        runner_row: None,
-        template: None,
-        arch: Arch::Win64,
-        prefix: None,
-        adopted: false,
-        omitted_components: false,
-        prerequisite: None,
-    };
     let _ = app.update(crate::Message::Flow(
         app.flow_generation,
-        crate::flow::Event::Create(Box::new(Event::Reviewed(checking, Ok(Box::new(review))))),
+        crate::flow::Event::Create(Box::new(Event::Checked(
+            checking,
+            draft,
+            Ok(Box::new(ready_review())),
+        ))),
     ));
-    assert_eq!(new_page(&app).stage, Stage::Review);
+    assert!(new_page(&app).checked().is_ok());
     for _ in 0..3 {
         let _ = app.update(ctrl_enter(true));
     }
     assert_eq!(
         new_page(&app).stage,
-        Stage::Review,
+        Stage::Details,
         "the held chord creates nothing"
     );
     let _ = app.update(ctrl_enter(false));
     assert_eq!(new_page(&app).stage, Stage::Working, "a new press does");
+}
+
+#[test]
+fn edits_inside_the_wait_run_one_check_and_a_later_edit_runs_another() {
+    let mut page = page();
+    let waits: Vec<_> = ["H", "Ha", "Had"]
+        .into_iter()
+        .map(|name| page.update(Event::Name(name.to_owned())))
+        .collect();
+    assert!(page.checking, "Create waits from the first edit");
+    // Each edit's wait is the full delay and names its own check, so a
+    // later edit restarts it.
+    let settled: Vec<u64> = waits
+        .into_iter()
+        .map(|task| {
+            let (events, waited) = waited(task);
+            assert!(waited >= SETTLE, "{waited:?}");
+            match events[..] {
+                [Event::Settled(sequence)] => sequence,
+                _ => panic!("{events:?}"),
+            }
+        })
+        .collect();
+    assert_eq!(settled.last(), Some(&page.check_sequence));
+    // Only the last one checks; the earlier ones land nothing.
+    for sequence in &settled[..2] {
+        assert!(is_none(page.update(Event::Settled(*sequence))));
+        assert!(page.checking);
+    }
+    let checks = outputs(page.update(Event::Settled(settled[2])));
+    assert!(
+        matches!(&checks[..], [Event::Checked(sequence, _, Ok(_))] if *sequence == settled[2]),
+        "{checks:?}"
+    );
+    for event in checks {
+        let _ = page.update(event);
+    }
+    assert!(!page.checking);
+    assert_eq!(page.summary.as_ref().unwrap().draft.title, "Had");
+    // A wait that lands twice runs nothing more.
+    assert!(is_none(page.update(Event::Settled(settled[2]))));
+
+    // An edit after the check runs another.
+    let (events, _) = waited(page.update(Event::Name("Hades".to_owned())));
+    let [Event::Settled(sequence)] = events[..] else {
+        panic!("{events:?}");
+    };
+    assert_ne!(sequence, settled[2]);
+    let checks = outputs(page.update(Event::Settled(sequence)));
+    for event in checks {
+        let _ = page.update(event);
+    }
+    assert!(!page.checking);
+    assert_eq!(page.summary.as_ref().unwrap().draft.title, "Hades");
+}
+
+#[test]
+fn a_stale_check_drops_by_its_own_number_not_by_the_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let _ = page.update(Event::Settled(page.check_sequence));
+    let started = page.check_sequence;
+    let checked = Box::new(page.draft.clone());
+    let result = prepare(&paths, &page.draft).map(Box::new);
+    // Work that shares the generation, like reloading the options, leaves
+    // the check alone.
+    let _ = page.load_options();
+    let _ = page.update(Event::Checked(started, checked.clone(), result.clone()));
+    assert!(!page.checking);
+    assert!(page.checked().is_ok(), "{:?}", page.summary);
+
+    // An edit after a check started drops what it finds.
+    let _ = page.update(Event::Name("Hades 2".to_owned()));
+    let _ = page.update(Event::Settled(page.check_sequence));
+    let generation = page.generation;
+    let _ = page.update(Event::Checked(started, checked, result));
+    assert!(page.checking);
+    assert_eq!(page.summary.as_ref().unwrap().draft.title, "Hades");
+    assert_eq!(page.generation, generation);
+}
+
+#[test]
+fn create_waits_for_the_check_a_download_and_valid_fields() {
+    let size = iced::Size::new(900.0, 720.0);
+    // How often the reason shows: beside Create, and for Checking... on the
+    // Summary's heading, and for an error in the Summary.
+    type Case = (&'static str, fn(&mut Page), Hold, usize);
+    let cases: [Case; 3] = [
+        (
+            "checking",
+            |page| {
+                let _ = page.update(Event::Name("Test game 2".to_owned()));
+            },
+            Hold::Checking,
+            2,
+        ),
+        (
+            "missing runner",
+            |page| land(page, missing_runner()),
+            Hold::Missing("Runner GE-Proton-Latest isn't installed".to_owned()),
+            1,
+        ),
+        (
+            "invalid name",
+            |page| {
+                let _ = page.update(Event::Name("Test\u{7}game".to_owned()));
+                let _ = page.update(Event::Settled(page.check_sequence));
+            },
+            Hold::Problem(Problem::Error(
+                "Invalid title: can't contain control characters.".to_owned(),
+            )),
+            2,
+        ),
+    ];
+    for (label, make, hold, shown) in cases {
+        let mut page = summarized(ready_review());
+        make(&mut page);
+        assert_eq!(page.checked().map(|_| ()), Err(hold.clone()), "{label}");
+        let (reason, _) = hold_text(hold, Palette::DARK);
+        assert_eq!(
+            labeled(&texts(&page, size), &reason).len(),
+            shown,
+            "{label}"
+        );
+        assert!(click_label(&page, size, "Create").is_empty(), "{label}");
+        let _ = page.update(Event::Create);
+        assert_eq!(page.stage, Stage::Details, "{label}");
+        assert!(page.token.is_none(), "{label}");
+    }
+
+    let mut page = summarized(ready_review());
+    assert!(page.checked().is_ok());
+    assert_eq!(click_label(&page, size, "Create"), ["Create"]);
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn ctrl_enter_while_checking_does_nothing_and_never_fires_later() {
+    let mut page = summarized(ready_review());
+    let _ = page.update(Event::Name("Test game 2".to_owned()));
+    let generation = page.generation;
+    assert!(is_none(page.submit(true)));
+    assert_eq!(page.stage, Stage::Details);
+    let _ = page.update(Event::Checked(
+        page.check_sequence,
+        Box::new(page.draft.clone()),
+        Ok(Box::new(ready_review())),
+    ));
+    assert!(page.checked().is_ok());
+    assert_eq!(page.stage, Stage::Details, "nothing was kept to run now");
+    assert_eq!(page.generation, generation);
+    assert!(page.token.is_none());
+}
+
+#[test]
+fn reasons_for_untouched_fields_are_quiet_until_they_are_touched() {
+    let quiet = |reason| Some(Problem::Untouched(reason));
+    let loud = |reason: &str| Some(Problem::Error(reason.to_owned()));
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Installer));
+    assert_eq!(page.problem(), quiet("Enter a name"));
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    assert_eq!(page.problem(), quiet("Choose an installer"));
+    for (kind, source) in [
+        (Kind::Windows, Source::Executable),
+        (Kind::Native, Source::Executable),
+    ] {
+        switch(&mut page, kind, source);
+        assert_eq!(page.problem(), quiet("Choose a program"), "{kind} {source}");
+    }
+    // Typed and cleared, they're errors.
+    let _ = page.update(Event::Path("/games/hades.sh".to_owned()));
+    let _ = page.update(Event::Path(String::new()));
+    assert_eq!(page.problem(), loud("Choose a program"));
+    let _ = page.update(Event::Name(String::new()));
+    assert_eq!(page.problem(), loud("Enter a name"));
+    // A browsed path is touched too, and another row's path starts untouched.
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    switch(&mut page, Kind::Windows, Source::Installer);
+    assert_eq!(page.problem(), quiet("Choose an installer"));
+    let _ = page.update(Event::Browse);
+    let _ = page.update(Event::Picked(
+        page.picker_sequence,
+        Ok(Some(PathBuf::from("/setup.exe"))),
+    ));
+    let _ = page.update(Event::Path(" ".to_owned()));
+    assert_eq!(page.problem(), loud("Choose an installer"));
+    // An Environment name typed alone is a touched name.
+    let mut page = page_with_name_override();
+    let _ = page.update(Event::EnvironmentName(String::new()));
+    assert_eq!(page.problem(), loud("Enter a name"));
+
+    // The strip says it quietly, as the Summary does.
+    let palette = Palette::DARK;
+    let shown = |problem| hold_text(Hold::Problem(problem), palette).1;
+    assert_eq!(shown(Problem::Untouched("Enter a name")), palette.muted);
+    assert_eq!(
+        shown(Problem::Error("Enter a name".to_owned())),
+        palette.danger
+    );
+    assert_eq!(hold_text(Hold::Checking, palette).1, palette.muted);
+    assert_eq!(
+        hold_text(Hold::Missing(String::new()), palette).1,
+        palette.warning
+    );
+}
+
+fn page_with_name_override() -> Page {
+    let mut page = page();
+    let _ = page.update(Event::EditEnvironment);
+    let _ = page.update(Event::EnvironmentName("hades".to_owned()));
+    assert_eq!(page.problem(), None);
+    page
+}
+
+#[test]
+fn the_notes_that_change_create_show_beside_it_once_it_is_ready() {
+    use crate::layout_probe::probe;
+    let size = iced::Size::new(400.0, 300.0);
+    let adopted = "This will register the existing prefix in place.";
+    let replaced = "Proton's own DXVK and vkd3d-proton replace the template's.";
+    let both = format!("{adopted} {replaced}");
+    let cases = [
+        (true, false, adopted.to_owned()),
+        (false, true, replaced.to_owned()),
+        (true, true, both.clone()),
+    ];
+    for (adopts, omits, pinned) in cases {
+        let review = Review {
+            adopted: adopts,
+            omitted_components: omits,
+            ..ready_review()
+        };
+        let page = summarized(review.clone());
+        let mut view = page.view_with_key_availability(Palette::DARK, true);
+        let (viewport, content) = probe(&mut view, size).scrollables[0];
+        let texts = texts(&page, size);
+        let bounds = labeled(&texts, &pinned);
+        assert_eq!(bounds.len(), 1, "{pinned}");
+        assert!(
+            bounds[0].y >= viewport.y + viewport.height,
+            "{pinned} is pinned"
+        );
+        // The Summary says them in full, in the scrolling body.
+        for note in consequences(&review) {
+            let bounds = labeled(&texts, note);
+            assert_eq!(bounds.len(), 1, "{note}");
+            assert!(
+                crate::layout_probe::within(bounds[0], content),
+                "{note} scrolls"
+            );
+        }
+    }
+    let shows = |page: &Page, text: &str| !labeled(&texts(page, size), text).is_empty();
+    // While a newer check runs, the strip says so instead.
+    let mut page = summarized(adopting());
+    let _ = page.update(Event::Name("Test game 2".to_owned()));
+    assert!(!shows(&page, &both));
+    // And a check that finds neither says nothing beside Create.
+    land(&mut page, ready_review());
+    for text in [adopted, replaced, both.as_str()] {
+        assert!(!shows(&page, text), "{text}");
+    }
+}
+
+#[test]
+fn the_last_summary_stays_in_place_under_checking_while_the_next_check_runs() {
+    let size = iced::Size::new(900.0, 720.0);
+    let mut page = summarized(missing_runner());
+    let summary_part = |texts: Vec<(String, iced::Rectangle)>| -> Vec<(String, iced::Rectangle)> {
+        let start = texts
+            .iter()
+            .position(|(text, _)| text == "Summary")
+            .unwrap();
+        let end = texts.iter().position(|(text, _)| text == "Create").unwrap();
+        texts[start..end].to_vec()
+    };
+    let before = summary_part(texts(&page, size));
+    assert!(before.iter().any(|(text, _)| text == "Test game"));
+    let _ = page.update(Event::Name("Something else entirely".to_owned()));
+    assert!(page.checking);
+    let mut during = summary_part(texts(&page, size));
+    // On the heading's line, beside it.
+    let checking = during.remove(1);
+    assert_eq!(checking.0, "Checking...");
+    let heading = during[0].1;
+    assert!(checking.1.x > heading.x + heading.width, "{checking:?}");
+    assert!(checking.1.y < heading.y + heading.height, "{checking:?}");
+    // Everything else is the last check's, where it was.
+    assert_eq!(during, before);
+    // Its downloads wait for the check. The Summary is below the fold in
+    // a short dialog, which a click there would never reach.
+    let tall = iced::Size::new(900.0, 4000.0);
+    assert!(click_label(&page, tall, "Download GE-Proton").is_empty());
+    let _ = page.update(Event::Download(Provider::GeProton));
+    assert_eq!(page.stage, Stage::Details);
+
+    // Dimmed: drawn in the muted role, darker than before on a dark theme.
+    let brightest = |page: &Page, label: &str| {
+        let bounds = last_labeled(&texts(page, size), label);
+        let mut view = page.view_with_key_availability(Palette::DARK, true);
+        let pixels = crate::layout_probe::render(&mut view, size);
+        let mut most = 0u32;
+        for y in bounds.y as u32..(bounds.y + bounds.height) as u32 {
+            for x in bounds.x as u32..(bounds.x + bounds.width) as u32 {
+                let at = ((y * size.width as u32 + x) * 4) as usize;
+                most = most.max(pixels[at..at + 3].iter().map(|&c| u32::from(c)).sum());
+            }
+        }
+        most
+    };
+    let dim = brightest(&page, "Test game");
+    land(&mut page, missing_runner());
+    // The landed check is of the new draft, so its Name row changed.
+    let bright = brightest(&page, "Something else entirely");
+    assert!(dim < bright, "{dim} {bright}");
+    assert_eq!(dimmed(Palette::DARK).foreground, Palette::DARK.muted);
+    assert_eq!(dimmed(Palette::DARK).warning, Palette::DARK.muted);
+    assert_eq!(dimmed(Palette::DARK).danger, Palette::DARK.muted);
+
+    // The first check has nothing to keep: only Checking... shows.
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    let _ = page.update(Event::EditEnvironment);
+    page.summary = None;
+    let _ = page.update(Event::EnvironmentName("hades".to_owned()));
+    let shown = summary_part(texts(&page, size));
+    let shown: Vec<&str> = shown.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(shown, ["Summary", "Checking..."]);
+}
+
+#[test]
+fn a_check_lands_while_the_discard_prompt_shows() {
+    let mut page = summarized(ready_review());
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let waiting = page.check_sequence;
+    // The prompt opens on Details once Open existing asks (plan 0064 step 6).
+    page.leave_prompt = true;
+    // Its wait still starts the check, and the check still lands.
+    let task = page.update(Event::Settled(waiting));
+    assert!(!is_none(task));
+    let _ = page.update(Event::Checked(
+        waiting,
+        Box::new(page.draft.clone()),
+        Ok(Box::new(adopting())),
+    ));
+    assert!(page.leave_prompt);
+    assert!(!page.checking);
+    assert!(
+        page.summary
+            .as_ref()
+            .unwrap()
+            .found
+            .as_ref()
+            .unwrap()
+            .adopted
+    );
+    // Other events stay blocked.
+    let _ = page.update(Event::Name("Hades 2".to_owned()));
+    assert_eq!(page.draft.title, "Hades");
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+}
+
+#[test]
+fn a_download_and_its_failure_return_to_details_and_check_again() {
+    let mut page = summarized(Review {
+        runner_row: None,
+        prerequisite: Some(Prerequisite::Runner("GE-Proton11-3".to_owned())),
+        ..ready_review()
+    });
+    page.draft.runner = "GE-Proton11-3".to_owned();
+    let review = page.summary.clone().unwrap().found.unwrap();
+    land(&mut page, review);
+    let size = iced::Size::new(900.0, 4000.0);
+    assert_eq!(
+        click_label(&page, size, "Download GE-Proton"),
+        ["Download(GeProton)"]
+    );
+
+    // The download itself never runs here; its result is landed below.
+    let _ = page.update(Event::Download(Provider::GeProton));
+    assert_eq!(page.stage, Stage::Working);
+    let checks = page.check_sequence;
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Ok("GE-Proton11-4".to_owned()),
+    ));
+    assert_eq!(page.stage, Stage::Details);
+    assert_eq!(
+        page.draft.runner, "GE-Proton11-4",
+        "the named build installed"
+    );
+    assert_ne!(page.check_sequence, checks);
+    assert!(page.checking);
+    assert!(page.error.is_none());
+
+    let review = page.summary.clone().unwrap().found.unwrap();
+    land(&mut page, review);
+    let _ = page.update(Event::Download(Provider::GeProton));
+    assert_eq!(page.stage, Stage::Working);
+    let checks = page.check_sequence;
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Err("offline".to_owned()),
+    ));
+    assert_eq!(page.stage, Stage::Details);
+    assert_eq!(page.draft.runner, "GE-Proton11-4");
+    assert_ne!(page.check_sequence, checks);
+    assert!(page.checking);
+    assert_eq!(labeled(&texts(&page, size), "offline").len(), 1);
+    // A late result from the failed download lands nothing.
+    let _ = page.update(Event::Downloaded(
+        page.generation.wrapping_sub(1),
+        Ok("GE-Proton11-5".to_owned()),
+    ));
+    assert_eq!(page.draft.runner, "GE-Proton11-4");
+}
+
+#[test]
+fn back_to_details_from_finished_keeps_the_draft_and_checks_it_again() {
+    let size = iced::Size::new(900.0, 720.0);
+    let mut page = summarized(ready_review());
+    page.report = Some(Report::new());
+    page.show_finished();
+    assert_eq!(
+        click_label(&page, size, "Back to details"),
+        ["BackToDetails"]
+    );
+    let checks = page.check_sequence;
+    let _ = page.update(Event::BackToDetails);
+    assert_eq!(page.stage, Stage::Details);
+    assert_eq!(page.draft.title, "Test game");
+    assert!(page.report.is_none());
+    assert_ne!(page.check_sequence, checks);
+    assert!(page.checking);
+
+    // Not after a creation that registered, which has nothing to go back to.
+    let (mut page, _) = registered(false);
+    let _ = page.finish();
+    assert!(labeled(&texts(&page, size), "Back to details").is_empty());
+    let _ = page.update(Event::BackToDetails);
+    assert_eq!(page.stage, Stage::Finished);
+}
+
+/// Details for a game with the gaming template and the offer showing, its
+/// check landed with nothing missing.
+fn offering(paths: &Paths) -> Page {
+    let mut page = offer_page(paths);
+    let _ = page.update(Event::Template("gaming".to_owned()));
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    assert!(page.offer_shown());
+    land(&mut page, ready_review());
+    assert!(page.checked().is_ok());
+    page
+}
+
+#[test]
+fn create_waits_for_an_answer_to_the_offer_and_its_recheck() {
+    let size = iced::Size::new(900.0, 4000.0);
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offering(&paths);
+    let _ = page.update(Event::Offer(true));
+    assert!(page.answering);
+    // The review was made before the answer, so Create holds and says so,
+    // and the Summary shows it's out of date.
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    assert_eq!(labeled(&texts(&page, size), "Checking...").len(), 2);
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+    // Even a check landing meanwhile read the old setting.
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+
+    let before = page.check_sequence;
+    let _ = page.update(Event::Offered(
+        page.offer_sequence,
+        answer_offer(&paths, true),
+    ));
+    assert!(!page.answering);
+    assert_ne!(page.check_sequence, before, "the answer checks again");
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn a_failed_answer_to_the_offer_checks_again_and_lets_create_go() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offering(&paths);
+    let _ = page.update(Event::Offer(true));
+    let before = page.check_sequence;
+    let _ = page.update(Event::Offered(
+        page.offer_sequence,
+        Err("disk full".to_owned()),
+    ));
+    assert_eq!(page.error.as_deref(), Some("disk full"));
+    assert!(!page.answering);
+    // It may have been saved before the failure, so the Summary checks.
+    assert_ne!(page.check_sequence, before);
+    assert!(page.checking);
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn an_answer_to_the_offer_lands_while_the_discard_prompt_shows() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offering(&paths);
+    let _ = page.update(Event::Offer(true));
+    // The prompt opens on Details once Open existing asks (plan 0064 step 6).
+    page.leave_prompt = true;
+    let before = page.check_sequence;
+    let _ = page.update(Event::Offered(
+        page.offer_sequence,
+        answer_offer(&paths, true),
+    ));
+    assert!(!page.answering, "Create isn't left waiting for good");
+    assert!(page.options.as_ref().is_some_and(|options| !options.offer));
+    assert_ne!(page.check_sequence, before);
+    let _ = page.update(Event::KeepEditing);
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn a_retried_download_clears_the_last_failure() {
+    let size = iced::Size::new(900.0, 4000.0);
+    let mut page = summarized(missing_runner());
+    let _ = page.update(Event::Download(Provider::GeProton));
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Err("offline".to_owned()),
+    ));
+    assert_eq!(page.error.as_deref(), Some("offline"));
+    land(&mut page, missing_runner());
+    assert_eq!(labeled(&texts(&page, size), "offline").len(), 1);
+
+    let _ = page.update(Event::Download(Provider::GeProton));
+    assert_eq!(page.stage, Stage::Working);
+    assert!(page.error.is_none(), "the retry is under way");
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Ok("GE-Proton11-4".to_owned()),
+    ));
+    land(&mut page, ready_review());
+    assert!(page.error.is_none());
+    assert!(labeled(&texts(&page, size), "offline").is_empty());
+    assert!(page.checked().is_ok());
+}
+
+#[test]
+fn create_holds_unless_the_check_was_of_the_draft_as_it_is() {
+    // A change that skipped `edited`, as a future edit path might.
+    let mut page = summarized(ready_review());
+    page.draft.title = "Changed behind its back".to_owned();
+    assert!(!page.checking);
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+
+    // A check lands with the draft it checked, not the one the page has.
+    let mut page = summarized(ready_review());
+    let checked = Box::new(page.draft.clone());
+    let _ = page.update(Event::Name("Test game 2".to_owned()));
+    let _ = page.update(Event::Checked(
+        page.check_sequence,
+        checked,
+        Ok(Box::new(ready_review())),
+    ));
+    assert!(!page.checking);
+    assert_eq!(page.summary.as_ref().unwrap().draft.title, "Test game");
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+}
+
+/// Whether anything is drawn on the rows of the text reading `label` in the
+/// gutter right of the scrolling body, before the scrollbar. Text that wraps
+/// never reaches it, whatever it sits in.
+fn ink_beside(page: &Page, size: iced::Size, label: &str) -> bool {
+    use crate::layout_probe::probe;
+    let bounds = last_labeled(&texts(page, size), label);
+    let mut view = page.view_with_key_availability(Palette::DARK, true);
+    let (viewport, _) = probe(&mut view, size).scrollables[0];
+    let pixels = crate::layout_probe::render(&mut view, size);
+    let body_right = (viewport.x + viewport.width - super::frame::SCROLL_GUTTER).ceil() as u32;
+    (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+        (body_right + 1..body_right + 5).any(|x| {
+            let at = ((y * size.width as u32 + x) * 4) as usize;
+            pixels[at + 3] > 0
+        })
+    })
+}
+
+/// A long word that doesn't wrap lays out no wider than its room but draws
+/// past it, so what tells it apart is ink beside its box.
+#[test]
+fn long_unbroken_names_and_errors_wrap_in_small_dialogs() {
+    use crate::layout_probe::probe;
+    let runner = format!("GE-Proton-{}", "x".repeat(80));
+    let build = format!("v{}", "9".repeat(80));
+    let error = format!("https://example.invalid/{}", "a".repeat(120));
+    let cases = [
+        (
+            Review {
+                runner_row: None,
+                prerequisite: Some(Prerequisite::Runner(runner.clone())),
+                ..ready_review()
+            },
+            format!(
+                "Runner {runner} is unavailable. Choose a provider to download its latest release:"
+            ),
+        ),
+        (
+            Review {
+                prerequisite: Some(Prerequisite::Component {
+                    provider: Provider::Dxvk,
+                    version: Some(build.clone()),
+                }),
+                ..ready_review()
+            },
+            format!(
+                "Missing {} exact build {build}. Download it before creating this environment?",
+                Provider::Dxvk
+            ),
+        ),
+    ];
+    for (review, note) in cases {
+        let mut page = summarized(review);
+        page.error = Some(error.clone());
+        for (width, height) in [(280.0, 240.0), (400.0, 300.0)] {
+            let size = iced::Size::new(width, height);
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, size);
+            let spilled = probe.outside(iced::Rectangle::with_size(size));
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+            // Tall enough to draw the whole body; the width decides wrapping.
+            let tall = iced::Size::new(width, 4000.0);
+            for long in [note.as_str(), error.as_str()] {
+                assert!(!ink_beside(&page, tall, long), "{width}: {long:.30}");
+            }
+        }
+    }
+}
+
+#[test]
+fn canceling_a_download_returns_to_details_and_checks_again() {
+    let esc = || iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape);
+    for how in ["Cancel", "Back", "Esc", "Force stop"] {
+        let mut page = summarized(missing_runner());
+        let _ = page.update(Event::Download(Provider::GeProton));
+        assert_eq!(page.stage, Stage::Working, "{how}");
+        assert!(page.busy(), "{how}");
+        let token = page.token.clone().unwrap();
+        // The download itself never runs here; what it returns is landed.
+        let page = match how {
+            "Cancel" => {
+                let _ = page.update(Event::Cancel);
+                page
+            }
+            "Back" => {
+                let _ = page.back();
+                page
+            }
+            "Esc" => {
+                let mut app = crate::tests::app();
+                app.flow = Some(crate::flow::Page::New(Box::new(page)));
+                let _ = app.update(pressed(esc(), false));
+                let Some(crate::flow::Page::New(page)) = app.flow.take() else {
+                    panic!("Esc left the New page");
+                };
+                *page
+            }
+            _ => {
+                let _ = page.update(Event::Cancel);
+                let size = iced::Size::new(900.0, 720.0);
+                assert_eq!(click_label(&page, size, "Force stop"), ["Force"]);
+                let _ = page.update(Event::Force);
+                assert!(token.is_forced());
+                page
+            }
+        };
+        let mut page = page;
+        assert!(token.is_canceled(), "{how}");
+        assert_eq!(
+            page.stage,
+            Stage::Working,
+            "{how}: until the download stops"
+        );
+        let checks = page.check_sequence;
+        let _ = page.update(Event::Downloaded(
+            page.generation,
+            Err("Download canceled".to_owned()),
+        ));
+        assert_eq!(page.stage, Stage::Details, "{how}");
+        assert!(page.token.is_none(), "{how}");
+        assert_ne!(page.check_sequence, checks, "{how}");
+        assert!(page.checking, "{how}");
+        land(&mut page, missing_runner());
+        assert_eq!(
+            page.checked().map(|_| ()),
+            Err(Hold::Missing(
+                "Runner GE-Proton-Latest isn't installed".to_owned()
+            )),
+            "{how}: the download is offered again"
+        );
+    }
 }
