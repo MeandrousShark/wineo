@@ -285,6 +285,23 @@ fn a_hand_written_default_is_no_change_after_a_swap_back_or_reset() {
     assert!(global_editor(&page).form.library_edits().is_empty());
 }
 
+#[test]
+fn reset_keeps_keys_this_wineo_doesnt_know() {
+    let (_root, paths) = setup();
+    write_library(
+        &paths,
+        "schema_version = 1\n\n[input.buttons]\nteleport = \"a\"\nfavorite = \"rs\"\n",
+    );
+    let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::ResetButtons);
+    assert_eq!(page.changes(), 1);
+    assert!(save(&paths, &page).failed.is_none());
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[input.buttons]\nteleport = \"a\"\n"
+    );
+}
+
 mod app {
     //! The capture in the app: pad presses go to the waiting row first.
 
