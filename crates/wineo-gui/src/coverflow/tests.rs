@@ -1880,3 +1880,226 @@ fn switching_into_coverflow_shows_the_strip_on_its_stop_at_once() {
     assert_eq!(app.strip.position(), 15.0);
     assert!(app.strip.settled());
 }
+
+#[test]
+fn side_covers_turn_toward_the_middle_and_narrow_as_they_turn() {
+    let rest = geometry(10.0, 30, WIDE);
+    let middle = cover(&rest, 10);
+    assert_eq!(middle.tilt, 0.0);
+    assert_eq!(cover(&rest, 9).tilt, -1.0);
+    assert_eq!(cover(&rest, 13).tilt, 1.0);
+    let flat = 330.0 * scale(1.0);
+    assert_eq!(
+        cover(&rest, 11).bounds.width,
+        (flat * crate::tilt::WIDTH).round()
+    );
+    // Halfway between two stops, both are half turned, each its own way.
+    let between = geometry(10.5, 30, WIDE);
+    assert_eq!(cover(&between, 10).tilt, -0.5);
+    assert_eq!(cover(&between, 11).tilt, 0.5);
+    let half = cover(&between, 10).bounds.width;
+    let full = (330.0 * scale(0.5) * crate::tilt::WIDTH).round();
+    assert!(half > full, "{half} > {full}");
+}
+
+fn tilts_named(app: &App) -> Vec<(String, Tilt, bool)> {
+    let mut named: Vec<_> = app
+        .strip_tilts()
+        .into_iter()
+        .map(|((file, kind), _, tilt)| {
+            let name = file
+                .path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            (name, tilt, matches!(kind, artwork::Kind::Cover(_)))
+        })
+        .collect();
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    named
+}
+
+#[test]
+fn the_strip_wants_each_side_cover_tilted_its_way_and_the_neighbors_from_their_large_cover() {
+    let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
+    select(&mut app, "game-10");
+    let tilts = tilts_named(&app);
+    // The nine on screen and one past each end, but the middle.
+    assert_eq!(tilts.len(), 10, "{tilts:?}");
+    assert!(tilts.iter().all(|(name, _, _)| name != "game-10"));
+    for (name, tilt, large) in &tilts {
+        let stop: usize = name["game-".len()..].parse().unwrap();
+        assert_eq!(*tilt == Tilt::Left, stop < 10, "{name}");
+        assert_eq!(*large, stop.abs_diff(10) == 1, "{name}");
+    }
+    // With no large cover at this size, the neighbors warp from the grid's.
+    let _ = app.update(Message::Strip(Event::Measured(Size::new(900.0, 600.0))));
+    assert!(tilts_named(&app).iter().all(|(_, _, large)| !large));
+}
+
+/// Gives every game solid red grid art, as if decoded.
+fn red_posters(app: &mut App) {
+    for card in app.cards.clone() {
+        let key = (card.art.clone().unwrap(), artwork::Kind::Grid);
+        app.images.insert(
+            key,
+            false,
+            image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495)),
+        );
+    }
+}
+
+fn warping_names(app: &App) -> std::collections::BTreeSet<String> {
+    app.warping
+        .iter()
+        .map(|((file, _), _, _)| {
+            file.path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn a_warp_waits_for_its_flat_art_and_then_starts() {
+    let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
+    red_posters(&mut app);
+    select(&mut app, "game-10");
+    let warping = warping_names(&app);
+    // Every grid-sourced side cover is warping; the neighbors wait for
+    // their large covers.
+    assert!(
+        warping.contains("game-08") && warping.contains("game-12"),
+        "{warping:?}"
+    );
+    assert!(
+        !warping.contains("game-09") && !warping.contains("game-11"),
+        "{warping:?}"
+    );
+    let kind = app.cover_kind().unwrap();
+    let key = (art_of(&app, "game-11"), kind);
+    let _ = app.update(Message::ArtLoaded(
+        key.clone(),
+        false,
+        Ok(image::Handle::from_rgba(480, 720, vec![0; 480 * 720 * 4])),
+    ));
+    assert!(app.warping.contains(&(key, false, Tilt::Right)));
+}
+
+#[test]
+fn a_warp_for_a_cover_no_longer_near_the_middle_is_dropped() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    red_posters(&mut app);
+    select(&mut app, "game-10");
+    let wanted = (art_of(&app, "game-12"), artwork::Kind::Grid);
+    let stale = (art_of(&app, "game-25"), artwork::Kind::Grid);
+    let warped = || Some(image::Handle::from_rgba(1, 1, vec![0; 4]));
+    let _ = app.update(Message::ArtWarped(
+        stale.clone(),
+        false,
+        Tilt::Right,
+        warped(),
+    ));
+    assert!(!app.images.contains_tilted(&stale, false, Tilt::Right));
+    // The wrong way round for where it sits is stale too.
+    let _ = app.update(Message::ArtWarped(
+        wanted.clone(),
+        false,
+        Tilt::Left,
+        warped(),
+    ));
+    assert!(!app.images.contains_tilted(&wanted, false, Tilt::Left));
+    let _ = app.update(Message::ArtWarped(
+        wanted.clone(),
+        false,
+        Tilt::Right,
+        warped(),
+    ));
+    assert!(app.images.contains_tilted(&wanted, false, Tilt::Right));
+    assert!(!app.warping.contains(&(wanted, false, Tilt::Right)));
+}
+
+#[test]
+fn nothing_large_or_tilted_is_queued_while_the_strip_glides() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    red_posters(&mut app);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-05");
+    app.motion.system_reduced = false;
+    app.warping.clear();
+    app.loading.clear();
+    press(&mut app, Named::PageDown);
+    assert!(!app.strip.settled());
+    frame(&mut app, &mut clock, 16);
+    assert!(app.warping.is_empty(), "{:?}", warping_names(&app));
+    let kind = app.cover_kind().unwrap();
+    assert!(app.loading.iter().all(|((_, held), _)| *held != kind));
+    frame(&mut app, &mut clock, 300);
+    assert!(app.strip.settled());
+    assert!(!app.warping.is_empty());
+    assert!(app.loading.iter().any(|((_, held), _)| *held == kind));
+}
+
+#[test]
+fn a_tilted_cover_draws_its_warp_with_the_far_corners_clear() {
+    let (_root, mut app) = with_art(9, WIDE);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    let geometry = geometry(4.0, 9, WIDE);
+    let left = cover(&geometry, 2).bounds;
+    let render = |app: &App| {
+        let mut element = app.strip_view();
+        crate::layout_probe::render(&mut element, WIDE)
+    };
+    // Flat until its warp arrives, so its far top corner is art.
+    let corner = Point::new(left.x + 2.0, left.y + 2.0);
+    assert!(pixel(&render(&app), corner)[0] > 60);
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let warp = crate::tilt::warp(&flat, Tilt::Left).unwrap();
+    app.images.insert_tilted(
+        (art_of(&app, "game-02"), artwork::Kind::Grid),
+        false,
+        Tilt::Left,
+        warp,
+    );
+    let pixels = render(&app);
+    let background = pixel(&pixels, Point::new(5.0, 5.0));
+    assert_eq!(
+        pixel(&pixels, corner),
+        background,
+        "the trapezoid leaves it clear"
+    );
+    // Where that clear corner crosses the cover behind it, that cover
+    // shows: nothing square is drawn behind or over the warp.
+    let behind = cover(&geometry, 1).bounds;
+    let over = Point::new(left.x + 2.0, behind.y + 3.0);
+    assert!(behind.contains(over) && over.y < left.y + left.height * crate::tilt::INSET);
+    let seen = pixel(&pixels, over);
+    assert!(seen[0] > background[0] + 40, "{seen:?}");
+    // Its near top corner and its middle are art, dimmed.
+    let near = pixel(&pixels, Point::new(left.x + left.width - 3.0, left.y + 3.0));
+    assert!(near[0] > background[0] + 40, "{near:?}");
+    assert!(pixel(&pixels, left.center())[0] > background[0] + 40);
+}
+
+#[test]
+fn eviction_keeps_the_tilts_the_strip_wants_and_lets_others_go() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    select(&mut app, "game-10");
+    let wanted = (art_of(&app, "game-12"), artwork::Kind::Grid);
+    let other = (art_of(&app, "game-25"), artwork::Kind::Grid);
+    app.images = crate::art_cache::ArtCache::with_budget(4);
+    let warped = || image::Handle::from_rgba(1, 1, vec![0; 4]);
+    // The wanted one is the older, so only its protection keeps it.
+    app.images
+        .insert_tilted(wanted.clone(), false, Tilt::Right, warped());
+    app.images
+        .insert_tilted(other.clone(), false, Tilt::Right, warped());
+    app.evict_art();
+    assert!(app.images.contains_tilted(&wanted, false, Tilt::Right));
+    assert!(!app.images.contains_tilted(&other, false, Tilt::Right));
+}

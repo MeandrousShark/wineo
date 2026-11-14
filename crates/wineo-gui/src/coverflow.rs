@@ -7,6 +7,7 @@ use iced::{Point, Rectangle, Size, Task};
 
 use std::time::{Duration, Instant};
 
+use crate::art_cache::Tilt;
 use crate::coverflow_widget::Caption;
 use crate::grid_motion::{DOCK_WIDTH, GridLayout, Places, Spring, Stop, ViewLayout};
 use crate::keys::Direction;
@@ -29,8 +30,8 @@ const MIN_SCALE: f32 = 0.5;
 /// How much darker each step from the middle draws.
 const STEP_DIM: f32 = 0.15;
 /// The first neighbor's center from the middle's, in middle widths, and
-/// each later step's, so the side covers overlap.
-const NEAR: f32 = 0.75;
+/// each later step's, so the side covers overlap once tilted.
+const NEAR: f32 = 0.68;
 const FAR: f32 = 0.3;
 /// The room under the middle cover for its title and status line.
 pub(crate) const CAPTION: f32 = 64.0;
@@ -48,6 +49,14 @@ pub(crate) struct Cover {
     pub(crate) bounds: Rectangle,
     pub(crate) scale: f32,
     pub(crate) opacity: f32,
+    /// How far it's turned toward the middle: 0 facing out, -1 fully as a
+    /// cover on the left, 1 as one on the right. Its width narrows with it.
+    pub(crate) tilt: f32,
+}
+
+/// A cover's width, as a share of its flat width, `tilt` of the way turned.
+fn tilted_width(tilt: f32) -> f32 {
+    1.0 - (1.0 - crate::tilt::WIDTH) * tilt.abs().min(1.0)
 }
 
 /// The strip at one position: its covers back to front, and where the
@@ -105,8 +114,9 @@ pub(crate) fn geometry(position: f32, count: usize, size: Size) -> Geometry {
                 return None;
             }
             let scale = scale(distance);
+            let tilt = offset.clamp(-1.0, 1.0);
             let drawn = Size::new(
-                (middle.width * scale).round(),
+                (middle.width * scale * tilted_width(tilt)).round(),
                 (middle.height * scale).round(),
             );
             let x = center.x + reach(offset) * middle.width;
@@ -121,6 +131,7 @@ pub(crate) fn geometry(position: f32, count: usize, size: Size) -> Geometry {
                 ),
                 scale,
                 opacity: (1.0 - STEP_DIM * distance.min(NEIGHBORS as f32)) * fade,
+                tilt,
             })
         })
         .collect();
@@ -149,7 +160,7 @@ pub(crate) fn on_screen(size: Size) -> usize {
     let side = (1..=NEIGHBORS)
         .take_while(|&step| {
             let distance = step as f32;
-            let half = middle.width * scale(distance) / 2.0;
+            let half = middle.width * scale(distance) * tilted_width(1.0) / 2.0;
             reach(distance) * middle.width - half < size.width / 2.0
         })
         .count();
@@ -195,6 +206,15 @@ impl StopId {
                 .get(header)
                 .map(|place| Self::Collapsed(place.header.key.clone())),
         }
+    }
+}
+
+/// The app's card index of the game the stop shows: its own, or a
+/// collapsed section's first.
+fn stop_card(places: &Places, stop: usize) -> Option<usize> {
+    match places.strip.get(stop)? {
+        Stop::Card(index) => places.cards.get(*index).copied(),
+        Stop::Collapsed { first, .. } => *first,
     }
 }
 
@@ -734,15 +754,99 @@ impl App {
     /// cache's budget like any art.
     pub(crate) fn strip_art(&self) -> Vec<(ArtKey, bool)> {
         let places = self.grid_places();
-        // Around where the strip is heading: a cover it only glides past
-        // decodes nothing.
-        let position = self.strip.target() as f32;
-        let card_of = |stop: &Stop| match stop {
-            Stop::Card(index) => places.cards.get(*index).copied(),
-            Stop::Collapsed { first, .. } => *first,
+        let near = self.strip_near(&places);
+        let mut seen = std::collections::HashSet::new();
+        let mut keys = Vec::new();
+        let mut push = |key: ArtKey, dimmed: bool| {
+            if seen.insert(key.clone()) {
+                keys.push((key, dimmed));
+            }
         };
-        // The covers on screen and the next one past each end, so a step
-        // finds its poster ready, and nothing more is held for the strip.
+        for stop in &near {
+            if let Some(card) = stop_card(&places, *stop).and_then(|index| self.cards.get(index))
+                && let Some(art) = &card.art
+            {
+                push((art.clone(), artwork::Kind::Grid), card.not_installed());
+            }
+        }
+        if self.strip.settled()
+            && let Some(kind) = self.cover_kind()
+        {
+            let target = self.strip.target();
+            let large = [Some(target), target.checked_sub(1), Some(target + 1)];
+            for stop in large.into_iter().flatten() {
+                let Some(card) = stop_card(&places, stop).and_then(|index| self.cards.get(index))
+                else {
+                    continue;
+                };
+                if let Some(art) = &card.art {
+                    push(self.held_cover(art, kind), card.not_installed());
+                }
+            }
+        }
+        keys
+    }
+
+    /// The tilts the strip wants warped once it rests, each from the flat
+    /// art it's made of, gray or not, and which way: every cover on screen
+    /// but the middle, and the next past each end. The middle's two
+    /// neighbors warp from their large `Cover`, the rest from the grid's
+    /// poster. Nothing while the strip glides.
+    pub(crate) fn strip_tilts(&self) -> Vec<(ArtKey, bool, Tilt)> {
+        if !self.strip.settled() {
+            return Vec::new();
+        }
+        let places = self.grid_places();
+        let target = self.strip.target();
+        self.strip_near(&places)
+            .into_iter()
+            .filter(|stop| *stop != target)
+            .filter_map(|stop| {
+                let card = stop_card(&places, stop).and_then(|index| self.cards.get(index))?;
+                let art = card.art.as_ref()?;
+                let tilt = if stop < target {
+                    Tilt::Left
+                } else {
+                    Tilt::Right
+                };
+                Some((self.tilt_source(art, stop), card.not_installed(), tilt))
+            })
+            .collect()
+    }
+
+    /// The flat art the cover at `stop` warps from: its large `Cover` next
+    /// to the middle, its grid poster elsewhere.
+    fn tilt_source(&self, art: &crate::library::ArtFile, stop: usize) -> ArtKey {
+        match self.cover_kind() {
+            Some(kind) if stop.abs_diff(self.strip.target()) == 1 => self.held_cover(art, kind),
+            _ => (art.clone(), artwork::Kind::Grid),
+        }
+    }
+
+    /// The cover at `stop` turned `tilt`'s way, warped from the art it
+    /// wants or, while that warps, from its grid poster.
+    pub(crate) fn strip_tilted(
+        &self,
+        card: &crate::library::Card,
+        stop: usize,
+        tilt: Tilt,
+    ) -> Option<image::Handle> {
+        let art = card.art.as_ref()?;
+        let dimmed = card.not_installed();
+        self.images
+            .shown_tilted(&self.tilt_source(art, stop), dimmed, tilt)
+            .or_else(|| {
+                self.images
+                    .shown_tilted(&(art.clone(), artwork::Kind::Grid), dimmed, tilt)
+            })
+            .cloned()
+    }
+
+    /// The stops whose art the strip holds, nearest the stop it's heading
+    /// to first: the covers on screen there and the next past each end. A
+    /// cover the strip only glides past isn't among them.
+    fn strip_near(&self, places: &Places) -> Vec<usize> {
+        let position = self.strip.target() as f32;
         let size = self.strip_size();
         let shown = geometry(position, places.strip.len(), size)
             .covers
@@ -764,41 +868,7 @@ impl App {
                 .abs()
                 .total_cmp(&(*b as f32 - position).abs())
         });
-        let mut seen = std::collections::HashSet::new();
-        let mut keys = Vec::new();
-        let mut push = |key: ArtKey, dimmed: bool| {
-            if seen.insert(key.clone()) {
-                keys.push((key, dimmed));
-            }
-        };
-        for stop in &near {
-            if let Some(card) =
-                card_of(&places.strip[*stop]).and_then(|index| self.cards.get(index))
-                && let Some(art) = &card.art
-            {
-                push((art.clone(), artwork::Kind::Grid), card.not_installed());
-            }
-        }
-        if self.strip.settled()
-            && let Some(kind) = self.cover_kind()
-        {
-            let target = self.strip.target();
-            let large = [Some(target), target.checked_sub(1), Some(target + 1)];
-            for stop in large.into_iter().flatten() {
-                let Some(card) = places
-                    .strip
-                    .get(stop)
-                    .and_then(card_of)
-                    .and_then(|index| self.cards.get(index))
-                else {
-                    continue;
-                };
-                if let Some(art) = &card.art {
-                    push(self.held_cover(art, kind), card.not_installed());
-                }
-            }
-        }
-        keys
+        near
     }
 
     /// The `Cover` key for `art` at `kind`, or a larger one already held.
@@ -861,10 +931,19 @@ impl App {
                     }
                 };
                 let card = card.and_then(|index| self.cards.get(index));
+                // The side it's on as drawn now, which a glide can change.
+                let side = if (stop as f32) < position {
+                    Tilt::Left
+                } else {
+                    Tilt::Right
+                };
                 Some(Face {
                     stop,
                     id: StopId::of(&places, places.strip[stop])?,
                     art: card.and_then(|card| self.strip_handle(card, stop)),
+                    tilted: card
+                        .filter(|_| stop as f32 != position)
+                        .and_then(|card| self.strip_tilted(card, stop, side)),
                     title: card
                         .map(|card| card.display_title.clone())
                         .unwrap_or_default(),

@@ -6,6 +6,7 @@ use std::ops::ControlFlow;
 use iced::widget::image;
 use iced::{Rectangle, Task};
 
+use crate::art_cache::Tilt;
 use crate::{App, ArtKey, Early, GAP, Message, artwork};
 
 impl App {
@@ -64,8 +65,11 @@ impl App {
             .map(|(key, _)| key)
             .collect();
         let visible = &self.visible_art;
-        self.images
-            .evict(|key| visible.contains(key) || panel.contains(key));
+        let tilts = &self.visible_tilts;
+        self.images.evict_where(|key, tilt| match tilt {
+            Tilt::None => visible.contains(key) || panel.contains(key),
+            tilt => tilts.contains(&(key.clone(), tilt)),
+        });
     }
 
     /// The art in view, decoded if it isn't yet. In coverflow it waits for
@@ -80,17 +84,88 @@ impl App {
     }
 
     pub(crate) fn load_art_now(&mut self) -> Task<Message> {
-        let keys = if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+        let coverflow = self.layout == crate::grid_motion::ViewLayout::Coverflow;
+        let keys = if coverflow {
             self.strip_art()
         } else {
             self.grid_art()
+        };
+        let tilts = if coverflow {
+            self.strip_tilts()
+        } else {
+            Vec::new()
         };
         for (key, _) in &keys {
             self.images.touch(key);
         }
         self.visible_art = keys.iter().map(|(key, _)| key.clone()).collect();
+        self.visible_tilts = tilts
+            .iter()
+            .map(|(key, _, tilt)| (key.clone(), *tilt))
+            .collect();
         self.evict_art();
-        self.load_images(keys)
+        Task::batch([self.load_images(keys), self.warp_images(tilts)])
+    }
+
+    /// Warps each tilt whose flat art is here and that isn't yet, off the
+    /// UI thread and behind the same limit as the decodes. A tilt whose art
+    /// is still decoding is asked for again when it arrives.
+    pub(crate) fn warp_images(&mut self, tilts: Vec<(ArtKey, bool, Tilt)>) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for (key, dimmed, tilt) in tilts {
+            if self.images.contains_tilted(&key, dimmed, tilt)
+                || self.warping.contains(&(key.clone(), dimmed, tilt))
+            {
+                continue;
+            }
+            let Some(flat) = self
+                .images
+                .contains(&key, dimmed)
+                .then(|| self.images.shown(&key, dimmed).cloned())
+                .flatten()
+            else {
+                continue;
+            };
+            self.warping.insert((key.clone(), dimmed, tilt));
+            let decodes = self.decodes.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let warped = match decodes.acquire_owned().await {
+                        Ok(permit) => tokio::task::spawn_blocking(move || {
+                            let warped = crate::tilt::warp(&flat, tilt);
+                            drop(permit);
+                            warped
+                        })
+                        .await
+                        .ok()
+                        .flatten(),
+                        Err(_) => None,
+                    };
+                    (key, warped)
+                },
+                move |(key, warped)| Message::ArtWarped(key, dimmed, tilt, warped),
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    /// Keeps a finished tilt while the strip still wants it. One for a
+    /// cover that's no longer near the middle is dropped.
+    pub(crate) fn art_warped(
+        &mut self,
+        key: ArtKey,
+        dimmed: bool,
+        tilt: Tilt,
+        warped: Option<image::Handle>,
+    ) -> Task<Message> {
+        self.warping.remove(&(key.clone(), dimmed, tilt));
+        if let Some(handle) = warped
+            && self.visible_tilts.contains(&(key.clone(), tilt))
+        {
+            self.images.insert_tilted(key, dimmed, tilt, handle);
+            self.evict_art();
+        }
+        Task::none()
     }
 
     /// The art the grid draws, in the order it's needed: cards drawn in
@@ -190,13 +265,21 @@ impl App {
         if self.current_art.get(&key.0.path) != Some(&key.0.identity) {
             return ControlFlow::Break(Task::none());
         }
+        // Flat art a wanted tilt waits on starts its warp now.
+        let warps = Tilt::SIDES
+            .into_iter()
+            .any(|tilt| self.visible_tilts.contains(&(key.clone(), tilt)));
         match result {
             Ok(handle) => self.art_loaded(key, dimmed, handle),
             Err(_) => {
                 self.failed_images.insert(key);
             }
         }
-        ControlFlow::Continue(Task::none())
+        ControlFlow::Continue(if warps {
+            self.load_visible_art()
+        } else {
+            Task::none()
+        })
     }
 }
 
