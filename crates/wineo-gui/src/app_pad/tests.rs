@@ -933,3 +933,72 @@ fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
     assert_eq!(glyph(Style::Nintendo, PadButton::Lt), Glyph::Label("ZL"));
     assert_eq!(glyph(Style::PlayStation, PadButton::Rb), Glyph::Label("R1"));
 }
+
+/// Coverflow over sections a, b, and c of two games each, with b collapsed,
+/// a pad connected and the gate open, and the cursor on a-0 with its panel
+/// shut.
+fn coverflow_ready() -> (tempfile::TempDir, App) {
+    let (home, mut app) = booted();
+    app.group = wineo_core::library::GroupBy::Tag;
+    let cards = ["a-0", "a-1", "b-0", "b-1", "c-0", "c-1"]
+        .into_iter()
+        .map(|name| {
+            let mut card = card(name, State::Inactive, 60);
+            card.tags = vec![name[..1].to_owned()];
+            card
+        })
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.switch_layout(crate::grid_motion::ViewLayout::Coverflow);
+    let _ = app.update(Message::Strip(crate::coverflow::Event::Measured(
+        iced::Size::new(1600.0, 900.0),
+    )));
+    let _ = app.update(Message::ToggleSection(crate::slot::SectionKey::Tag(
+        "b".into(),
+    )));
+    let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+    focus(&mut app);
+    move_to(&mut app, "a-0");
+    (home, app)
+}
+
+#[test]
+fn in_coverflow_the_dpad_walks_the_strip_and_a_opens_a_section_card() {
+    let (_home, mut app) = coverflow_ready();
+    assert_eq!(app.strip.target(), 0);
+    tap(&mut app, Raw::DPadRight);
+    assert_eq!(app.selected.as_deref(), Some("a-1"));
+    assert_eq!(app.strip.target(), 1);
+    tap(&mut app, Raw::DPadRight);
+    assert_eq!(app.strip.target(), 2);
+    assert!(app.header_cursor().is_some(), "on b's card");
+    tap(&mut app, Raw::South);
+    assert!(
+        !app.collapsed
+            .contains(&crate::slot::SectionKey::Tag("b".into()))
+    );
+    assert_eq!(app.selected.as_deref(), Some("b-0"));
+    assert_eq!(app.strip.target(), 2);
+    assert!(app.header_cursor().is_none());
+}
+
+#[test]
+fn on_a_coverflow_card_the_hints_drop_favorite_and_mark_and_a_opens() {
+    let (_home, mut app) = coverflow_ready();
+    // The panel is open on a-1, then the card hides it.
+    tap(&mut app, Raw::DPadRight);
+    tap(&mut app, Raw::South);
+    assert!(app.panel_open);
+    let words = |app: &App| -> Vec<&'static str> {
+        app.pad_hints().into_iter().map(|(_, word)| word).collect()
+    };
+    assert!(words(&app).contains(&"Play"));
+    assert!(words(&app).contains(&"Favorite"));
+    tap(&mut app, Raw::DPadRight);
+    assert!(app.panel_hidden_by_card());
+    let on_card = words(&app);
+    assert!(on_card.contains(&"Open"), "{on_card:?}");
+    assert!(!on_card.contains(&"Play"), "{on_card:?}");
+    assert!(!on_card.contains(&"Favorite") && !on_card.contains(&"Mark"));
+    assert!(app.pad_hint_view().is_some(), "the bar shows in coverflow");
+}
