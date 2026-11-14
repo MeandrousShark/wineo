@@ -459,6 +459,7 @@ impl App {
     /// the art the new middle needs when it moved.
     pub(crate) fn sync_strip(&mut self) -> Task<Message> {
         if self.layout != ViewLayout::Coverflow {
+            self.strip_art_due = false;
             return Task::none();
         }
         let before = (
@@ -509,10 +510,13 @@ impl App {
             self.selection_changed();
         }
         self.center_strip();
-        if (&self.selected, &self.cursor, self.strip.target) == (&before.0, &before.1, before.2) {
+        let due = std::mem::take(&mut self.strip_art_due);
+        if !due
+            && (&self.selected, &self.cursor, self.strip.target) == (&before.0, &before.1, before.2)
+        {
             Task::none()
         } else {
-            Task::batch([self.load_visible_art(), self.load_panel_art()])
+            Task::batch([self.load_art_now(), self.load_panel_art()])
         }
     }
 

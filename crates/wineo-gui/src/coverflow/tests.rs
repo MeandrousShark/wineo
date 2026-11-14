@@ -1628,3 +1628,30 @@ fn r_on_a_card_lands_on_its_only_game_with_the_panel_open_or_shut() {
         assert!(app.panel_open, "open {open}");
     }
 }
+
+#[test]
+fn a_search_that_moves_the_selection_asks_no_large_cover_for_the_old_place() {
+    let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
+    select(&mut app, "game-07");
+    let kind = app.cover_kind().expect("a large cover");
+    app.loading.clear();
+    let _ = app.update(Message::SearchChanged("game-1".into()));
+    assert_eq!((selected(&app), app.strip.target()), ("game-10", 0));
+    let covers: std::collections::BTreeSet<String> = app
+        .loading
+        .iter()
+        .filter(|((_, held), _)| *held == kind)
+        .map(|((file, _), _)| {
+            file.path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    // Stop 7 of the new order is game-17: nothing for it or its neighbors.
+    assert_eq!(
+        covers.into_iter().collect::<Vec<_>>(),
+        ["game-10", "game-11"]
+    );
+}

@@ -68,7 +68,18 @@ impl App {
             .evict(|key| visible.contains(key) || panel.contains(key));
     }
 
+    /// The art in view, decoded if it isn't yet. In coverflow it waits for
+    /// `sync_strip` at the end of the update, since the strip's middle may
+    /// still move, and art asked for now would be for where it was.
     pub(crate) fn load_visible_art(&mut self) -> Task<Message> {
+        if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+            self.strip_art_due = true;
+            return Task::none();
+        }
+        self.load_art_now()
+    }
+
+    pub(crate) fn load_art_now(&mut self) -> Task<Message> {
         let keys = if self.layout == crate::grid_motion::ViewLayout::Coverflow {
             self.strip_art()
         } else {

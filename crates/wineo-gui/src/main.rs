@@ -189,6 +189,9 @@ pub(crate) struct App {
     layout: grid_motion::ViewLayout,
     /// Coverflow's place along its strip.
     strip: coverflow::Strip,
+    /// Coverflow's art was asked for during this update, and is requested
+    /// once the strip's middle has settled after it.
+    strip_art_due: bool,
     /// The display's own scale factor, under the interface size, which
     /// coverflow's large covers decode for.
     display_scale: f32,
@@ -671,6 +674,7 @@ impl App {
             poster_only: false,
             layout: grid_motion::ViewLayout::Grid,
             strip: coverflow::Strip::default(),
+            strip_art_due: false,
             display_scale: 1.0,
             layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
