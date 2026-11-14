@@ -2432,6 +2432,117 @@ fn a_warp_that_arrives_for_a_cover_on_screen_fades_in_over_its_flat_art() {
     assert!(!app.strip.active());
 }
 
+/// Presses `named` and leaves the work it queues undone.
+fn key_down(app: &mut App, named: Named) {
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(named),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+}
+
+/// The stop of each game `keys` names, in their order.
+fn stops_of(keys: &[(ArtKey, bool)]) -> Vec<usize> {
+    keys.iter()
+        .map(|((file, _), _)| {
+            let name = file.path.file_stem().unwrap().to_string_lossy();
+            name["game-".len()..].parse().unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn a_long_glide_warps_the_covers_it_leaves_and_passes_both_ways() {
+    let (_root, mut app) = with_art(40, WIDE);
+    select(&mut app, "game-05");
+    let _ = app.update(Message::ClosePanel);
+    app.motion.system_reduced = false;
+    red_posters(&mut app);
+    app.loading.clear();
+    app.warping.clear();
+    key_down(&mut app, Named::PageDown);
+    let target = app.strip.target();
+    assert!(
+        target > 5 + 6,
+        "farther than the target's own window: {target}"
+    );
+    assert!(!app.strip.settled());
+    // From six behind where it set out to six past where it lands, each
+    // turned left if it's ever left of the middle on the way and right if
+    // it's ever right of it: the old middle and those it passes, both.
+    let mut wanted = Vec::new();
+    for stop in 0..=target + 6 {
+        let name = format!("game-{stop:02}");
+        if stop < target {
+            wanted.push((name.clone(), Tilt::Left, false));
+        }
+        if stop > 5 {
+            wanted.push((name, Tilt::Right, false));
+        }
+    }
+    let mut tilts = tilts_named(&app);
+    tilts.sort_by(|a, b| (&a.0, a.1 == Tilt::Right).cmp(&(&b.0, b.1 == Tilt::Right)));
+    assert_eq!(tilts, wanted);
+    let grid = |name: &str| (art_of(&app, name), artwork::Kind::Grid);
+    for name in ["game-05", "game-06", "game-07"] {
+        assert!(
+            app.warping.contains(&(grid(name), false, Tilt::Left)),
+            "{name}"
+        );
+    }
+    // Nearest where it's drawn first, the way it's heading before behind.
+    assert_eq!(stops_of(&app.strip_art())[..3], [5, 6, 4]);
+}
+
+#[test]
+fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
+    // Four digits, so the strip's order is the names'.
+    let (_root, mut app) = boot();
+    let cards = (0..2000)
+        .map(|index| art_card(&format!("game-{index:04}")))
+        .collect();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.switch_layout(ViewLayout::Coverflow);
+    let _ = app.update(Message::Strip(Event::Measured(WIDE)));
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-0005");
+    let _ = app.update(Message::ClosePanel);
+    app.motion.system_reduced = false;
+    key_down(&mut app, Named::End);
+    assert_eq!(app.strip.target(), 1999);
+    // What's on screen and six more ahead where it sets out, and six
+    // around where it lands: no more than a short jump holds.
+    let held = |app: &App| {
+        let keys = app.strip_art();
+        let stops = stops_of(&keys);
+        assert_eq!(
+            stops.iter().collect::<std::collections::HashSet<_>>().len(),
+            stops.len()
+        );
+        assert!(app.strip_tilts().len() <= 2 * stops.len());
+        stops
+    };
+    let mut stops = held(&app);
+    assert_eq!(stops[..3], [5, 6, 4]);
+    stops.sort_unstable();
+    let ahead = NEIGHBORS + 1 + PREWARM;
+    let wanted: Vec<usize> = (0..=5 + ahead).chain(1999 - PREWARM..=1999).collect();
+    assert_eq!(stops, wanted);
+    // Partway, everything on screen then is held, and still that few.
+    frame(&mut app, &mut clock, 48);
+    let position = app.strip.position();
+    assert!(position > 100.0 && position < 1900.0, "{position}");
+    let stops = held(&app);
+    // One more each end where it sits between two stops.
+    assert!(stops.len() <= wanted.len() + 2, "{}", stops.len());
+    for stop in 0..2000usize {
+        if (stop as f32 - position).abs() < NEIGHBORS as f32 + 1.0 {
+            assert!(stops.contains(&stop), "{stop} at {position}");
+        }
+    }
+}
+
 #[test]
 fn eviction_keeps_the_tilts_the_strip_wants_and_lets_others_go() {
     let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));

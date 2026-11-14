@@ -16,9 +16,9 @@ use crate::{App, ArtKey, Message, artwork};
 
 /// Covers drawn on each side of the middle one.
 pub(crate) const NEIGHBORS: usize = 4;
-/// Stops on each side of the one the strip heads to whose posters and
-/// tilts are kept ready: those on screen and two more, so a cover a glide
-/// brings in is already turned.
+/// Stops on each side of the strip's stop, and while it glides of where
+/// it's drawn, whose posters and tilts are kept ready: those on screen and
+/// two more, so a cover a glide brings in is already turned.
 const PREWARM: usize = NEIGHBORS + 2;
 /// The middle cover's height, as a share of the strip's.
 const HEIGHT_SHARE: f32 = 0.55;
@@ -857,14 +857,13 @@ impl App {
         cover_height(height).map(artwork::Kind::Cover)
     }
 
-    /// The art the strip draws, in the order it's needed: the grid
-    /// poster of each stop within `PREWARM` of the one it's heading to,
-    /// from the middle out, then, once the strip rests, the larger `Cover`
-    /// of the middle and its two neighbors. A held `Cover` at least as
-    /// large is kept rather than decoding another. Each key comes once,
-    /// with whether it's drawn dimmed. This is all eviction protects for
-    /// the strip, so large covers past the middle three age out of the
-    /// cache's budget like any art.
+    /// The art the strip draws, in the order it's needed: the grid poster
+    /// of each stop `strip_near` holds, in its order, then, once the strip
+    /// rests, the larger `Cover` of the middle and its two neighbors. A
+    /// held `Cover` at least as large is kept rather than decoding another.
+    /// Each key comes once, with whether it's drawn dimmed. This is all
+    /// eviction protects for the strip, so large covers past the middle
+    /// three age out of the cache's budget like any art.
     pub(crate) fn strip_art(&self) -> Vec<(ArtKey, bool)> {
         let places = self.grid_places();
         let near = self.strip_near(&places);
@@ -901,11 +900,11 @@ impl App {
     }
 
     /// The tilts the strip wants warped, each from the flat art it's made
-    /// of, gray or not, and which way: each stop within `PREWARM` of the
-    /// one it's heading to, turned the way it sits from there, and while
-    /// it glides, also the way it sits from where the strip is drawn, so a
-    /// cover the middle passes on the way has both. At rest the middle's
-    /// two neighbors warp from their large `Cover`; otherwise every warp is
+    /// of, gray or not, and which way: each stop `strip_near` holds, turned
+    /// the way it sits from where the strip heads, and while it glides,
+    /// also the way it sits from where the strip is drawn, so a cover the
+    /// middle passes on the way has both. At rest the middle's two
+    /// neighbors warp from their large `Cover`; otherwise every warp is
     /// from the grid's poster, cheap enough to make mid-glide.
     pub(crate) fn strip_tilts(&self) -> Vec<(ArtKey, bool, Tilt)> {
         let places = self.grid_places();
@@ -997,18 +996,45 @@ impl App {
             .cloned()
     }
 
-    /// The stops whose art the strip holds, nearest the stop it's heading
-    /// to first: those within `PREWARM` of it, more than are ever on
-    /// screen, so a cover sliding in already has its poster and tilt. A
-    /// cover a long jump only flies past isn't among them.
+    /// The stops whose art the strip holds. At rest, those within
+    /// `PREWARM` of its stop, more than are ever on screen, so a cover
+    /// sliding in already has its poster and tilt. While it glides, every
+    /// stop from `PREWARM` behind where it's drawn to `PREWARM` past the
+    /// one it's heading to, so a cover it leaves or passes is turned too;
+    /// a jump longer than that keeps only what's on screen and `PREWARM`
+    /// ahead at each end, so Home on a huge library asks for no more than
+    /// a short one. Nearest where it's drawn first, ahead before behind.
     fn strip_near(&self, places: &Places) -> Vec<usize> {
         let Some(last) = places.strip.len().checked_sub(1) else {
             return Vec::new();
         };
         let target = self.strip.target().min(last);
-        let mut near: Vec<usize> =
-            (target.saturating_sub(PREWARM)..=(target + PREWARM).min(last)).collect();
-        near.sort_by_key(|stop| stop.abs_diff(target));
+        let window = |at: usize| at.saturating_sub(PREWARM)..=(at + PREWARM).min(last);
+        if self.strip.settled() {
+            let mut near: Vec<usize> = window(target).collect();
+            near.sort_by_key(|stop| stop.abs_diff(target));
+            return near;
+        }
+        let position = self.strip.position().clamp(0.0, last as f32);
+        let right = target as f32 >= position;
+        let (floor, ceil) = (position.floor() as usize, position.ceil() as usize);
+        let reach = NEIGHBORS + 1 + PREWARM;
+        let start = if right {
+            floor.saturating_sub(PREWARM)..=(ceil + reach).min(last)
+        } else {
+            floor.saturating_sub(reach)..=(ceil + PREWARM).min(last)
+        };
+        let (low, high) = (floor.min(target), ceil.max(target));
+        let mut near: Vec<usize> = (low.saturating_sub(PREWARM)..=(high + PREWARM).min(last))
+            .filter(|stop| start.contains(stop) || window(target).contains(stop))
+            .collect();
+        let behind = |stop: usize| ((stop as f32) < position) == right;
+        near.sort_by(|a, b| {
+            (*a as f32 - position)
+                .abs()
+                .total_cmp(&(*b as f32 - position).abs())
+                .then_with(|| behind(*a).cmp(&behind(*b)))
+        });
         near
     }
 
