@@ -17,8 +17,10 @@ details.
 1. Publish to the repositories in parallel (plan 0065).
 2. The new environment flow: kind and starting point first, Review folded
    into Details, and art chosen after Create (plan 0064).
+3. Coverflow with controller navigation, library views part 5 (plan
+   0066).
 
-Coverflow with controller navigation and store imports come after that.
+Store imports come after that.
 
 ## Backlog
 
