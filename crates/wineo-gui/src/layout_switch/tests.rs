@@ -150,25 +150,25 @@ fn either_side_sets_its_layout_and_saves_it() {
 }
 
 #[test]
-fn ctrl_l_switches_both_ways_unless_something_else_took_it() {
+fn ctrl_l_switches_on_unless_something_else_took_it() {
     let (_root, mut app) = library(4);
     ctrl_l(&mut app, false, false);
+    assert_eq!(app.layout, ViewLayout::Coverflow);
+    finish_write(&mut app);
+    assert_eq!(saved(&app), ViewLayout::Coverflow);
+    // Search has no use for it.
+    ctrl_l(&mut app, true, true);
     assert_eq!(app.layout, ViewLayout::List);
     finish_write(&mut app);
     assert_eq!(saved(&app), ViewLayout::List);
-    // Search has no use for it.
-    ctrl_l(&mut app, true, true);
-    assert_eq!(app.layout, ViewLayout::Grid);
-    finish_write(&mut app);
-    assert_eq!(saved(&app), ViewLayout::Grid);
     // A focused control that took it keeps it.
     ctrl_l(&mut app, false, true);
-    assert_eq!(app.layout, ViewLayout::Grid);
+    assert_eq!(app.layout, ViewLayout::List);
     // So does an open menu.
     let _ = app.update(Message::Sort(SortEvent::ToggleMenu));
     app.sort_menu = true;
     ctrl_l(&mut app, false, false);
-    assert_eq!(app.layout, ViewLayout::Grid);
+    assert_eq!(app.layout, ViewLayout::List);
 }
 
 #[test]
@@ -501,33 +501,36 @@ fn press_on_segment(app: &mut App, named: iced::keyboard::key::Named) -> iced::e
 }
 
 #[test]
-fn left_right_space_and_enter_each_flip_a_focused_segment() {
+fn left_steps_back_and_right_space_and_enter_step_forward_without_wrapping() {
     use iced::keyboard::key::Named;
     let (_root, mut app) = library(4);
-    for named in [
-        Named::ArrowLeft,
-        Named::ArrowRight,
-        Named::Space,
-        Named::Enter,
+    // The sides run list, grid, coverflow, and a key that has nowhere to go
+    // still takes the press, so it never reaches the library's selection.
+    for (named, start, expected) in [
+        (Named::ArrowLeft, ViewLayout::Coverflow, ViewLayout::Grid),
+        (Named::ArrowLeft, ViewLayout::Grid, ViewLayout::List),
+        (Named::ArrowLeft, ViewLayout::List, ViewLayout::List),
+        (Named::ArrowRight, ViewLayout::List, ViewLayout::Grid),
+        (Named::ArrowRight, ViewLayout::Grid, ViewLayout::Coverflow),
+        (
+            Named::ArrowRight,
+            ViewLayout::Coverflow,
+            ViewLayout::Coverflow,
+        ),
+        (Named::Space, ViewLayout::List, ViewLayout::Grid),
+        (Named::Space, ViewLayout::Grid, ViewLayout::Coverflow),
+        (Named::Space, ViewLayout::Coverflow, ViewLayout::Coverflow),
+        (Named::Enter, ViewLayout::List, ViewLayout::Grid),
+        (Named::Enter, ViewLayout::Grid, ViewLayout::Coverflow),
+        (Named::Enter, ViewLayout::Coverflow, ViewLayout::Coverflow),
     ] {
-        for start in [ViewLayout::Grid, ViewLayout::List] {
-            let _ = set(&mut app, start);
-            let other = if start == ViewLayout::Grid {
-                ViewLayout::List
-            } else {
-                ViewLayout::Grid
-            };
-            assert_eq!(
-                press_on_segment(&mut app, named),
-                iced::event::Status::Captured
-            );
-            assert_eq!(app.layout, other, "{named:?} from {start:?}");
-            assert_eq!(
-                press_on_segment(&mut app, named),
-                iced::event::Status::Captured
-            );
-            assert_eq!(app.layout, start, "{named:?} again comes back");
-        }
+        let _ = set(&mut app, start);
+        assert_eq!(
+            press_on_segment(&mut app, named),
+            iced::event::Status::Captured,
+            "{named:?} from {start:?}"
+        );
+        assert_eq!(app.layout, expected, "{named:?} from {start:?}");
     }
 }
 
@@ -611,8 +614,8 @@ fn the_switch_has_three_sides_in_order_and_each_sets_its_layout() {
     assert_eq!(WIDTH, 96.0);
     let size = Size::new(200.0, 100.0);
     for (side, expected) in [
-        (0, "Layout(Set(Grid))"),
-        (1, "Layout(Set(List))"),
+        (0, "Layout(Set(List))"),
+        (1, "Layout(Set(Grid))"),
         (2, "Layout(Set(Coverflow))"),
     ] {
         assert_eq!(click_at(toolbar(&app), size, &[2, side]), [expected]);
@@ -624,13 +627,13 @@ fn the_switch_has_three_sides_in_order_and_each_sets_its_layout() {
 }
 
 #[test]
-fn ctrl_l_cycles_grid_list_coverflow_and_back_saving_each() {
+fn ctrl_l_cycles_the_sides_left_to_right_and_wraps_saving_each() {
     let (_root, mut app) = library(4);
     for (expected, text) in [
-        (ViewLayout::List, "list"),
         (ViewLayout::Coverflow, "coverflow"),
-        (ViewLayout::Grid, "grid"),
         (ViewLayout::List, "list"),
+        (ViewLayout::Grid, "grid"),
+        (ViewLayout::Coverflow, "coverflow"),
     ] {
         ctrl_l(&mut app, false, false);
         assert_eq!(app.layout, expected);
@@ -641,24 +644,24 @@ fn ctrl_l_cycles_grid_list_coverflow_and_back_saving_each() {
     }
     // Search has no use for it, and a control that took it keeps it.
     ctrl_l(&mut app, true, true);
-    assert_eq!(app.layout, ViewLayout::Coverflow);
+    assert_eq!(app.layout, ViewLayout::List);
     ctrl_l(&mut app, false, true);
-    assert_eq!(app.layout, ViewLayout::Coverflow);
+    assert_eq!(app.layout, ViewLayout::List);
 }
 
 #[test]
 fn the_thumb_rests_at_three_stops_and_slides_between_them() {
-    assert_eq!(stop(ViewLayout::Grid), 0.0);
-    assert_eq!(stop(ViewLayout::List), 1.0);
+    assert_eq!(stop(ViewLayout::List), 0.0);
+    assert_eq!(stop(ViewLayout::Grid), 1.0);
     assert_eq!(stop(ViewLayout::Coverflow), 2.0);
 
     let (_root, mut app) = library(4);
-    assert_eq!(app.layout_thumb.progress(), 0.0);
+    assert_eq!(app.layout_thumb.progress(), 1.0);
     let _ = set(&mut app, ViewLayout::Coverflow);
     assert!(app.layout_thumb.active());
     assert_eq!(
         app.layout_thumb.progress(),
-        0.0,
+        1.0,
         "it sets out from the grid"
     );
     let generation = app.layout_thumb.generation();
@@ -667,12 +670,12 @@ fn the_thumb_rests_at_three_stops_and_slides_between_them() {
         Instant::now() + Duration::from_millis(80),
     )));
     let midway = app.layout_thumb.progress();
-    assert!(midway > 0.0 && midway < 2.0, "{midway}");
+    assert!(midway > 1.0 && midway < 2.0, "{midway}");
     settle_thumb(&mut app);
     assert!(!app.layout_thumb.active());
     assert_eq!(app.layout_thumb.progress(), 2.0);
     // Back one stop, not through the one it passed.
-    let _ = set(&mut app, ViewLayout::List);
+    let _ = set(&mut app, ViewLayout::Grid);
     settle_thumb(&mut app);
     assert_eq!(app.layout_thumb.progress(), 1.0);
 
@@ -680,7 +683,7 @@ fn the_thumb_rests_at_three_stops_and_slides_between_them() {
     let _ = set(&mut app, ViewLayout::Coverflow);
     assert!(!app.layout_thumb.active());
     assert_eq!(app.layout_thumb.progress(), 2.0);
-    let _ = set(&mut app, ViewLayout::Grid);
+    let _ = set(&mut app, ViewLayout::List);
     assert_eq!(app.layout_thumb.progress(), 0.0);
 }
 
@@ -725,9 +728,9 @@ fn the_thumb_is_drawn_over_the_chosen_side() {
     app.motion.system_reduced = true;
     let size = Size::new(200.0, 100.0);
     for (layout, side) in [
-        (ViewLayout::List, 1.0),
+        (ViewLayout::Grid, 1.0),
         (ViewLayout::Coverflow, 2.0),
-        (ViewLayout::Grid, 0.0),
+        (ViewLayout::List, 0.0),
     ] {
         let _ = set(&mut app, layout);
         let node = crate::layout_probe::layout(&mut toolbar(&app), size);

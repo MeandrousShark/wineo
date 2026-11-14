@@ -1540,8 +1540,8 @@ fn an_overtaken_write_follows_up_only_after_another_change_for_every_field() {
                 toggle_layout(app);
             },
             |view| format!("{:?}", view.layout),
+            "Coverflow",
             "List",
-            "Grid",
         ),
     ];
     for (what, first, again, read, overtaken, followed) in cases {

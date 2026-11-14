@@ -151,19 +151,21 @@ pub(crate) fn keyboard_control<'a, M: Clone + 'a>(
     })
 }
 
-/// A two-way segment as one control, like a radio group: it takes focus
-/// only from the keyboard, since a click already moves the segment's thumb,
-/// and while focused Enter, Space, Left, and Right all press it. Left and
-/// Right are captured, so they never reach the library's selection.
-pub(crate) fn segment<'a, M: Clone + 'a>(
+/// A segment of three or more choices in a row, which Left steps back
+/// through and Right steps forward through, sending `on_back` and
+/// `on_forward`. Enter and Space send `on_forward` too. Like `segment` it
+/// takes focus only from the keyboard and captures Left and Right.
+pub(crate) fn ordered_segment<'a, M: Clone + 'a>(
     content: Element<'a, M>,
     id: impl Into<iced::widget::Id>,
-    on_press: M,
+    on_back: M,
+    on_forward: M,
 ) -> Element<'a, M> {
     Element::new(FocusControl {
         mouse_focus: false,
         arrows: true,
-        ..FocusControl::new(content, true, id, on_press)
+        back: Some(on_back),
+        ..FocusControl::new(content, true, id, on_forward)
     })
 }
 
@@ -286,6 +288,9 @@ struct FocusControl<'a, M, R: AdvancedRenderer = iced::Renderer> {
     menu: Option<M>,
     /// Left and Right press it as well, for a segment of two choices.
     arrows: bool,
+    /// With `arrows`, what Left sends instead of `on_press`, for a segment
+    /// whose choices have an order.
+    back: Option<M>,
     /// Sent for R while focused, and `delete` for Delete, for a row that
     /// can be renamed or deleted from the keyboard. Like `exclude`, the
     /// control owns the keys, since its popup can't tell which row is
@@ -313,6 +318,7 @@ impl<'a, M, R: AdvancedRenderer> FocusControl<'a, M, R> {
             exclude: None,
             menu: None,
             arrows: false,
+            back: None,
             rename: None,
             delete: None,
         }
@@ -445,8 +451,8 @@ where
             Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key:
                     iced::keyboard::Key::Named(
-                        iced::keyboard::key::Named::ArrowLeft
-                        | iced::keyboard::key::Named::ArrowRight,
+                        named @ (iced::keyboard::key::Named::ArrowLeft
+                        | iced::keyboard::key::Named::ArrowRight),
                     ),
                 modifiers,
                 repeat,
@@ -459,7 +465,11 @@ where
                 // A held key repeats, and a repeat must not slip through to
                 // the library's selection, nor flip the layout back and forth.
                 if !repeat {
-                    shell.publish(self.on_press.clone());
+                    let left = *named == iced::keyboard::key::Named::ArrowLeft;
+                    shell.publish(match &self.back {
+                        Some(back) if left => back.clone(),
+                        _ => self.on_press.clone(),
+                    });
                 }
                 shell.capture_event();
                 return;
@@ -973,6 +983,40 @@ mod tests {
         let (messages, status) = send(&mut widget, &mut tree, &node, none, ctrl);
         assert!(messages.is_empty());
         assert_eq!(status, iced::event::Status::Ignored);
+    }
+
+    #[test]
+    fn an_ordered_segment_sends_back_for_left_and_forward_for_the_rest() {
+        let button = iced::widget::button::Button::<crate::Message, iced::Theme, ()>::new("Side");
+        let mut widget: Element<'_, crate::Message, iced::Theme, ()> = Element::new(FocusControl {
+            mouse_focus: false,
+            arrows: true,
+            back: Some(crate::Message::Rebuild),
+            ..FocusControl::new(button.into(), true, "ordered", crate::Message::Undo)
+        });
+        let mut tree = tree::Tree::new(widget.as_widget());
+        tree.state.downcast_mut::<State>().focus();
+        let node = widget.as_widget_mut().layout(
+            &mut tree,
+            &(),
+            &layout::Limits::new(Size::ZERO, Size::new(96.0, 32.0)),
+        );
+        let none = mouse::Cursor::Unavailable;
+        for (named, expected) in [
+            (Named::ArrowLeft, "[Rebuild]"),
+            (Named::ArrowRight, "[Undo]"),
+            (Named::Space, "[Undo]"),
+            (Named::Enter, "[Undo]"),
+        ] {
+            let (messages, status) = send(&mut widget, &mut tree, &node, none, key_event(named));
+            assert_eq!(format!("{messages:?}"), expected, "{named:?}");
+            assert_eq!(status, iced::event::Status::Captured, "{named:?}");
+        }
+        // A held key sends nothing but is still kept from the library.
+        let held = key_with(Named::ArrowLeft, keyboard::Modifiers::empty(), true);
+        let (messages, status) = send(&mut widget, &mut tree, &node, none, held);
+        assert!(messages.is_empty());
+        assert_eq!(status, iced::event::Status::Captured);
     }
 
     #[test]

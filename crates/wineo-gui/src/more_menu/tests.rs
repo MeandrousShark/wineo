@@ -366,7 +366,7 @@ fn a_long_preset_name_folds_sooner() {
     let text = format!("schema_version = 1\n\n[presets.\"{LONG}\"]\n");
     let (_root, mut app) = library_with(Some(&text), 100);
     // Room for every control with search squeezed, but not much more.
-    let _ = app.window_resized(Size::new(1015.0, 800.0));
+    let _ = app.window_resized(Size::new(1047.0, 800.0));
     let mut window = Window::new(&mut app);
     assert!(app.toolbar_folds.is_empty());
     let plain = shown(&app, crate::filter_control::FILTER_BUTTON_ID).unwrap();
@@ -430,11 +430,11 @@ fn the_menu_takes_the_sort_menus_keys() {
     assert_eq!(window.focused(&app), ids(RANDOM_ID));
     window.press(&mut app, Named::Tab);
     assert_eq!(window.focused(&app), ids(LAYOUT_ID));
-    // Left and Right flip the focused segment, which keeps its focus.
-    window.press(&mut app, Named::ArrowRight);
+    // Left and Right step the focused segment, which keeps its focus.
+    window.press(&mut app, Named::ArrowLeft);
     assert_eq!(app.layout, crate::grid_motion::ViewLayout::List);
     assert_eq!(window.focused(&app), ids(LAYOUT_ID));
-    window.press(&mut app, Named::ArrowLeft);
+    window.press(&mut app, Named::ArrowRight);
     assert_eq!(app.layout, crate::grid_motion::ViewLayout::Grid);
     assert!(app.more_menu, "the segment leaves the menu open");
     window.press(&mut app, Named::ArrowDown);
@@ -878,4 +878,22 @@ fn coverflow_keeps_the_menus_zoom_rows_as_the_grid_does() {
     let x = zoom_control::x_of(slider, 150.0);
     window.click(&mut app, iced::Point::new(x, slider.center_y()));
     assert_eq!(app.zoom, 150);
+}
+
+#[test]
+fn the_wider_layout_switch_fits_its_menu_row_at_150_percent() {
+    let (_root, mut app) = library(150);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    let segment = window.bounds(&app, LAYOUT_ID).expect("the menu's switch");
+    assert_eq!(segment.width, crate::layout_switch::WIDTH);
+    let position = crate::grid::menu_position(app.more_menu_position, app.window_size, 0.0);
+    let menu = Rectangle::new(position, Size::new(WIDTH, 100.0));
+    assert!(
+        segment.x >= menu.x && right(segment) <= right(menu),
+        "{segment:?} in {menu:?}"
+    );
+    // The row's label still has room on its left.
+    assert!(segment.x - menu.x > 48.0, "{segment:?} in {menu:?}");
+    assert!(right(menu) <= right_edge(&app) + 1.0, "{menu:?}");
 }

@@ -1,4 +1,4 @@
-//! The toolbar's layout segment: a grid, a list, and a coverflow side under
+//! The toolbar's layout segment: a list, a grid, and a coverflow side under
 //! one thumb that slides to the chosen one, Ctrl+L to cycle through them,
 //! and saving the choice to `library.toml`.
 
@@ -25,9 +25,13 @@ const GRID: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16
 pub(crate) enum Event {
     /// A click on one side.
     Set(ViewLayout),
-    /// Ctrl+L, or Enter, Space, Left, or Right on the focused segment: the
-    /// next layout, and the first again after the last.
+    /// Ctrl+L: the next side, and the first again after the last.
     Toggle,
+    /// Left on the focused segment: the side before, none before the first.
+    Back,
+    /// Right, Enter, or Space on the focused segment: the side after, none
+    /// after the last.
+    Forward,
     /// A frame of the thumb's slide.
     Tick(u64, Instant),
 }
@@ -48,23 +52,27 @@ pub(crate) fn label(layout: ViewLayout) -> &'static str {
     }
 }
 
-/// Where the thumb rests for `layout`, in sides from the left: the sides
-/// run grid, list, coverflow.
+/// The sides left to right.
+const ORDER: [ViewLayout; 3] = [ViewLayout::List, ViewLayout::Grid, ViewLayout::Coverflow];
+
+/// Where the thumb rests for `layout`, in sides from the left.
 pub(crate) fn stop(layout: ViewLayout) -> f32 {
-    match layout {
-        ViewLayout::Grid => 0.0,
-        ViewLayout::List => 1.0,
-        ViewLayout::Coverflow => 2.0,
-    }
+    ORDER.iter().position(|side| *side == layout).unwrap_or(0) as f32
 }
 
-/// The layout after `layout`, Ctrl+L's way round.
+/// The side after `layout`, wrapping to the first: Ctrl+L's way round.
 pub(crate) fn next(layout: ViewLayout) -> ViewLayout {
-    match layout {
-        ViewLayout::Grid => ViewLayout::List,
-        ViewLayout::List => ViewLayout::Coverflow,
-        ViewLayout::Coverflow => ViewLayout::Grid,
-    }
+    ORDER[(stop(layout) as usize + 1) % ORDER.len()]
+}
+
+/// The side `step` places from `layout`, or `layout` itself at an end.
+fn stepped(layout: ViewLayout, step: isize) -> ViewLayout {
+    let at = stop(layout) as isize + step;
+    usize::try_from(at)
+        .ok()
+        .and_then(|at| ORDER.get(at))
+        .copied()
+        .unwrap_or(layout)
 }
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
@@ -75,6 +83,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     match event {
         Event::Set(layout) => app.set_layout(layout),
         Event::Toggle => app.set_layout(next(app.layout)),
+        Event::Back => app.set_layout(stepped(app.layout, -1)),
+        Event::Forward => app.set_layout(stepped(app.layout, 1)),
         Event::Tick(generation, now) => {
             app.layout_thumb.tick(generation, now);
             Task::none()
@@ -235,15 +245,15 @@ pub(crate) fn segment<'a>(app: &'a App, id: &'static str) -> Element<'a, Message
             });
         zoom_control::with_tooltip(side.into(), label(layout), palette)
     };
-    // One Tab stop and one ring for all the sides, since the keys cycle the
-    // layout whichever side is chosen.
-    focus_button::segment(
+    // One Tab stop and one ring for all the sides: Left and Right step
+    // through them, and Enter and Space step forward.
+    focus_button::ordered_segment(
         stack![
             track,
             thumb,
             row![
-                side(ViewLayout::Grid, GRID),
                 side(ViewLayout::List, LIST),
+                side(ViewLayout::Grid, GRID),
                 side(ViewLayout::Coverflow, COVERFLOW),
             ],
         ]
@@ -251,7 +261,8 @@ pub(crate) fn segment<'a>(app: &'a App, id: &'static str) -> Element<'a, Message
         .height(ui::BUTTON_HEIGHT)
         .into(),
         id,
-        Message::Layout(Event::Toggle),
+        Message::Layout(Event::Back),
+        Message::Layout(Event::Forward),
     )
 }
 
