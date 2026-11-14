@@ -343,3 +343,192 @@ fn a_jump_that_changes_the_selection_resets_what_belongs_to_the_old_one() {
     press(&mut app, Named::End);
     assert_eq!(app.panel_note.as_deref(), Some("again"));
 }
+
+/// Three tag sections of six games each, a, b, and c, in that order.
+fn sectioned(layout: ViewLayout) -> App {
+    let mut app = crate::tests::app();
+    app.viewport_width = 1000.0;
+    app.viewport_height = 800.0;
+    app.layout = layout;
+    app.group = wineo_core::library::GroupBy::Tag;
+    let cards = ["a", "b", "c"]
+        .into_iter()
+        .flat_map(|tag| {
+            (0..6).map(move |index| {
+                let mut card = card(&format!("{tag}-{index}"), State::Inactive, 0);
+                card.tags = vec![tag.to_owned()];
+                card
+            })
+        })
+        .collect();
+    app.merge(cards);
+    app.reorder();
+    app.snap_grid();
+    app
+}
+
+fn tag(name: &str) -> crate::slot::SectionKey {
+    crate::slot::SectionKey::Tag(name.to_owned())
+}
+
+fn shown_order(app: &App) -> Vec<String> {
+    app.grid_places()
+        .ids
+        .iter()
+        .map(|id| id.name().to_owned())
+        .collect()
+}
+
+fn header_on(app: &mut App, section: &str, selected: &str) {
+    app.selected = Some(selected.into());
+    app.cursor = Some(crate::app_selection::Cursor::Header(tag(section)));
+}
+
+#[test]
+fn with_sections_home_and_end_go_to_the_first_and_last_game_of_the_library() {
+    for layout in [ViewLayout::List, ViewLayout::Grid] {
+        let mut app = sectioned(layout);
+        assert_eq!(shown_order(&app).len(), 18);
+        select(&mut app, "b-2");
+        press(&mut app, Named::End);
+        assert_eq!(selected(&app), "c-5", "{layout:?}");
+        press(&mut app, Named::Home);
+        assert_eq!(selected(&app), "a-0", "{layout:?}");
+    }
+}
+
+#[test]
+fn a_page_crosses_a_section_boundary_as_the_arrows_do() {
+    let mut app = sectioned(ViewLayout::List);
+    fit_rows(&mut app, 3);
+    select(&mut app, "a-4");
+    // Two rows left in a, so the third lands in b.
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "b-1");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "b-4");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "c-1");
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "b-4");
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "b-1");
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "a-4");
+    // The ends stop the page without wrapping, across all three sections.
+    press(&mut app, Named::PageUp);
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "a-0");
+    select(&mut app, "c-4");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "c-5");
+}
+
+#[test]
+fn a_grid_page_crosses_into_the_next_section_at_the_nearest_column() {
+    let mut app = sectioned(ViewLayout::Grid);
+    app.viewport_width = 1500.0;
+    app.snap_grid();
+    press(&mut app, Named::Home);
+    press(&mut app, Named::ArrowRight);
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(selected(&app), "a-2");
+    // Each section is one row of six when the window is wide enough.
+    assert!(app.columns() >= 6, "{}", app.columns());
+    fit_rows(&mut app, 1);
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "b-2");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "c-2");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "c-2", "the last row stays");
+    fit_rows(&mut app, 2);
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "a-2");
+}
+
+#[test]
+fn a_collapsed_section_has_no_games_to_land_on() {
+    let mut app = sectioned(ViewLayout::List);
+    let _ = app.update(Message::ToggleSection(tag("b")));
+    assert_eq!(shown_order(&app).len(), 12);
+    fit_rows(&mut app, 3);
+    select(&mut app, "a-4");
+    // a-5, then c-0 and c-1, skipping b.
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "c-1");
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "a-4");
+    // The ends skip a collapsed section at either end too.
+    let _ = app.update(Message::ToggleSection(tag("c")));
+    press(&mut app, Named::End);
+    assert_eq!(selected(&app), "a-5");
+    let _ = app.update(Message::ToggleSection(tag("c")));
+    let _ = app.update(Message::ToggleSection(tag("b")));
+    let _ = app.update(Message::ToggleSection(tag("a")));
+    press(&mut app, Named::Home);
+    assert_eq!(selected(&app), "b-0");
+}
+
+#[test]
+fn every_section_collapsed_leaves_nothing_to_jump_to() {
+    let mut app = sectioned(ViewLayout::List);
+    select(&mut app, "b-2");
+    for section in ["a", "b", "c"] {
+        let _ = app.update(Message::ToggleSection(tag(section)));
+    }
+    assert!(shown_order(&app).is_empty());
+    for key in [Named::Home, Named::End, Named::PageUp, Named::PageDown] {
+        press(&mut app, key);
+        assert_eq!(selected(&app), "b-2", "{key:?}");
+    }
+}
+
+#[test]
+fn from_a_header_cursor_a_page_starts_at_the_header_and_home_and_end_leave_it() {
+    let mut app = sectioned(ViewLayout::List);
+    fit_rows(&mut app, 3);
+    // Down from a header goes to the first card under it, so the third row
+    // is the third card of its section.
+    header_on(&mut app, "b", "a-0");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "b-2");
+    assert_eq!(app.header_cursor(), None);
+    // Up goes to the row above the header, the last card of the section
+    // before it.
+    header_on(&mut app, "b", "a-0");
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "a-3");
+    assert_eq!(app.header_cursor(), None);
+    header_on(&mut app, "b", "b-3");
+    press(&mut app, Named::Home);
+    assert_eq!(selected(&app), "a-0");
+    assert_eq!(app.header_cursor(), None);
+    header_on(&mut app, "b", "b-3");
+    press(&mut app, Named::End);
+    assert_eq!(selected(&app), "c-5");
+    assert_eq!(app.header_cursor(), None);
+}
+
+#[test]
+fn from_the_header_of_a_collapsed_section_a_page_goes_past_it() {
+    let mut app = sectioned(ViewLayout::List);
+    fit_rows(&mut app, 3);
+    select(&mut app, "b-2");
+    let _ = app.update(Message::ToggleSection(tag("b")));
+    // The cursor moved to the header and the selection stays on its game.
+    assert_eq!(app.header_cursor(), Some(&tag("b")));
+    assert_eq!(selected(&app), "b-2");
+    press(&mut app, Named::PageDown);
+    assert_eq!(selected(&app), "c-2");
+    assert_eq!(app.header_cursor(), None);
+
+    // And Up goes to the row above the header.
+    let mut app = sectioned(ViewLayout::List);
+    fit_rows(&mut app, 3);
+    select(&mut app, "b-2");
+    let _ = app.update(Message::ToggleSection(tag("b")));
+    assert_eq!(app.header_cursor(), Some(&tag("b")));
+    press(&mut app, Named::PageUp);
+    assert_eq!(selected(&app), "a-3");
+}
