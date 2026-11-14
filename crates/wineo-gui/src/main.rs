@@ -33,6 +33,7 @@ mod flow;
 mod focus_button;
 mod fold_row;
 mod fonts;
+mod fullscreen;
 #[cfg(test)]
 mod galaxy_fake;
 #[cfg(test)]
@@ -358,7 +359,15 @@ pub(crate) struct App {
     /// The cursor at the last input that could open the action menu.
     menu_anchor: iced::Point,
     action_menu_position: iced::Point,
+    /// The size on screen now, which menus and pages lay out against. Full
+    /// screen's size lands here too.
     window_size: iced::Size,
+    /// The last size the window had while windowed, for the tray's reopen.
+    windowed_size: iced::Size,
+    /// Who made the window full screen; see `fullscreen`.
+    fullscreen: fullscreen::Owner,
+    /// `[view] coverflow_fullscreen`, as saved.
+    coverflow_fullscreen: bool,
     close_prompt: bool,
     /// A close waiting only on sort writes, which shows no prompt.
     close_quietly: bool,
@@ -509,6 +518,8 @@ pub(crate) enum Message {
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
     ScrollIdle(u64),
     Window(window::Id, window::Event),
+    /// The window's mode as read after a resize, and that resize's size.
+    WindowMode(window::Id, window::Mode, iced::Size),
     ThemeChanged(iced::theme::Mode),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
@@ -773,6 +784,9 @@ impl App {
             menu_anchor: iced::Point::ORIGIN,
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
+            windowed_size: iced::Size::new(1200.0, 800.0),
+            fullscreen: fullscreen::Owner::Nobody,
+            coverflow_fullscreen: false,
             close_prompt: false,
             close_quietly: false,
             closing: false,
@@ -815,12 +829,15 @@ impl App {
         // and these hold until its first size arrives.
         let launch = app_window::launch_size(app.interface_size);
         app.window_size = launch;
+        app.windowed_size = launch;
         app.viewport_width = launch.width - sidebar::WIDTH;
         app.viewport_height = launch.height - 50.0;
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
         app.layout = saved.view.layout;
+        app.coverflow_fullscreen = saved.view.coverflow_fullscreen;
+        app.fullscreen = app.fullscreen_at_start();
         app.group = saved.view.group;
         app.layout_thumb.snap_to(layout_switch::stop(app.layout));
         app.query = saved.view.into();
@@ -837,7 +854,8 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
-        let (main_window, open) = open_main_window(launch, app.interface_size);
+        let (main_window, open) =
+            open_main_window(launch, app.interface_size, app.fullscreen.is_set());
         app.main_window = Some(main_window);
         (
             app,
@@ -1131,6 +1149,7 @@ impl App {
         let rescaled = self.sync_interface_size();
         self.sync_font();
         self.sync_desktop();
+        let fullscreen = self.sync_coverflow_fullscreen();
         if self.tray.service && self.desktop.tray {
             self.sync_tray_menu();
         }
@@ -1198,7 +1217,7 @@ impl App {
         } else {
             Task::none()
         };
-        Task::batch([task, focus, wakes, rescaled])
+        Task::batch([task, focus, wakes, rescaled, fullscreen])
     }
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
@@ -1558,10 +1577,17 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Window(
-                _,
-                window::Event::Resized(size) | window::Event::Opened { size, .. },
-            ) => self.window_resized(size),
+            Message::Window(id, window::Event::Resized(size)) => {
+                let resized = self.window_resized(size);
+                Task::batch([resized, self.read_window_mode(id, size)])
+            }
+            // The mode isn't read here: a window opening full screen may not
+            // have been configured yet, and would read as windowed.
+            Message::Window(_, window::Event::Opened { size, .. }) => self.window_resized(size),
+            Message::WindowMode(id, mode, size) => {
+                self.window_mode_read(id, mode, size);
+                Task::none()
+            }
             Message::Window(_, window::Event::CloseRequested) => self.close_requested(),
             Message::CloseWaitOver(generation) => {
                 if self.close_wake.fired(generation) && self.close_by.is_some() {
@@ -1619,6 +1645,13 @@ impl App {
                     self.close_prompt = false;
                 }
                 Task::none()
+            }
+            // A global key: no page or menu sees it, and the close prompt
+            // above has already taken the input.
+            Message::Key(keyboard::Key::Named(keyboard::key::Named::F11), modifiers, _)
+                if !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                self.toggle_fullscreen()
             }
             Message::Key(key, modifiers, _) if self.hook_stop_confirm.is_some() => {
                 self.hook_stop_key(&key, modifiers)
@@ -2159,8 +2192,12 @@ fn icon_rgba(size: Option<u32>) -> Option<(Vec<u8>, u32, u32)> {
 pub(crate) fn open_main_window(
     size: iced::Size,
     interface_size: u16,
+    fullscreen: bool,
 ) -> (window::Id, Task<Message>) {
-    let (id, open) = window::open(window_settings(size, interface_size));
+    let (id, open) = window::open(window::Settings {
+        fullscreen,
+        ..window_settings(size, interface_size)
+    });
     (id, open.discard())
 }
 

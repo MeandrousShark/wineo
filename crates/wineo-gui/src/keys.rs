@@ -32,8 +32,6 @@ pub(crate) enum Action {
     Last,
     /// PageUp and PageDown: a screenful of rows up or down.
     Page(Direction),
-    /// F11. Full screen isn't built yet, so it does nothing.
-    ToggleFullscreen,
 }
 
 pub(crate) fn action(
@@ -102,9 +100,6 @@ pub(crate) fn action(
         }
         Key::Named(Named::PageDown) if !search_focused && !jump_modified(modifiers) => {
             Action::Page(Direction::Down)
-        }
-        Key::Named(Named::F11) if !search_focused && !jump_modified(modifiers) => {
-            Action::ToggleFullscreen
         }
         _ => Action::None,
     }
@@ -326,9 +321,6 @@ impl App {
                 let rows = self.rows_per_screen();
                 self.step_cursor(|places, current| page(places, current, direction, rows))
             }
-            // Full screen lands with its own step; the key is taken so
-            // nothing else reads it meanwhile.
-            Action::ToggleFullscreen => Task::none(),
             // Same rule as Enter: only a shown card, and only when nothing
             // else has the keys.
             Action::ToggleFavorite => {
