@@ -55,8 +55,8 @@ pub(crate) fn back_message() -> Message {
     )
 }
 
-/// What Start sends: full screen's key, past the filter, which works
-/// anywhere F11 does.
+/// What Start sends: F11, past the filter. It lands on F11's global arm in
+/// `update` (`toggle_fullscreen`), after the close prompt, which takes it.
 pub(crate) fn start_message() -> Message {
     Message::Key(
         Key::Named(Named::F11),

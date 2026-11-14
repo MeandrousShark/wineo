@@ -415,15 +415,31 @@ fn back_is_the_mouse_back_button() {
 }
 
 #[test]
-fn start_sends_full_screens_key_but_not_in_the_close_prompt() {
+fn start_toggles_full_screen_anywhere_but_the_close_prompt() {
     assert!(matches!(
         start_message(),
         Message::Key(Key::Named(Named::F11), modifiers, iced::event::Status::Ignored)
             if modifiers.is_empty()
     ));
+    use crate::fullscreen::Owner;
+    let (_home, mut app) = ready();
+    assert_eq!(app.fullscreen, Owner::Nobody);
+    tap(&mut app, Raw::Start);
+    assert_eq!(app.fullscreen, Owner::User);
+    tap(&mut app, Raw::Start);
+    assert_eq!(app.fullscreen, Owner::Nobody);
+    // It skips the filter, so it works over a page too.
+    let _ = app.update(Message::OpenSettings);
+    assert!(app.settings.is_some());
+    tap(&mut app, Raw::Start);
+    assert_eq!(app.fullscreen, Owner::User);
+    tap(&mut app, Raw::Start);
+    assert_eq!(app.fullscreen, Owner::Nobody);
+
     let (_home, mut app) = ready();
     app.close_prompt = true;
     tap(&mut app, Raw::Start);
+    assert_eq!(app.fullscreen, Owner::Nobody);
     assert!(app.close_prompt);
     // B still answers the prompt, as Esc does.
     tap(&mut app, Raw::East);
