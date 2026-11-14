@@ -526,12 +526,14 @@ Library's size.
 - Side covers tilt toward the middle: 60% as wide as flat, the far edge
   inset 10% top and bottom, cropped to the 2:3 middle. The tilt is a warp
   made once per cover on the decode thread and cached left and right, never
-  drawn per frame. A cover crossfades from flat to tilted within a quarter
-  stop of the middle and is all trapezoid beyond it.
+  drawn per frame. A cover stays flat within a landing's overshoot (0.15 stop)
+  of the middle, crossfades to tilted by 0.3 stop, and is all trapezoid
+  beyond.
   Covers are square, since tiny-skia ignores image corner radius.
 - Everything about a cover follows one outline each frame: the trapezoid
-  once turned, warp or not. A cover whose warp isn't here yet is a blank
-  card in that trapezoid, never its flat art. Name cards and
+  once turned, warp or not. A cover waiting on its warp is a blank card
+  with its title and a hairline edge, never its flat art; an art-less name
+  card has the same edge. Name cards and
   section stacks turn with the strip. The trapezoid fills are SVGs made at
   each cover's own aspect, since both renderers scale an SVG evenly to its
   longer side and ignore `preserveAspectRatio`.
@@ -555,8 +557,10 @@ Library's size.
   the grid poster shown until it arrives. That decode and its warps wait
   until the strip rests, and a result for a cover that has moved away is
   dropped. Grid-size warps are made during glides too, for every stop from
-  six behind where the strip is drawn to six past its target, and on a
-  jump longer than that only what's on screen and six ahead at each end. A
+  six behind where the strip is drawn to six past its target, asked again
+  at each stop crossed unless the strip moves faster than four stops a
+  frame; a longer jump holds only what's on screen and six ahead, plus six
+  around where it lands. A
   warp that arrives late for a cover on screen fades in over its blank card
   in 150 ms. At rest the middle's neighbors show their grid warp until the
   large one is here, which replaces it without a fade. A
