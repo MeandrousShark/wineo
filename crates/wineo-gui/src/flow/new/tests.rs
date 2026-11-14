@@ -942,6 +942,94 @@ fn the_review_runner_row_names_another_launchers_build() {
     assert_eq!(review.runner_row.as_deref(), Some("GE-Proton11-3 (Steam)"));
 }
 
+fn fake_proton(paths: &Paths, name: &str) {
+    let dir = GlobalConfig::default()
+        .runner_root(paths)
+        .unwrap()
+        .join(name);
+    fs::create_dir_all(&dir).unwrap();
+    write_script(dir.join("proton"), "#!/bin/sh\nexit 0\n");
+}
+
+/// A Windows draft that asks for a Proton build that isn't installed, with a
+/// template that sets a 32-bit architecture and a DXVK pick, and a compatible
+/// Proton prefix already sitting where the environment would go. Returns the
+/// check before the download and the one after the build is installed.
+fn before_and_after_a_download(runner: &str) -> (Review, Review) {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    fs::create_dir_all(paths.templates_dir()).unwrap();
+    fs::write(
+        paths.templates_dir().join("old.toml"),
+        "arch = \"win32\"\ndxvk = \"2.4\"\n",
+    )
+    .unwrap();
+    let draft = Draft {
+        title: "old-game".to_owned(),
+        template: "old".to_owned(),
+        runner: runner.to_owned(),
+        arch: Some(Arch::Win32),
+        ..Draft::default()
+    };
+    let prefix = prepare(&paths, &draft).unwrap().prefix.unwrap();
+    fs::create_dir_all(prefix.join("pfx")).unwrap();
+    fs::write(prefix.join("pfx/system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+
+    let before = prepare(&paths, &draft).unwrap();
+    assert!(before.runner.is_none());
+    fake_proton(&paths, "GE-Proton11-3");
+    let draft = Draft {
+        runner: "GE-Proton11-3".to_owned(),
+        ..draft
+    };
+    let after = prepare(&paths, &draft).unwrap();
+    assert!(after.runner.as_ref().is_some_and(Runner::is_proton));
+    (before, after)
+}
+
+#[test]
+fn a_missing_runner_shows_the_architecture_the_download_will_use() {
+    let (before, after) = before_and_after_a_download("GE-Proton11-3");
+    assert_eq!(before.arch, Arch::Win64);
+    assert_eq!(before.arch, after.arch);
+}
+
+#[test]
+fn a_missing_runner_shows_the_prefix_it_will_adopt() {
+    let (before, after) = before_and_after_a_download("GE-Proton11-3");
+    assert!(before.adopted);
+    assert_eq!(before.adopted, after.adopted);
+    assert_eq!(before.prefix, after.prefix);
+}
+
+#[test]
+fn a_missing_runner_shows_the_components_proton_will_omit() {
+    let (before, after) = before_and_after_a_download("GE-Proton11-3");
+    assert!(before.omitted_components);
+    assert_eq!(before.omitted_components, after.omitted_components);
+    assert_eq!(before.template, after.template);
+}
+
+#[test]
+fn a_missing_runner_changes_only_its_own_row_after_the_download() {
+    let (before, after) = before_and_after_a_download("GE-Proton11-3");
+    assert!(matches!(
+        &before.prerequisite,
+        Some(Prerequisite::Runner(name)) if name == "GE-Proton11-3"
+    ));
+    assert!(after.prerequisite.is_none());
+    assert!(before.runner_row.is_none() && after.runner_row.is_some());
+}
+
+#[test]
+fn a_missing_alias_is_filled_in_the_same_way() {
+    let (before, _) = before_and_after_a_download("GE-Proton-Latest");
+    assert_eq!(before.arch, Arch::Win64);
+    assert!(before.adopted);
+    assert!(before.omitted_components);
+}
+
 /// The app on the New page's working step, and the generation its reply
 /// needs.
 fn working() -> (crate::App, u64) {
