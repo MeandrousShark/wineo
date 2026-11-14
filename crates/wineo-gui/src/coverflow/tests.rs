@@ -455,6 +455,86 @@ fn a_selection_filtered_out_hands_the_middle_to_the_first_game() {
     assert_eq!(app.strip.target(), 10);
 }
 
+/// Presses right `presses` times from rest, then lets two frames pass so
+/// the strip is between stops. Returns where it's drawn.
+fn glide_midway(app: &mut App, clock: &mut crate::clock::Fake, presses: usize) -> f32 {
+    for _ in 0..presses {
+        press(app, Named::ArrowRight);
+    }
+    frame(app, clock, 16);
+    frame(app, clock, 50);
+    let at = app.strip.position();
+    assert!(!app.strip.settled());
+    assert!(at.fract() != 0.0 && at < app.strip.target() as f32, "{at}");
+    at
+}
+
+#[test]
+fn filtering_mid_glide_retargets_from_where_the_strip_is() {
+    // The selection survives the filter and its stop moves down.
+    let (_root, mut app, mut clock) = moving(30, 12);
+    let at = glide_midway(&mut app, &mut clock, 3);
+    assert_eq!(app.strip.target(), 15);
+    let _ = app.update(Message::SearchChanged("game-1".into()));
+    assert_eq!((selected(&app), app.strip.target()), ("game-15", 5));
+    assert_eq!(middle(&app), "game-15");
+    assert_eq!(app.strip.position(), at, "no jump on the filter");
+    assert!(!app.strip.settled());
+    frame(&mut app, &mut clock, 16);
+    let early = app.strip.position();
+    assert!(early < at && early > 5.0, "{early} from {at}");
+    frame(&mut app, &mut clock, 400);
+    assert_eq!(app.strip.position(), 5.0);
+    assert!(app.strip.settled());
+
+    // A selection the filter drops hands the middle to the first game,
+    // glide from the fractional position and all.
+    let (_root, mut app, mut clock) = moving(30, 2);
+    let at = glide_midway(&mut app, &mut clock, 6);
+    assert_eq!(app.strip.target(), 8);
+    let _ = app.update(Message::SearchChanged("game-1".into()));
+    assert_eq!((selected(&app), app.strip.target()), ("game-10", 0));
+    assert_eq!(middle(&app), "game-10");
+    assert_eq!(app.strip.position(), at);
+    // It carries its motion into the new glide before turning back.
+    frame(&mut app, &mut clock, 16);
+    let early = app.strip.position();
+    assert!((early - at).abs() < 1.0, "{early} from {at}");
+    frame(&mut app, &mut clock, 100);
+    assert!(
+        app.strip.position() < at,
+        "{} from {at}",
+        app.strip.position()
+    );
+    frame(&mut app, &mut clock, 400);
+    assert_eq!(app.strip.position(), 0.0);
+    assert!(app.strip.settled());
+    assert_eq!(middle(&app), selected(&app));
+
+    // Nothing matches: the strip rests with nothing to draw and nothing
+    // left to glide to.
+    let (_root, mut app, mut clock) = moving(30, 2);
+    glide_midway(&mut app, &mut clock, 6);
+    let _ = app.update(Message::SearchChanged("no such game".into()));
+    assert!(app.grid_places().strip.is_empty());
+    for _ in 0..3 {
+        frame(&mut app, &mut clock, 400);
+    }
+    assert!(app.strip.settled() && !app.strip.active());
+    assert_eq!(app.strip.position(), app.strip.target() as f32);
+    assert!(geometry(app.strip.position(), 0, WIDE).covers.is_empty());
+    {
+        let mut element = app.strip_view();
+        let _ = crate::layout_probe::render(&mut element, WIDE);
+    }
+    // The filter clearing brings the strip back to the selection.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    frame(&mut app, &mut clock, 400);
+    assert!(app.strip.settled());
+    assert_eq!(app.strip.position(), app.strip.target() as f32);
+    assert_eq!(middle(&app), selected(&app));
+}
+
 #[test]
 fn search_random_pick_and_rescan_recenter_the_strip() {
     let (_root, mut app) = flat(12);
@@ -2270,11 +2350,17 @@ fn frame_time_of_a_held_slide_under_tiny_skia() {
                     unreachable!()
                 };
                 let height = u32::from(height);
-                app.images.insert(
-                    (art, kind),
-                    false,
-                    noise(height * 2 / 3, height, index as u32),
-                );
+                let large = noise(height * 2 / 3, height, index as u32);
+                // The middle's neighbors settle on warps of the large
+                // cover, so the frame measured draws those, not the small
+                // grid ones. The slide passes every stop, so every card
+                // has them.
+                for tilt in [Tilt::Left, Tilt::Right] {
+                    let warp = crate::tilt::warp(&large, tilt).unwrap();
+                    app.images
+                        .insert_tilted((art.clone(), kind), false, tilt, warp);
+                }
+                app.images.insert((art, kind), false, large);
             }
         }
         let mut renderer = crate::layout_probe::renderer();
