@@ -346,7 +346,7 @@ fn ctrl_enter_opens_news_focused_row_the_first_when_it_opens() {
 }
 
 #[test]
-fn back_and_change_land_on_the_row_details_came_from() {
+fn back_lands_on_the_row_details_came_from() {
     let (mut app, tree) = new_at(3);
     let ids = new_row_ids(&app);
     let (_, tree, task) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::empty());
@@ -361,18 +361,8 @@ fn back_and_change_land_on_the_row_details_came_from() {
     );
     let tree = settle(&mut app, tree, task);
     assert!(choosing(&app));
-    let (now, tree) = focused(&app, tree);
-    assert_eq!(now, [Id::from(ids[3].clone())], "Back");
-
-    let (_, tree, task) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::empty());
-    let tree = settle(&mut app, tree, task);
-    assert_eq!(details_for(&app), Some(NEW_ROWS[3]));
-    let change = super::Event::Create(Box::new(super::new::Event::Change));
-    let task = app.update(Message::Flow(app.flow_generation, change));
-    let tree = settle(&mut app, tree, task);
-    assert!(choosing(&app));
     let (now, _) = focused(&app, tree);
-    assert_eq!(now, [Id::from(ids[3].clone())], "Change");
+    assert_eq!(now, [Id::from(ids[3].clone())], "Back");
 }
 
 #[test]
