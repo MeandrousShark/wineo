@@ -99,6 +99,14 @@ impl App {
         }
     }
 
+    /// Selects the game `name` from outside the grid (a page, a menu, a
+    /// flow), off any header, so a collapsed section's card never holds a
+    /// selection it doesn't stand for.
+    pub(crate) fn select_game(&mut self, name: String) {
+        self.leave_header();
+        self.selected = Some(name);
+    }
+
     /// Takes the cursor off a header, leaving a card's copy alone.
     pub(crate) fn leave_header(&mut self) {
         if self.header_cursor().is_some() {
@@ -118,7 +126,7 @@ impl App {
             if self.selected.as_deref() != Some(&name) {
                 self.close_checkup();
             }
-            self.selected = Some(name.clone());
+            self.select_game(name.clone());
             self.panel_open = true;
             if !was_open {
                 self.panel_motion.open(Instant::now());

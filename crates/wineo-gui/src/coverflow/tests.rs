@@ -1453,3 +1453,107 @@ fn entering_full_screen_resizes_the_strip_to_the_new_window() {
     assert!(app.panel_open);
     assert_eq!(selected(&app), "game-12");
 }
+
+/// `sectioned`, with `game` also tagged `also`.
+fn sectioned_with(game: &str, also: &str) -> (tempfile::TempDir, App) {
+    let (root, mut app) = sectioned();
+    let mut cards = app.cards.clone();
+    for card in &mut cards {
+        if card.name == game {
+            card.tags.push(also.into());
+        }
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    (root, app)
+}
+
+#[test]
+fn collapsing_from_a_game_also_in_an_open_section_rests_on_the_card() {
+    let (_root, mut app) = sectioned_with("b-2", "c");
+    select(&mut app, "b-2");
+    assert_eq!(app.selected_slot().unwrap().section(), &tag("b"));
+    collapse(&mut app, "b");
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-0");
+    assert!(app.panel_hidden_by_card());
+}
+
+#[test]
+fn collapsing_from_a_game_also_in_an_earlier_collapsed_section_rests_on_its_own_card() {
+    let (_root, mut app) = sectioned_with("b-2", "a");
+    select(&mut app, "c-0");
+    collapse(&mut app, "a");
+    select(&mut app, "b-2");
+    assert_eq!(app.selected_slot().unwrap().section(), &tag("b"));
+    collapse(&mut app, "b");
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-0");
+}
+
+#[test]
+fn a_new_sort_keeps_the_card_with_its_new_first_game() {
+    let (_root, mut app) = sectioned();
+    // Playtime grows with the names in b, so the most played is last.
+    let mut cards = app.cards.clone();
+    for card in &mut cards {
+        if let Some(index) = card.name.strip_prefix("b-") {
+            card.seconds = 60 * (index.parse::<i64>().unwrap() + 1);
+        }
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    collapse(&mut app, "b");
+    select(&mut app, "a-5");
+    press(&mut app, Named::ArrowRight);
+    assert_eq!((middle(&app).as_str(), selected(&app)), ("[b]", "b-0"));
+    let _ = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-5");
+    let _ = app.update(Message::Sort(crate::sort_control::Event::FlipDirection));
+    assert_eq!(selected(&app), "b-0");
+    let _ = app.update(Message::Sort(crate::sort_control::Event::Pick(
+        wineo_core::library::SortKey::Playtime,
+    )));
+    assert_eq!(middle(&app), "[b]");
+    let places = app.grid_places();
+    let first = places
+        .strip
+        .iter()
+        .find_map(|stop| match stop {
+            Stop::Collapsed { first, .. } => *first,
+            Stop::Card(_) => None,
+        })
+        .map(|index| app.cards[index].name.clone());
+    assert_eq!(app.selected, first);
+    assert_ne!(
+        selected(&app),
+        "b-0",
+        "the playtime sort moved b's first game"
+    );
+}
+
+#[test]
+fn a_grid_header_cursor_on_a_game_shown_elsewhere_becomes_its_card() {
+    let (_root, mut app) = sectioned_with("b-3", "c");
+    let _ = app.switch_layout(ViewLayout::Grid);
+    select(&mut app, "b-3");
+    collapse(&mut app, "b");
+    assert_eq!(app.cursor, Some(Cursor::Header(tag("b"))));
+    assert_eq!(selected(&app), "b-3");
+    let _ = app.switch_layout(ViewLayout::Coverflow);
+    let _ = app.update(Message::Strip(Event::Measured(WIDE)));
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-0");
+}
+
+#[test]
+fn selecting_a_game_from_a_page_leaves_the_card() {
+    let (_root, mut app) = sectioned();
+    collapse(&mut app, "b");
+    select(&mut app, "a-5");
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(middle(&app), "[b]");
+    let _ = app.update(Message::ContextSettings("c-2".into()));
+    assert_eq!(selected(&app), "c-2");
+    assert_eq!(app.header_cursor(), None);
+    assert_eq!(middle(&app), "c-2");
+}

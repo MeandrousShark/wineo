@@ -1790,7 +1790,7 @@ impl App {
                 if self.selected.as_deref() != Some(&name) {
                     self.close_checkup();
                 }
-                self.selected = Some(name);
+                self.select_game(name);
                 self.open_settings()
             }
             Message::Flow(generation, event) => self.flow_update(generation, event),

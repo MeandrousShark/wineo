@@ -452,10 +452,11 @@ impl App {
 
     /// Keeps the middle cover what Enter acts on, after anything that may
     /// have moved the selection, the order, or the sections: a header
-    /// cursor on an open section goes to its first game; a selection the
-    /// strip doesn't show goes to its collapsed section's card, or with
-    /// none, or nothing selected, to the first stop. Returns the art the
-    /// new middle needs when it moved.
+    /// cursor on a collapsed section keeps its card with the section's
+    /// first game selected, and on an open section goes to that game; a
+    /// selection the strip doesn't show goes to its collapsed section's
+    /// card, or with none, or nothing selected, to the first stop. Returns
+    /// the art the new middle needs when it moved.
     pub(crate) fn sync_strip(&mut self) -> Task<Message> {
         if self.layout != ViewLayout::Coverflow {
             return Task::none();
@@ -477,15 +478,12 @@ impl App {
                         Stop::Collapsed { header: at, first } if *at == header => *first,
                         _ => None,
                     });
-                    let first = first
+                    // The card stands for its section, whose first game can
+                    // change under it with the sort or the cards. Every way
+                    // of selecting a game leaves the header first.
+                    self.selected = first
                         .and_then(|index| self.cards.get(index))
                         .map(|card| card.name.clone());
-                    if self.selected.is_none() || self.selected == first {
-                        self.selected = first;
-                    } else {
-                        // The selection moved on without the cursor.
-                        self.cursor = None;
-                    }
                 }
                 Some(header) => {
                     let at = places.headers[header].header.at;
