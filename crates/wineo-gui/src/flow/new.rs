@@ -608,8 +608,8 @@ impl Page {
             edited |= draft.desktop != blank.desktop;
         }
         if draft.kind == Kind::Windows {
-            edited |= draft.prefix != blank.prefix
-                || draft.runner != blank.runner
+            edited |= draft.prefix.trim() != blank.prefix
+                || draft.runner.trim() != blank.runner
                 || draft.template != blank.template
                 || draft.arch != blank.arch;
         }

@@ -2033,6 +2033,10 @@ fn fields_the_picked_row_hides_are_not_edits() {
     // A cleared Environment name override is no override.
     let _ = page.update(Event::EnvironmentName(" ".to_owned()));
     assert!(!page.has_edits());
+    // Nor are blank runner and prefix overrides.
+    let _ = page.update(Event::Runner("  ".to_owned()));
+    let _ = page.update(Event::Prefix(" ".to_owned()));
+    assert!(!page.has_edits());
 }
 
 #[test]
@@ -2106,14 +2110,22 @@ fn the_choice_page_fits_small_dialogs_and_the_window_minimum() {
 /// `key` pressed on the window, as the event subscription delivers it, held
 /// down when `repeat`.
 fn pressed(key: iced::keyboard::Key, repeat: bool) -> crate::Message {
-    use iced::keyboard::{Event, Location, Modifiers, key::NativeCode, key::Physical};
+    pressed_with(key, iced::keyboard::Modifiers::empty(), repeat)
+}
+
+fn pressed_with(
+    key: iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+    repeat: bool,
+) -> crate::Message {
+    use iced::keyboard::{Event, Location, key::NativeCode, key::Physical};
     crate::event_message(
         iced::Event::Keyboard(Event::KeyPressed {
             key: key.clone(),
             modified_key: key,
             physical_key: Physical::Unidentified(NativeCode::Unidentified),
             location: Location::Standard,
-            modifiers: Modifiers::empty(),
+            modifiers,
             text: None,
             repeat,
         }),
@@ -2257,4 +2269,50 @@ fn details_title_has_change_and_the_choice_page_shows_no_details_error() {
     let _ = page.update(Event::Change);
     // The title and the rows.
     assert_eq!(children(&page), 2);
+}
+
+#[test]
+fn a_held_ctrl_enter_submits_once() {
+    let ctrl_enter = |repeat| {
+        pressed_with(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+            repeat,
+        )
+    };
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    page.draft.title = "Hollow Knight".to_owned();
+    let mut app = app_with_key(page);
+    let _ = app.update(ctrl_enter(false));
+    let checking = new_page(&app).generation;
+    assert_eq!(new_page(&app).reviewing, Some(checking), "Next");
+    // The check lands while the key is still down.
+    let review = Review {
+        runner: None,
+        runner_row: None,
+        template: None,
+        arch: Arch::Win64,
+        prefix: None,
+        adopted: false,
+        omitted_components: false,
+        prerequisite: None,
+    };
+    let _ = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::Create(Box::new(Event::Reviewed(checking, Ok(Box::new(review))))),
+    ));
+    assert_eq!(new_page(&app).stage, Stage::Review);
+    for _ in 0..3 {
+        let _ = app.update(ctrl_enter(true));
+    }
+    assert_eq!(
+        new_page(&app).stage,
+        Stage::Review,
+        "the held chord creates nothing"
+    );
+    let _ = app.update(ctrl_enter(false));
+    assert_eq!(new_page(&app).stage, Stage::Working, "a new press does");
 }

@@ -389,3 +389,25 @@ fn ctrl_enter_opens_nothing_with_no_row_focused() {
     let _ = settle(&mut app, tree, task);
     assert!(choosing(&app));
 }
+
+#[test]
+fn new_opened_with_ctrl_enter_from_add_lands_on_its_first_row() {
+    let (mut app, tree) = add_at(0);
+    let (_, tree, task) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::CTRL);
+    assert!(choosing(&app));
+    let tree = settle(&mut app, tree, task);
+    let ids = new_row_ids(&app);
+    let (now, tree) = focused(&app, tree);
+    assert_eq!(now, [Id::from(ids[0].clone())]);
+    // The rows take the keys from there.
+    let (_, tree, task) = key(
+        &mut app,
+        tree,
+        Key::Named(Named::ArrowDown),
+        Modifiers::empty(),
+    );
+    let tree = settle(&mut app, tree, task);
+    let (published, _, _) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::empty());
+    assert_eq!(published.len(), 1, "{published:?}");
+    assert_eq!(details_for(&app), Some(NEW_ROWS[1]));
+}
