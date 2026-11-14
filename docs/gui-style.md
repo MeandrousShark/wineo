@@ -526,10 +526,12 @@ Library's size.
 - Side covers tilt toward the middle: 60% as wide as flat, the far edge
   inset 10% top and bottom, cropped to the 2:3 middle. The tilt is a warp
   made once per cover on the decode thread and cached left and right, never
-  drawn per frame. A cover crossfades from flat to tilted as it turns.
+  drawn per frame. A cover crossfades from flat to tilted within a quarter
+  stop of the middle and is all trapezoid beyond it.
   Covers are square, since tiny-skia ignores image corner radius.
 - Everything about a cover follows one outline each frame: the trapezoid
-  once its warp is what's drawn, the rectangle before that. Name cards and
+  once turned, warp or not. A cover whose warp isn't here yet is a blank
+  card in that trapezoid, never its flat art. Name cards and
   section stacks turn with the strip. The trapezoid fills are SVGs made at
   each cover's own aspect, since both renderers scale an SVG evenly to its
   longer side and ignore `preserveAspectRatio`.
@@ -552,9 +554,12 @@ Library's size.
   physical pixels, rounded up to 240 px steps and at most 1440 px tall, with
   the grid poster shown until it arrives. That decode and its warps wait
   until the strip rests, and a result for a cover that has moved away is
-  dropped. Grid-size warps are made during glides too, for the stops within
-  six of the target, so a cover arriving on screen is already tilted; one
-  that arrives late for a cover on screen fades in over 150 ms. A
+  dropped. Grid-size warps are made during glides too, for every stop from
+  six behind where the strip is drawn to six past its target, and on a
+  jump longer than that only what's on screen and six ahead at each end. A
+  warp that arrives late for a cover on screen fades in over its blank card
+  in 150 ms. At rest the middle's neighbors show their grid warp until the
+  large one is here, which replaces it without a fade. A
   resize moves the covers at once but asks for the larger decode only after
   250 ms without another resize.
 - Motion: the position follows the grid cards' spring, stepped by elapsed
