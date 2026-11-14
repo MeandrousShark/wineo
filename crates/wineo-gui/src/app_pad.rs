@@ -281,6 +281,21 @@ impl App {
         Task::none()
     }
 
+    /// A key or mouse press anywhere in the window ends a capture: a click
+    /// on any control or none, a key, a text field. The press that started
+    /// it arrives after the row's own message, so one within the grace of
+    /// the start is that press.
+    pub(crate) fn press_ends_capture(&mut self) {
+        let now = self.pad_now();
+        if let Some(page) = &mut self.settings
+            && page.capture.is_some_and(|capture| {
+                now.saturating_duration_since(capture.started) >= PRESS_GRACE
+            })
+        {
+            page.capture = None;
+        }
+    }
+
     /// When the waiting remap row gives up.
     pub(crate) fn capture_until(&self) -> Option<Instant> {
         self.settings

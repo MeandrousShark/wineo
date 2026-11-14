@@ -570,7 +570,7 @@ pub(super) fn global_view<'a>(
         locked,
         palette,
     );
-    let content = column![
+    column![
         section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
@@ -629,12 +629,8 @@ pub(super) fn global_view<'a>(
         text(version_line()).size(12).color(palette.muted),
     ]
     .spacing(24)
-    .width(Fill);
-    // A click on the page itself, past every control, ends a remap
-    // capture; controls end it with their own events.
-    iced::widget::mouse_area(content)
-        .on_press(send(Event::PageClicked))
-        .into()
+    .width(Fill)
+    .into()
 }
 
 /// The note under the Desktop choices while the tray icon is off.

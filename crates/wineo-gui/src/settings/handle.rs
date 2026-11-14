@@ -280,9 +280,8 @@ impl Page {
                 }
                 Step::none()
             }
-            // The app starts a capture, since it holds the clock; a click on
-            // the page has already ended one in `update`.
-            Event::CaptureButton(_) | Event::PageClicked => Step::none(),
+            // The app starts a capture, since it holds the clock.
+            Event::CaptureButton(_) => Step::none(),
             Event::GlobalController(on) => {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {

@@ -1575,6 +1575,7 @@ impl App {
                 if matches!(message, Message::Pressed) {
                     self.pad_gate.press(self.pad_now());
                     self.pad_hint = None;
+                    self.press_ends_capture();
                 } else {
                     self.pad_gate.focus();
                 }

@@ -29,10 +29,12 @@ pub(crate) use load::desktop_line;
 use load::{ProgramChoice, Report, RunnerChoice, Scan, Snapshot, Texts};
 use tabs::Tab;
 
-/// A remap row waiting for a pad button, until the time it gives up.
+/// A remap row waiting for a pad button, from when it started until the
+/// time it gives up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Capture {
     pub(crate) action: wineo_core::library::PadAction,
+    pub(crate) started: std::time::Instant,
     pub(crate) until: std::time::Instant,
 }
 
@@ -103,8 +105,6 @@ pub(crate) enum Event {
     CaptureButton(wineo_core::library::PadAction),
     /// Every controller action back on its default button.
     ResetButtons,
-    /// A click on the page itself, not on a control, which ends a capture.
-    PageClicked,
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -212,7 +212,12 @@ impl Event {
                 | Event::SteamKeySaved(..)
                 | Event::SteamKeyRemoved(..)
                 | Event::SteamKeyLocated(..)
-                | Event::Gog(_)
+                | Event::Gog(
+                    gog::Event::StatusLoaded(..)
+                        | gog::Event::LoginReady(..)
+                        | gog::Event::LoggedIn(..)
+                        | gog::Event::LoggedOut(..)
+                )
                 | Event::Scanned(..)
                 | Event::PickedPath(..)
                 | Event::Resolved(..)
@@ -735,7 +740,11 @@ impl Page {
         {
             self.capture = None;
         } else {
-            self.capture = Some(Capture { action, until });
+            self.capture = Some(Capture {
+                action,
+                started: until - CAPTURE_FOR,
+                until,
+            });
         }
     }
     /// Puts the pad's `button` on the waiting row's action, if one waits.

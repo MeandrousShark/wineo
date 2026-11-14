@@ -214,8 +214,11 @@ fn the_same_row_again_stops_waiting_and_a_locked_page_never_waits() {
 fn anything_the_user_does_on_the_page_ends_the_wait() {
     let (_root, paths) = setup();
     let cancels = [
-        Event::PageClicked,
         Event::Tab(Tab::Appearance),
+        Event::Gog(gog::Event::LoginOpen),
+        Event::Gog(gog::Event::Login),
+        Event::Gog(gog::Event::CopyLink),
+        Event::Gog(gog::Event::Logout),
         Event::Save,
         Event::Revert,
         Event::Reload,
@@ -239,33 +242,12 @@ fn anything_the_user_does_on_the_page_ends_the_wait() {
         Event::Checked(1, sequence, load::Texts::read_global(&paths)),
     );
     let _ = page.update(&paths, Event::Scrolled(Tab::General, 40.0));
-    assert_eq!(page.capturing(), Some(PadAction::Favorite));
-}
-
-#[test]
-fn a_click_on_the_page_between_sections_ends_the_wait() {
-    let (_root, paths) = setup();
-    let page = global_page(&paths);
-    let general = view::global_view(
-        global_editor(&page),
-        &page,
+    // A GOG answer that came back on its own, too.
+    let _ = page.update(
         &paths,
-        false,
-        crate::theme::Palette::DARK,
+        Event::Gog(gog::Event::StatusLoaded(1, 0, Ok(gog::Status::LoggedOut))),
     );
-    let mut laid = crate::layout_probe::lay_out(general, iced::Size::new(900.0, 4000.0));
-    // The gap under the first section, which no control covers.
-    let first = crate::layout_probe::bounds_at(&laid.node, &[0, 0]);
-    let at = iced::Point::new(first.x + 10.0, first.y + first.height + 12.0);
-    let messages = laid.event_at(
-        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
-        iced::mouse::Cursor::Available(at),
-    );
-    let texts: Vec<String> = messages
-        .iter()
-        .map(|message| format!("{message:?}"))
-        .collect();
-    assert_eq!(texts, ["Settings(PageClicked)"]);
+    assert_eq!(page.capturing(), Some(PadAction::Favorite));
 }
 
 #[test]
@@ -477,16 +459,55 @@ mod app {
     }
 
     #[test]
-    fn a_click_elsewhere_or_a_tab_ends_the_wait() {
+    fn any_click_or_key_after_the_starting_one_ends_the_wait() {
         let (_root, paths) = setup();
-        let (mut app, _) = app_in(&paths);
-        for event in [Event::PageClicked, Event::Tab(Tab::Appearance)] {
-            let _ = app.update(Message::Settings(Event::Tab(Tab::General)));
+        let (mut app, start) = app_in(&paths);
+        // Any mouse button or key in the window is a press, whatever is
+        // under it: a text field, the space outside the column, the
+        // header.
+        for event in [
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                iced::mouse::Button::Right,
+            )),
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: Key::Character("a".into()),
+                modified_key: Key::Character("a".into()),
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers: Modifiers::empty(),
+                text: None,
+                repeat: false,
+            }),
+        ] {
+            let id = app.main_window.unwrap();
+            let pressed = crate::window_or_press(event.clone(), id);
+            assert!(matches!(pressed, Some(Message::Pressed)), "{event:?}");
+
+            // The click or Enter that started it arrives after the row's
+            // own message, inside the grace: it keeps waiting.
+            app.pad_clock = Some(start);
             start_capture(&mut app, PadAction::Favorite);
-            let name = format!("{event:?}");
-            let _ = app.update(Message::Settings(event));
-            assert_eq!(page(&app).capturing(), None, "{name}");
+            let _ = app.update(pressed.clone().unwrap());
+            app.pad_clock = Some(start + crate::app_pad::PRESS_GRACE - Duration::from_millis(1));
+            let _ = app.update(pressed.clone().unwrap());
+            assert_eq!(
+                page(&app).capturing(),
+                Some(PadAction::Favorite),
+                "{event:?}"
+            );
+            // Any later press ends it.
+            app.pad_clock = Some(start + crate::app_pad::PRESS_GRACE);
+            let _ = app.update(pressed.unwrap());
+            assert_eq!(page(&app).capturing(), None, "{event:?}");
         }
+        // A tab switch too.
+        app.pad_clock = Some(start);
+        start_capture(&mut app, PadAction::Favorite);
+        let _ = app.update(Message::Settings(Event::Tab(Tab::Appearance)));
+        assert_eq!(page(&app).capturing(), None);
     }
 
     #[test]
