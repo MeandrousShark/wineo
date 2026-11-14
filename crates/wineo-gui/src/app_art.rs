@@ -104,9 +104,10 @@ impl App {
             .map(|(key, _, tilt)| (key.clone(), *tilt))
             .collect();
         self.evict_art();
-        // Warps first: a batch first polls its tasks in order, and the
-        // decode limit hands out permits in the order they're asked for, so
-        // a cheap warp for a cover on screen never waits on a large decode.
+        // Warps first: a batch polls its tasks in order the first time, so
+        // within this one the cheap warps usually ask the decode limit for a
+        // permit before the large decodes do. Work queued by earlier loads
+        // still comes first.
         Task::batch([self.warp_images(tilts), self.load_images(keys)])
     }
 
