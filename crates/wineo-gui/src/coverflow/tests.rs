@@ -2222,3 +2222,89 @@ fn a_log_left_open_on_the_cards_game_is_hidden_with_the_panel() {
     press(&mut app, Named::Escape);
     assert!(app.search.is_empty());
 }
+
+/// A poster `width` by `height` of opaque noise, so nothing about it is
+/// cheaper to draw than real art.
+fn noise(width: u32, height: u32, seed: u32) -> image::Handle {
+    let mut state = seed.wrapping_mul(2_654_435_761) | 1;
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for _ in 0..width * height {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let [r, g, b, _] = state.to_le_bytes();
+        pixels.extend_from_slice(&[r, g, b, 255]);
+    }
+    image::Handle::from_rgba(width, height, pixels)
+}
+
+/// The tiny-skia frame time of a held slide through the strip at full
+/// screen sizes: each frame builds the strip, lays it out, and draws it
+/// with the CPU renderer, covers tilted and the middle's large cover in.
+/// Only meaningful in an optimized build:
+/// `cargo test -p wineo-gui --profile release-test frame_time -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement, run optimized by hand"]
+fn frame_time_of_a_held_slide_under_tiny_skia() {
+    use std::time::{Duration, Instant};
+    for size in [Size::new(2560.0, 1440.0), Size::new(1920.0, 1080.0)] {
+        let (_root, mut app) = with_art(40, size);
+        app.motion.system_reduced = false;
+        let mut clock = crate::clock::Fake::start();
+        select(&mut app, "game-05");
+        let _ = app.update(Message::ClosePanel);
+        app.panel_motion.snap(true);
+        let kind = app.cover_kind();
+        for (index, card) in app.cards.clone().iter().enumerate() {
+            let art = card.art.clone().unwrap();
+            let poster = noise(320, 480, index as u32 + 1);
+            for tilt in [Tilt::Left, Tilt::Right] {
+                let warp = crate::tilt::warp(&poster, tilt).unwrap();
+                app.images
+                    .insert_tilted((art.clone(), artwork::Kind::Grid), false, tilt, warp);
+            }
+            app.images
+                .insert((art.clone(), artwork::Kind::Grid), false, poster);
+            if let Some(kind) = kind {
+                let artwork::Kind::Cover(height) = kind else {
+                    unreachable!()
+                };
+                let height = u32::from(height);
+                app.images.insert(
+                    (art, kind),
+                    false,
+                    noise(height * 2 / 3, height, index as u32),
+                );
+            }
+        }
+        let mut renderer = crate::layout_probe::renderer();
+        let mut times = Vec::new();
+        for frame in 0..240 {
+            // A held key repeats every 30 ms; frames come every 16.7 ms.
+            if frame % 2 == 0 && app.strip.target() < 35 {
+                press(&mut app, Named::ArrowRight);
+            }
+            clock.advance(Duration::from_micros(16_700));
+            let _ = app.update(Message::Strip(Event::Tick(
+                app.strip.generation(),
+                clock.now(),
+            )));
+            let started = Instant::now();
+            let mut element = app.strip_view();
+            let _ = crate::layout_probe::render_with(&mut renderer, &mut element, size);
+            if frame >= 30 {
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        let median = times[times.len() / 2];
+        let p95 = times[times.len() * 95 / 100];
+        eprintln!(
+            "{}x{}: median {median:.1} ms, p95 {p95:.1} ms over {} frames",
+            size.width,
+            size.height,
+            times.len()
+        );
+        assert!(!times.is_empty());
+    }
+}
