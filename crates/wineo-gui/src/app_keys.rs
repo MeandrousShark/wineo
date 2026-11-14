@@ -6,7 +6,37 @@ use iced::{Task, keyboard};
 
 use crate::{App, Early, Message, SEARCH_ID, downloads_page, flow, removal, sidebar};
 
+/// Keys a flow takes once per press: a held number key or Esc would
+/// otherwise walk on across pages, and on into the library.
+fn once_per_press(key: &keyboard::Key) -> bool {
+    use iced::keyboard::{Key, key::Named};
+    match key.as_ref() {
+        Key::Named(Named::Escape) => true,
+        Key::Character(text) => text.chars().all(|c| c.is_ascii_digit()),
+        _ => false,
+    }
+}
+
 impl App {
+    /// A held key's repeat as the press it repeats, or None when it's a
+    /// number key or Esc and a flow is open or took its first press. Any
+    /// other press forgets the held key.
+    pub(crate) fn unrepeated(&mut self, message: Message) -> Option<Message> {
+        match message {
+            Message::KeyRepeat(key, modifiers, status) => {
+                let held = once_per_press(&key)
+                    && (self.flow.is_some() || self.flow_held_key.as_ref() == Some(&key));
+                (!held).then_some(Message::Key(key, modifiers, status))
+            }
+            Message::Key(key, modifiers, status) => {
+                self.flow_held_key =
+                    (self.flow.is_some() && once_per_press(&key)).then(|| key.clone());
+                Some(Message::Key(key, modifiers, status))
+            }
+            message => Some(message),
+        }
+    }
+
     pub(crate) fn flow_key(
         &mut self,
         key: keyboard::Key,
