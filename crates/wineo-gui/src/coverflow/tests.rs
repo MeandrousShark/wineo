@@ -743,41 +743,68 @@ fn a_click_on_a_side_cover_centers_it_and_on_the_middle_selects_it() {
     assert_eq!(selected(&app), "game-06");
 }
 
+/// A left press at `point`, and what the widgets publish for it.
+fn press_at(
+    window: &mut crate::more_menu::tests::Window,
+    app: &mut App,
+    point: Point,
+) -> Vec<Message> {
+    let mut messages = Vec::new();
+    let mut laid = window.lay_out(app);
+    messages.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
+        iced::mouse::Cursor::Available(point),
+    ));
+    let tree = laid.into_tree();
+    *window = crate::more_menu::tests::Window::with_tree(tree);
+    window.send(app, messages.clone());
+    messages
+}
+
+fn double_clicked(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|message| matches!(message, Message::DoubleClick(_)))
+}
+
 #[test]
-fn a_quick_second_click_after_centering_a_cover_isnt_a_double_click() {
+fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
     let (_root, mut app) = flat(10);
     select(&mut app, "game-04");
     let mut window = crate::more_menu::tests::Window::new(&mut app);
+    // A side cover, then the middle it became.
     let side = cover_at(&mut window, &app, 5);
-    window.click(
-        &mut app,
-        Point::new(side.x + side.width - 4.0, side.center_y()),
-    );
+    let point = Point::new(side.x + side.width - 4.0, side.center_y());
+    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
     assert_eq!(selected(&app), "game-05");
-    let middle = cover_at(&mut window, &app, 5);
-    let laid_messages = {
-        let mut laid = window.lay_out(&app);
-        laid.event_at(
-            &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
-            iced::mouse::Cursor::Available(middle.center()),
-        )
+    // Pressing there again at once isn't a double click on the cover it
+    // centered.
+    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    select(&mut app, "game-05");
+    // The panel comes and goes with these presses, moving the strip, so
+    // the middle is found again each time.
+    let middle = |window: &mut crate::more_menu::tests::Window, app: &App| {
+        cover_at(window, app, app.strip.target()).center()
     };
-    assert!(
-        laid_messages
-            .iter()
-            .all(|message| !matches!(message, Message::DoubleClick(_))),
-        "{laid_messages:?}"
-    );
-    // A real double click on the middle is one.
-    let mut laid = window.lay_out(&app);
-    let press = iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
-    let cursor = iced::mouse::Cursor::Available(middle.center());
-    let mut messages = laid.event_at(&press, cursor);
-    messages.extend(laid.event_at(&press, cursor));
+    let point = middle(&mut window, &app);
+    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    // The middle, then a key moves another one there: the same spot again
+    // at once is a plain press on whatever is there now.
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(selected(&app), "game-06");
+    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    select(&mut app, "game-06");
+    let _ = app.update(Message::ClosePanel);
+    app.panel_motion.snap(false);
+    let point = middle(&mut window, &app);
+    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    // Twice on the same middle cover is a double click, though the first
+    // press toggled the panel and moved the strip from under the pointer.
+    let messages = press_at(&mut window, &mut app, point);
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::DoubleClick(name) if name == "game-05")),
+            .any(|message| matches!(message, Message::DoubleClick(name) if name == "game-06")),
         "{messages:?}"
     );
 }
@@ -1026,10 +1053,10 @@ fn the_middle_draws_its_art_and_the_side_covers_draw_darker() {
     let geometry = geometry(app.strip.position(), 9, WIDE);
     let middle = at(cover(&geometry, 4).bounds.center());
     assert_eq!(middle, [200, 0, 0, 255]);
-    // The far right edge of the outermost cover shows past its neighbor.
+    // The outermost cover's right part shows past its neighbor, darker.
     let side = cover(&geometry, 8).bounds;
-    let side = at(Point::new(side.x + side.width - 2.0, side.center_y()));
-    assert!(side[0] < middle[0] && side[0] > 0, "{side:?}");
+    let side = at(Point::new(side.x + side.width * 0.8, side.center_y()));
+    assert!(side[0] + 60 < middle[0] && side[0] > 0, "{side:?}");
 }
 
 #[test]

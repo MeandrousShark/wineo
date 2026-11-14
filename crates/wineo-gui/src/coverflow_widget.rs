@@ -27,7 +27,7 @@ const PIXELS_PER_NOTCH: f32 = 60.0;
 /// How far each blank card behind a collapsed section's poster sits, as a
 /// share of the poster's width.
 const STACK_OFFSET: f32 = 0.06;
-const TITLE_SIZE: f32 = 18.0;
+const TITLE_SIZE: f32 = 16.0;
 const STATUS_SIZE: f32 = 13.0;
 const LABEL_SIZE: f32 = 13.0;
 const DOT: f32 = 8.0;
@@ -417,31 +417,42 @@ impl Widget<Message, Theme, Renderer> for Strip {
                 let Some(point) = cursor.position_over(bounds) else {
                     return;
                 };
+                let previous = state.last_click.take();
+                // A double click stays with the middle cover it started on
+                // while that's still the middle, though the first click
+                // opened the panel and moved the strip from under it.
+                if *button == mouse::Button::Left
+                    && let Some((click, StopId::Card(slot))) = &previous
+                    && self.face(self.middle).map(|face| &face.id)
+                        == Some(&StopId::Card(slot.clone()))
+                {
+                    let again = mouse::Click::new(point, *button, Some(*click));
+                    if again.kind() == mouse::click::Kind::Double {
+                        shell.publish(Message::Press(slot.clone()));
+                        shell.publish(Message::DoubleClick(slot.name().to_owned()));
+                        state.last_click = Some((again, StopId::Card(slot.clone())));
+                        shell.capture_event();
+                        return;
+                    }
+                }
                 let Some(face) = self.hit(bounds, point) else {
                     return;
                 };
                 let id = face.id.clone();
                 let middle = face.stop == self.middle;
                 match (button, &id) {
+                    // Only a press that starts on the middle cover can be
+                    // the first of a double click, so one that centered a
+                    // cover never launches it.
                     (mouse::Button::Left, _) if !middle => {
-                        state.last_click = None;
                         shell.publish(Message::Strip(StripEvent::Center(id)));
                     }
                     (mouse::Button::Left, StopId::Collapsed(key)) => {
-                        state.last_click = None;
                         shell.publish(Message::Strip(StripEvent::Open(key.clone())));
                     }
                     (mouse::Button::Left, StopId::Card(slot)) => {
-                        let previous = state
-                            .last_click
-                            .take()
-                            .filter(|(_, last)| *last == id)
-                            .map(|(click, _)| click);
-                        let click = mouse::Click::new(point, *button, previous);
                         shell.publish(Message::Press(slot.clone()));
-                        if click.kind() == mouse::click::Kind::Double {
-                            shell.publish(Message::DoubleClick(slot.name().to_owned()));
-                        }
+                        let click = mouse::Click::new(point, *button, None);
                         state.last_click = Some((click, id));
                     }
                     (mouse::Button::Right, StopId::Card(slot)) if middle => {

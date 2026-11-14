@@ -129,6 +129,11 @@ impl Window {
         found
     }
 
+    /// A window holding widget state taken from another.
+    pub(crate) fn with_tree(tree: Tree) -> Self {
+        Self(Some(tree))
+    }
+
     pub(crate) fn new(app: &mut App) -> Self {
         let mut window = Self(None);
         window.frame(app);
