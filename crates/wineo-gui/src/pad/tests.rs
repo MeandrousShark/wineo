@@ -308,6 +308,31 @@ fn a_disconnect_or_release_all_stops_the_repeat() {
     );
 }
 
+/// Made-up time for the pump: it moves only when a read says it took a
+/// while or the pump sleeps, so nothing here really waits.
+#[derive(Clone)]
+struct FakeClock(std::rc::Rc<std::cell::Cell<Instant>>);
+
+impl FakeClock {
+    fn new() -> Self {
+        Self(std::rc::Rc::new(std::cell::Cell::new(Instant::now())))
+    }
+
+    fn advance(&self, duration: Duration) {
+        self.0.set(self.0.get() + duration);
+    }
+}
+
+impl reader::Clock for FakeClock {
+    fn now(&self) -> Instant {
+        self.0.get()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.advance(duration);
+    }
+}
+
 /// A made-up source: each read takes its next entry, and the reads are
 /// counted.
 struct Fake {
@@ -340,21 +365,23 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
     events.extend([None, None, None, None, None]);
     events.push(Some(PadEvent::Disconnected(0)));
     events.push(Some(PadEvent::Connected(1, xbox())));
+    let clock = FakeClock::new();
+    let start = reader::Clock::now(&clock);
     let sent = std::cell::RefCell::new(Vec::new());
-    let started = Instant::now();
     reader::pump(
         fake(move |read| events[read].clone()),
         reader::RETRY_AFTER,
+        &clock,
         |event| {
-            sent.borrow_mut().push((event, Instant::now()));
+            sent.borrow_mut().push((event, reader::Clock::now(&clock)));
             sent.borrow().len() < 3
         },
     );
     let sent = sent.into_inner();
-    // The tap's release comes well before the repeat would fire, as gilrs
-    // returns None after every drained batch.
-    assert!(started.elapsed() < REPEAT_AFTER, "{:?}", started.elapsed());
-    assert!(sent[1].1 - sent[0].1 < REPEAT_AFTER);
+    // The tap's release comes with no wait at all, as gilrs returns None
+    // after every drained batch, so no repeat can fire in between.
+    assert_eq!(sent[1].1, sent[0].1);
+    assert_eq!(reader::Clock::now(&clock), start);
     // It stops once the app is gone, leaving the rest unread.
     assert_eq!(
         sent.into_iter().map(|(event, _)| event).collect::<Vec<_>>(),
@@ -370,30 +397,41 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
 fn reads_that_keep_failing_back_off() {
     let retry = Duration::from_millis(20);
     let window = Duration::from_millis(300);
-    let started = Instant::now();
-    let source = fake(move |_| (started.elapsed() >= window).then_some(PadEvent::Disconnected(0)));
+    let clock = FakeClock::new();
+    let start = reader::Clock::now(&clock);
+    let time = clock.clone();
+    // Fails at once until the window has passed, or after so many reads
+    // that it was spinning, so a broken back-off ends too.
+    let source = fake(move |read| {
+        let passed = reader::Clock::now(&time).saturating_duration_since(start);
+        (passed >= window || read >= 10_000).then_some(PadEvent::Disconnected(0))
+    });
     let reads = source.reads.clone();
-    reader::pump(source, retry, |_| false);
-    // A spinning read would make many thousands in that time; backing off
-    // allows the quick ones and then about one per retry.
-    let bound = 8 + (window.as_millis() / retry.as_millis()) as usize + 2;
-    assert!(reads.get() <= bound, "{} reads", reads.get());
-    assert!(reads.get() > 8, "{} reads", reads.get());
+    reader::pump(source, retry, &clock, |_| false);
+    // The quick ones, then one per retry until the window is over, and
+    // the read that ends it.
+    let expected = 8 + (window.as_millis() / retry.as_millis()) as usize + 1;
+    assert_eq!(reads.get(), expected);
 }
 
 #[test]
 fn a_slow_none_is_a_read_that_waited_and_never_backs_off() {
     // Each None comes after a wait, as after a hotplug that isn't a pad:
-    // none of them count toward backing off.
-    let started = Instant::now();
+    // none of them count toward backing off, so the pump never sleeps.
+    let clock = FakeClock::new();
+    let start = reader::Clock::now(&clock);
+    let time = clock.clone();
     let source = fake(move |read| {
         if read < 12 {
-            std::thread::sleep(Duration::from_millis(60));
+            time.advance(Duration::from_millis(60));
             None
         } else {
             Some(PadEvent::Disconnected(0))
         }
     });
-    reader::pump(source, Duration::from_secs(5), |_| false);
-    assert!(started.elapsed() < Duration::from_secs(2));
+    reader::pump(source, Duration::from_secs(5), &clock, |_| false);
+    assert_eq!(
+        reader::Clock::now(&clock).saturating_duration_since(start),
+        Duration::from_millis(12 * 60)
+    );
 }

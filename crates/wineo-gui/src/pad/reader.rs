@@ -32,13 +32,37 @@ const QUICK: Duration = Duration::from_millis(50);
 /// off. A drained batch gives one per pad at most.
 const QUICK_NONES: u32 = 8;
 
+/// The time the reader goes by and how it waits: the real clock in the
+/// app, a made-up one in tests.
+pub(crate) trait Clock {
+    fn now(&self) -> Instant;
+    fn sleep(&self, duration: Duration);
+}
+
+struct RealClock;
+
+impl Clock for RealClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 /// Sends what `source` reads until the receiving side is gone. A `None`
 /// reads again at once, and only a run of quick ones waits `retry` before
 /// each further read.
-pub(crate) fn pump(mut source: impl Source, retry: Duration, send: impl Fn(PadEvent) -> bool) {
+pub(crate) fn pump(
+    mut source: impl Source,
+    retry: Duration,
+    clock: &impl Clock,
+    send: impl Fn(PadEvent) -> bool,
+) {
     let mut quick_nones = 0;
     loop {
-        let asked = Instant::now();
+        let asked = clock.now();
         match source.next() {
             Some(event) => {
                 quick_nones = 0;
@@ -47,11 +71,11 @@ pub(crate) fn pump(mut source: impl Source, retry: Duration, send: impl Fn(PadEv
                 }
             }
             // It waited in the read first, so the read works.
-            None if asked.elapsed() >= QUICK => quick_nones = 0,
+            None if clock.now().saturating_duration_since(asked) >= QUICK => quick_nones = 0,
             None => {
                 quick_nones += 1;
                 if quick_nones > QUICK_NONES {
-                    std::thread::sleep(retry);
+                    clock.sleep(retry);
                 }
             }
         }
@@ -78,7 +102,9 @@ fn events() -> impl Stream<Item = PadEvent> {
                         return;
                     }
                 }
-                pump(source, RETRY_AFTER, |event| send.send(event).is_ok());
+                pump(source, RETRY_AFTER, &RealClock, |event| {
+                    send.send(event).is_ok()
+                });
             });
         if started.is_err() {
             return;

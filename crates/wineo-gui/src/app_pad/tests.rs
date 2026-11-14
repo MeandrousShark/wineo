@@ -434,6 +434,7 @@ fn the_stick_moves_like_the_dpad() {
 #[test]
 fn a_held_direction_repeats_through_its_wakeup() {
     let (_home, mut app) = ready();
+    app.pad_clock = Some(std::time::Instant::now());
     let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
@@ -443,7 +444,12 @@ fn a_held_direction_repeats_through_its_wakeup() {
     let stale = app.pad_wake.generation().wrapping_sub(1);
     settle_update(&mut app, Message::PadRepeat(stale));
     assert_eq!(app.selected.as_deref(), Some("beta"));
-    std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
+    // Just before it's due, a wakeup moves nothing.
+    app.pad_clock = Some(due - Duration::from_millis(1));
+    let generation = app.pad_wake.generation();
+    settle_update(&mut app, Message::PadRepeat(generation));
+    assert_eq!(app.selected.as_deref(), Some("beta"));
+    app.pad_clock = Some(due);
     let generation = app.pad_wake.generation();
     settle_update(&mut app, Message::PadRepeat(generation));
     assert_eq!(app.selected.as_deref(), Some("gamma"));
@@ -454,10 +460,12 @@ fn a_held_direction_repeats_through_its_wakeup() {
 #[test]
 fn a_held_repeat_waits_for_the_last_presss_field_check() {
     let (_home, mut app) = ready();
+    let start = std::time::Instant::now();
+    app.pad_clock = Some(start);
     let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
     assert!(app.pad_checking);
     // The repeat comes due before the check answers: nothing new is asked.
-    std::thread::sleep(crate::pad::REPEAT_AFTER);
+    app.pad_clock = Some(start + crate::pad::REPEAT_AFTER);
     let generation = app.pad_wake.generation();
     let repeat = app.update(Message::PadRepeat(generation));
     assert!(
@@ -469,7 +477,7 @@ fn a_held_repeat_waits_for_the_last_presss_field_check() {
     settle(&mut app, press);
     assert!(!app.pad_checking);
     assert_eq!(app.selected.as_deref(), Some("beta"));
-    std::thread::sleep(crate::pad::REPEAT_EVERY);
+    app.pad_clock = Some(start + crate::pad::REPEAT_AFTER + crate::pad::REPEAT_EVERY);
     let generation = app.pad_wake.generation();
     settle_update(&mut app, Message::PadRepeat(generation));
     assert_eq!(app.selected.as_deref(), Some("gamma"));

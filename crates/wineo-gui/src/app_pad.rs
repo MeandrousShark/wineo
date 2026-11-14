@@ -174,7 +174,7 @@ impl App {
             event,
             pad::PadEvent::Connected(..) | pad::PadEvent::Disconnected(_)
         );
-        let input = self.pads.event(event, Instant::now());
+        let input = self.pads.event(event, self.pad_now());
         if connection && let Some(page) = &mut self.settings {
             page.pads = self.pads.names();
         }
@@ -194,7 +194,7 @@ impl App {
         }
         // The clock moves on either way, so a slow check skips a repeat
         // instead of piling them up.
-        match self.pads.repeat(Instant::now()) {
+        match self.pads.repeat(self.pad_now()) {
             Some(input) if self.input.controller && !self.pad_checking => self.pad_input(input),
             _ => Task::none(),
         }
