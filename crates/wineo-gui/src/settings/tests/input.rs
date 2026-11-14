@@ -163,3 +163,39 @@ fn rebase_keeps_remaps_the_form_changed() {
         BTreeMap::from([(PadAction::Mark, PadButton::Rs)])
     );
 }
+
+/// A rebase for `library.toml` that lands after `config.toml` moved too
+/// keeps General's base, but still records what it read of the library, so
+/// once the config is back the next check finds nothing new.
+#[test]
+fn a_rebase_that_finds_the_config_moved_still_records_both() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let _ = page.update(
+        &paths,
+        Event::GlobalField(global::Field::StopTimeout, "7".to_owned()),
+    );
+    assert!(page.is_dirty());
+    library::set_coverflow_fullscreen(&paths, true).unwrap();
+    library::set_input(&paths, &input(false, &[])).unwrap();
+    let sequence = start_check(&mut page);
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, load::Texts::read_global(&paths)),
+    );
+    assert!(page.loading(), "a library change rebases");
+    // Another window writes the config while the rebase reads.
+    fs::create_dir_all(paths.global_config().parent().unwrap()).unwrap();
+    fs::write(paths.global_config(), "stop_timeout = 9\n").unwrap();
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    assert!(!page.loading());
+    // And takes it back.
+    fs::remove_file(paths.global_config()).unwrap();
+    let sequence = start_check(&mut page);
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, load::Texts::read_global(&paths)),
+    );
+    assert!(!page.loading(), "nothing changed since the rebase read");
+    assert!(!page.changed_on_disk);
+}

@@ -123,11 +123,19 @@ impl App {
     /// How much of the grid's viewport bottom the bar covers, which the
     /// grid adds under its last row and scrolling into view keeps clear.
     pub(crate) fn bar_room(&self) -> f32 {
-        if self.action_bar_shown() {
-            BAR_ROOM
+        let hints = if self.pad_hint_shown() {
+            crate::pad::glyph::HINT_HEIGHT + BAR_CLEARANCE
         } else {
             0.0
-        }
+        };
+        let bar = if self.action_bar_shown() {
+            BAR_ROOM
+        } else if hints > 0.0 {
+            crate::grid::NOTES_MARGIN
+        } else {
+            0.0
+        };
+        bar + hints
     }
 
     /// The popup shows only with its bar, and like the toolbar's menus.

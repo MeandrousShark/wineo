@@ -587,9 +587,9 @@ pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String
 /// One Save on the global page: General's edits to `config.toml`, then the
 /// Appearance tab's theme files (new, edited, renamed), its `[appearance]` in
 /// `library.toml`, and last the theme deletes, so `library.toml` never names
-/// a file that's gone. `auto_import`, `[desktop]`, and `coverflow_fullscreen` go to `library.toml`
-/// after General's edits. Each part runs only when it has edits, and a failure
-/// stops the rest.
+/// a file that's gone. `auto_import`, `[desktop]`, `coverflow_fullscreen`,
+/// and `[input]` go to `library.toml` after General's edits. Each part runs
+/// only when it has edits, and a failure stops the rest.
 pub(crate) fn save_global_page(
     paths: &Paths,
     edits: &Edits,
@@ -600,6 +600,7 @@ pub(crate) fn save_global_page(
         auto_import,
         desktop,
         coverflow_fullscreen,
+        input,
     } = library_edits.into();
     let mut report = Report {
         lines: Vec::new(),
@@ -627,6 +628,12 @@ pub(crate) fn save_global_page(
     }
     if let Some(on) = coverflow_fullscreen
         && let Err(error) = library::set_coverflow_fullscreen(paths, on)
+    {
+        library_refused(paths, &error, &mut report);
+        return Ok(report);
+    }
+    if let Some(input) = input
+        && let Err(error) = library::set_input(paths, &input)
     {
         library_refused(paths, &error, &mut report);
         return Ok(report);
@@ -797,16 +804,20 @@ pub(crate) fn check_task(
 }
 
 /// General's edits that go to `library.toml` rather than the config file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LibraryEdits {
     pub(crate) auto_import: Option<bool>,
     pub(crate) desktop: Option<library::Desktop>,
     pub(crate) coverflow_fullscreen: Option<bool>,
+    pub(crate) input: Option<library::Input>,
 }
 
 impl LibraryEdits {
     pub(crate) fn is_empty(&self) -> bool {
-        self.auto_import.is_none() && self.desktop.is_none() && self.coverflow_fullscreen.is_none()
+        self.auto_import.is_none()
+            && self.desktop.is_none()
+            && self.coverflow_fullscreen.is_none()
+            && self.input.is_none()
     }
 }
 
@@ -817,6 +828,7 @@ impl From<Option<bool>> for LibraryEdits {
             auto_import,
             desktop: None,
             coverflow_fullscreen: None,
+            input: None,
         }
     }
 }

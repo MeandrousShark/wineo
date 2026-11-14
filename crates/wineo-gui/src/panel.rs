@@ -376,6 +376,9 @@ impl App {
         .then_some(target)
     }
     fn begin_start(&mut self, name: String, target: String) -> Task<Message> {
+        // The game takes the pad from here; the gate opens on the next real
+        // focus.
+        self.close_pad_gate();
         let token = Token::new();
         let install_done = Token::new();
         self.operation = Some(Operation {
@@ -423,6 +426,8 @@ impl App {
         ])
     }
     fn ask_steam(&mut self, name: String, action: steam_install::Action) -> Task<Message> {
+        // Steam comes forward, like a launch.
+        self.close_pad_gate();
         self.steam_request = Some(name.clone());
         self.panel_error = None;
         self.panel_note = None;

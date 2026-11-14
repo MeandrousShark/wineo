@@ -86,6 +86,8 @@ pub(crate) enum Event {
     GlobalOnStart(wineo_core::library::OnStart),
     /// Desktop's When everything stops.
     GlobalOnStop(wineo_core::library::OnStop),
+    /// Controller's switch.
+    GlobalController(bool),
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -278,6 +280,7 @@ impl Event {
                 | Event::GlobalClose(_)
                 | Event::GlobalOnStart(_)
                 | Event::GlobalOnStop(_)
+                | Event::GlobalController(_)
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
@@ -422,6 +425,8 @@ pub(crate) struct Page {
     gog: gog::Settings,
     /// Scrolls to the Steam key row once the page loads.
     pub(crate) reveal_steam_key: bool,
+    /// The controllers connected, by name, which the app keeps current.
+    pub(crate) pads: Vec<String>,
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
     pub(crate) open_add_after_load: bool,
@@ -526,6 +531,7 @@ impl Page {
             steam_key: steam_key::Settings::default(),
             gog: gog::Settings::default(),
             reveal_steam_key: false,
+            pads: Vec::new(),
             resolving: None,
             open_add_after_load: false,
         }
@@ -650,6 +656,12 @@ impl Page {
     pub(crate) fn desktop(&self) -> Option<wineo_core::library::Desktop> {
         match &self.view {
             View::Global(editor) => Some(editor.form.loaded.desktop),
+            _ => None,
+        }
+    }
+    pub(crate) fn input(&self) -> Option<wineo_core::library::Input> {
+        match &self.view {
+            View::Global(editor) => Some(editor.form.loaded.input.clone()),
             _ => None,
         }
     }
@@ -839,6 +851,7 @@ impl App {
         }
         self.steam_key_work.sequence = self.steam_key_work.sequence.max(page.steam_key_sequence);
         page.gog.sequence = self.gog_work.sequence;
+        page.pads = self.pads.names();
         if let Some((sequence, busy)) = self.gog_work.pending {
             page.gog.busy = Some(busy);
             page.gog.busy_sequence = Some(sequence);

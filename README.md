@@ -157,6 +157,7 @@ libwayland-client0
 libwayland-egl1
 libegl1
 libvulkan1
+libudev1
 ca-certificates
 ```
 <!-- ubuntu-runtime-packages:end -->
@@ -176,6 +177,7 @@ libwayland-client
 libwayland-egl
 libglvnd-egl
 vulkan-loader
+systemd-libs
 ca-certificates
 ```
 <!-- fedora-runtime-packages:end -->
@@ -183,7 +185,9 @@ ca-certificates
 ### From source
 
 You need a recent stable Rust toolchain (the workspace uses the 2024
-edition), a C compiler, and `pkg-config`. Build and install both programs:
+edition), a C compiler, `pkg-config`, and the udev headers (`libudev-dev`
+on Ubuntu, `systemd-devel` on Fedora, part of `systemd-libs` on Arch) for
+controller support. Build and install both programs:
 
 ```sh
 git clone https://github.com/MeandrousShark/wineo.git

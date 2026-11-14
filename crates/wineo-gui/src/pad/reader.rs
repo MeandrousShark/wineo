@@ -1,0 +1,219 @@
+//! The one thread that reads controllers, for the life of the process.
+//!
+//! It's a plain `std::thread` parked in gilrs's blocking read, so an idle
+//! pad costs no CPU. Never `spawn_blocking`: iced's runtime drop waits on
+//! blocking tasks with no limit (see `exit_watchdog`), so every quit would
+//! hit the watchdog. It can't be stopped without an event to wake it, so it
+//! stays once started and the app ignores what it sends while the switch
+//! is off.
+
+use std::time::{Duration, Instant};
+
+use iced::Subscription;
+use iced::futures::{SinkExt, Stream};
+
+use super::{Axis, PadEvent, PadInfo, Raw};
+use crate::Message;
+
+/// What one read found.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Read {
+    Event(PadEvent),
+    /// An event nothing here reads, like the right stick or a trigger's
+    /// travel. The device works, so it counts like an event, but nothing is
+    /// sent.
+    Ignored,
+    /// No event. Often normal: gilrs says so once a batch of events is
+    /// drained, after a hotplug that isn't a pad, and for events its
+    /// filters drop. Only a run of them right away means the read itself
+    /// is failing.
+    Nothing,
+}
+
+/// Where events come from: gilrs in the app, made-up ones in tests.
+pub(crate) trait Source {
+    /// Blocks until the next read has something to say.
+    fn next(&mut self) -> Read;
+}
+
+/// The wait before each read once quick empty reads pile up. It's short
+/// because a working pad can pile them up too: gilrs's deadzone and jitter
+/// filters drop an axis event and hand back the drain's empty read, so a
+/// thumb resting on the stick looks like a failing read. Short, a misfire
+/// adds at most this much to the next press, while a device that really
+/// fails is held to about a hundred reads a second, which costs nothing.
+pub(crate) const RETRY_AFTER: Duration = Duration::from_millis(10);
+/// A `None` back sooner than this didn't wait for anything.
+const QUICK: Duration = Duration::from_millis(50);
+/// Quick `None`s in a row, with no event between, before the reader backs
+/// off. A drained batch gives one per pad at most.
+const QUICK_NONES: u32 = 8;
+
+/// The time the reader goes by and how it waits: the real clock in the
+/// app, a made-up one in tests.
+pub(crate) trait Clock {
+    fn now(&self) -> Instant;
+    fn sleep(&self, duration: Duration);
+}
+
+struct RealClock;
+
+impl Clock for RealClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+/// Sends what `source` reads until the receiving side is gone. A `None`
+/// reads again at once, and only a run of quick ones waits `retry` before
+/// each further read.
+pub(crate) fn pump(
+    mut source: impl Source,
+    retry: Duration,
+    clock: &impl Clock,
+    send: impl Fn(PadEvent) -> bool,
+) {
+    let mut quick_nones = 0;
+    loop {
+        let asked = clock.now();
+        match source.next() {
+            Read::Event(event) => {
+                quick_nones = 0;
+                if !send(event) {
+                    return;
+                }
+            }
+            Read::Ignored => quick_nones = 0,
+            // It waited in the read first, so the read works.
+            Read::Nothing if clock.now().saturating_duration_since(asked) >= QUICK => {
+                quick_nones = 0;
+            }
+            Read::Nothing => {
+                quick_nones += 1;
+                if quick_nones > QUICK_NONES {
+                    clock.sleep(retry);
+                }
+            }
+        }
+    }
+}
+
+/// The reader's events for as long as the app runs.
+pub(crate) fn subscription() -> Subscription<Message> {
+    Subscription::run(events).map(Message::Pad)
+}
+
+fn events() -> impl Stream<Item = PadEvent> {
+    iced::stream::channel(16, async |mut output| {
+        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+        let started = std::thread::Builder::new()
+            .name("wineo-pad".to_owned())
+            .spawn(move || {
+                // No pad support here is the same as no pad.
+                let Some(source) = Gilrs::new() else {
+                    return;
+                };
+                for event in source.connected() {
+                    if send.send(event).is_err() {
+                        return;
+                    }
+                }
+                pump(source, RETRY_AFTER, &RealClock, |event| {
+                    send.send(event).is_ok()
+                });
+            });
+        if started.is_err() {
+            return;
+        }
+        while let Some(event) = receive.recv().await {
+            if output.send(event).await.is_err() {
+                return;
+            }
+        }
+    })
+}
+
+struct Gilrs(gilrs::Gilrs);
+
+impl Gilrs {
+    fn new() -> Option<Self> {
+        gilrs::Gilrs::new().ok().map(Self)
+    }
+
+    /// The pads already there at start, which gilrs reports no event for.
+    fn connected(&self) -> Vec<PadEvent> {
+        self.0
+            .gamepads()
+            .map(|(id, pad)| PadEvent::Connected(id.into(), info(&pad)))
+            .collect()
+    }
+}
+
+impl Source for Gilrs {
+    fn next(&mut self) -> Read {
+        let Some(event) = self.0.next_event_blocking(None) else {
+            return Read::Nothing;
+        };
+        let id = usize::from(event.id);
+        let translated = match event.event {
+            gilrs::EventType::Connected => {
+                Some(PadEvent::Connected(id, info(&self.0.gamepad(event.id))))
+            }
+            gilrs::EventType::Disconnected => Some(PadEvent::Disconnected(id)),
+            gilrs::EventType::ButtonPressed(button, _) => {
+                raw(button).map(|raw| PadEvent::Pressed(id, raw))
+            }
+            gilrs::EventType::ButtonReleased(button, _) => {
+                raw(button).map(|raw| PadEvent::Released(id, raw))
+            }
+            gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickX, value, _) => {
+                Some(PadEvent::Stick(id, Axis::X, value))
+            }
+            gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickY, value, _) => {
+                Some(PadEvent::Stick(id, Axis::Y, value))
+            }
+            _ => None,
+        };
+        // Events nothing reads don't wake the app, but they show the
+        // device works.
+        translated.map_or(Read::Ignored, Read::Event)
+    }
+}
+
+fn info(pad: &gilrs::Gamepad<'_>) -> PadInfo {
+    PadInfo {
+        name: pad.name().to_owned(),
+        vendor: pad.vendor_id(),
+        product: pad.product_id(),
+    }
+}
+
+/// gilrs's names by position. Its `LeftTrigger` is the bumper and
+/// `LeftTrigger2` the trigger, which reaches here as a press once gilrs's
+/// own threshold is crossed, so analog triggers need none of ours.
+pub(crate) fn raw(button: gilrs::Button) -> Option<Raw> {
+    use gilrs::Button;
+    Some(match button {
+        Button::South => Raw::South,
+        Button::East => Raw::East,
+        Button::North => Raw::North,
+        Button::West => Raw::West,
+        Button::LeftTrigger => Raw::LeftBumper,
+        Button::RightTrigger => Raw::RightBumper,
+        Button::LeftTrigger2 => Raw::LeftTrigger,
+        Button::RightTrigger2 => Raw::RightTrigger,
+        Button::Select => Raw::Select,
+        Button::Start => Raw::Start,
+        Button::LeftThumb => Raw::LeftStick,
+        Button::RightThumb => Raw::RightStick,
+        Button::DPadUp => Raw::DPadUp,
+        Button::DPadDown => Raw::DPadDown,
+        Button::DPadLeft => Raw::DPadLeft,
+        Button::DPadRight => Raw::DPadRight,
+        Button::C | Button::Z | Button::Mode | Button::Unknown => return None,
+    })
+}
