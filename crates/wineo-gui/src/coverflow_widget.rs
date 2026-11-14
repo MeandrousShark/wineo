@@ -1,5 +1,6 @@
 //! Draws coverflow's strip from `coverflow::geometry` and turns presses
-//! and the wheel on it into messages. Covers are flat for now.
+//! and the wheel on it into messages. The covers beside the middle one
+//! draw as warps tilted toward it, flat until their warp is ready.
 
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
