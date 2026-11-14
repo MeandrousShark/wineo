@@ -65,10 +65,11 @@ pub(crate) fn start_message() -> Message {
     )
 }
 
-/// A press in the window that follows a close by less than this is the
-/// trailing press of the input that closed it, such as the double click or
-/// Enter that launched a game: iced hands a widget's message to `update`
-/// before the press reaches the subscription that reports it.
+/// A press in the window that follows any close by less than this is taken
+/// as the trailing press of the input that closed it, such as the double
+/// click or Enter that launched a game: iced hands a widget's message to
+/// `update` before the press reaches the subscription that reports it. It
+/// applies after losing focus or hiding too, where no press follows.
 pub(crate) const PRESS_GRACE: Duration = Duration::from_millis(300);
 
 /// Whether pad presses count. It opens on a real focus at once, or on a
@@ -95,7 +96,7 @@ impl Gate {
     }
 
     /// A press opens it too, since some compositors never send focus,
-    /// unless it's the trailing press of what just closed it.
+    /// unless it comes within the grace of any close.
     pub(crate) fn press(&mut self, now: Instant) {
         if self
             .closed_at
