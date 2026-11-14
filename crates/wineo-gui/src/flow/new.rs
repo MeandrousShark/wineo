@@ -41,6 +41,9 @@ const LOG_ID: &str = "install-log";
 
 const PROGRAM_LIST: &str = "new-programs";
 
+/// The Name field's hint. Regular software goes through this flow too.
+const NAME_HINT: &str = "Name";
+
 const START_LIST: &str = "new-starts";
 
 /// A row on the choice page: the kind and starting point it picks, and what
@@ -295,6 +298,17 @@ impl Draft {
         }
     }
 
+    /// What the Environment name override shows while it's empty: the name it
+    /// falls back to, once there is one.
+    fn environment_placeholder(&self) -> String {
+        let derived = self.derived_environment();
+        if derived.is_empty() {
+            "Environment name".to_owned()
+        } else {
+            derived
+        }
+    }
+
     /// What the desktop entry is called and what the card shows, when the
     /// title says anything.
     fn target_title(&self) -> Option<String> {
@@ -322,6 +336,8 @@ pub(crate) enum Event {
     Template(String),
     ToggleAdditionalWineOptions,
     Arch(Arch),
+    /// The architecture override back to unset.
+    ArchDefault,
     Desktop(bool),
     Browse,
     BrowsePrefix,
@@ -408,6 +424,9 @@ pub(crate) struct Page {
     target_desktop: bool,
     launch: bool,
     leave_prompt: bool,
+    /// Where Discard goes instead of the Add choices, when the prompt was
+    /// opened by a way out other than Back.
+    leave_for: Option<Action>,
     action: Option<Action>,
     generation: u64,
     token: Option<Token>,
@@ -449,6 +468,7 @@ impl Page {
             target_desktop: false,
             launch: false,
             leave_prompt: false,
+            leave_for: None,
             action: None,
             generation: 0,
             token: None,
@@ -1043,7 +1063,7 @@ impl Page {
     fn add_target(&mut self) -> Task<Event> {
         let exe = self.target_path.trim().to_owned();
         if exe.is_empty() {
-            self.error = Some("Choose a game executable".to_owned());
+            self.error = Some("Choose a program".to_owned());
             return Task::none();
         }
         let paths = self.paths.clone();
@@ -1053,7 +1073,7 @@ impl Page {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.stage = Stage::Working;
-        self.status = "Adding game target...".to_owned();
+        self.status = "Adding target...".to_owned();
         task::blocking(
             move || {
                 let environment = Environment::load(&paths, &name).map_err(|e| e.to_string())?;
@@ -1133,17 +1153,27 @@ impl Page {
             Event::OpenExisting if self.stage == Stage::Details => {
                 let name = self.draft.environment_name();
                 if self.paths.environment_config(&name).exists() {
-                    self.action = Some(Action::Settings {
+                    let settings = Action::Settings {
                         name,
                         launch: false,
-                    });
+                    };
+                    // Leaving drops the draft, so a draft with edits asks first.
+                    if self.has_edits() {
+                        self.leave_prompt = true;
+                        self.leave_for = Some(settings);
+                    } else {
+                        self.action = Some(settings);
+                    }
                 }
             }
             Event::Discard => {
                 self.leave_prompt = false;
-                self.action = Some(Action::Choose);
+                self.action = Some(self.leave_for.take().unwrap_or(Action::Choose));
             }
-            Event::KeepEditing => self.leave_prompt = false,
+            Event::KeepEditing => {
+                self.leave_prompt = false;
+                self.leave_for = None;
+            }
             Event::Start(kind, source)
                 if self.stage == Stage::Choose && start_of(kind, source).is_some() =>
             {
@@ -1219,6 +1249,10 @@ impl Page {
                 self.draft.arch = Some(value);
                 return self.edited();
             }
+            Event::ArchDefault if self.stage == Stage::Details => {
+                self.draft.arch = None;
+                return self.edited();
+            }
             Event::Desktop(value) if self.stage == Stage::Details => {
                 self.draft.desktop = value;
                 return self.edited();
@@ -1279,7 +1313,8 @@ impl Page {
             Event::Downloaded(generation, result)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
-                self.token = None;
+                // A cancel the user chose isn't an error to show.
+                let canceled = self.token.take().is_some_and(|token| token.is_canceled());
                 self.downloading = None;
                 match result {
                     Ok(name) => {
@@ -1290,6 +1325,7 @@ impl Page {
                             self.draft.runner = name;
                         }
                     }
+                    Err(_) if canceled => {}
                     Err(error) => self.error = Some(error),
                 }
                 self.status.clear();
@@ -1529,7 +1565,7 @@ impl Page {
         let environment = self.draft.environment_name();
         let mut name_field = column![
             text("Name"),
-            text_input("Game name", &self.draft.title).on_input(Event::Name)
+            text_input(NAME_HINT, &self.draft.title).on_input(Event::Name)
         ]
         .spacing(4)
         .width(Fill);
@@ -1566,7 +1602,7 @@ impl Page {
         if self.editing_environment {
             name_field = name_field.push(text("Environment name")).push(
                 text_input(
-                    "Environment name",
+                    &self.draft.environment_placeholder(),
                     self.draft
                         .environment
                         .as_deref()
@@ -1698,9 +1734,16 @@ impl Page {
                     );
                 }
                 options_body = options_body.push(text("Architecture override")).push(
-                    pick_list([Arch::Win64, Arch::Win32], self.draft.arch, Event::Arch)
-                        .placeholder("Use template or global default")
-                        .wineo_style(palette),
+                    pick_list(
+                        [
+                            ArchPick::Default,
+                            ArchPick::Arch(Arch::Win64),
+                            ArchPick::Arch(Arch::Win32),
+                        ],
+                        Some(self.draft.arch.map_or(ArchPick::Default, ArchPick::Arch)),
+                        ArchPick::event,
+                    )
+                    .wineo_style(palette),
                 );
                 options_body = options_body.push(text("Prefix folder override")).push(
                     row![
@@ -1860,7 +1903,7 @@ impl Page {
                 Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
                 Stage::Working if self.fetching => "Getting artwork",
                 Stage::Working => "Creating environment",
-                Stage::Target => "Choose game target",
+                Stage::Target => "Choose a target",
                 Stage::Finished => "Environment created",
             },
             palette,
@@ -1889,16 +1932,22 @@ impl Page {
             }
             Stage::Working => {
                 body = body.push(text(&self.status));
-                body = body.push(if self.fetching {
+                if self.fetching {
                     let skipping = self.fetch_token.as_ref().is_some_and(Token::is_canceled);
-                    ui::secondary_button("Skip", palette)
-                        .on_press_maybe((!skipping).then_some(Event::SkipFetch))
-                // Force stop only makes sense after a cancel, like the other flows.
-                } else if self.token.as_ref().is_some_and(Token::is_canceled) {
-                    ui::secondary_button("Force stop", palette).on_press(Event::Force)
-                } else {
-                    ui::secondary_button("Cancel", palette).on_press(Event::Cancel)
-                });
+                    body = body.push(
+                        ui::secondary_button("Skip", palette)
+                            .on_press_maybe((!skipping).then_some(Event::SkipFetch)),
+                    );
+                // Only creation and downloads set a token, so only they have
+                // anything to cancel. Force stop only makes sense after a
+                // cancel, like the other flows.
+                } else if let Some(token) = &self.token {
+                    body = body.push(if token.is_canceled() {
+                        ui::secondary_button("Force stop", palette).on_press(Event::Force)
+                    } else {
+                        ui::secondary_button("Cancel", palette).on_press(Event::Cancel)
+                    });
+                }
                 if !self.log.is_empty() {
                     body = body.push(logview::controls(
                         &self.log_view,
@@ -1919,7 +1968,7 @@ impl Page {
             }
             Stage::Target => {
                 body = body.push(text(
-                    "Choose the game executable. The installer itself is not a target.",
+                    "Choose the program to run. The installer itself is not a target.",
                 ));
                 if let Some(report) = &self.report
                     && !report.programs.is_empty()
@@ -1952,7 +2001,7 @@ impl Page {
                         .label("Create desktop entry")
                         .on_toggle(Event::TargetDesktop),
                 );
-                body = body.push(
+                footer = Some(
                     row![
                         ui::accent_base("Confirm", palette.primary).on_press(Event::AddTarget),
                         button("Skip for now")
@@ -1960,7 +2009,8 @@ impl Page {
                             .on_press(Event::SkipTarget),
                     ]
                     .spacing(16)
-                    .align_y(Center),
+                    .align_y(Center)
+                    .into(),
                 );
             }
             Stage::Finished => {
@@ -1999,7 +2049,7 @@ impl Page {
                     if report.registered && report.playable && report.cleanup_resolved {
                         body = body.push(
                             checkbox(self.launch)
-                                .label("Launch game when this page closes")
+                                .label("Launch it when this page closes")
                                 .on_toggle(Event::Launch),
                         );
                     }
@@ -2046,7 +2096,7 @@ impl Page {
         // (iced matches a column's children by position) and its scroll offset
         // and focus survive. The prompt sits above Back, outside the scroll, so
         // it is never below the fold of a long form.
-        if matches!(self.stage, Stage::Choose | Stage::Details) {
+        if matches!(self.stage, Stage::Choose | Stage::Details | Stage::Target) {
             let mut top = column![].spacing(12);
             if self.leave_prompt {
                 top = top.push(
@@ -2240,6 +2290,32 @@ fn dimmed(palette: Palette) -> Palette {
         warning: palette.muted,
         danger: palette.muted,
         ..palette
+    }
+}
+
+/// An architecture picker entry: the template or global default, or one set
+/// by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchPick {
+    Default,
+    Arch(Arch),
+}
+
+impl ArchPick {
+    fn event(self) -> Event {
+        match self {
+            Self::Default => Event::ArchDefault,
+            Self::Arch(arch) => Event::Arch(arch),
+        }
+    }
+}
+
+impl std::fmt::Display for ArchPick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => f.write_str("Use template or global default"),
+            Self::Arch(arch) => arch.fmt(f),
+        }
     }
 }
 
