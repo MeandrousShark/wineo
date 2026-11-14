@@ -1761,7 +1761,7 @@ impl Page {
         summary = summary.push(review_summary(summary_groups(&last.draft, review), palette));
         let mut notes = Vec::new();
         for note in consequences(review) {
-            notes.push(text(note).color(palette.warning).into());
+            notes.push(wrapped(note).color(palette.warning).into());
         }
         if let Some(prerequisite) = &review.prerequisite {
             notes.push(self.prerequisite_note(prerequisite, palette));
@@ -1795,7 +1795,7 @@ impl Page {
         let mut note = column![].spacing(8).width(Fill);
         match prerequisite {
             Prerequisite::Runner(name) => {
-                note = note.push(text(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
+                note = note.push(wrapped(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
                 if name != "Proton-CachyOS-Latest" {
                     note = note.push(download("Download GE-Proton", Provider::GeProton));
                 }
@@ -1808,7 +1808,7 @@ impl Page {
                     || "latest release".to_owned(),
                     |name| format!("exact build {name}"),
                 );
-                note = note.push(text(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
+                note = note.push(wrapped(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
                 let label = match provider {
                     Provider::Dxvk => "Download DXVK",
                     Provider::Vkd3d => "Download vkd3d",
@@ -2033,7 +2033,7 @@ impl Page {
         if let Some(error) = &self.error
             && self.stage != Stage::Choose
         {
-            body = body.push(text(error).color(palette.danger));
+            body = body.push(wrapped(error).color(palette.danger));
         }
         let max_width = if self.stage == Stage::Details {
             900.0

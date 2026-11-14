@@ -3127,3 +3127,136 @@ fn create_holds_unless_the_check_was_of_the_draft_as_it_is() {
     let _ = page.update(Event::Create);
     assert_eq!(page.stage, Stage::Details);
 }
+
+/// Whether anything is drawn on the rows of the text reading `label` in the
+/// gutter right of the scrolling body, before the scrollbar. Text that wraps
+/// never reaches it, whatever it sits in.
+fn ink_beside(page: &Page, size: iced::Size, label: &str) -> bool {
+    use crate::layout_probe::probe;
+    let bounds = last_labeled(&texts(page, size), label);
+    let mut view = page.view_with_key_availability(Palette::DARK, true);
+    let (viewport, _) = probe(&mut view, size).scrollables[0];
+    let pixels = crate::layout_probe::render(&mut view, size);
+    let body_right = (viewport.x + viewport.width - super::frame::SCROLL_GUTTER).ceil() as u32;
+    (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+        (body_right + 1..body_right + 5).any(|x| {
+            let at = ((y * size.width as u32 + x) * 4) as usize;
+            pixels[at + 3] > 0
+        })
+    })
+}
+
+/// A long word that doesn't wrap lays out no wider than its room but draws
+/// past it, so what tells it apart is ink beside its box.
+#[test]
+fn long_unbroken_names_and_errors_wrap_in_small_dialogs() {
+    use crate::layout_probe::probe;
+    let runner = format!("GE-Proton-{}", "x".repeat(80));
+    let build = format!("v{}", "9".repeat(80));
+    let error = format!("https://example.invalid/{}", "a".repeat(120));
+    let cases = [
+        (
+            Review {
+                runner_row: None,
+                prerequisite: Some(Prerequisite::Runner(runner.clone())),
+                ..ready_review()
+            },
+            format!(
+                "Runner {runner} is unavailable. Choose a provider to download its latest release:"
+            ),
+        ),
+        (
+            Review {
+                prerequisite: Some(Prerequisite::Component {
+                    provider: Provider::Dxvk,
+                    version: Some(build.clone()),
+                }),
+                ..ready_review()
+            },
+            format!(
+                "Missing {} exact build {build}. Download it before creating this environment?",
+                Provider::Dxvk
+            ),
+        ),
+    ];
+    for (review, note) in cases {
+        let mut page = summarized(review);
+        page.error = Some(error.clone());
+        for (width, height) in [(280.0, 240.0), (400.0, 300.0)] {
+            let size = iced::Size::new(width, height);
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, size);
+            let spilled = probe.outside(iced::Rectangle::with_size(size));
+            assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+            // Tall enough to draw the whole body; the width decides wrapping.
+            let tall = iced::Size::new(width, 4000.0);
+            for long in [note.as_str(), error.as_str()] {
+                assert!(!ink_beside(&page, tall, long), "{width}: {long:.30}");
+            }
+        }
+    }
+}
+
+#[test]
+fn canceling_a_download_returns_to_details_and_checks_again() {
+    let esc = || iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape);
+    for how in ["Cancel", "Back", "Esc", "Force stop"] {
+        let mut page = summarized(missing_runner());
+        let _ = page.update(Event::Download(Provider::GeProton));
+        assert_eq!(page.stage, Stage::Working, "{how}");
+        assert!(page.busy(), "{how}");
+        let token = page.token.clone().unwrap();
+        // The download itself never runs here; what it returns is landed.
+        let page = match how {
+            "Cancel" => {
+                let _ = page.update(Event::Cancel);
+                page
+            }
+            "Back" => {
+                let _ = page.back();
+                page
+            }
+            "Esc" => {
+                let mut app = crate::tests::app();
+                app.flow = Some(crate::flow::Page::New(Box::new(page)));
+                let _ = app.update(pressed(esc(), false));
+                let Some(crate::flow::Page::New(page)) = app.flow.take() else {
+                    panic!("Esc left the New page");
+                };
+                *page
+            }
+            _ => {
+                let _ = page.update(Event::Cancel);
+                let size = iced::Size::new(900.0, 720.0);
+                assert_eq!(click_label(&page, size, "Force stop"), ["Force"]);
+                let _ = page.update(Event::Force);
+                assert!(token.is_forced());
+                page
+            }
+        };
+        let mut page = page;
+        assert!(token.is_canceled(), "{how}");
+        assert_eq!(
+            page.stage,
+            Stage::Working,
+            "{how}: until the download stops"
+        );
+        let checks = page.check_sequence;
+        let _ = page.update(Event::Downloaded(
+            page.generation,
+            Err("Download canceled".to_owned()),
+        ));
+        assert_eq!(page.stage, Stage::Details, "{how}");
+        assert!(page.token.is_none(), "{how}");
+        assert_ne!(page.check_sequence, checks, "{how}");
+        assert!(page.checking, "{how}");
+        land(&mut page, missing_runner());
+        assert_eq!(
+            page.checked().map(|_| ()),
+            Err(Hold::Missing(
+                "Runner GE-Proton-Latest isn't installed".to_owned()
+            )),
+            "{how}: the download is offered again"
+        );
+    }
+}
