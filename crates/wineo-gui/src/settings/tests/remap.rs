@@ -495,56 +495,134 @@ mod app {
         assert!(!page(&app).is_dirty());
     }
 
+    fn key(named: Named) -> iced::Event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: Key::Named(named),
+            modified_key: Key::Named(named),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        })
+    }
+
+    fn mouse(button: iced::mouse::Button) -> iced::Event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button))
+    }
+
+    /// The window's `Pressed` for `event`, which any key or mouse button
+    /// gives, whatever is under the pointer.
+    fn pressed(app: &App, event: iced::Event) -> Message {
+        let id = app.main_window.unwrap();
+        let pressed = crate::window_or_press(event.clone(), id);
+        assert!(matches!(pressed, Some(Message::Pressed)), "{event:?}");
+        pressed.unwrap()
+    }
+
+    fn at(app: &mut App, start: Instant, after: Duration) {
+        app.pad_clock = Some(start + after);
+    }
+
     #[test]
     fn any_click_or_key_after_the_starting_one_ends_the_wait() {
+        use crate::app_pad::PRESS_GRACE;
         let (_root, paths) = setup();
         let (mut app, start) = app_in(&paths);
-        // Any mouse button or key in the window is a press, whatever is
-        // under it: a text field, the space outside the column, the
-        // header.
-        for event in [
-            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
-            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
-                iced::mouse::Button::Right,
-            )),
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                key: Key::Character("a".into()),
-                modified_key: Key::Character("a".into()),
-                physical_key: iced::keyboard::key::Physical::Unidentified(
-                    iced::keyboard::key::NativeCode::Unidentified,
-                ),
-                location: iced::keyboard::Location::Standard,
-                modifiers: Modifiers::empty(),
-                text: None,
-                repeat: false,
-            }),
-        ] {
-            let id = app.main_window.unwrap();
-            let pressed = crate::window_or_press(event.clone(), id);
-            assert!(matches!(pressed, Some(Message::Pressed)), "{event:?}");
-
-            // The click or Enter that started it arrives after the row's
-            // own message, inside the grace: it keeps waiting.
-            app.pad_clock = Some(start);
+        // A click: the button takes it on release, so its press comes
+        // first, while nothing waits yet, and the row's message after.
+        for (round, button) in [iced::mouse::Button::Left, iced::mouse::Button::Right]
+            .into_iter()
+            .enumerate()
+        {
+            let start = start + Duration::from_secs(10 * round as u64);
+            at(&mut app, start, Duration::ZERO);
+            let _ = app.update(pressed(&app, mouse(button)));
             start_capture(&mut app, PadAction::Favorite);
-            let _ = app.update(pressed.clone().unwrap());
-            app.pad_clock = Some(start + crate::app_pad::PRESS_GRACE - Duration::from_millis(1));
-            let _ = app.update(pressed.clone().unwrap());
-            assert_eq!(
-                page(&app).capturing(),
-                Some(PadAction::Favorite),
-                "{event:?}"
-            );
-            // Any later press ends it.
-            app.pad_clock = Some(start + crate::app_pad::PRESS_GRACE);
-            let _ = app.update(pressed.unwrap());
-            assert_eq!(page(&app).capturing(), None, "{event:?}");
+            // Another click anywhere (a text field, outside the column,
+            // the header) after the grace ends it.
+            at(&mut app, start, PRESS_GRACE);
+            let _ = app.update(pressed(&app, mouse(button)));
+            assert_eq!(page(&app).capturing(), None, "{button:?}");
         }
+        // Enter on the row: the row takes it on the key's press, so the
+        // key's `Pressed` comes after, inside the grace, and keeps it.
+        let start = start + Duration::from_secs(30);
+        at(&mut app, start, Duration::ZERO);
+        start_capture(&mut app, PadAction::Favorite);
+        let _ = app.update(pressed(&app, key(Named::Enter)));
+        at(&mut app, start, PRESS_GRACE - Duration::from_millis(1));
+        let _ = app.update(pressed(&app, key(Named::Tab)));
+        assert_eq!(page(&app).capturing(), Some(PadAction::Favorite));
+        // Any key after the grace ends it.
+        at(&mut app, start, PRESS_GRACE);
+        let _ = app.update(pressed(&app, key(Named::Tab)));
+        assert_eq!(page(&app).capturing(), None);
         // A tab switch too.
-        app.pad_clock = Some(start);
+        at(&mut app, start, Duration::from_secs(2));
         start_capture(&mut app, PadAction::Favorite);
         let _ = app.update(Message::Settings(Event::Tab(Tab::Appearance)));
         assert_eq!(page(&app).capturing(), None);
+    }
+
+    #[test]
+    fn a_click_on_the_waiting_row_stops_the_wait() {
+        use crate::app_pad::{CLICK_STOP, PRESS_GRACE};
+        let (_root, paths) = setup();
+        let (mut app, start) = app_in(&paths);
+        start_capture(&mut app, PadAction::Favorite);
+        // The click's press, then its release's message for the same row.
+        at(&mut app, start, PRESS_GRACE);
+        let _ = app.update(pressed(&app, mouse(iced::mouse::Button::Left)));
+        at(&mut app, start, PRESS_GRACE + Duration::from_millis(120));
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Favorite)));
+        assert_eq!(page(&app).capturing(), None);
+
+        // A click on another row moves the wait there.
+        let (mut app, start) = app_in(&paths);
+        start_capture(&mut app, PadAction::Favorite);
+        at(&mut app, start, PRESS_GRACE);
+        let _ = app.update(pressed(&app, mouse(iced::mouse::Button::Left)));
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Mark)));
+        assert_eq!(page(&app).capturing(), Some(PadAction::Mark));
+
+        // A press elsewhere ends it, and a fresh click on the same row right
+        // after, its own press first, starts it again.
+        let (mut app, start) = app_in(&paths);
+        start_capture(&mut app, PadAction::Favorite);
+        at(&mut app, start, PRESS_GRACE);
+        let _ = app.update(pressed(&app, mouse(iced::mouse::Button::Left)));
+        assert_eq!(page(&app).capturing(), None);
+        at(&mut app, start, PRESS_GRACE + Duration::from_millis(100));
+        let _ = app.update(pressed(&app, mouse(iced::mouse::Button::Left)));
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Favorite)));
+        assert_eq!(page(&app).capturing(), Some(PadAction::Favorite));
+
+        // A press elsewhere ends it, and a later message for the same row,
+        // past the click window, starts it again.
+        let (mut app, start) = app_in(&paths);
+        start_capture(&mut app, PadAction::Favorite);
+        at(&mut app, start, PRESS_GRACE);
+        let _ = app.update(pressed(&app, mouse(iced::mouse::Button::Left)));
+        assert_eq!(page(&app).capturing(), None);
+        at(&mut app, start, PRESS_GRACE + CLICK_STOP);
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Favorite)));
+        assert_eq!(page(&app).capturing(), Some(PadAction::Favorite));
+
+        // Enter on the waiting row: its message first stops it, and the
+        // key's press after does nothing more.
+        let (mut app, start) = app_in(&paths);
+        start_capture(&mut app, PadAction::Favorite);
+        at(&mut app, start, PRESS_GRACE + Duration::from_secs(1));
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Favorite)));
+        assert_eq!(page(&app).capturing(), None);
+        let _ = app.update(pressed(&app, key(Named::Enter)));
+        assert_eq!(page(&app).capturing(), None);
+        // And the next Enter starts it again.
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Favorite)));
+        assert_eq!(page(&app).capturing(), Some(PadAction::Favorite));
     }
 
     #[test]

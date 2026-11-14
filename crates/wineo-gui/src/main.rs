@@ -176,6 +176,9 @@ pub(crate) struct App {
     pad_wake: wake::Wake,
     /// When a remap row waiting for a pad button gives up.
     capture_wake: wake::Wake,
+    /// The waiting row a press just ended, and when, so the same click's
+    /// release on that row stops the wait instead of starting it again.
+    capture_pressed_off: Option<(wineo_core::library::PadAction, Instant)>,
     /// A press's text field check is in flight, so a repeat waits for it
     /// rather than queueing another.
     pad_checking: bool,
@@ -703,6 +706,7 @@ impl App {
             pad_hint: None,
             pad_wake: wake::Wake::default(),
             capture_wake: wake::Wake::default(),
+            capture_pressed_off: None,
             pad_checking: false,
             tray: tray::Tray::default(),
             instance: None,

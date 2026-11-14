@@ -72,6 +72,10 @@ pub(crate) fn start_message() -> Message {
 /// applies after losing focus or hiding too, where no press follows.
 pub(crate) const PRESS_GRACE: Duration = Duration::from_millis(300);
 
+/// How long a click on a waiting row may take from press to release and
+/// still read as stopping the wait it just ended.
+pub(crate) const CLICK_STOP: Duration = Duration::from_millis(500);
+
 /// Whether pad presses count. It opens on a real focus at once, or on a
 /// press in the window, and shuts when the window loses focus, hides, or
 /// launches something.
@@ -262,9 +266,20 @@ impl App {
     /// A remap row's click or Enter: waits for the next pad button, for at
     /// most `CAPTURE_FOR` on the pad clock.
     pub(crate) fn toggle_capture(&mut self, action: PadAction) -> Task<Message> {
-        let until = self.pad_now() + crate::settings::CAPTURE_FOR;
+        let now = self.pad_now();
+        // A click on the waiting row: its press ended the wait just now, and
+        // this, from the release, means stop rather than start again.
+        if self
+            .capture_pressed_off
+            .take()
+            .is_some_and(|(pressed, at)| {
+                pressed == action && now.saturating_duration_since(at) < CLICK_STOP
+            })
+        {
+            return Task::none();
+        }
         if let Some(page) = &mut self.settings {
-            page.toggle_capture(action, until);
+            page.toggle_capture(action, now + crate::settings::CAPTURE_FOR);
         }
         Task::none()
     }
@@ -282,17 +297,25 @@ impl App {
     }
 
     /// A key or mouse press anywhere in the window ends a capture: a click
-    /// on any control or none, a key, a text field. The press that started
-    /// it arrives after the row's own message, so one within the grace of
-    /// the start is that press.
+    /// on any control or none, a key, a text field. The two arrive in
+    /// different orders. A row takes Enter or Space on the key's press, so
+    /// that key's `Pressed` comes after the row's message, and one within
+    /// the grace of the start is that key. A button takes a click on its
+    /// release, so the click's `Pressed` comes first; a click on the
+    /// waiting row ends the wait here, and `toggle_capture` then reads the
+    /// row's message as a stop.
     pub(crate) fn press_ends_capture(&mut self) {
         let now = self.pad_now();
+        // Only the release of the press that ended a wait reads as a stop,
+        // so a fresh click on the row starts it again.
+        self.capture_pressed_off = None;
         if let Some(page) = &mut self.settings
-            && page.capture.is_some_and(|capture| {
-                now.saturating_duration_since(capture.started) >= PRESS_GRACE
-            })
+            && let Some(capture) = page
+                .capture
+                .filter(|capture| now.saturating_duration_since(capture.started) >= PRESS_GRACE)
         {
             page.capture = None;
+            self.capture_pressed_off = Some((capture.action, now));
         }
     }
 
