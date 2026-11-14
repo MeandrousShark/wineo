@@ -341,6 +341,48 @@ impl Strip {
         }
     }
 
+    /// A name card's title in `color`, clear of the slanted top and
+    /// bottom `share` of the turn brings.
+    fn draw_name(
+        &self,
+        renderer: &mut Renderer,
+        face: &Face,
+        bounds: Rectangle,
+        share: f32,
+        color: Color,
+        clip: Rectangle,
+    ) {
+        if color.a <= 0.0 {
+            return;
+        }
+        let size = (bounds.height / 240.0 * 14.0).clamp(12.0, 28.0);
+        let pad = bounds.width * 0.08;
+        let slant = bounds.height * crate::tilt::INSET * share;
+        let room = Rectangle::new(
+            Point::new(bounds.x + pad, bounds.y + slant + pad),
+            Size::new(
+                (bounds.width - 2.0 * pad).max(0.0),
+                (bounds.height - 2.0 * (slant + pad)).max(0.0),
+            ),
+        );
+        renderer.fill_text(
+            text::Text {
+                content: face.title.clone(),
+                bounds: room.size(),
+                size: Pixels(size),
+                line_height: text::LineHeight::default(),
+                font: renderer.default_font(),
+                align_x: text::Alignment::Center,
+                align_y: alignment::Vertical::Center,
+                shaping: text::Shaping::Advanced,
+                wrapping: text::Wrapping::Word,
+            },
+            room.center(),
+            color,
+            room.intersection(&clip).unwrap_or(room),
+        );
+    }
+
     /// A face's background, art or name card, and its fade toward the
     /// background, all in the one outline `share` picks.
     fn draw_face(
@@ -392,7 +434,15 @@ impl Strip {
                 }
                 let alpha = dim * opacity;
                 if share > 0.0 && warped < 1.0 {
-                    fill_outline(renderer, bounds, tilt, 1.0, surface.scale_alpha(share));
+                    // The blank card is a name card with a hairline edge,
+                    // so it stays apart from a section's stack behind it.
+                    let edge = self.shaded(palette.border, opacity);
+                    fill_outline(renderer, bounds, tilt, 1.0, edge.scale_alpha(share));
+                    let card = bounds.shrink(1.0);
+                    fill_outline(renderer, card, tilt, 1.0, surface.scale_alpha(share));
+                    let name = self.shaded(palette.muted, opacity);
+                    let shown = share * (1.0 - warped);
+                    self.draw_name(renderer, face, bounds, share, name.scale_alpha(shown), clip);
                     let behind = card_gives_way(alpha, warped);
                     if behind > 0.0 {
                         let veil = palette.background.scale_alpha(share * behind);
@@ -410,33 +460,8 @@ impl Strip {
             }
             None => {
                 fill_outline(renderer, bounds, tilt, share, surface);
-                // The name stays clear of the slanted top and bottom.
-                let size = (bounds.height / 240.0 * 14.0).clamp(12.0, 28.0);
-                let pad = bounds.width * 0.08;
-                let slant = bounds.height * crate::tilt::INSET * share;
-                let room = Rectangle::new(
-                    Point::new(bounds.x + pad, bounds.y + slant + pad),
-                    Size::new(
-                        (bounds.width - 2.0 * pad).max(0.0),
-                        (bounds.height - 2.0 * (slant + pad)).max(0.0),
-                    ),
-                );
-                renderer.fill_text(
-                    text::Text {
-                        content: face.title.clone(),
-                        bounds: room.size(),
-                        size: Pixels(size),
-                        line_height: text::LineHeight::default(),
-                        font: renderer.default_font(),
-                        align_x: text::Alignment::Center,
-                        align_y: alignment::Vertical::Center,
-                        shaping: text::Shaping::Advanced,
-                        wrapping: text::Wrapping::Word,
-                    },
-                    room.center(),
-                    self.shaded(palette.muted, opacity),
-                    room.intersection(&clip).unwrap_or(room),
-                );
+                let name = self.shaded(palette.muted, opacity);
+                self.draw_name(renderer, face, bounds, share, name, clip);
             }
         }
     }

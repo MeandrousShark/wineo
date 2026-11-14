@@ -2323,6 +2323,39 @@ fn a_tilted_cover_draws_its_warp_with_the_far_corners_clear() {
 }
 
 #[test]
+fn a_blank_card_shows_its_title_and_an_edge_like_a_name_card() {
+    let (_root, mut app) = with_art(9, WIDE);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    red_warps(&mut app, &["game-00", "game-01", "game-03"], Tilt::Left);
+    let geometry = geometry(4.0, 9, WIDE);
+    let b = cover(&geometry, 2).bounds;
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    let card = pixel(
+        &pixels,
+        Point::new(b.x + b.width * 0.25, b.y + b.height * 0.2),
+    );
+    // Its far edge, a hairline apart from the card.
+    let edge = pixel(&pixels, Point::new(b.x.floor(), b.center_y()));
+    let inside = pixel(&pixels, Point::new(b.x.floor() + 3.0, b.center_y()));
+    assert_eq!(inside, card);
+    // Lighter, where the card alone would only blend into the darker
+    // background.
+    assert!(
+        (0..3).all(|channel| edge[channel] > card[channel] + 5),
+        "edge {edge:?}, card {card:?}"
+    );
+    // Its title, lighter than the card, down its middle.
+    let x = (b.x + b.width * 0.4) as usize;
+    let title = (b.y as usize..(b.y + b.height) as usize)
+        .filter(|&y| pixels[(y * WIDE.width as usize + x) * 4] > card[0] + 30)
+        .count();
+    assert!(title > 0, "the title shows");
+}
+
+#[test]
 fn a_cover_tilted_right_leaves_its_far_corners_clear_too() {
     let (_root, mut app) = with_art(9, WIDE);
     select(&mut app, "game-04");
