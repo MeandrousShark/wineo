@@ -155,7 +155,8 @@ impl App {
         // or with none shown, the first stop does.
         if layout == ViewLayout::Coverflow {
             let centered = self.sync_strip();
-            return Task::batch([stopped, centered, self.load_visible_art()]);
+            let fullscreen = self.fullscreen_after_layout(from);
+            return Task::batch([stopped, centered, self.load_visible_art(), fullscreen]);
         }
         let places = self.grid_places();
         let height = places.height + self.bar_room();

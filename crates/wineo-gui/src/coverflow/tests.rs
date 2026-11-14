@@ -1365,3 +1365,35 @@ fn delete_does_nothing_on_a_section_card() {
     press(&mut app, Named::Delete);
     assert!(app.removal.is_some());
 }
+
+#[test]
+fn entering_full_screen_resizes_the_strip_to_the_new_window() {
+    let (_root, mut app) = flat(30);
+    let _ = app.switch_layout(ViewLayout::Grid);
+    app.coverflow_fullscreen = true;
+    select(&mut app, "game-12");
+    let _ = app.update(Message::ClosePanel);
+    app.panel_motion.snap(false);
+    let _ = app.set_layout(ViewLayout::Coverflow);
+    assert_eq!(app.fullscreen, crate::fullscreen::Owner::Switch);
+    let mut window = crate::more_menu::tests::Window::new(&mut app);
+    let before = strip_bounds(&mut window, &app);
+    assert_eq!(app.strip.size(), before.size());
+    let covers = app.covers_per_screen();
+    // The compositor answers with the screen's size.
+    let _ = app.update(app.window_event(iced::window::Event::Resized(Size::new(2560.0, 1440.0))));
+    window.frame(&mut app);
+    let after = strip_bounds(&mut window, &app);
+    assert!(after.width > before.width && after.height > before.height);
+    // What the app sizes from is the strip as now laid out, not before.
+    assert_eq!(app.strip.size(), after.size());
+    assert_eq!(app.strip_size(), after.size());
+    assert!(app.covers_per_screen() >= covers);
+    // The middle cover is drawn at the new size, and clicks find it there.
+    let middle = cover_at(&mut window, &app, 12);
+    assert_eq!(middle.size(), middle_size(after.size()));
+    assert!((middle.center_x() - (after.x + after.width / 2.0)).abs() <= 1.0);
+    window.click(&mut app, middle.center());
+    assert!(app.panel_open);
+    assert_eq!(selected(&app), "game-12");
+}
