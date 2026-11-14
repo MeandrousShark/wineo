@@ -78,12 +78,14 @@ pub(crate) struct Captions {
 /// The strip of `count` stops at `position`, drawing `faces`, with the
 /// cover at `middle` taking the clicks a grid card does. `open` keeps the
 /// docked panel's room.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn strip<'a>(
     faces: Vec<Face>,
     count: usize,
     position: f32,
     middle: usize,
     open: bool,
+    bottom: f32,
     captions: Captions,
     palette: Palette,
 ) -> Element<'a, Message> {
@@ -93,6 +95,7 @@ pub(crate) fn strip<'a>(
         position,
         middle,
         open,
+        bottom,
         captions,
         palette,
     })
@@ -104,6 +107,8 @@ struct Strip {
     position: f32,
     middle: usize,
     open: bool,
+    /// How much of the strip's bottom the marks and hint bars cover.
+    bottom: f32,
     captions: Captions,
     palette: Palette,
 }
@@ -147,7 +152,8 @@ impl Strip {
 
     fn geometry(&self, bounds: Rectangle) -> (Rectangle, coverflow::Geometry) {
         let area = coverflow::area(bounds, self.open);
-        let geometry = coverflow::geometry(self.position, self.count, area.size());
+        let geometry =
+            coverflow::geometry_above(self.position, self.count, area.size(), self.bottom);
         (area, geometry)
     }
 

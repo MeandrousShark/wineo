@@ -72,8 +72,14 @@ pub(crate) struct Geometry {
 /// wins in a very narrow window, and never taller than leaves room for the
 /// caption.
 pub(crate) fn middle_size(size: Size) -> Size {
+    middle_size_above(size, 0.0)
+}
+
+/// `middle_size`, with the caption also kept above the bottom `bottom` of
+/// the strip, where the marks and hint bars float.
+fn middle_size_above(size: Size, bottom: f32) -> Size {
     let floor = GridLayout::default().poster_height();
-    let room = (size.height - CAPTION).max(0.0);
+    let room = (size.height - CAPTION - bottom).max(0.0);
     let height = (size.height * HEIGHT_SHARE)
         .max(floor)
         .min(room)
@@ -100,8 +106,18 @@ fn reach(offset: f32) -> f32 {
 /// between two while it moves, in a strip `size` large. Covers more than
 /// `NEIGHBORS` from it fade out over the next stop and then aren't drawn.
 pub(crate) fn geometry(position: f32, count: usize, size: Size) -> Geometry {
-    let middle = middle_size(size);
-    let top = ((size.height - middle.height - CAPTION) / 2.0)
+    geometry_above(position, count, size, 0.0)
+}
+
+/// `geometry`, with the middle cover's caption kept above the bottom
+/// `bottom` of the strip, where the marks and hint bars float: centered as
+/// usual where that's clear, lifted where it isn't, and smaller only when
+/// lifting isn't enough.
+pub(crate) fn geometry_above(position: f32, count: usize, size: Size, bottom: f32) -> Geometry {
+    let middle = middle_size_above(size, bottom);
+    let block = middle.height + CAPTION;
+    let top = ((size.height - block) / 2.0)
+        .min(size.height - bottom - block)
         .max(0.0)
         .round();
     let center = Point::new((size.width / 2.0).round(), top + middle.height / 2.0);
@@ -1060,6 +1076,7 @@ impl App {
                 position,
                 middle,
                 self.panel_open,
+                self.bar_room(),
                 captions,
                 self.palette,
             ),

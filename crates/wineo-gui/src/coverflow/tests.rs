@@ -2140,3 +2140,60 @@ fn a_resize_asks_for_a_larger_cover_only_once_it_settles() {
     // The strip itself took the new size at once all the same.
     assert_eq!(app.strip.size(), Size::new(2400.0, 1400.0));
 }
+
+#[test]
+fn in_a_short_window_the_caption_lifts_clear_of_the_bars() {
+    let bottom = 80.0;
+    // Tall enough, nothing moves.
+    assert_eq!(
+        geometry_above(10.0, 30, WIDE, bottom),
+        geometry(10.0, 30, WIDE)
+    );
+    // Short: the cover and caption lift, the cover keeping its size.
+    let short = Size::new(1600.0, 420.0);
+    let lifted = geometry_above(10.0, 30, short, bottom);
+    let caption = lifted.caption;
+    assert!(
+        caption.y + caption.height <= short.height - bottom,
+        "{caption:?}"
+    );
+    assert_eq!(
+        cover(&lifted, 10).bounds.size(),
+        cover(&geometry(10.0, 30, short), 10).bounds.size()
+    );
+    assert!(cover(&lifted, 10).bounds.y < cover(&geometry(10.0, 30, short), 10).bounds.y);
+    // Shorter still, the cover shrinks to fit above them.
+    let shorter = Size::new(1600.0, 330.0);
+    let squeezed = geometry_above(10.0, 30, shorter, bottom);
+    assert!(squeezed.caption.y + squeezed.caption.height <= shorter.height - bottom);
+    assert!(cover(&squeezed, 10).bounds.y >= 0.0);
+}
+
+#[test]
+fn the_marks_bar_lifts_the_strip_in_a_short_window() {
+    let short = Size::new(1600.0, 420.0);
+    let (_root, mut app) = with_art(9, short);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    let drawn = |app: &App| {
+        let mut element = app.strip_view();
+        crate::layout_probe::render(&mut element, short)
+    };
+    let pixel_at = |pixels: &[u8], point: Point| -> [u8; 4] {
+        let index = (point.y as usize * short.width as usize + point.x as usize) * 4;
+        pixels[index..index + 4].try_into().unwrap()
+    };
+    let flat = cover(&geometry(4.0, 9, short), 4).bounds;
+    let below_lifted = Point::new(flat.center_x(), flat.y + flat.height - 3.0);
+    assert!(
+        pixel_at(&drawn(&app), below_lifted)[0] > 150,
+        "the cover reaches here"
+    );
+    app.marked.insert("game-02".into());
+    assert!(app.bar_room() > 0.0);
+    let lifted = cover(&geometry_above(4.0, 9, short, app.bar_room()), 4).bounds;
+    assert!(lifted.y + lifted.height < below_lifted.y);
+    let seen = pixel_at(&drawn(&app), below_lifted);
+    assert!(seen[0] < 100, "lifted off it: {seen:?}");
+}
