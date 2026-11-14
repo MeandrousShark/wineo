@@ -292,7 +292,11 @@ fn boot() -> (tempfile::TempDir, App) {
         (key == "HOME").then(|| home.as_os_str().to_owned())
     })
     .unwrap();
-    (root, App::boot(paths).0)
+    let mut app = App::boot(paths).0;
+    // Moves snap, so the tests of what the strip shows and does see it at
+    // rest; the motion tests turn full motion back on.
+    app.motion.system_reduced = true;
+    (root, app)
 }
 
 /// Three tag sections of six games each, a, b, and c, in coverflow.
@@ -750,7 +754,7 @@ fn press_at(
     window: &mut crate::more_menu::tests::Window,
     app: &mut App,
     point: Point,
-    clock: &mut crate::coverflow_widget::clock::Fake,
+    clock: &mut crate::clock::Fake,
 ) -> Vec<Message> {
     clock.advance(std::time::Duration::from_millis(50));
     let mut messages = Vec::new();
@@ -774,7 +778,7 @@ fn double_clicked(messages: &[Message]) -> bool {
 #[test]
 fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
     let (_root, mut app) = flat(10);
-    let mut clock = crate::coverflow_widget::clock::Fake::start();
+    let mut clock = crate::clock::Fake::start();
     select(&mut app, "game-04");
     let mut window = crate::more_menu::tests::Window::new(&mut app);
     // A side cover, then the middle it became.
@@ -842,7 +846,7 @@ fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
 #[test]
 fn two_presses_on_the_middle_too_far_apart_are_not_a_double_click() {
     let (_root, mut app) = flat(10);
-    let mut clock = crate::coverflow_widget::clock::Fake::start();
+    let mut clock = crate::clock::Fake::start();
     select(&mut app, "game-04");
     let _ = app.update(Message::ClosePanel);
     app.panel_motion.snap(false);
@@ -1017,7 +1021,9 @@ fn the_strip_wants_the_drawn_posters_and_the_middle_three_large() {
 fn no_large_cover_is_asked_for_while_the_strip_moves() {
     let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
-    app.strip.position = 9.4;
+    let clock = crate::clock::Fake::start();
+    app.strip.go(11, false, None, clock.now());
+    assert!(!app.strip.settled());
     let keys = app.strip_art();
     assert!(kinds(&keys, is_cover).is_empty(), "{keys:?}");
     assert!(!kinds(&keys, is_grid).is_empty());
@@ -1685,7 +1691,7 @@ fn picking_the_cards_game_by_name_shows_the_hidden_panel_instead_of_closing_it()
 fn a_second_press_six_pixels_away_is_not_a_double_click() {
     for (offset, double) in [(6.0, false), (5.0, true)] {
         let (_root, mut app) = flat(10);
-        let mut clock = crate::coverflow_widget::clock::Fake::start();
+        let mut clock = crate::clock::Fake::start();
         select(&mut app, "game-04");
         let _ = app.update(Message::ClosePanel);
         app.panel_motion.snap(false);
@@ -1704,4 +1710,173 @@ fn a_second_press_six_pixels_away_is_not_a_double_click() {
             "{offset} px"
         );
     }
+}
+
+/// `flat(count)` with full motion, at rest on `game-{at}` with its panel
+/// shut, and a clock that only moves when told to.
+fn moving(count: usize, at: usize) -> (tempfile::TempDir, App, crate::clock::Fake) {
+    let (root, mut app) = flat(count);
+    let clock = crate::clock::Fake::start();
+    select(&mut app, &format!("game-{at:02}"));
+    let _ = app.update(Message::ClosePanel);
+    app.strip.snap();
+    let _ = app.update(Message::Strip(Event::Tick(
+        app.strip.generation(),
+        clock.now() + std::time::Duration::from_secs(1),
+    )));
+    app.motion.system_reduced = false;
+    assert!(!app.strip.active());
+    (root, app, clock)
+}
+
+/// A frame `ms` after the clock's now.
+fn frame(app: &mut App, clock: &mut crate::clock::Fake, ms: u64) {
+    clock.advance(std::time::Duration::from_millis(ms));
+    let _ = app.update(Message::Strip(Event::Tick(
+        app.strip.generation(),
+        clock.now(),
+    )));
+}
+
+#[test]
+fn a_move_glides_to_its_stop_and_then_asks_for_no_more_frames() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(app.strip.target(), 6);
+    assert_eq!(app.strip.position(), 5.0, "nothing moves before a frame");
+    assert!(app.strip.active() && !app.strip.settled());
+    frame(&mut app, &mut clock, 16);
+    let early = app.strip.position();
+    assert!(early > 5.0 && early < 6.0, "{early}");
+    frame(&mut app, &mut clock, 50);
+    assert!(app.strip.position() > early);
+    frame(&mut app, &mut clock, 300);
+    assert_eq!(app.strip.position(), 6.0);
+    assert!(app.strip.settled());
+    assert!(!app.strip.active(), "the title's fade ended first");
+    // A frame after it rests changes nothing.
+    let generation = app.strip.generation();
+    frame(&mut app, &mut clock, 16);
+    assert_eq!(
+        (app.strip.position(), app.strip.generation()),
+        (6.0, generation)
+    );
+}
+
+#[test]
+fn a_dropped_frame_skips_ahead_to_where_the_glide_would_be() {
+    let clock = crate::clock::Fake::start();
+    let start = clock.now();
+    let mut smooth = Strip::default();
+    let mut dropped = Strip::default();
+    for strip in [&mut smooth, &mut dropped] {
+        strip.size = WIDE;
+        strip.go(8, false, None, start);
+    }
+    let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+    for ms in [16, 32, 48] {
+        smooth.tick(smooth.generation(), at(ms));
+    }
+    dropped.tick(dropped.generation(), at(48));
+    assert!((smooth.position() - dropped.position()).abs() < 1e-3);
+    assert!(dropped.position() > 0.5, "{}", dropped.position());
+}
+
+#[test]
+fn a_long_jump_swings_past_its_stop_by_a_fraction_of_a_cover_at_most() {
+    let clock = crate::clock::Fake::start();
+    let start = clock.now();
+    let mut strip = Strip::default();
+    strip.go(40, false, None, start);
+    let mut furthest: f32 = 0.0;
+    for ms in (5..=300).step_by(5) {
+        strip.tick(
+            strip.generation(),
+            start + std::time::Duration::from_millis(ms),
+        );
+        furthest = furthest.max(strip.position());
+    }
+    assert!(furthest <= 40.0 + MAX_OVERSHOOT, "{furthest}");
+    assert!(furthest > 39.0);
+    assert_eq!(strip.position(), 40.0);
+}
+
+#[test]
+fn a_held_key_glides_through_without_stopping_at_each_cover() {
+    let (_root, mut app, mut clock) = moving(30, 2);
+    let mut last = app.strip.position();
+    for _ in 0..8 {
+        press(&mut app, Named::ArrowRight);
+        // Two frames between repeats, 30 ms apart.
+        for _ in 0..2 {
+            frame(&mut app, &mut clock, 15);
+            let now = app.strip.position();
+            assert!(now > last, "{now} after {last}");
+            last = now;
+        }
+    }
+    assert_eq!(app.strip.target(), 10);
+    assert!(app.strip.position() < 10.0, "it trails the held key");
+    frame(&mut app, &mut clock, 300);
+    assert_eq!(app.strip.position(), 10.0);
+    assert!(app.strip.settled());
+}
+
+#[test]
+fn reduced_motion_snaps_the_strip_and_keeps_the_titles_crossfade() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    app.motion.system_reduced = true;
+    let before = app.caption_at(&app.grid_places(), 5);
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(app.strip.position(), 6.0);
+    assert!(app.strip.settled());
+    assert_eq!(
+        app.strip.title().map(|(caption, _)| caption.clone()),
+        before
+    );
+    assert_eq!(app.strip.title().map(|(_, progress)| *progress), Some(0.0));
+    assert!(app.strip.active(), "frames for the fade");
+    frame(&mut app, &mut clock, 75);
+    let half = app.strip.title().map(|(_, progress)| *progress).unwrap();
+    assert!((half - 0.5).abs() < 1e-3, "{half}");
+    frame(&mut app, &mut clock, 75);
+    assert!(app.strip.title().is_none());
+    assert!(!app.strip.active());
+}
+
+#[test]
+fn full_motion_crossfades_the_title_too() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    press(&mut app, Named::ArrowRight);
+    assert!(app.strip.title().is_some());
+    frame(&mut app, &mut clock, TITLE_FADE.as_millis() as u64);
+    assert!(app.strip.title().is_none());
+    assert!(app.strip.active(), "still gliding");
+}
+
+#[test]
+fn a_covered_strip_ends_its_glide_where_it_was_heading() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    press(&mut app, Named::End);
+    frame(&mut app, &mut clock, 16);
+    assert!(!app.strip.settled());
+    let _ = app.update(Message::OpenSettings);
+    assert!(app.settings.is_some());
+    assert!(app.strip.settled());
+    assert_eq!(app.strip.position(), 19.0);
+    // A frame for the glide that ended is ignored.
+    let stale = app.strip.generation().wrapping_sub(1);
+    let _ = app.update(Message::Strip(Event::Tick(stale, clock.now())));
+    assert_eq!(app.strip.position(), 19.0);
+}
+
+#[test]
+fn switching_into_coverflow_shows_the_strip_on_its_stop_at_once() {
+    let (_root, mut app, _clock) = moving(20, 2);
+    let _ = app.switch_layout(ViewLayout::Grid);
+    select(&mut app, "game-15");
+    let _ = app.switch_layout(ViewLayout::Coverflow);
+    assert_eq!(app.strip.target(), 15);
+    assert_eq!(app.strip.position(), 15.0);
+    assert!(app.strip.settled());
 }

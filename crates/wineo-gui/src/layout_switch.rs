@@ -155,6 +155,8 @@ impl App {
         // or with none shown, the first stop does.
         if layout == ViewLayout::Coverflow {
             let centered = self.sync_strip();
+            // The strip shows at once on its stop, as the other layouts do.
+            self.strip.snap();
             let fullscreen = self.fullscreen_after_layout(from);
             return Task::batch([stopped, centered, self.load_visible_art(), fullscreen]);
         }

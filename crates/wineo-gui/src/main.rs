@@ -19,6 +19,7 @@ mod bulk_tags;
 mod checkup;
 mod checkup_work;
 mod chips;
+mod clock;
 mod collapse;
 mod coverflow;
 mod coverflow_widget;
@@ -1112,6 +1113,12 @@ impl App {
         } else {
             self.zooming.subscription()
         };
+        // Frames only while the strip shows and moves or fades.
+        let strip = if self.layout == grid_motion::ViewLayout::Coverflow && !self.panel_hidden() {
+            self.strip.subscription()
+        } else {
+            Subscription::none()
+        };
         let collapse = if !self.panel_hidden() && self.collapse.animating() {
             window::frames()
                 .with(self.collapse.generation())
@@ -1188,6 +1195,7 @@ impl App {
             self.details_fade.subscription(),
             zoom,
             collapse,
+            strip,
             layout_thumb,
             if self.pad_reading {
                 pad::reader::subscription()
