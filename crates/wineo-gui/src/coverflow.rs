@@ -1032,10 +1032,13 @@ impl App {
         } else {
             floor.saturating_sub(reach)..=(ceil + PREWARM).min(last)
         };
+        // Where it sets out, cut short of past where it lands, then where
+        // it lands: built from the two, never the stops between.
         let (low, high) = (floor.min(target), ceil.max(target));
-        let mut near: Vec<usize> = (low.saturating_sub(PREWARM)..=(high + PREWARM).min(last))
-            .filter(|stop| start.contains(stop) || window(target).contains(stop))
-            .collect();
+        let start = (*start.start()).max(low.saturating_sub(PREWARM))
+            ..=(*start.end()).min((high + PREWARM).min(last));
+        let mut near: Vec<usize> = start.clone().collect();
+        near.extend(window(target).filter(|stop| !start.contains(stop)));
         let behind = |stop: usize| ((stop as f32) < position) == right;
         near.sort_by(|a, b| {
             (*a as f32 - position)
