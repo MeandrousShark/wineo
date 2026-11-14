@@ -181,6 +181,11 @@ impl Page {
         self.generation
     }
 
+    #[cfg(test)]
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     pub(crate) fn blocks_launch(&self) -> bool {
         self.busy() && self.kind == Kind::Winetricks
     }

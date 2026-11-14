@@ -217,6 +217,64 @@ fn a_launch_or_a_steam_request_shuts_the_gate() {
 }
 
 #[test]
+fn a_tool_run_shuts_the_gate() {
+    // Every tool run goes through `tool_update`, whatever the kind; Run
+    // program's own check needs a real runner, so winetricks stands in.
+    use crate::tools_page::{Event, Kind};
+    for start in [Event::OpenWinetricks, Event::InstallMissing] {
+        let (home, mut app) = ready();
+        for card in &mut app.cards {
+            card.prefix = Some(home.path().join("prefix"));
+        }
+        let _ = app.update(Message::OpenTool("alpha".into(), Kind::Winetricks));
+        assert!(app.pad_gate_open());
+        let _ = app.update(Message::Tool("alpha".into(), Kind::Winetricks, start));
+        assert!(app.tool_pages[&("alpha".to_owned(), Kind::Winetricks)].busy());
+        assert!(!app.pad_gate_open());
+        // Only a real focus opens it again.
+        tap(&mut app, Raw::East);
+        assert!(app.tool_page.is_some());
+        focus(&mut app);
+        assert!(app.pad_gate_open());
+        // Later events from the running tool don't shut it again.
+        let _ = app.update(Message::Tool(
+            "alpha".into(),
+            Kind::Winetricks,
+            Event::Program("regedit".into()),
+        ));
+        assert!(app.tool_pages[&("alpha".to_owned(), Kind::Winetricks)].busy());
+        assert!(app.pad_gate_open());
+    }
+}
+
+#[test]
+fn a_tool_page_edit_or_refused_run_leaves_the_gate_open() {
+    use crate::tools_page::{Event, Kind};
+    let (home, mut app) = ready();
+    for card in &mut app.cards {
+        card.prefix = Some(home.path().join("prefix"));
+    }
+    let _ = app.update(Message::OpenTool("alpha".into(), Kind::Exec));
+    let _ = app.update(Message::Tool(
+        "alpha".into(),
+        Kind::Exec,
+        Event::Program("winecfg".into()),
+    ));
+    assert!(app.pad_gate_open());
+    let _ = app.update(Message::Tool(
+        "alpha".into(),
+        Kind::Exec,
+        Event::Program(String::new()),
+    ));
+    // The page refuses an empty program, so nothing starts.
+    let _ = app.update(Message::Tool("alpha".into(), Kind::Exec, Event::Submit));
+    let page = &app.tool_pages[&("alpha".to_owned(), Kind::Exec)];
+    assert_eq!(page.error(), Some("Choose a program."));
+    assert!(!page.busy());
+    assert!(app.pad_gate_open());
+}
+
+#[test]
 fn library_presses_become_their_keyboard_twins() {
     let (_home, mut app) = ready();
     tap(&mut app, Raw::DPadRight);
