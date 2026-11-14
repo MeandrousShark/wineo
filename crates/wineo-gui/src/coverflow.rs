@@ -323,6 +323,9 @@ pub(crate) fn page(
 /// How long the middle's title crossfades when the middle changes, in full
 /// and reduced motion alike.
 pub(crate) const TITLE_FADE: Duration = Duration::from_millis(150);
+/// How long a warp that arrives for a cover on screen takes to fade in
+/// over its flat art, as long as the title's crossfade.
+pub(crate) const WARP_FADE: Duration = TITLE_FADE;
 /// How far past its stop the strip may swing as it lands, in stops.
 const MAX_OVERSHOOT: f32 = 0.15;
 /// How long the strip's size must hold before its large covers decode for
@@ -352,6 +355,9 @@ pub(crate) struct Strip {
     /// Counts resizes, so only the last one's wait settles it.
     resize_generation: u64,
     resize_pending: bool,
+    /// When the last warp to arrive for a cover on screen is done fading
+    /// in, which keeps frames coming until then.
+    warp_fade: Option<Instant>,
 }
 
 impl Default for Strip {
@@ -368,6 +374,7 @@ impl Default for Strip {
             cover_size: Size::ZERO,
             resize_generation: 0,
             resize_pending: false,
+            warp_fade: None,
         }
     }
 }
@@ -444,6 +451,9 @@ impl Strip {
                 self.title = None;
             }
         }
+        if self.warp_fade.is_some_and(|until| now >= until) {
+            self.warp_fade = None;
+        }
         let mut settled = false;
         if let Some(deadline) = self.deadline {
             let target = self.target as f32;
@@ -461,9 +471,15 @@ impl Strip {
         settled
     }
 
-    /// Gliding, or the title still crossfading.
+    /// Gliding, or the title or a warp still fading.
     pub(crate) fn active(&self) -> bool {
-        self.deadline.is_some() || self.title.is_some()
+        self.deadline.is_some() || self.title.is_some() || self.warp_fade.is_some()
+    }
+
+    /// Asks for frames while a warp that just arrived at `now` fades in.
+    pub(crate) fn fade_warp(&mut self, now: Instant) {
+        self.warp_fade = Some(now + WARP_FADE);
+        self.last_tick.get_or_insert(now);
     }
 
     /// Resting on its stop. Covers decode their large art and warp their
@@ -905,6 +921,38 @@ impl App {
             .collect()
     }
 
+    /// Whether a cover drawn now shows `art` turned `tilt`'s way.
+    pub(crate) fn strip_shows(&self, art: &crate::library::ArtFile, tilt: Tilt) -> bool {
+        if self.layout != ViewLayout::Coverflow {
+            return false;
+        }
+        let places = self.grid_places();
+        let position = self.strip.position();
+        (0..places.strip.len())
+            .filter(|&stop| {
+                let offset = stop as f32 - position;
+                offset != 0.0
+                    && offset.abs() < NEIGHBORS as f32 + 1.0
+                    && (offset < 0.0) == (tilt == Tilt::Left)
+            })
+            .filter_map(|stop| stop_card(&places, stop).and_then(|index| self.cards.get(index)))
+            .any(|card| card.art.as_ref() == Some(art))
+    }
+
+    /// How far the warp of `art` turned `tilt`'s way has faded in: all the
+    /// way unless it arrived a moment ago for a cover on screen.
+    fn warp_shown(&self, art: &crate::library::ArtFile, tilt: Tilt) -> f32 {
+        self.warp_arrived
+            .get(&(art.clone(), tilt))
+            .map_or(1.0, |at| {
+                crate::clock::now()
+                    .saturating_duration_since(*at)
+                    .as_secs_f32()
+                    / WARP_FADE.as_secs_f32()
+            })
+            .min(1.0)
+    }
+
     /// The flat art the cover at `stop` warps from: its large `Cover` next
     /// to the middle, its grid poster elsewhere.
     fn tilt_source(&self, art: &crate::library::ArtFile, stop: usize) -> ArtKey {
@@ -1035,6 +1083,9 @@ impl App {
                     tilted: card
                         .filter(|_| stop as f32 != position)
                         .and_then(|card| self.strip_tilted(card, stop, side)),
+                    warp_shown: card
+                        .and_then(|card| card.art.as_ref())
+                        .map_or(1.0, |art| self.warp_shown(art, side)),
                     title: card
                         .map(|card| card.display_title.clone())
                         .unwrap_or_default(),

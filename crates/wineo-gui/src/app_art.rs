@@ -162,6 +162,19 @@ impl App {
         if let Some(handle) = warped
             && self.visible_tilts.contains(&(key.clone(), tilt))
         {
+            // A cover drawn flat for want of any warp fades into this one;
+            // a sharper warp replacing one already drawn just takes over.
+            let grid = (key.0.clone(), artwork::Kind::Grid);
+            let first = self.images.shown_tilted(&key, dimmed, tilt).is_none()
+                && self.images.shown_tilted(&grid, dimmed, tilt).is_none();
+            if first && self.strip_shows(&key.0, tilt) {
+                let now = crate::clock::now();
+                self.warp_arrived.retain(|_, at| {
+                    now.saturating_duration_since(*at) < crate::coverflow::WARP_FADE
+                });
+                self.warp_arrived.insert((key.0.clone(), tilt), now);
+                self.strip.fade_warp(now);
+            }
             self.images.insert_tilted(key, dimmed, tilt, handle);
             self.evict_art();
         }

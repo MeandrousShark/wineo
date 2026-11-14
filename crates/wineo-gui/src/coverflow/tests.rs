@@ -2203,6 +2203,186 @@ fn a_tilted_cover_draws_its_warp_with_the_far_corners_clear() {
 }
 
 #[test]
+fn a_cover_tilted_right_leaves_its_far_corners_clear_too() {
+    let (_root, mut app) = with_art(9, WIDE);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    app.images.insert_tilted(
+        (art_of(&app, "game-06"), artwork::Kind::Grid),
+        false,
+        Tilt::Right,
+        crate::tilt::warp(&flat, Tilt::Right).unwrap(),
+    );
+    let right = cover(&geometry(4.0, 9, WIDE), 6).bounds;
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    // Nothing behind the warp fills the corners it leaves clear, top or
+    // bottom, so the covers behind show there: down to 6% of the height,
+    // well past where an evenly scaled square shape would stop.
+    let far = right.x + right.width - 3.0;
+    let deep = right.height * 0.06;
+    for y in [right.y + deep, right.y + right.height - deep] {
+        assert_eq!(pixel(&pixels, Point::new(far, y))[3], 0, "at {y}");
+    }
+    let near = pixel(&pixels, Point::new(right.x + 3.0, right.y + 3.0));
+    assert!(near[0] > 100, "{near:?}");
+}
+
+#[test]
+fn a_far_cover_still_without_its_warp_is_evenly_dim_and_flat_mid_glide() {
+    let (_root, mut app) = with_art(20, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-05");
+    let _ = app.update(Message::ClosePanel);
+    app.motion.system_reduced = false;
+    // Flat art only, as for covers that just came on screen.
+    red_posters(&mut app);
+    press(&mut app, Named::ArrowLeft);
+    frame(&mut app, &mut clock, 16);
+    let position = app.strip.position();
+    assert!(position > 4.0 && position < 5.0, "{position}");
+    let geometry = geometry(position, 20, WIDE);
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    // The farthest on each side, fading in or out at the strip's ends.
+    for (stop, far_left) in [(0, true), (9, false)] {
+        let far = cover(&geometry, stop);
+        assert!(far.opacity > 0.0 && far.opacity < 0.4, "{far:?}");
+        assert_eq!(far.tilt.abs(), 1.0);
+        let b = far.bounds;
+        let x = if far_left {
+            b.x + 2.0
+        } else {
+            b.x + b.width - 3.0
+        };
+        // Its far corner, which a trapezoid would leave out, is as dim as
+        // the edge below it: no bright wedge of undimmed art.
+        let corner = pixel(&pixels, Point::new(x, b.y + 2.0));
+        let edge = pixel(&pixels, Point::new(x, b.center_y()));
+        for channel in 0..4 {
+            assert!(
+                corner[channel].abs_diff(edge[channel]) <= 2,
+                "stop {stop}: corner {corner:?}, edge {edge:?}"
+            );
+        }
+        assert!(edge[0] < 120, "dimmed: {edge:?}");
+        // Nor does its flat art reach past its bounds.
+        let outside = if far_left {
+            b.x - 3.0
+        } else {
+            b.x + b.width + 2.0
+        };
+        assert_eq!(pixel(&pixels, Point::new(outside, b.center_y()))[3], 0);
+    }
+}
+
+#[test]
+fn a_name_card_and_a_sections_stack_tilt_like_a_cover() {
+    let (_root, mut app) = sectioned();
+    collapse(&mut app, "a");
+    select(&mut app, "b-1");
+    let _ = app.update(Message::ClosePanel);
+    // [a], b-0 to b-5, c-0 to c-5, with b-1 in the middle.
+    assert_eq!(middle(&app), "b-1");
+    let count = app.grid_places().strip.len();
+    let mut element = app.strip_view();
+    let strip =
+        crate::layout_probe::bounds_at(&crate::layout_probe::layout(&mut element, WIDE), &[1]);
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    let geometry = geometry(app.strip.position(), count, strip.size());
+    let at = |stop| cover(&geometry, stop).bounds + iced::Vector::new(strip.x, strip.y);
+    // b-2's name card, right of the middle: its far top corner is clear
+    // and its near one is card.
+    let right = at(3);
+    let far = pixel(
+        &pixels,
+        Point::new(right.x + right.width - 3.0, right.y + 2.0),
+    );
+    assert_eq!(far[3], 0, "{far:?}");
+    assert_eq!(
+        pixel(&pixels, Point::new(right.x + 3.0, right.y + 3.0))[3],
+        255
+    );
+    // Its name stays in the card, clear of the slanted edges.
+    let name = (right.y as usize..(right.y + right.height) as usize)
+        .filter(|&y| {
+            let x = right.center_x() as usize;
+            let index = (y * WIDE.width as usize + x) * 4;
+            // The muted text is lighter than the card around it.
+            pixels[index] > pixel(&pixels, Point::new(right.x + 3.0, right.y + 3.0))[0] + 30
+        })
+        .count();
+    assert!(name > 0, "the name shows");
+    // [a]'s card two left, and the back card of the stack behind it.
+    let card = at(0);
+    let offset = card.width * crate::coverflow_widget::STACK_OFFSET * 2.0;
+    let back = card + iced::Vector::new(offset, -offset);
+    for corner in [
+        Point::new(card.x + 2.0, card.y + 2.0),
+        Point::new(back.x + 2.0, back.y + 2.0),
+    ] {
+        assert_eq!(pixel(&pixels, corner)[3], 0, "{corner:?}");
+    }
+    let top = Point::new(back.x + back.width * 0.5, back.y + back.height * 0.06);
+    assert_eq!(pixel(&pixels, top)[3], 255, "the stack shows above it");
+}
+
+#[test]
+fn a_warp_that_arrives_for_a_cover_on_screen_fades_in_over_its_flat_art() {
+    let (_root, mut app) = with_art(9, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    // The title's crossfade done, nothing asks for frames.
+    frame(&mut app, &mut clock, 200);
+    assert!(!app.strip.active());
+    let left = cover(&geometry(4.0, 9, WIDE), 2).bounds;
+    let corner = Point::new(left.x + 2.0, left.y + 2.0);
+    let render = |app: &App| {
+        let mut element = app.strip_view();
+        crate::layout_probe::render(&mut element, WIDE)
+    };
+    let key = (art_of(&app, "game-02"), artwork::Kind::Grid);
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let warp = crate::tilt::warp(&flat, Tilt::Left);
+    let _ = app.update(Message::ArtWarped(key.clone(), false, Tilt::Left, warp));
+    assert!(app.images.contains_tilted(&key, false, Tilt::Left));
+    assert!(app.strip.active(), "frames come while it fades");
+    // Just arrived, the flat art still fills the corner the warp leaves.
+    let art = &art_of(&app, "game-02");
+    assert_eq!(app.warp_shown(art, Tilt::Left), 0.0);
+    assert_eq!(pixel(&render(&app), corner)[3], 255);
+    frame(&mut app, &mut clock, 75);
+    let half = pixel(&render(&app), corner)[3];
+    assert!(half > 0 && half < 255, "fading: {half}");
+    frame(&mut app, &mut clock, 80);
+    assert_eq!(app.warp_shown(art, Tilt::Left), 1.0);
+    assert!(!app.strip.active(), "no frames once it's in");
+    assert_eq!(pixel(&render(&app), corner)[3], 0);
+    // A sharper warp taking over from one already drawn doesn't fade.
+    let neighbor = art_of(&app, "game-05");
+    app.images.insert_tilted(
+        (neighbor.clone(), artwork::Kind::Grid),
+        false,
+        Tilt::Right,
+        crate::tilt::warp(&flat, Tilt::Right).unwrap(),
+    );
+    let large = (neighbor.clone(), app.cover_kind().expect("a large cover"));
+    let _ = app.update(Message::ArtWarped(
+        large.clone(),
+        false,
+        Tilt::Right,
+        crate::tilt::warp(&flat, Tilt::Right),
+    ));
+    assert!(app.images.contains_tilted(&large, false, Tilt::Right));
+    assert_eq!(app.warp_shown(&neighbor, Tilt::Right), 1.0);
+    assert!(!app.strip.active());
+}
+
+#[test]
 fn eviction_keeps_the_tilts_the_strip_wants_and_lets_others_go() {
     let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
