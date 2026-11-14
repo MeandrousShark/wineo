@@ -76,9 +76,8 @@ fn move_to(app: &mut App, name: &str) {
 }
 
 /// What `task` sends, with its widget operations run in the app's laid out
-/// view. Anything that waits, like a wakeup, is cut off.
+/// view. Anything that waits, like a wakeup, is left unrun.
 fn outputs(app: &App, task: Task<Message>) -> Vec<Message> {
-    use iced::futures::StreamExt;
     if task.units() == 0 {
         return Vec::new();
     }
@@ -92,22 +91,59 @@ fn outputs(app: &App, task: Task<Message>) -> Vec<Message> {
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(20), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid
-                    .get_or_insert_with(|| {
-                        crate::layout_probe::lay_out(app.view(), app.window_size)
-                    })
-                    .run(operation),
-                _ => {}
-            }
-        }
+    each_ready(&runtime, &mut stream, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid
+            .get_or_insert_with(|| crate::layout_probe::lay_out(app.view(), app.window_size))
+            .run(operation),
+        _ => {}
     });
     messages
+}
+
+/// Takes every action `stream` has ready now, and stops when it has none
+/// and nothing woke it: a wakeup's sleep, or work on another thread.
+/// Nothing here waits on the clock, so a loaded machine can't cut a press's
+/// key path short; that path is all widget operations and their answers.
+/// A batch's stream says Pending now and then just to take turns, waking
+/// itself first, so a wake means poll again.
+fn each_ready<S>(
+    runtime: &tokio::runtime::Runtime,
+    stream: &mut S,
+    mut take: impl FnMut(iced_runtime::Action<Message>),
+) where
+    S: iced::futures::Stream<Item = iced_runtime::Action<Message>> + Unpin,
+{
+    use iced::futures::StreamExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct Woken(AtomicBool);
+    impl Wake for Woken {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    // Sleeps in the stream need the runtime's timer to exist, not to run.
+    let _runtime = runtime.enter();
+    let woken = Arc::new(Woken(AtomicBool::new(false)));
+    let waker = Waker::from(woken.clone());
+    let mut context = Context::from_waker(&waker);
+    // A stream that only ever wakes itself would never finish.
+    for _ in 0..100_000 {
+        woken.0.store(false, Ordering::SeqCst);
+        match stream.poll_next_unpin(&mut context) {
+            Poll::Ready(Some(action)) => take(action),
+            Poll::Ready(None) => return,
+            Poll::Pending if woken.0.load(Ordering::SeqCst) => {}
+            Poll::Pending => return,
+        }
+    }
+    panic!("the task kept waking itself without finishing");
 }
 
 /// Runs the key path a press starts: the text field check, the page's
@@ -822,7 +858,6 @@ fn drive_in(
     laid: &mut crate::layout_probe::Laid<'_, Message>,
     task: Task<Message>,
 ) -> Vec<Message> {
-    use iced::futures::StreamExt;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
     };
@@ -831,16 +866,10 @@ fn drive_in(
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(20), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid.run(operation),
-                _ => {}
-            }
-        }
+    each_ready(&runtime, &mut stream, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid.run(operation),
+        _ => {}
     });
     messages
 }
@@ -934,6 +963,43 @@ fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
     assert_eq!(glyph(Style::PlayStation, PadButton::Rb), Glyph::Label("R1"));
 }
 
+#[test]
+fn a_remap_changes_what_a_press_does_and_what_the_hints_say() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = ready();
+    // Confirm on X: X opens the card, and A, now Mark's, marks it.
+    app.input.buttons.insert(PadAction::Confirm, PadButton::X);
+    app.input.buttons.insert(PadAction::Mark, PadButton::A);
+    tap(&mut app, Raw::South);
+    assert!(app.marked.contains("alpha"));
+    assert!(!app.panel_open);
+    tap(&mut app, Raw::West);
+    assert!(app.panel_open);
+    let hints = crate::pad::glyph::hints(&app.input.bindings(), true, false);
+    assert_eq!(hints[0], (PadButton::X, "Play"));
+    assert!(hints.contains(&(PadButton::A, "Mark")));
+}
+
+#[test]
+fn a_remap_names_the_printed_button_on_a_nintendo_pad_too() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = ready();
+    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    // Confirm on `b` and Back on `a`: the button printed B, which sits at
+    // the bottom of a Nintendo pad, now confirms.
+    app.input.buttons.insert(PadAction::Confirm, PadButton::B);
+    app.input.buttons.insert(PadAction::Back, PadButton::A);
+    tap_on(&mut app, 1, Raw::East);
+    assert!(!app.panel_open);
+    tap_on(&mut app, 1, Raw::South);
+    assert!(app.panel_open);
+    // And on an Xbox pad, B is to the right.
+    tap(&mut app, Raw::South);
+    assert!(!app.panel_open);
+    tap(&mut app, Raw::East);
+    assert!(app.panel_open);
+}
+
 /// Coverflow over sections a, b, and c of two games each, with b collapsed,
 /// a pad connected and the gate open, and the cursor on a-0 with its panel
 /// shut.
@@ -1001,4 +1067,57 @@ fn on_a_coverflow_card_the_hints_drop_favorite_and_mark_and_a_opens() {
     assert!(!on_card.contains(&"Play"), "{on_card:?}");
     assert!(!on_card.contains(&"Favorite") && !on_card.contains(&"Mark"));
     assert!(app.pad_hint_view().is_some(), "the bar shows in coverflow");
+}
+
+#[test]
+fn a_remap_moves_the_coverflow_strip_and_opens_cards() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = coverflow_ready();
+    // Confirm on X, Last on A, and Mark, whose X that was, on RT.
+    app.input.buttons.insert(PadAction::Confirm, PadButton::X);
+    app.input.buttons.insert(PadAction::Last, PadButton::A);
+    app.input.buttons.insert(PadAction::Mark, PadButton::Rt);
+    // The collapsed section's card opens with the remapped confirm.
+    tap(&mut app, Raw::DPadRight);
+    tap(&mut app, Raw::DPadRight);
+    assert!(app.header_cursor().is_some(), "on b's card");
+    tap(&mut app, Raw::West);
+    assert_eq!(app.selected.as_deref(), Some("b-0"));
+    assert!(app.header_cursor().is_none());
+    // A now jumps the strip to its end, and X opens the game there.
+    tap(&mut app, Raw::South);
+    assert_eq!(app.selected.as_deref(), Some("c-1"));
+    assert_eq!(app.strip.target(), 5);
+    assert!(!app.panel_open);
+    tap(&mut app, Raw::West);
+    assert!(app.panel_open);
+}
+
+#[test]
+fn a_remapped_page_button_moves_the_strip_a_screenful() {
+    use wineo_core::library::{PadAction, PadButton};
+    // What PageDown does from the first cover.
+    let (_home, mut keyboard) = coverflow_ready();
+    let _ = keyboard.update(Message::KeyWithFocus(
+        Key::Named(Named::PageDown),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    let screenful = keyboard.strip.target();
+    assert!(screenful > 1, "a screenful is more than one cover");
+
+    // Next screenful on A, with confirm taking A's place on RB.
+    let (_home, mut app) = coverflow_ready();
+    app.input.buttons.insert(PadAction::PageRight, PadButton::A);
+    app.input.buttons.insert(PadAction::Confirm, PadButton::Rb);
+    tap(&mut app, Raw::South);
+    assert_eq!(app.strip.target(), screenful);
+    assert_eq!(app.selected, keyboard.selected);
+    assert!(!app.panel_open);
+    // RB, the old page button, now opens the game in the middle.
+    assert!(app.header_cursor().is_none(), "a game is in the middle");
+    tap(&mut app, Raw::RightBumper);
+    assert!(app.panel_open);
+    assert_eq!(app.strip.target(), screenful);
 }

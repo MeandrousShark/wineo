@@ -5,6 +5,7 @@ use std::path::Path;
 
 use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::edit;
+use wineo_core::library::{PadAction, PadButton};
 use wineo_core::paths::Paths;
 
 use super::appearance;
@@ -280,6 +281,48 @@ impl Form {
             None
         };
     }
+    /// Puts `button` on `action`. The action that had it takes the
+    /// button `action` had, so a pick never leaves two actions on one
+    /// button. When `action` had none, after a hand edit left it unbound,
+    /// the holder takes its own default if free, or the first free button. Only buttons off their default are
+    /// kept, so saving writes just the changes.
+    pub(crate) fn assign(&mut self, action: PadAction, button: PadButton) {
+        let bindings = self.draft.input.bindings();
+        let holder = bindings.action(button);
+        if holder == Some(action) {
+            return;
+        }
+        let mut resolved: BTreeMap<PadAction, PadButton> = PadAction::ALL
+            .into_iter()
+            .filter_map(|each| Some((each, bindings.button(each)?)))
+            .collect();
+        let old = resolved.remove(&action);
+        resolved.insert(action, button);
+        if let Some(holder) = holder {
+            let used: BTreeSet<PadButton> = resolved
+                .iter()
+                .filter(|(each, _)| **each != holder)
+                .map(|(_, button)| *button)
+                .collect();
+            let given = old.or_else(|| {
+                std::iter::once(holder.default_button())
+                    .chain(PadButton::ALL)
+                    .find(|button| !used.contains(button))
+            });
+            match given {
+                Some(given) => resolved.insert(holder, given),
+                None => resolved.remove(&holder),
+            };
+        }
+        self.draft.input.buttons = resolved
+            .into_iter()
+            .filter(|(each, button)| *button != each.default_button())
+            .collect();
+    }
+    /// Every action back on its default button.
+    pub(crate) fn reset_buttons(&mut self) {
+        self.draft.input.buttons.clear();
+    }
     pub(crate) fn changes(&self) -> usize {
         let edits = self.edits();
         edits.pairs.len()
@@ -290,7 +333,7 @@ impl Form {
             + usize::from(self.draft.desktop.close != self.loaded.desktop.close)
             + usize::from(self.draft.desktop.on_start != self.loaded.desktop.on_start)
             + usize::from(self.draft.desktop.on_stop != self.loaded.desktop.on_stop)
-            + usize::from(self.draft.input != self.loaded.input)
+            + usize::from(!same_input(&self.draft.input, &self.loaded.input))
     }
     /// What to save to `library.toml`, if anything changed there.
     pub(crate) fn library_edits(&self) -> super::load::LibraryEdits {
@@ -298,7 +341,8 @@ impl Form {
             auto_import: self.auto_import_edit(),
             desktop: (self.draft.desktop != self.loaded.desktop).then_some(self.draft.desktop),
             coverflow_fullscreen: self.coverflow_fullscreen_edit(),
-            input: (self.draft.input != self.loaded.input).then(|| self.draft.input.clone()),
+            input: (!same_input(&self.draft.input, &self.loaded.input))
+                .then(|| self.draft.input.clone()),
         }
     }
     /// What to save for `coverflow_fullscreen`, if it changed.
@@ -418,6 +462,20 @@ impl Form {
         }
         edits
     }
+}
+
+/// Whether two `[input]`s save the same. A remap onto an action's own
+/// button, which a hand edit can write, is the same as none.
+fn same_input(a: &wineo_core::library::Input, b: &wineo_core::library::Input) -> bool {
+    let changed = |input: &wineo_core::library::Input| -> BTreeMap<PadAction, PadButton> {
+        input
+            .buttons
+            .iter()
+            .filter(|(action, button)| **button != action.default_button())
+            .map(|(action, button)| (*action, *button))
+            .collect()
+    };
+    a.controller == b.controller && changed(a) == changed(b)
 }
 
 pub(crate) struct Editor {

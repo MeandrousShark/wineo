@@ -174,6 +174,11 @@ pub(crate) struct App {
     pad_hint: Option<pad::Style>,
     /// A held direction's next repeat.
     pad_wake: wake::Wake,
+    /// When a remap row waiting for a pad button gives up.
+    capture_wake: wake::Wake,
+    /// The waiting row a press just ended, and when, so the same click's
+    /// release on that row stops the wait instead of starting it again.
+    capture_pressed_off: Option<(wineo_core::library::PadAction, Instant)>,
     /// A press's text field check is in flight, so a repeat waits for it
     /// rather than queueing another.
     pad_checking: bool,
@@ -680,6 +685,9 @@ pub(crate) enum Message {
     PadKey(keyboard::Key, keyboard::Modifiers, bool),
     /// The pointer moved, which hides the controller hints.
     PointerMoved,
+    /// A remap row's wait for a pad button may be over, tagged with its
+    /// wakeup.
+    CaptureTimeout(u64),
 }
 
 impl App {
@@ -697,6 +705,8 @@ impl App {
             pad_clock: None,
             pad_hint: None,
             pad_wake: wake::Wake::default(),
+            capture_wake: wake::Wake::default(),
+            capture_pressed_off: None,
             pad_checking: false,
             tray: tray::Tray::default(),
             instance: None,
@@ -1292,6 +1302,8 @@ impl App {
             self.close_wake.arm(self.close_by, Message::CloseWaitOver),
             self.pad_wake
                 .arm(self.pads.repeat_due(), Message::PadRepeat),
+            self.capture_wake
+                .arm(self.capture_until(), Message::CaptureTimeout),
         ]);
         let rescaled = if rescaled {
             self.refresh_window_size()
@@ -1567,6 +1579,7 @@ impl App {
                 if matches!(message, Message::Pressed) {
                     self.pad_gate.press(self.pad_now());
                     self.pad_hint = None;
+                    self.press_ends_capture();
                 } else {
                     self.pad_gate.focus();
                 }
@@ -1701,6 +1714,9 @@ impl App {
             Message::Window(_, window::Event::Unfocused) => {
                 self.focused = false;
                 self.close_pad_gate();
+                if let Some(page) = &mut self.settings {
+                    page.capture = None;
+                }
                 // Keys released elsewhere never report here, so Ctrl
                 // can't be trusted to still be down.
                 self.modifiers = keyboard::Modifiers::empty();
@@ -1800,6 +1816,7 @@ impl App {
             Message::PadKey(key, modifiers, text_focused) => {
                 self.pad_key(key, modifiers, text_focused)
             }
+            Message::CaptureTimeout(generation) => self.capture_timeout(generation),
             Message::PointerMoved => {
                 self.pad_hint = None;
                 Task::none()

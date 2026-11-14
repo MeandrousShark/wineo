@@ -72,6 +72,10 @@ pub(crate) fn start_message() -> Message {
 /// applies after losing focus or hiding too, where no press follows.
 pub(crate) const PRESS_GRACE: Duration = Duration::from_millis(300);
 
+/// How long a click on a waiting row may take from press to release and
+/// still read as stopping the wait it just ended.
+pub(crate) const CLICK_STOP: Duration = Duration::from_millis(500);
+
 /// Whether pad presses count. It opens on a real focus at once, or on a
 /// press in the window, and shuts when the window loses focus, hides, or
 /// launches something.
@@ -175,9 +179,26 @@ impl App {
             event,
             pad::PadEvent::Connected(..) | pad::PadEvent::Disconnected(_)
         );
+        let disconnect = matches!(event, pad::PadEvent::Disconnected(_));
         let input = self.pads.event(event, self.pad_now());
-        if connection && let Some(page) = &mut self.settings {
-            page.pads = self.pads.names();
+        if let Some(page) = &mut self.settings {
+            if connection {
+                page.pads = self.pads.names();
+            }
+            if disconnect {
+                page.capture = None;
+            }
+            page.pad_style = self.pads.recent_style();
+        }
+        // A remap row waiting takes the next button before anything else,
+        // whichever action it's bound to now and whatever the saved switch
+        // says, since the page's own switch may be on in its draft.
+        if let Some(Input::Button(button, _)) = input
+            && self.pad_gate_open()
+            && let Some(page) = self.settings.as_mut()
+            && page.take_capture(button)
+        {
+            return Task::none();
         }
         if !self.input.controller {
             self.pads.release_all();
@@ -242,6 +263,70 @@ impl App {
         self.update(Message::Key(key, modifiers, iced::event::Status::Ignored))
     }
 
+    /// A remap row's click or Enter: waits for the next pad button, for at
+    /// most `CAPTURE_FOR` on the pad clock.
+    pub(crate) fn toggle_capture(&mut self, action: PadAction) -> Task<Message> {
+        let now = self.pad_now();
+        // A click on the waiting row: its press ended the wait just now, and
+        // this, from the release, means stop rather than start again.
+        if self
+            .capture_pressed_off
+            .take()
+            .is_some_and(|(pressed, at)| {
+                pressed == action && now.saturating_duration_since(at) < CLICK_STOP
+            })
+        {
+            return Task::none();
+        }
+        if let Some(page) = &mut self.settings {
+            page.toggle_capture(action, now + crate::settings::CAPTURE_FOR);
+        }
+        Task::none()
+    }
+
+    /// The capture's wakeup: it gives up once its time is up.
+    pub(crate) fn capture_timeout(&mut self, generation: u64) -> Task<Message> {
+        let now = self.pad_now();
+        if self.capture_wake.fired(generation)
+            && let Some(page) = &mut self.settings
+            && page.capture.is_some_and(|capture| now >= capture.until)
+        {
+            page.capture = None;
+        }
+        Task::none()
+    }
+
+    /// A key or mouse press anywhere in the window ends a capture: a click
+    /// on any control or none, a key, a text field. The two arrive in
+    /// different orders. A row takes Enter or Space on the key's press, so
+    /// that key's `Pressed` comes after the row's message, and one within
+    /// the grace of the start is that key. A button takes a click on its
+    /// release, so the click's `Pressed` comes first; a click on the
+    /// waiting row ends the wait here, and `toggle_capture` then reads the
+    /// row's message as a stop.
+    pub(crate) fn press_ends_capture(&mut self) {
+        let now = self.pad_now();
+        // Only the release of the press that ended a wait reads as a stop,
+        // so a fresh click on the row starts it again.
+        self.capture_pressed_off = None;
+        if let Some(page) = &mut self.settings
+            && let Some(capture) = page
+                .capture
+                .filter(|capture| now.saturating_duration_since(capture.started) >= PRESS_GRACE)
+        {
+            page.capture = None;
+            self.capture_pressed_off = Some((capture.action, now));
+        }
+    }
+
+    /// When the waiting remap row gives up.
+    pub(crate) fn capture_until(&self) -> Option<Instant> {
+        self.settings
+            .as_ref()
+            .and_then(|page| page.capture)
+            .map(|capture| capture.until)
+    }
+
     /// The hint bar's room under the grid's last row while it shows.
     pub(crate) fn pad_hint_shown(&self) -> bool {
         self.pad_hint.is_some()
@@ -291,9 +376,17 @@ impl App {
         if let Some(input) = self.settings.as_ref().and_then(|page| page.input()) {
             self.input = input;
         }
-        if self.input.controller {
+        // Turning the switch on in Settings starts the reader before the
+        // save, so the remap rows can hear a pad.
+        let draft_on = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.draft_controller())
+            .unwrap_or(false);
+        if self.input.controller || draft_on {
             self.pad_reading = true;
-        } else {
+        }
+        if !self.input.controller {
             self.pads.release_all();
             self.pad_hint = None;
         }
