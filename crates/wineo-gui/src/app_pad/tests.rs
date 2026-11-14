@@ -1039,3 +1039,27 @@ fn on_a_coverflow_card_the_hints_drop_favorite_and_mark_and_a_opens() {
     assert!(!on_card.contains(&"Favorite") && !on_card.contains(&"Mark"));
     assert!(app.pad_hint_view().is_some(), "the bar shows in coverflow");
 }
+
+#[test]
+fn a_remap_moves_the_coverflow_strip_and_opens_cards() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = coverflow_ready();
+    // Confirm on X, Last on A, and Mark, whose X that was, on RT.
+    app.input.buttons.insert(PadAction::Confirm, PadButton::X);
+    app.input.buttons.insert(PadAction::Last, PadButton::A);
+    app.input.buttons.insert(PadAction::Mark, PadButton::Rt);
+    // The collapsed section's card opens with the remapped confirm.
+    tap(&mut app, Raw::DPadRight);
+    tap(&mut app, Raw::DPadRight);
+    assert!(app.header_cursor().is_some(), "on b's card");
+    tap(&mut app, Raw::West);
+    assert_eq!(app.selected.as_deref(), Some("b-0"));
+    assert!(app.header_cursor().is_none());
+    // A now jumps the strip to its end, and X opens the game there.
+    tap(&mut app, Raw::South);
+    assert_eq!(app.selected.as_deref(), Some("c-1"));
+    assert_eq!(app.strip.target(), 5);
+    assert!(!app.panel_open);
+    tap(&mut app, Raw::West);
+    assert!(app.panel_open);
+}
