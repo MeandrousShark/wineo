@@ -1389,3 +1389,27 @@ fn a_non_preset_entry_survives_next_to_a_save_and_a_rename() {
     assert!(text.contains("list = [\"a\", \"b\"]"), "{text}");
     assert_eq!(fixture.presets(), ["Fresh", "Newer"]);
 }
+
+#[test]
+fn a_coverflow_preset_round_trips_and_an_unknown_layout_reads_as_grid() {
+    let fixture = Fixture::new();
+    let preset = Preset {
+        layout: ViewLayout::Coverflow,
+        ..Preset::default()
+    };
+    assert!(set_preset(&fixture.paths, "Couch", &preset).unwrap());
+    assert!(fixture.read().contains("layout = \"coverflow\""));
+    assert_eq!(fixture.preset("Couch"), preset);
+    assert!(!set_preset(&fixture.paths, "Couch", &preset).unwrap());
+
+    // Saving the same preset with another layout changes that line.
+    let list = Preset {
+        layout: ViewLayout::List,
+        ..Preset::default()
+    };
+    assert!(set_preset(&fixture.paths, "Couch", &list).unwrap());
+    assert_eq!(fixture.preset("Couch"), list);
+
+    fixture.write("schema_version = 1\n\n[presets.Couch]\nlayout = \"carousel\"\n");
+    assert_eq!(fixture.preset("Couch").layout, ViewLayout::Grid);
+}

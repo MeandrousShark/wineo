@@ -6,6 +6,7 @@ use std::fs;
 
 use toml_edit::{DocumentMut, Item, Key};
 
+use super::input::{PadAction, PadButton, read_input};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
 use super::{
@@ -74,6 +75,7 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
             "presets" => inspect_presets(item, &mut inspection),
             "appearance" => inspect_appearance(paths, &mut themes, item, &mut inspection),
             "desktop" => inspect_desktop(item, &mut inspection),
+            "input" => inspect_input(item, &mut inspection),
             "environments" => inspect_environments(item, &mut inspection),
             "steam" => inspect_steam(item, &mut inspection),
             other => inspection
@@ -81,7 +83,36 @@ pub(crate) fn inspect(paths: &Paths) -> Inspection {
                 .push(unknown(None, &display_path(&[other]))),
         }
     }
+    inspection.findings.extend(conflict_findings(&document));
     inspection
+}
+
+/// Two actions on one button, which a hand edit or a newer wineo can cause.
+/// The reader has already settled it, so this says how.
+fn conflict_findings(document: &DocumentMut) -> impl Iterator<Item = Finding> {
+    read_input(document)
+        .conflicts()
+        .into_iter()
+        .map(|conflict| {
+            let outcome = match conflict.button {
+                Some(button) => format!(
+                    "{} uses {} instead",
+                    conflict.action.as_str(),
+                    button.as_str()
+                ),
+                None => format!("{} has no button", conflict.action.as_str()),
+            };
+            Finding {
+                kind: FindingKind::FieldInvalid,
+                environment: None,
+                message: format!(
+                    "library.toml: input.buttons: {} can't use {}, which {} uses; {outcome}",
+                    conflict.action.as_str(),
+                    conflict.wanted.as_str(),
+                    conflict.taken_by.as_str(),
+                ),
+            }
+        })
 }
 
 fn unreadable(failure: ReadFailure) -> Unreadable {
@@ -114,10 +145,14 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
                 Some(name) if SortKey::from_str(name).is_some() => continue,
                 _ => sort_expected(),
             },
-            "descending" | "favorites_first" | "poster_only" if value.as_bool().is_some() => {
+            "descending" | "favorites_first" | "poster_only" | "coverflow_fullscreen"
+                if value.as_bool().is_some() =>
+            {
                 continue;
             }
-            "descending" | "favorites_first" | "poster_only" => BOOL.to_owned(),
+            "descending" | "favorites_first" | "poster_only" | "coverflow_fullscreen" => {
+                BOOL.to_owned()
+            }
             "random" => match value.as_str() {
                 Some(name) if RandomPool::parse(name).is_some() => continue,
                 _ => random_expected(),
@@ -359,6 +394,47 @@ fn inspect_desktop(item: &Item, inspection: &mut Inspection) {
         inspection
             .findings
             .push(invalid(None, &path, &expected, value));
+    }
+}
+
+fn inspect_input(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection
+            .findings
+            .push(invalid(None, &display_path(&["input"]), TABLE, item));
+        return;
+    };
+    for (key, value) in table.iter() {
+        let path = display_path(&["input", key]);
+        match key {
+            "controller" if value.as_bool().is_some() => {}
+            "controller" => inspection.findings.push(invalid(None, &path, BOOL, value)),
+            "buttons" => inspect_buttons(value, inspection),
+            _ => inspection.findings.push(unknown(None, &path)),
+        }
+    }
+}
+
+fn inspect_buttons(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection.findings.push(invalid(
+            None,
+            &display_path(&["input", "buttons"]),
+            TABLE,
+            item,
+        ));
+        return;
+    };
+    for (action, button) in table.iter() {
+        let path = display_path(&["input", "buttons", action]);
+        if PadAction::parse(action).is_none() {
+            inspection.findings.push(unknown(None, &path));
+        } else if button.as_str().and_then(PadButton::parse).is_none() {
+            let expected = expected_one_of(PadButton::ALL.map(PadButton::as_str));
+            inspection
+                .findings
+                .push(invalid(None, &path, &expected, button));
+        }
     }
 }
 
