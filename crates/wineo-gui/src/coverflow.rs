@@ -332,6 +332,11 @@ pub(crate) const TITLE_FADE: Duration = Duration::from_millis(150);
 /// How long a warp that arrives for a cover on screen takes to fade in
 /// over its flat art, as long as the title's crossfade.
 pub(crate) const WARP_FADE: Duration = TITLE_FADE;
+/// How fast, in stops a second, the strip goes too fast to ask for art at
+/// each stop it crosses: a screen of covers each 60 Hz frame, when none is
+/// on screen for a frame, so their decodes would only land late, ahead of
+/// the large cover where it stops.
+const FLY_BY: f32 = (2 * NEIGHBORS + 1) as f32 * 60.0;
 /// How far past its stop the strip may swing as it lands, in stops.
 const MAX_OVERSHOOT: f32 = 0.15;
 /// How long the strip's size must hold before its large covers decode for
@@ -367,6 +372,8 @@ pub(crate) struct Strip {
     /// The stop the strip was drawn at, rounded down, when its art was
     /// last asked for, so a glide asks again only once per stop crossed.
     art_stop: Option<i32>,
+    /// How fast it moved over the last frame, in stops a second.
+    speed: f32,
 }
 
 impl Default for Strip {
@@ -385,6 +392,7 @@ impl Default for Strip {
             resize_pending: false,
             warp_fade: None,
             art_stop: None,
+            speed: 0.0,
         }
     }
 }
@@ -465,6 +473,7 @@ impl Strip {
             self.warp_fade = None;
         }
         let mut settled = false;
+        let before = self.position();
         if let Some(deadline) = self.deadline {
             let target = self.target as f32;
             if now >= deadline {
@@ -475,6 +484,12 @@ impl Strip {
                 self.spring.step(target, previous, deadline, now);
             }
         }
+        let elapsed = now.saturating_duration_since(previous).as_secs_f32();
+        self.speed = if elapsed > 0.0 {
+            (self.position() - before).abs() / elapsed
+        } else {
+            0.0
+        };
         if !self.active() {
             self.last_tick = None;
         }
@@ -497,9 +512,12 @@ impl Strip {
         self.art_stop = Some(self.position().floor() as i32);
     }
 
-    /// Gliding into a stop it hasn't asked for art at yet.
+    /// Gliding into a stop it hasn't asked for art at yet, slower than
+    /// `FLY_BY`.
     pub(crate) fn crossed_stop(&self) -> bool {
-        !self.settled() && self.art_stop != Some(self.position().floor() as i32)
+        !self.settled()
+            && self.speed <= FLY_BY
+            && self.art_stop != Some(self.position().floor() as i32)
     }
 
     /// Resting on its stop. The middle three decode their large art and
@@ -549,6 +567,11 @@ impl Strip {
     #[cfg(test)]
     pub(crate) fn resize_generation(&self) -> u64 {
         self.resize_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn speed(&self) -> f32 {
+        self.speed
     }
 
     #[cfg(test)]
