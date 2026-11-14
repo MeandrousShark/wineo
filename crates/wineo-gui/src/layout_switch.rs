@@ -137,6 +137,7 @@ impl App {
         let stopped = self.stop_zoom();
         self.collapse.reset();
         let header = self.header_room();
+        let from = self.layout;
         self.layout = layout;
         self.viewport_height = (self.viewport_height + header - self.header_room()).max(0.0);
         if self.motion.reduced() {
@@ -180,7 +181,14 @@ impl App {
         } else {
             self.scroll_to_landing()
         };
-        Task::batch([stopped, scroll, landing, self.load_visible_art()])
+        let fullscreen = self.fullscreen_after_layout(from);
+        Task::batch([
+            stopped,
+            scroll,
+            landing,
+            self.load_visible_art(),
+            fullscreen,
+        ])
     }
 }
 

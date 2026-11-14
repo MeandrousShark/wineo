@@ -32,7 +32,8 @@ pub(crate) enum Action {
     Last,
     /// PageUp and PageDown: a screenful of rows up or down.
     Page(Direction),
-    /// F11. Full screen isn't built yet, so it does nothing.
+    /// F11. `update` takes it as a global key before any page or menu sees
+    /// it, so it never reaches `handle_key`.
     ToggleFullscreen,
 }
 
@@ -326,8 +327,7 @@ impl App {
                 let rows = self.rows_per_screen();
                 self.step_cursor(|places, current| page(places, current, direction, rows))
             }
-            // Full screen lands with its own step; the key is taken so
-            // nothing else reads it meanwhile.
+            // Taken in `update` before it gets here; see `fullscreen`.
             Action::ToggleFullscreen => Task::none(),
             // Same rule as Enter: only a shown card, and only when nothing
             // else has the keys.

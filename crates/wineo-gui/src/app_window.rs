@@ -285,6 +285,11 @@ impl App {
 
     pub(crate) fn window_resized(&mut self, size: iced::Size) -> Task<Message> {
         self.window_size = size;
+        // With an owner set the size may be full screen's, so it waits for
+        // the mode answer.
+        if !self.fullscreen.is_set() {
+            self.windowed_size = size;
+        }
         self.viewport_width = (size.width - sidebar::WIDTH).max(0.0);
         self.viewport_height = (size.height - 48.0 - self.header_room()).max(0.0);
         // Every frame of a drag would restart the springs.
