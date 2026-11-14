@@ -333,10 +333,11 @@ pub(crate) const TITLE_FADE: Duration = Duration::from_millis(150);
 /// over its flat art, as long as the title's crossfade.
 pub(crate) const WARP_FADE: Duration = TITLE_FADE;
 /// How fast, in stops a second, the strip goes too fast to ask for art at
-/// each stop it crosses: a screen of covers each 60 Hz frame, when none is
-/// on screen for a frame, so their decodes would only land late, ahead of
-/// the large cover where it stops.
-const FLY_BY: f32 = (2 * NEIGHBORS + 1) as f32 * 60.0;
+/// each stop it crosses: more than `NEIGHBORS` stops a 60 Hz frame, when
+/// a cover is gone before its art could land, and its decode would only
+/// wait ahead of the large cover where the strip stops. A speed rather
+/// than a step, so a faster display doesn't ask more.
+const FLY_BY: f32 = NEIGHBORS as f32 * 60.0;
 /// How far past its stop the strip may swing as it lands, in stops.
 const MAX_OVERSHOOT: f32 = 0.15;
 /// How long the strip's size must hold before its large covers decode for

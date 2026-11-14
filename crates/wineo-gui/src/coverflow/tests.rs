@@ -2712,73 +2712,74 @@ fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
     }
 }
 
-#[test]
-fn the_art_held_follows_a_long_glide_asking_once_per_stop_crossed() {
-    // Past where its two ends' windows meet, and never too fast to see.
-    let (_root, mut app) = library_at(30, 5);
-    let mut clock = crate::clock::Fake::start();
-    key_down(&mut app, Named::End);
-    assert_eq!(app.strip.target(), 29);
-    let held = |app: &App| -> Vec<usize> {
-        let keys: Vec<(ArtKey, bool)> = app
-            .visible_art
-            .iter()
-            .filter(|(_, kind)| *kind == artwork::Kind::Grid)
-            .map(|key| (key.clone(), false))
-            .collect();
-        stops_of(&keys)
-    };
-    // A key nobody wants, which any new ask for art replaces.
-    let marker = (
+/// The grid posters `app` holds for the strip, by stop.
+fn held_stops(app: &App) -> Vec<usize> {
+    let keys: Vec<(ArtKey, bool)> = app
+        .visible_art
+        .iter()
+        .filter(|(_, kind)| *kind == artwork::Kind::Grid)
+        .map(|key| (key.clone(), false))
+        .collect();
+    stops_of(&keys)
+}
+
+/// A key nobody wants, which any new ask for the strip's art replaces.
+fn art_marker() -> ArtKey {
+    (
         crate::tests::art_file("/tmp/game-9999.png", 1),
         artwork::Kind::Grid,
-    );
-    let (mut asked, mut skipped) = (0, 0);
+    )
+}
+
+#[test]
+fn the_art_held_follows_a_glide_asking_once_per_stop_crossed() {
+    let (_root, mut app) = library_at(30, 5);
+    let mut clock = crate::clock::Fake::start();
+    key_down(&mut app, Named::PageDown);
+    let target = app.strip.target();
+    assert!(target > 5 + PREWARM, "{target}");
+    let marker = art_marker();
+    let (mut asked_at, mut asks) = (5.0, 0);
     for _ in 0..200 {
-        let before = app.strip.position().floor();
         app.visible_art.insert(marker.clone());
         frame(&mut app, &mut clock, 4);
         if app.strip.settled() {
             break;
         }
         let position = app.strip.position();
+        let stop = position.floor();
+        assert!(app.strip.speed() <= FLY_BY, "slow enough to see");
         let fresh = !app.visible_art.contains(&marker);
-        assert_eq!(fresh, position.floor() != before, "at {position}");
+        assert_eq!(fresh, stop != asked_at, "at {position}");
         if fresh {
-            asked += 1;
-        } else {
-            skipped += 1;
+            (asked_at, asks) = (stop, asks + 1);
         }
-        // Everything drawn where it is now is held, all the way there.
-        assert!(app.strip.speed() <= FLY_BY);
-        let held = held(&app);
-        for stop in 0..30usize {
-            if (stop as f32 - position).abs() < NEIGHBORS as f32 + 1.0 {
-                assert!(held.contains(&stop), "{stop} at {position}: {held:?}");
+        // What it holds starts six behind where it's drawn now, not where
+        // it set out, and covers everything on screen.
+        let held = held_stops(&app);
+        let behind = (stop as usize).saturating_sub(PREWARM);
+        assert_eq!(held.iter().min(), Some(&behind), "at {position}");
+        for on in 0..30usize {
+            if (on as f32 - position).abs() < NEIGHBORS as f32 + 1.0 {
+                assert!(held.contains(&on), "{on} at {position}: {held:?}");
             }
         }
     }
     assert!(app.strip.settled());
-    assert!(
-        asked > 10 && skipped > 0,
-        "asked {asked}, skipped {skipped}"
-    );
+    assert!(asks >= target - 5 - 1, "asked {asks} times");
 }
 
 #[test]
-fn a_glide_too_fast_to_see_asks_for_no_art_on_the_way() {
-    let (_root, mut app) = huge_at(5);
+fn a_jump_too_fast_to_see_queues_nothing_on_the_way_and_its_landing_at_rest() {
+    let (_root, mut app) = huge_at(1994);
     let mut clock = crate::clock::Fake::start();
-    key_down(&mut app, Named::End);
-    let marker = (
-        crate::tests::art_file("/tmp/game-9999.png", 1),
-        artwork::Kind::Grid,
-    );
-    let (mut fast, mut slow_asks) = (0, 0);
-    // The stop it last asked at, which the press did where it set out.
-    let mut asked_at = 5.0;
+    key_down(&mut app, Named::Home);
+    assert_eq!(app.strip.target(), 0);
+    let marker = art_marker();
+    let (mut fast, mut asked_at) = (0, 1994.0);
     for _ in 0..200 {
         app.visible_art.insert(marker.clone());
+        let queued = app.loading.clone();
         frame(&mut app, &mut clock, 4);
         if app.strip.settled() {
             break;
@@ -2788,22 +2789,32 @@ fn a_glide_too_fast_to_see_asks_for_no_art_on_the_way() {
         if app.strip.speed() > FLY_BY {
             fast += 1;
             assert!(!fresh, "asked at {stop}");
+            assert_eq!(app.loading, queued, "queued at {stop}");
         } else {
             // Slow again, it asks once for wherever it got to.
             assert_eq!(fresh, stop != asked_at, "at {stop}");
-            slow_asks += usize::from(fresh);
         }
         if fresh {
             asked_at = stop;
         }
     }
     assert!(app.strip.settled());
-    assert!(
-        fast > 10 && slow_asks > 0,
-        "fast {fast}, slow asks {slow_asks}"
-    );
-    // So what's decoding is little more than the two ends and the three
-    // large covers it rests on, not the thousands it passed.
+    assert!(fast > 10, "fast for {fast} frames");
+    // Resting, its landing is queued: the posters around it, asked for
+    // at the press, and the large covers of the middle and its neighbor.
+    let kind = app.cover_kind().expect("a large cover");
+    for stop in 0..=PREWARM {
+        let grid = (
+            art_of(&app, &format!("game-{stop:04}")),
+            artwork::Kind::Grid,
+        );
+        assert!(app.loading.contains(&(grid, false)), "{stop}");
+    }
+    for stop in [0, 1] {
+        let large = (art_of(&app, &format!("game-{stop:04}")), kind);
+        assert!(app.loading.contains(&(large, false)), "{stop}");
+    }
+    // Little more than its two ends, not the thousands it passed.
     assert!(app.loading.len() < 64, "{}", app.loading.len());
 }
 
