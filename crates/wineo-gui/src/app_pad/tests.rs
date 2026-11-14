@@ -177,7 +177,7 @@ fn losing_focus_hiding_and_closing_shut_the_gate() {
     // compositor that refused the raise never sends.
     let (_home, mut app) = ready();
     let _ = app.hide_window();
-    assert!(!app.pad_gate);
+    assert!(!app.pad_gate.is_open());
     let _ = app.open_window();
     assert!(app.focused);
     assert!(app.main_window.is_some());
@@ -295,6 +295,103 @@ fn a_tool_page_edit_or_refused_run_leaves_the_gate_open() {
     let page = &app.tool_pages[&("alpha".to_owned(), Kind::Exec)];
     assert_eq!(page.error(), Some("Choose a program."));
     assert!(!page.busy());
+    assert!(app.pad_gate_open());
+}
+
+#[test]
+fn the_gate_ignores_a_press_inside_the_grace_after_a_close() {
+    let start = std::time::Instant::now();
+    let mut gate = Gate::default();
+    assert!(!gate.is_open());
+    // Nothing closed it yet, so the first press opens it.
+    gate.press(start);
+    assert!(gate.is_open());
+    gate.close(start);
+    gate.press(start);
+    gate.press(start + PRESS_GRACE - Duration::from_millis(1));
+    assert!(!gate.is_open());
+    gate.press(start + PRESS_GRACE);
+    assert!(gate.is_open());
+    // A real focus opens it at once.
+    gate.close(start);
+    gate.focus();
+    assert!(gate.is_open());
+}
+
+/// A launch route's own message, then the trailing press of the same
+/// input, all at one pinned instant.
+fn launch_then_its_press(app: &mut App, launch: Message) {
+    let _ = app.update(launch);
+    assert!(!app.pad_gate_open(), "the launch shuts the gate");
+    let _ = app.update(Message::Pressed);
+}
+
+fn steam_ready(name: &str, install: wineo_core::steam::AppState) -> (tempfile::TempDir, App) {
+    let (home, mut app) = ready();
+    app.merge(vec![crate::tests::steam_card(name, install)]);
+    app.pad_clock = Some(std::time::Instant::now());
+    (home, app)
+}
+
+#[test]
+fn a_launchs_own_trailing_press_leaves_the_gate_shut() {
+    use wineo_core::steam::AppState;
+    // A double click on the card.
+    let (_home, mut app) = steam_ready("game", AppState::Installed);
+    launch_then_its_press(&mut app, Message::DoubleClick("game".into()));
+    assert!(app.operation.is_some());
+    assert!(!app.pad_gate_open(), "double click");
+
+    // Enter or Space on the focused Play button.
+    let (_home, mut app) = steam_ready("game", AppState::Installed);
+    let _ = app.update(Message::Select("game".into()));
+    launch_then_its_press(&mut app, Message::Play);
+    assert!(!app.pad_gate_open(), "Play");
+
+    // Enter on the focused Install button, a Steam handoff.
+    let (_home, mut app) = steam_ready("owned", AppState::NotInstalled);
+    let _ = app.update(Message::Select("owned".into()));
+    launch_then_its_press(&mut app, Message::Install);
+    assert!(app.steam_request.is_some());
+    assert!(!app.pad_gate_open(), "Install");
+
+    // Enter in a tool page's field, which submits it.
+    use crate::tools_page::{Event, Kind};
+    let (home, mut app) = ready();
+    app.pad_clock = Some(std::time::Instant::now());
+    for card in &mut app.cards {
+        card.prefix = Some(home.path().join("prefix"));
+    }
+    let _ = app.update(Message::OpenTool("alpha".into(), Kind::Winetricks));
+    for event in [Event::Verb("corefonts".into()), Event::AddVerb] {
+        let _ = app.update(Message::Tool("alpha".into(), Kind::Winetricks, event));
+    }
+    launch_then_its_press(
+        &mut app,
+        Message::Tool("alpha".into(), Kind::Winetricks, Event::Submit),
+    );
+    assert!(!app.pad_gate_open(), "tool run");
+}
+
+#[test]
+fn after_a_launch_focus_reopens_at_once_and_a_later_press_after_the_grace() {
+    use wineo_core::steam::AppState;
+    let (_home, mut app) = steam_ready("game", AppState::Installed);
+    let start = app.pad_clock.unwrap();
+    launch_then_its_press(&mut app, Message::DoubleClick("game".into()));
+    // A compositor that never sends focus: a press just inside the grace
+    // still counts as the launch's, and the next one after it opens.
+    app.pad_clock = Some(start + PRESS_GRACE - Duration::from_millis(1));
+    let _ = app.update(Message::Pressed);
+    assert!(!app.pad_gate_open());
+    app.pad_clock = Some(start + PRESS_GRACE);
+    let _ = app.update(Message::Pressed);
+    assert!(app.pad_gate_open());
+
+    // A real focus doesn't wait.
+    let (_home, mut app) = steam_ready("game", AppState::Installed);
+    launch_then_its_press(&mut app, Message::DoubleClick("game".into()));
+    focus(&mut app);
     assert!(app.pad_gate_open());
 }
 

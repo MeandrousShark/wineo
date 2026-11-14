@@ -162,10 +162,12 @@ pub(crate) struct App {
     /// switch is on and stays for the process, since it can't be woken to
     /// stop.
     pad_reading: bool,
-    /// Pad presses count: the window had a real focus or a press since it
-    /// last lost focus, hid, or launched something. Separate from
+    /// Whether pad presses count; see `app_pad::Gate`. Separate from
     /// `focused`, which stays true on compositors that never say.
-    pad_gate: bool,
+    pad_gate: app_pad::Gate,
+    /// What `pad_now` reads instead of the clock, so tests set the time.
+    #[cfg(test)]
+    pad_clock: Option<Instant>,
     /// The hint bar shows, in the labels of the last pad pressed.
     pad_hint: Option<pad::Style>,
     /// A held direction's next repeat.
@@ -677,7 +679,9 @@ impl App {
             input: wineo_core::library::Input::default(),
             pads: pad::Pads::default(),
             pad_reading: false,
-            pad_gate: false,
+            pad_gate: app_pad::Gate::default(),
+            #[cfg(test)]
+            pad_clock: None,
             pad_hint: None,
             pad_wake: wake::Wake::default(),
             pad_checking: false,
@@ -1535,9 +1539,11 @@ impl App {
             // A closed window's last presses still arrive.
             Message::Pressed if self.main_window.is_none() => Task::none(),
             Message::Pressed | Message::Window(_, window::Event::Focused) => {
-                self.pad_gate = true;
                 if matches!(message, Message::Pressed) {
+                    self.pad_gate.press(self.pad_now());
                     self.pad_hint = None;
+                } else {
+                    self.pad_gate.focus();
                 }
                 if self.focused {
                     Task::none()

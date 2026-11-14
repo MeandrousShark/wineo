@@ -6,7 +6,7 @@
 //! the Library with nothing over it takes them, and an overlay added later
 //! is closed to the pad until `library_overlay_open` names it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use iced::advanced::widget::operation::{Focusable, Outcome, TextInput};
 use iced::advanced::widget::{Id, Operation};
@@ -65,7 +65,57 @@ pub(crate) fn start_message() -> Message {
     )
 }
 
+/// A press in the window that follows a close by less than this is the
+/// trailing press of the input that closed it, such as the double click or
+/// Enter that launched a game: iced hands a widget's message to `update`
+/// before the press reaches the subscription that reports it.
+pub(crate) const PRESS_GRACE: Duration = Duration::from_millis(300);
+
+/// Whether pad presses count. It opens on a real focus at once, or on a
+/// press in the window, and shuts when the window loses focus, hides, or
+/// launches something.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Gate {
+    open: bool,
+    closed_at: Option<Instant>,
+}
+
+impl Gate {
+    pub(crate) fn is_open(self) -> bool {
+        self.open
+    }
+
+    pub(crate) fn close(&mut self, now: Instant) {
+        self.open = false;
+        self.closed_at = Some(now);
+    }
+
+    pub(crate) fn focus(&mut self) {
+        self.open = true;
+    }
+
+    /// A press opens it too, since some compositors never send focus,
+    /// unless it's the trailing press of what just closed it.
+    pub(crate) fn press(&mut self, now: Instant) {
+        if self
+            .closed_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= PRESS_GRACE)
+        {
+            self.open = true;
+        }
+    }
+}
+
 impl App {
+    /// The time the pad gate goes by.
+    pub(crate) fn pad_now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now) = self.pad_clock {
+            return now;
+        }
+        Instant::now()
+    }
+
     /// A confirm, the close prompt, or a flow takes every key.
     pub(crate) fn dialog_open(&self) -> bool {
         self.close_prompt
@@ -101,7 +151,7 @@ impl App {
 
     /// The gate is open and nothing is closing.
     pub(crate) fn pad_gate_open(&self) -> bool {
-        self.pad_gate && !self.closing && !self.exiting && self.main_window.is_some()
+        self.pad_gate.is_open() && !self.closing && !self.exiting && self.main_window.is_some()
     }
 
     /// Whether a pad press other than Back and Start acts: the Library,
@@ -115,7 +165,7 @@ impl App {
     /// Closes the gate until the next real focus, since gilrs reads the pad
     /// whichever window has focus.
     pub(crate) fn close_pad_gate(&mut self) {
-        self.pad_gate = false;
+        self.pad_gate.close(self.pad_now());
         self.pads.release_all();
     }
 
