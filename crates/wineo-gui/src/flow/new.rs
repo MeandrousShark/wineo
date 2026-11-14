@@ -110,6 +110,11 @@ fn program_id(exe: &str) -> String {
 }
 const LOG_CAP: usize = 128 * 1024;
 const LOG_KEEP: usize = 64 * 1024;
+/// How long the draft has to stay put before the Summary checks it again.
+const SETTLE: Duration = Duration::from_millis(300);
+/// The most of a reason the strip beside Create shows. The Summary has all
+/// of it, and a long path would leave a short dialog no room to scroll.
+const PINNED_REASON_MAX: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -151,7 +156,6 @@ impl std::fmt::Display for Source {
 enum Stage {
     Choose,
     Details,
-    Review,
     Working,
     Target,
     Finished,
@@ -182,6 +186,31 @@ pub(crate) struct Review {
     adopted: bool,
     omitted_components: bool,
     prerequisite: Option<Prerequisite>,
+}
+
+/// What the last check found, and the draft it checked. The Summary shows
+/// it until the next check lands, so it doesn't blank on every keystroke.
+#[derive(Debug, Clone)]
+struct Summary {
+    draft: Draft,
+    found: Result<Review, Problem>,
+}
+
+/// What stops a draft before or during its check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Problem {
+    /// A required field the user hasn't touched yet, said quietly.
+    Untouched(&'static str),
+    Error(String),
+}
+
+/// Why Create is off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Hold {
+    Checking,
+    Problem(Problem),
+    /// A runner or component the Summary offers to download.
+    Missing(String),
 }
 
 #[derive(Debug, Clone)]
@@ -298,7 +327,9 @@ pub(crate) enum Event {
     BrowsePrefix,
     PrefixPicked(u64, Result<Option<PathBuf>, String>),
     Picked(u64, Result<Option<PathBuf>, String>),
-    Next,
+    /// The draft stayed put after the edit with this check number.
+    Settled(u64),
+    Checked(u64, Result<Box<Review>, String>),
     Create,
     Download(Provider),
     Downloaded(u64, Result<String, String>),
@@ -315,7 +346,8 @@ pub(crate) enum Event {
     CleanUp,
     Cleaned(u64, Result<bool, String>),
     RetryArt,
-    RetryCreation,
+    /// Finished's way back after a creation that didn't register.
+    BackToDetails,
     SkipArt,
     FetchArt(bool),
     SkipFetch,
@@ -326,7 +358,6 @@ pub(crate) enum Event {
     /// The answer to using other launchers' builds.
     Offer(bool),
     Offered(u64, Result<Options, String>),
-    Reviewed(u64, Result<Box<Review>, String>),
     Progress(u64, String),
     LogChunk(u64, String),
     LogAction(iced::widget::text_editor::Action),
@@ -357,7 +388,16 @@ pub(crate) struct Page {
     template_preview: Option<Template>,
     additional_wine_options: bool,
     editing_environment: bool,
-    review: Option<Review>,
+    /// Whether Name or Environment name has been typed into.
+    name_touched: bool,
+    /// Whether the path has been typed or browsed for, since the row was picked.
+    path_touched: bool,
+    summary: Option<Summary>,
+    /// Bumped by every edit and by leaving Details, so an older check, or
+    /// its wait, drops. Downloads and creation keep `generation`.
+    check_sequence: u64,
+    /// From an edit until the check of the draft as it is lands.
+    checking: bool,
     report: Option<Report>,
     error: Option<String>,
     status: String,
@@ -372,8 +412,6 @@ pub(crate) struct Page {
     token: Option<Token>,
     downloading: Option<Provider>,
     picker_sequence: u64,
-    /// The generation of the review being prepared, if one is.
-    reviewing: Option<u64>,
     /// Set while an answer to the offer is being saved.
     answering: bool,
     offer_sequence: u64,
@@ -396,7 +434,11 @@ impl Page {
             template_preview: None,
             additional_wine_options: false,
             editing_environment: false,
-            review: None,
+            name_touched: false,
+            path_touched: false,
+            summary: None,
+            check_sequence: 0,
+            checking: false,
             report: None,
             error: None,
             status: String::new(),
@@ -411,7 +453,6 @@ impl Page {
             token: None,
             downloading: None,
             picker_sequence: 0,
-            reviewing: None,
             answering: false,
             offer_sequence: 0,
         };
@@ -591,27 +632,28 @@ impl Page {
         edited
     }
 
-    /// Opens Details for a row. Another row than the draft's keeps the names
-    /// but not the path, since an installer and a program path mean
-    /// different things, and resets the desktop entry.
-    fn pick(&mut self, kind: Kind, source: Source) {
+    /// Opens Details for a row and checks the draft. Another row than the
+    /// draft's keeps the names but not the path, since an installer and a
+    /// program path mean different things, and resets the desktop entry.
+    fn pick(&mut self, kind: Kind, source: Source) -> Task<Event> {
         if (kind, source) != (self.draft.kind, self.draft.source) {
             self.draft.kind = kind;
             self.draft.source = source;
             self.draft.path.clear();
             self.draft.desktop = Draft::default().desktop;
-            self.edited();
+            self.path_touched = false;
+            self.error = None;
         }
         self.picked = true;
         self.stage = Stage::Details;
+        self.check_now()
     }
 
     /// Back to the choice page with the draft kept. A check still running
-    /// is dropped, so coming back to Details doesn't jump to Review.
+    /// or waiting lands nowhere: it only lands on Details, and opening
+    /// Details checks again under a new number.
     fn change(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
         self.picker_sequence = self.picker_sequence.wrapping_add(1);
-        self.reviewing = None;
         self.status.clear();
         self.stage = Stage::Choose;
     }
@@ -631,7 +673,6 @@ impl Page {
                 }
             }
             Stage::Details => self.change(),
-            Stage::Review => self.stage = Stage::Details,
             Stage::Working if self.fetching => self.skip_fetch(),
             Stage::Working => self.cancel(false),
             Stage::Target => return self.finish(),
@@ -648,8 +689,9 @@ impl Page {
         }
         let event = match self.stage {
             Stage::Choose => return open_focused_start(),
-            Stage::Details => Event::Next,
-            Stage::Review => Event::Create,
+            // Create checks its own gate, so a press while the Summary
+            // checks does nothing and isn't kept for later.
+            Stage::Details => Event::Create,
             Stage::Target => Event::AddTarget,
             Stage::Finished => Event::ToLibrary,
             Stage::Working => return Task::none(),
@@ -657,11 +699,98 @@ impl Page {
         self.update_with_key_availability(event, key_available)
     }
 
-    fn edited(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+    /// After an edit on Details: the Summary checks the draft once it has
+    /// stayed put for `SETTLE`, and Create waits for that check.
+    fn edited(&mut self) -> Task<Event> {
         self.picker_sequence = self.picker_sequence.wrapping_add(1);
         self.error = None;
-        self.review = None;
+        self.check_sequence = self.check_sequence.wrapping_add(1);
+        self.checking = true;
+        let sequence = self.check_sequence;
+        Task::perform(async { tokio::time::sleep(SETTLE).await }, move |()| {
+            Event::Settled(sequence)
+        })
+    }
+
+    /// Checks the draft at once, dropping any check before it.
+    fn check_now(&mut self) -> Task<Event> {
+        self.check_sequence = self.check_sequence.wrapping_add(1);
+        self.run_check()
+    }
+
+    /// Checks the draft under the current check number: the fields here,
+    /// then `prepare` on the worker.
+    fn run_check(&mut self) -> Task<Event> {
+        let sequence = self.check_sequence;
+        if let Some(problem) = self.problem() {
+            self.checking = false;
+            self.summary = Some(Summary {
+                draft: self.draft.clone(),
+                found: Err(problem),
+            });
+            return Task::none();
+        }
+        self.checking = true;
+        let paths = self.paths.clone();
+        let draft = self.draft.clone();
+        task::blocking(
+            move || prepare(&paths, &draft),
+            move |result| Event::Checked(sequence, result.map(Box::new)),
+        )
+    }
+
+    /// What `validate` finds, said quietly for a blank field the user hasn't
+    /// touched yet.
+    fn problem(&self) -> Option<Problem> {
+        let reason = |touched: bool, reason: &'static str| {
+            if touched {
+                Problem::Error(reason.to_owned())
+            } else {
+                Problem::Untouched(reason)
+            }
+        };
+        let draft = &self.draft;
+        let no_override = draft
+            .environment
+            .as_deref()
+            .is_none_or(|name| name.trim().is_empty());
+        if draft.title.trim().is_empty() && no_override {
+            return Some(reason(self.name_touched, "Enter a name"));
+        }
+        if let Err(error) = self.validate_name() {
+            return Some(Problem::Error(error));
+        }
+        if draft.source != Source::Empty && draft.path.trim().is_empty() {
+            let field = if draft.source == Source::Installer {
+                "Choose an installer"
+            } else {
+                "Choose a program"
+            };
+            return Some(reason(self.path_touched, field));
+        }
+        self.validate().err().map(Problem::Error)
+    }
+
+    /// The last check's review when no edit came after it and nothing is
+    /// missing, or why Create is off.
+    fn checked(&self) -> Result<&Review, Hold> {
+        let summary = match &self.summary {
+            Some(summary) if !self.checking => summary,
+            _ => return Err(Hold::Checking),
+        };
+        let review = summary
+            .found
+            .as_ref()
+            .map_err(|problem| Hold::Problem(problem.clone()))?;
+        match &review.prerequisite {
+            Some(Prerequisite::Runner(name)) => {
+                Err(Hold::Missing(format!("Runner {name} isn't installed")))
+            }
+            Some(Prerequisite::Component { provider, .. }) => {
+                Err(Hold::Missing(format!("{provider} isn't installed")))
+            }
+            None => Ok(review),
+        }
     }
 
     fn additional_wine_options_visible(&self) -> bool {
@@ -669,6 +798,17 @@ impl Page {
     }
 
     fn validate(&self) -> Result<(), String> {
+        self.validate_name()?;
+        if self.draft.source != Source::Empty && self.draft.path.trim().is_empty() {
+            return Err("Choose an executable or installer".to_owned());
+        }
+        if self.draft.kind == Kind::Native && self.draft.source == Source::Installer {
+            return Err("Native environments cannot run a Windows installer".to_owned());
+        }
+        Ok(())
+    }
+
+    fn validate_name(&self) -> Result<(), String> {
         let name = self.draft.environment_name();
         if name.is_empty() {
             return Err("Name needs letters or digits.".to_owned());
@@ -691,44 +831,21 @@ impl Page {
         {
             return Err(problem);
         }
-        if self.draft.source != Source::Empty && self.draft.path.trim().is_empty() {
-            return Err("Choose an executable or installer".to_owned());
-        }
-        if self.draft.kind == Kind::Native && self.draft.source == Source::Installer {
-            return Err("Native environments cannot run a Windows installer".to_owned());
-        }
         Ok(())
     }
 
-    fn review_task(&mut self) -> Task<Event> {
-        if let Err(error) = self.validate() {
-            self.error = Some(error);
-            return Task::none();
-        }
-        self.generation = self.generation.wrapping_add(1);
-        let generation = self.generation;
-        let paths = self.paths.clone();
-        let draft = self.draft.clone();
-        self.reviewing = Some(generation);
-        self.status = "Checking creation choices...".to_owned();
-        task::blocking(
-            move || prepare(&paths, &draft),
-            move |result| Event::Reviewed(generation, result.map(Box::new)),
-        )
-    }
-
     fn start(&mut self, key_available: bool) -> Task<Event> {
-        if let Err(error) = self.validate() {
-            self.error = Some(error);
-            return Task::none();
-        }
-        let Some(review) = self.review.clone() else {
+        let Ok(review) = self.checked() else {
             return Task::none();
         };
-        if review.prerequisite.is_some() {
-            return Task::none();
-        }
-        if self.busy() {
+        let review = review.clone();
+        // The disk may have changed since the check, like another
+        // environment taking the name.
+        if let Err(error) = self.validate() {
+            self.summary = Some(Summary {
+                draft: self.draft.clone(),
+                found: Err(Problem::Error(error)),
+            });
             return Task::none();
         }
         self.generation = self.generation.wrapping_add(1);
@@ -774,9 +891,13 @@ impl Page {
     }
 
     fn download(&mut self, provider: Provider) -> Task<Event> {
+        let Err(Hold::Missing(_)) = self.checked() else {
+            return Task::none();
+        };
         let Some(prerequisite) = self
-            .review
+            .summary
             .as_ref()
+            .and_then(|summary| summary.found.as_ref().ok())
             .and_then(|review| review.prerequisite.clone())
         else {
             return Task::none();
@@ -979,7 +1100,17 @@ impl Page {
         event: Event,
         key_available: bool,
     ) -> Task<Event> {
-        if self.leave_prompt && !matches!(event, Event::Back | Event::KeepEditing | Event::Discard)
+        // A finished check still lands, so the Summary matches what Create
+        // would do once the prompt is answered.
+        if self.leave_prompt
+            && !matches!(
+                event,
+                Event::Back
+                    | Event::KeepEditing
+                    | Event::Discard
+                    | Event::Settled(_)
+                    | Event::Checked(..)
+            )
         {
             return Task::none();
         }
@@ -1002,28 +1133,30 @@ impl Page {
             Event::Start(kind, source)
                 if self.stage == Stage::Choose && start_of(kind, source).is_some() =>
             {
-                self.pick(kind, source);
+                return self.pick(kind, source);
             }
             Event::Change if self.stage == Stage::Details => self.change(),
             Event::Name(value) if self.stage == Stage::Details => {
                 self.draft.title = value;
-                self.edited();
+                self.name_touched = true;
+                return self.edited();
             }
             Event::EditEnvironment if self.stage == Stage::Details => {
                 self.editing_environment = true;
             }
             Event::EnvironmentName(value) if self.stage == Stage::Details => {
                 self.draft.environment = Some(value);
-                self.edited();
+                self.name_touched = true;
+                return self.edited();
             }
             Event::Path(value) if self.stage == Stage::Details => {
-                self.picker_sequence = self.picker_sequence.wrapping_add(1);
                 self.draft.path = value;
-                self.edited();
+                self.path_touched = true;
+                return self.edited();
             }
             Event::Prefix(value) if self.stage == Stage::Details => {
                 self.draft.prefix = value;
-                self.edited();
+                return self.edited();
             }
             Event::BrowsePrefix if self.stage == Stage::Details => {
                 self.picker_sequence = self.picker_sequence.wrapping_add(1);
@@ -1039,7 +1172,7 @@ impl Page {
                 match result {
                     Ok(Some(path)) => {
                         self.draft.prefix = path.to_string_lossy().into_owned();
-                        self.edited();
+                        return self.edited();
                     }
                     Ok(None) => {}
                     Err(error) => self.error = Some(error),
@@ -1047,11 +1180,11 @@ impl Page {
             }
             Event::Runner(value) if self.stage == Stage::Details => {
                 self.draft.runner = value;
-                self.edited();
+                return self.edited();
             }
             Event::Template(value) if self.stage == Stage::Details => {
                 self.draft.template = value;
-                self.edited();
+                let check = self.edited();
                 self.template_preview = if self.draft.template.is_empty() {
                     None
                 } else {
@@ -1063,17 +1196,18 @@ impl Page {
                         }
                     }
                 };
+                return check;
             }
             Event::ToggleAdditionalWineOptions if self.stage == Stage::Details => {
                 self.additional_wine_options = !self.additional_wine_options;
             }
             Event::Arch(value) if self.stage == Stage::Details => {
                 self.draft.arch = Some(value);
-                self.edited();
+                return self.edited();
             }
             Event::Desktop(value) if self.stage == Stage::Details => {
                 self.draft.desktop = value;
-                self.edited();
+                return self.edited();
             }
             Event::Browse if matches!(self.stage, Stage::Details | Stage::Target) => {
                 self.picker_sequence = self.picker_sequence.wrapping_add(1);
@@ -1089,14 +1223,30 @@ impl Page {
                         self.target_path = path.display().to_string();
                     } else if self.stage == Stage::Details {
                         self.draft.path = path.display().to_string();
-                        self.edited();
+                        self.path_touched = true;
+                        return self.edited();
                     }
                 }
                 Ok(None) => {}
                 Err(error) => self.error = Some(error),
             },
-            Event::Next if self.stage == Stage::Details => return self.review_task(),
-            Event::RetryCreation
+            Event::Settled(sequence)
+                if sequence == self.check_sequence
+                    && self.checking
+                    && self.stage == Stage::Details =>
+            {
+                return self.run_check();
+            }
+            Event::Checked(sequence, result)
+                if sequence == self.check_sequence && self.stage == Stage::Details =>
+            {
+                self.checking = false;
+                self.summary = Some(Summary {
+                    draft: self.draft.clone(),
+                    found: result.map(|review| *review).map_err(Problem::Error),
+                });
+            }
+            Event::BackToDetails
                 if self.stage == Stage::Finished
                     && self
                         .report
@@ -1105,25 +1255,11 @@ impl Page {
             {
                 self.stage = Stage::Details;
                 self.report = None;
-                self.edited();
-                return self.review_task();
+                self.error = None;
+                return self.check_now();
             }
-            Event::Reviewed(generation, result)
-                if generation == self.generation && self.stage == Stage::Details =>
-            {
-                self.reviewing = None;
-                self.status.clear();
-                match result {
-                    Ok(review) => {
-                        self.error = None;
-                        self.review = Some(*review);
-                        self.stage = Stage::Review;
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-            }
-            Event::Create if self.stage == Stage::Review => return self.start(key_available),
-            Event::Download(provider) if self.stage == Stage::Review => {
+            Event::Create if self.stage == Stage::Details => return self.start(key_available),
+            Event::Download(provider) if self.stage == Stage::Details => {
                 return self.download(provider);
             }
             Event::Downloaded(generation, result)
@@ -1133,21 +1269,18 @@ impl Page {
                 self.downloading = None;
                 match result {
                     Ok(name) => {
-                        if self.review.as_ref().is_some_and(|review| {
-                            matches!(&review.prerequisite, Some(Prerequisite::Runner(runner))
+                        if self.summary.as_ref().is_some_and(|summary| {
+                            matches!(&summary.found, Ok(Review { prerequisite: Some(Prerequisite::Runner(runner)), .. })
                                 if runner != "GE-Proton-Latest" && runner != "Proton-CachyOS-Latest")
                         }) {
-                            self.draft.runner = name.clone();
+                            self.draft.runner = name;
                         }
-                        self.status = format!("Installed {name}. Checking choices again...");
-                        self.stage = Stage::Details;
-                        return self.review_task();
                     }
-                    Err(error) => {
-                        self.error = Some(error);
-                        self.stage = Stage::Review;
-                    }
+                    Err(error) => self.error = Some(error),
                 }
+                self.status.clear();
+                self.stage = Stage::Details;
+                return self.check_now();
             }
             Event::Progress(generation, line)
                 if generation == self.generation && self.stage == Stage::Working =>
@@ -1358,11 +1491,10 @@ impl Page {
                 match result {
                     Ok(options) => {
                         self.options = Some(options);
-                        // A review started before the answer was saved may
-                        // have read the old setting, so check it again. An
-                        // open review shows what Create does and stays.
-                        if self.stage == Stage::Details && self.reviewing == Some(self.generation) {
-                            return self.review_task();
+                        // The answer changes which runners resolve, and the
+                        // Summary has to match what Create does.
+                        if self.stage == Stage::Details {
+                            return self.check_now();
                         }
                     }
                     Err(error) => self.error = Some(error),
@@ -1584,6 +1716,120 @@ impl Page {
         form.into()
     }
 
+    /// The last check's result at the bottom of Details, dimmed under
+    /// "Checking..." while the next one runs.
+    fn summary_view(&self, palette: Palette) -> Element<'_, Event> {
+        // On the heading's line, so starting a check never moves the rest.
+        let mut heading = row![ui::section_heading("Summary", palette)]
+            .spacing(12)
+            .align_y(Center);
+        if self.checking {
+            heading = heading.push(text("Checking...").size(12).color(palette.muted));
+        }
+        let mut summary = column![heading].spacing(10).width(Fill);
+        let Some(last) = &self.summary else {
+            return summary.into();
+        };
+        let palette = if self.checking {
+            dimmed(palette)
+        } else {
+            palette
+        };
+        let review = match &last.found {
+            Ok(review) => review,
+            Err(problem) => {
+                let (reason, color) = match problem {
+                    Problem::Untouched(reason) => ((*reason).to_owned(), palette.muted),
+                    Problem::Error(error) => (error.clone(), palette.danger),
+                };
+                return summary.push(wrapped(reason).color(color)).into();
+            }
+        };
+        summary = summary.push(review_summary(summary_groups(&last.draft, review), palette));
+        let mut notes = Vec::new();
+        for note in consequences(review) {
+            notes.push(text(note).color(palette.warning).into());
+        }
+        if let Some(prerequisite) = &review.prerequisite {
+            notes.push(self.prerequisite_note(prerequisite, palette));
+        }
+        if !notes.is_empty() {
+            let mut section = column![ui::section_heading("Notes", palette)]
+                .spacing(8)
+                .width(Fill);
+            for (index, note) in notes.into_iter().enumerate() {
+                if index > 0 {
+                    section = section.push(ui::separator(palette));
+                }
+                section = section.push(note);
+            }
+            summary = summary.push(ui::section(section, palette));
+        }
+        summary.into()
+    }
+
+    /// A missing runner or component, with its download buttons, which wait
+    /// while a newer check runs.
+    fn prerequisite_note(
+        &self,
+        prerequisite: &Prerequisite,
+        palette: Palette,
+    ) -> Element<'_, Event> {
+        let download = |label: &'static str, provider: Provider| {
+            ui::secondary_button(label, palette)
+                .on_press_maybe((!self.checking).then_some(Event::Download(provider)))
+        };
+        let mut note = column![].spacing(8).width(Fill);
+        match prerequisite {
+            Prerequisite::Runner(name) => {
+                note = note.push(text(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
+                if name != "Proton-CachyOS-Latest" {
+                    note = note.push(download("Download GE-Proton", Provider::GeProton));
+                }
+                if name != "GE-Proton-Latest" {
+                    note = note.push(download("Download Proton-CachyOS", Provider::ProtonCachyos));
+                }
+            }
+            Prerequisite::Component { provider, version } => {
+                let description = version.as_ref().map_or_else(
+                    || "latest release".to_owned(),
+                    |name| format!("exact build {name}"),
+                );
+                note = note.push(text(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
+                let label = match provider {
+                    Provider::Dxvk => "Download DXVK",
+                    Provider::Vkd3d => "Download vkd3d",
+                    Provider::GeProton => "Download GE-Proton",
+                    Provider::ProtonCachyos => "Download Proton-CachyOS",
+                };
+                note = note.push(download(label, *provider));
+            }
+        }
+        note.into()
+    }
+
+    /// Create, with why it's off beside it, or the notes that change what it
+    /// does, so they show without scrolling to the Summary.
+    fn create_strip(&self, palette: Palette) -> Element<'_, Event> {
+        let checked = self.checked();
+        let create = ui::accent_button("Create", palette.primary, checked.is_ok(), Event::Create);
+        // Beside Create rather than wrapped under it, which keeps the strip
+        // shortest in a narrow dialog.
+        let mut beside = column![].spacing(4).width(Fill);
+        match checked {
+            Ok(review) => {
+                for note in pinned_consequences(review) {
+                    beside = beside.push(wrapped(note).size(12).color(palette.warning));
+                }
+            }
+            Err(hold) => {
+                let (reason, color) = hold_text(hold, palette);
+                beside = beside.push(wrapped(cut(reason)).size(12).color(color));
+            }
+        }
+        row![create, beside].spacing(12).align_y(Center).into()
+    }
+
     pub(crate) fn view_with_key_availability(
         &self,
         palette: Palette,
@@ -1595,7 +1841,6 @@ impl Page {
                 Stage::Choose => "New environment",
                 Stage::Details => start_of(self.draft.kind, self.draft.source)
                     .map_or("New environment", |start| start.heading),
-                Stage::Review => "Review new environment",
                 Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
                 Stage::Working if self.fetching => "Getting artwork",
                 Stage::Working => "Creating environment",
@@ -1621,118 +1866,10 @@ impl Page {
         match self.stage {
             Stage::Choose => body = body.push(start_list(palette)),
             Stage::Details => {
-                body = body.push(self.details_form(palette, key_available));
-                footer = Some(
-                    ui::accent_base("Next", palette.primary)
-                        .on_press(Event::Next)
-                        .into(),
-                );
-            }
-            Stage::Review => {
-                if let Some(review) = &self.review {
-                    let mut application = vec![("Environment", self.draft.environment_name())];
-                    if let Some(title) = self.draft.target_title() {
-                        application.insert(0, ("Name", title));
-                    }
-                    let mut source = vec![
-                        ("Type", self.draft.kind.to_string()),
-                        ("Starting point", self.draft.source.to_string()),
-                    ];
-                    if !self.draft.path.is_empty() {
-                        source.push(("Program", self.draft.path.clone()));
-                    }
-                    let mut runtime = Vec::new();
-                    if let Some(row) = &review.runner_row {
-                        runtime.push(("Runner", row.clone()));
-                    } else if let Some(Prerequisite::Runner(name)) = &review.prerequisite {
-                        runtime.push(("Runner", format!("{name} (not installed)")));
-                    }
-                    if self.draft.kind == Kind::Windows {
-                        runtime.push(("Architecture", review.arch.to_string()));
-                    }
-                    if let Some(prefix) = &review.prefix {
-                        runtime.push(("Prefix", prefix.display().to_string()));
-                    }
-                    let mut groups = vec![("Application", application), ("Source", source)];
-                    if self.draft.kind == Kind::Windows {
-                        groups.push(("Runtime", runtime));
-                    }
-                    body = body.push(review_summary(groups, palette));
-
-                    let mut notes = column![ui::section_heading("Review notes", palette)]
-                        .spacing(8)
-                        .width(Fill);
-                    let mut has_notes = false;
-                    if review.adopted {
-                        notes = notes.push(
-                            text("This compatible existing prefix will be registered in place.")
-                                .color(palette.warning),
-                        );
-                        has_notes = true;
-                    }
-                    if review.omitted_components {
-                        if has_notes {
-                            notes = notes.push(ui::separator(palette));
-                        }
-                        notes = notes.push(text("This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.").color(palette.warning));
-                        has_notes = true;
-                    }
-                    if let Some(prerequisite) = &review.prerequisite {
-                        if has_notes {
-                            notes = notes.push(ui::separator(palette));
-                        }
-                        match prerequisite {
-                            Prerequisite::Runner(name) => {
-                                notes = notes.push(text(format!("Runner {name} is unavailable. Choose a provider to download its latest release:")).color(palette.warning));
-                                let mut providers = column![].spacing(8).width(Fill);
-                                if name != "Proton-CachyOS-Latest" {
-                                    providers = providers.push(
-                                        ui::secondary_button("Download GE-Proton", palette)
-                                            .on_press(Event::Download(Provider::GeProton)),
-                                    );
-                                }
-                                if name != "GE-Proton-Latest" {
-                                    providers = providers.push(
-                                        ui::secondary_button("Download Proton-CachyOS", palette)
-                                            .on_press(Event::Download(Provider::ProtonCachyos)),
-                                    );
-                                }
-                                notes = notes.push(providers);
-                            }
-                            Prerequisite::Component { provider, version } => {
-                                let description = version.as_ref().map_or_else(
-                                    || "latest release".to_owned(),
-                                    |name| format!("exact build {name}"),
-                                );
-                                notes = notes.push(text(format!("Missing {provider} {description}. Download it before creating this environment?")).color(palette.warning));
-                                let label = match provider {
-                                    Provider::Dxvk => "Download DXVK",
-                                    Provider::Vkd3d => "Download vkd3d",
-                                    Provider::GeProton => "Download GE-Proton",
-                                    Provider::ProtonCachyos => "Download Proton-CachyOS",
-                                };
-                                notes = notes.push(
-                                    ui::secondary_button(label, palette)
-                                        .on_press(Event::Download(*provider)),
-                                );
-                            }
-                        }
-                        has_notes = true;
-                    }
-                    if has_notes {
-                        body = body.push(ui::section(notes, palette));
-                    }
-                }
-                let can_create = self
-                    .review
-                    .as_ref()
-                    .is_some_and(|review| review.prerequisite.is_none());
-                footer = Some(ui::accent_button(
-                    "Create",
-                    palette.primary,
-                    can_create,
-                    Event::Create,
-                ));
+                body = body
+                    .push(self.details_form(palette, key_available))
+                    .push(self.summary_view(palette));
+                footer = Some(self.create_strip(palette));
             }
             Stage::Working => {
                 body = body.push(text(&self.status));
@@ -1866,8 +2003,8 @@ impl Page {
                         );
                     } else {
                         body = body.push(
-                            ui::secondary_button("Review again", palette)
-                                .on_press(Event::RetryCreation),
+                            ui::secondary_button("Back to details", palette)
+                                .on_press(Event::BackToDetails),
                         );
                         body = body.push(
                             ui::secondary_button("Back to library", palette)
@@ -1893,7 +2030,7 @@ impl Page {
         // (iced matches a column's children by position) and its scroll offset
         // and focus survive. The prompt sits above Back, outside the scroll, so
         // it is never below the fold of a long form.
-        if matches!(self.stage, Stage::Choose | Stage::Details | Stage::Review) {
+        if matches!(self.stage, Stage::Choose | Stage::Details) {
             let mut top = column![].spacing(12);
             if self.leave_prompt {
                 top = top.push(
@@ -1996,6 +2133,98 @@ fn review_field(label: &'static str, value: String, palette: Palette) -> Element
     .spacing(2)
     .width(Fill)
     .into()
+}
+
+/// The Summary's rows: the draft as it was checked, and what the check found.
+fn summary_groups(
+    draft: &Draft,
+    review: &Review,
+) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    let mut application = vec![("Environment", draft.environment_name())];
+    if let Some(title) = draft.target_title() {
+        application.insert(0, ("Name", title));
+    }
+    let mut source = vec![
+        ("Type", draft.kind.to_string()),
+        ("Starting point", draft.source.to_string()),
+    ];
+    if !draft.path.is_empty() {
+        source.push(("Program", draft.path.clone()));
+    }
+    let mut groups = vec![("Application", application), ("Source", source)];
+    if draft.kind == Kind::Windows {
+        let mut runtime = Vec::new();
+        if let Some(row) = &review.runner_row {
+            runtime.push(("Runner", row.clone()));
+        } else if let Some(Prerequisite::Runner(name)) = &review.prerequisite {
+            runtime.push(("Runner", format!("{name} (not installed)")));
+        }
+        runtime.push(("Architecture", review.arch.to_string()));
+        if let Some(prefix) = &review.prefix {
+            runtime.push(("Prefix", prefix.display().to_string()));
+        }
+        groups.push(("Runtime", runtime));
+    }
+    groups
+}
+
+/// The notes that change what Create does, as the Summary says them.
+fn consequences(review: &Review) -> Vec<&'static str> {
+    let mut notes = Vec::new();
+    if review.adopted {
+        notes.push("This compatible existing prefix will be registered in place.");
+    }
+    if review.omitted_components {
+        notes.push("This Proton runner bundles DXVK and vkd3d-proton, so the template's component picks will be omitted.");
+    }
+    notes
+}
+
+/// `consequences`, shorter, for the strip beside Create.
+fn pinned_consequences(review: &Review) -> Vec<&'static str> {
+    let mut notes = Vec::new();
+    if review.adopted {
+        notes.push("This will register the existing prefix in place.");
+    }
+    if review.omitted_components {
+        notes.push("The template's DXVK and vkd3d picks will be omitted.");
+    }
+    notes
+}
+
+/// Why Create is off, as the strip says it: quiet while checking or for a
+/// field not touched yet, a warning for a download, danger for an error.
+fn hold_text(hold: Hold, palette: Palette) -> (String, iced::Color) {
+    match hold {
+        Hold::Checking => ("Checking...".to_owned(), palette.muted),
+        Hold::Problem(Problem::Untouched(reason)) => (reason.to_owned(), palette.muted),
+        Hold::Problem(Problem::Error(error)) => (error, palette.danger),
+        Hold::Missing(reason) => (reason, palette.warning),
+    }
+}
+
+/// `reason`, cut to `PINNED_REASON_MAX` characters with "..." when longer.
+fn cut(reason: String) -> String {
+    match reason.char_indices().nth(PINNED_REASON_MAX) {
+        Some((end, _)) => format!("{}...", reason[..end].trim_end()),
+        None => reason,
+    }
+}
+
+/// Text that breaks anywhere, so a long path in a message never spills.
+fn wrapped<'a>(message: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    text(message).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+}
+
+/// The Summary's colors while it waits on a newer check: every text role
+/// reads as muted, which keeps its contrast in every theme.
+fn dimmed(palette: Palette) -> Palette {
+    Palette {
+        foreground: palette.muted,
+        warning: palette.muted,
+        danger: palette.muted,
+        ..palette
+    }
 }
 
 /// A picker entry: the template or global default, or a named runner.
