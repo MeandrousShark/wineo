@@ -85,6 +85,9 @@ impl App {
 
     pub(crate) fn load_art_now(&mut self) -> Task<Message> {
         let coverflow = self.layout == crate::grid_motion::ViewLayout::Coverflow;
+        if coverflow {
+            self.strip.art_asked();
+        }
         let keys = if coverflow {
             self.strip_art()
         } else {
@@ -104,7 +107,11 @@ impl App {
             .map(|(key, _, tilt)| (key.clone(), *tilt))
             .collect();
         self.evict_art();
-        Task::batch([self.load_images(keys), self.warp_images(tilts)])
+        // Warps first: a batch polls its tasks in order the first time, so
+        // within this one the cheap warps usually ask the decode limit for a
+        // permit before the large decodes do. Work queued by earlier loads
+        // still comes first.
+        Task::batch([self.warp_images(tilts), self.load_images(keys)])
     }
 
     /// Warps each tilt whose flat art is here and that isn't yet, off the

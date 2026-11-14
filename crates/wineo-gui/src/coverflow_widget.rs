@@ -1,7 +1,7 @@
 //! Draws coverflow's strip from `coverflow::geometry` and turns presses
 //! and the wheel on it into messages. The covers beside the middle one
-//! draw as warps tilted toward it, flat until their warp is ready, which
-//! then fades in.
+//! draw as warps tilted toward it, a blank card in the same outline until
+//! their warp is ready, which then fades in.
 
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
@@ -194,6 +194,17 @@ fn cover_fit(handle: &image::Handle, frame: Rectangle) -> Rectangle {
     )
 }
 
+/// `bounds` a pixel in on every side, and never less than nothing.
+pub(crate) fn inset(bounds: Rectangle) -> Rectangle {
+    Rectangle::new(
+        Point::new(bounds.x + 1.0, bounds.y + 1.0),
+        Size::new(
+            (bounds.width - 2.0).max(0.0),
+            (bounds.height - 2.0).max(0.0),
+        ),
+    )
+}
+
 fn quad(renderer: &mut Renderer, bounds: Rectangle, color: Color, border: Border) {
     renderer.fill_quad(
         Quad {
@@ -249,16 +260,47 @@ pub(crate) fn games(count: usize) -> String {
     }
 }
 
-/// How much of a face draws in its tilted outline, the trapezoid, rather
-/// than flat: art turns only once its warp is here, and as that fades in;
-/// a name card turns with the strip.
-pub(crate) fn tilted_share(face: &Face, tilt: f32) -> f32 {
-    let turned = tilt.abs().min(1.0);
-    match (&face.art, &face.tilted) {
-        (Some(_), Some(_)) => turned * face.warp_shown.clamp(0.0, 1.0),
-        (Some(_), None) => 0.0,
-        (None, _) => turned,
+/// Less turned than this, a cover draws flat in a plain rectangle: an SVG
+/// is rasterized again at each new size, so every glide frame, and a
+/// sliver of trapezoid doesn't show.
+const MIN_SHARE: f32 = 0.02;
+
+/// How far from the middle, in stops, a cover is all trapezoid: the flat
+/// rectangle fades out only short of this, so the covers a glide carries
+/// past the middle show its ghost for a moment, not all the way across.
+const TURN_BAND: f32 = 0.3;
+
+/// How much of a cover draws in its tilted outline, the trapezoid, rather
+/// than flat: none within a landing's overshoot of the middle, so the
+/// cover it lands on never turns as it swings past, all of it from
+/// `TURN_BAND` out, whether its warp is here or not, and easing between.
+pub(crate) fn tilted_share(tilt: f32) -> f32 {
+    use crate::coverflow::MAX_OVERSHOOT;
+    let x = ((tilt.abs() - MAX_OVERSHOOT) / (TURN_BAND - MAX_OVERSHOOT)).clamp(0.0, 1.0);
+    let share = x * x * (3.0 - 2.0 * x);
+    if share < MIN_SHARE { 0.0 } else { share }
+}
+
+/// How much of the blank card a warp fading in at `warped`, drawn at
+/// `alpha` of its own, has the background cover first. The card stays
+/// whole under the warp, and gives way only to what the warp's own fade
+/// shows through once it's in, so the mix goes straight from card to warp
+/// rather than dipping toward the background halfway.
+pub(crate) fn card_gives_way(alpha: f32, warped: f32) -> f32 {
+    let shown = alpha * warped;
+    if shown >= 1.0 {
+        1.0
+    } else {
+        warped * (1.0 - alpha) / (1.0 - shown)
     }
+}
+
+/// How much of a face's art draws as its warp rather than the blank card
+/// standing in for it: none until the warp is here, then as it fades in.
+pub(crate) fn warp_share(face: &Face) -> f32 {
+    face.tilted
+        .as_ref()
+        .map_or(0.0, |_| face.warp_shown.clamp(0.0, 1.0))
 }
 
 /// A cover's outline filled in `color`: the rectangle while it's flat, the
@@ -307,8 +349,50 @@ impl Strip {
             let offset = bounds.width * STACK_OFFSET * step;
             let card = bounds + Vector::new(offset, -offset);
             fill_outline(renderer, card, cover.tilt, share, edge);
-            fill_outline(renderer, card.shrink(1.0), cover.tilt, share, surface);
+            fill_outline(renderer, inset(card), cover.tilt, share, surface);
         }
+    }
+
+    /// A name card's title in `color`, clear of the slanted top and
+    /// bottom `share` of the turn brings.
+    fn draw_name(
+        &self,
+        renderer: &mut Renderer,
+        face: &Face,
+        bounds: Rectangle,
+        share: f32,
+        color: Color,
+        clip: Rectangle,
+    ) {
+        if color.a <= 0.0 {
+            return;
+        }
+        let size = (bounds.height / 240.0 * 14.0).clamp(12.0, 28.0);
+        let pad = bounds.width * 0.08;
+        let slant = bounds.height * crate::tilt::INSET * share;
+        let room = Rectangle::new(
+            Point::new(bounds.x + pad, bounds.y + slant + pad),
+            Size::new(
+                (bounds.width - 2.0 * pad).max(0.0),
+                (bounds.height - 2.0 * (slant + pad)).max(0.0),
+            ),
+        );
+        renderer.fill_text(
+            text::Text {
+                content: face.title.clone(),
+                bounds: room.size(),
+                size: Pixels(size),
+                line_height: text::LineHeight::default(),
+                font: renderer.default_font(),
+                align_x: text::Alignment::Center,
+                align_y: alignment::Vertical::Center,
+                shaping: text::Shaping::Advanced,
+                wrapping: text::Wrapping::Word,
+            },
+            room.center(),
+            color,
+            room.intersection(&clip).unwrap_or(room),
+        );
     }
 
     /// A face's background, art or name card, and its fade toward the
@@ -324,18 +408,33 @@ impl Strip {
     ) {
         let palette = self.palette;
         let (tilt, opacity) = (cover.tilt, cover.opacity);
-        // A faded poster shows the background through it, as in the grid,
-        // and never the covers behind it.
-        fill_outline(renderer, bounds, tilt, share, palette.background);
         let dim = if face.faded {
             crate::panel::DIMMED_OPACITY
         } else {
             1.0
         };
+        let surface = self.shaded(
+            crate::ui::blend(palette.surface, palette.background, 1.0 - dim),
+            opacity,
+        );
+        let warped = warp_share(face);
+        // A faded poster shows the background through it, as in the grid,
+        // and never the covers behind it. An opaque card in the same
+        // outline hides it, so it isn't drawn under one.
+        let card_only = surface.a >= 1.0
+            && match face.art {
+                Some(_) => share >= 1.0 && warped == 0.0,
+                None => true,
+            };
+        if !card_only {
+            fill_outline(renderer, bounds, tilt, share, palette.background);
+        }
         match &face.art {
             Some(handle) => {
                 // Turning, the flat art fades into its warp, which fills
                 // the bounds exactly: it's the 2:3 crop the flat art shows.
+                // Flat art never shows turned, so a warp that isn't here
+                // yet has a blank card in its place, which it fades over.
                 let flat = 1.0 - share;
                 if flat > 0.0 {
                     renderer.draw_image(
@@ -345,45 +444,38 @@ impl Strip {
                         clip,
                     );
                 }
-                if let Some(warp) = face.tilted.as_ref().filter(|_| share > 0.0) {
+                let alpha = dim * opacity;
+                if share > 0.0 && warped < 1.0 {
+                    // The blank card looks like a name card, its hairline
+                    // edge keeping it apart from a section's stack behind.
+                    let edge = self.shaded(palette.border, opacity);
+                    fill_outline(renderer, bounds, tilt, 1.0, edge.scale_alpha(share));
+                    let card = inset(bounds);
+                    fill_outline(renderer, card, tilt, 1.0, surface.scale_alpha(share));
+                    let name = self.shaded(palette.muted, opacity);
+                    let shown = share * (1.0 - warped);
+                    self.draw_name(renderer, face, bounds, share, name.scale_alpha(shown), clip);
+                    let behind = card_gives_way(alpha, warped);
+                    if behind > 0.0 {
+                        let veil = palette.background.scale_alpha(share * behind);
+                        fill_outline(renderer, bounds, tilt, 1.0, veil);
+                    }
+                }
+                if let Some(warp) = face.tilted.as_ref().filter(|_| share * warped > 0.0) {
                     renderer.draw_image(
                         iced::advanced::image::Image::new(warp.clone())
-                            .opacity(dim * opacity * share),
+                            .opacity(alpha * share * warped),
                         bounds,
                         clip,
                     );
                 }
             }
             None => {
-                let surface = crate::ui::blend(palette.surface, palette.background, 1.0 - dim);
-                fill_outline(renderer, bounds, tilt, share, self.shaded(surface, opacity));
-                // The name stays clear of the slanted top and bottom.
-                let size = (bounds.height / 240.0 * 14.0).clamp(12.0, 28.0);
-                let pad = bounds.width * 0.08;
-                let slant = bounds.height * crate::tilt::INSET * share;
-                let room = Rectangle::new(
-                    Point::new(bounds.x + pad, bounds.y + slant + pad),
-                    Size::new(
-                        (bounds.width - 2.0 * pad).max(0.0),
-                        (bounds.height - 2.0 * (slant + pad)).max(0.0),
-                    ),
-                );
-                renderer.fill_text(
-                    text::Text {
-                        content: face.title.clone(),
-                        bounds: room.size(),
-                        size: Pixels(size),
-                        line_height: text::LineHeight::default(),
-                        font: renderer.default_font(),
-                        align_x: text::Alignment::Center,
-                        align_y: alignment::Vertical::Center,
-                        shaping: text::Shaping::Advanced,
-                        wrapping: text::Wrapping::Word,
-                    },
-                    room.center(),
-                    self.shaded(palette.muted, opacity),
-                    room.intersection(&clip).unwrap_or(room),
-                );
+                let edge = self.shaded(palette.border, opacity);
+                fill_outline(renderer, bounds, tilt, share, edge);
+                fill_outline(renderer, inset(bounds), tilt, share, surface);
+                let name = self.shaded(palette.muted, opacity);
+                self.draw_name(renderer, face, bounds, share, name, clip);
             }
         }
     }
@@ -712,7 +804,7 @@ impl Widget<Message, Theme, Renderer> for Strip {
             // Everything about a cover follows one outline per frame, and
             // fades by mixing toward the background rather than by a shade
             // drawn over it, which would need an outline of its own.
-            let share = tilted_share(face, cover.tilt);
+            let share = tilted_share(cover.tilt);
             // Each part is a layer of its own, since a layer draws its
             // quads before its images, whatever order they came in.
             if face.section.is_some() {

@@ -16,9 +16,10 @@ use crate::{App, ArtKey, Message, artwork};
 
 /// Covers drawn on each side of the middle one.
 pub(crate) const NEIGHBORS: usize = 4;
-/// Stops on each side of the one the strip heads to whose posters and
-/// tilts are kept ready: those on screen and two more, so a cover a glide
-/// brings in is already turned.
+/// Stops on each side of the strip's stop, and while it glides of where
+/// it's drawn, whose posters and tilts are kept ready: those on screen and
+/// two more, so a cover a glide brings in is already turned. A glide asks
+/// again at each stop it crosses, so the window moves with it.
 const PREWARM: usize = NEIGHBORS + 2;
 /// The middle cover's height, as a share of the strip's.
 const HEIGHT_SHARE: f32 = 0.55;
@@ -331,8 +332,15 @@ pub(crate) const TITLE_FADE: Duration = Duration::from_millis(150);
 /// How long a warp that arrives for a cover on screen takes to fade in
 /// over its flat art, as long as the title's crossfade.
 pub(crate) const WARP_FADE: Duration = TITLE_FADE;
-/// How far past its stop the strip may swing as it lands, in stops.
-const MAX_OVERSHOOT: f32 = 0.15;
+/// How fast, in stops a second, the strip goes too fast to ask for art at
+/// each stop it crosses: more than `NEIGHBORS` stops a 60 Hz frame, when
+/// a cover is gone before its art could land, and its decode would only
+/// wait ahead of the large cover where the strip stops. A speed rather
+/// than a step, so a faster display doesn't ask more.
+const FLY_BY: f32 = NEIGHBORS as f32 * 60.0;
+/// How far past its stop the strip may swing as it lands, in stops. A
+/// cover this close to the middle draws flat, so a landing never turns it.
+pub(crate) const MAX_OVERSHOOT: f32 = 0.15;
 /// How long the strip's size must hold before its large covers decode for
 /// it, so a window being dragged bigger doesn't decode at every step.
 pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(250);
@@ -363,6 +371,11 @@ pub(crate) struct Strip {
     /// When the last warp to arrive for a cover on screen is done fading
     /// in, which keeps frames coming until then.
     warp_fade: Option<Instant>,
+    /// The stop the strip was drawn at, rounded down, when its art was
+    /// last asked for, so a glide asks again only once per stop crossed.
+    art_stop: Option<i32>,
+    /// How fast it moved over the last frame, in stops a second.
+    speed: f32,
 }
 
 impl Default for Strip {
@@ -380,6 +393,8 @@ impl Default for Strip {
             resize_generation: 0,
             resize_pending: false,
             warp_fade: None,
+            art_stop: None,
+            speed: 0.0,
         }
     }
 }
@@ -460,6 +475,7 @@ impl Strip {
             self.warp_fade = None;
         }
         let mut settled = false;
+        let before = self.position();
         if let Some(deadline) = self.deadline {
             let target = self.target as f32;
             if now >= deadline {
@@ -470,6 +486,12 @@ impl Strip {
                 self.spring.step(target, previous, deadline, now);
             }
         }
+        let elapsed = now.saturating_duration_since(previous).as_secs_f32();
+        self.speed = if elapsed > 0.0 {
+            (self.position() - before).abs() / elapsed
+        } else {
+            0.0
+        };
         if !self.active() {
             self.last_tick = None;
         }
@@ -485,6 +507,23 @@ impl Strip {
     pub(crate) fn fade_warp(&mut self, now: Instant) {
         self.warp_fade = Some(now + WARP_FADE);
         self.last_tick.get_or_insert(now);
+    }
+
+    /// Notes that the art for where the strip is drawn now was asked for.
+    pub(crate) fn art_asked(&mut self) {
+        self.art_stop = Some(self.position().floor() as i32);
+    }
+
+    /// Gliding into a stop it hasn't asked for art at yet, slower than
+    /// `FLY_BY`, on a frame of the glide now under way, so a frame left
+    /// over from an earlier one can't ask on its speed. A landing that
+    /// swings over its stop asks once more just before it rests, which
+    /// queues nothing already held or on its way.
+    pub(crate) fn crossed_stop(&self, generation: u64) -> bool {
+        generation == self.generation
+            && !self.settled()
+            && self.speed <= FLY_BY
+            && self.art_stop != Some(self.position().floor() as i32)
     }
 
     /// Resting on its stop. The middle three decode their large art and
@@ -534,6 +573,11 @@ impl Strip {
     #[cfg(test)]
     pub(crate) fn resize_generation(&self) -> u64 {
         self.resize_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn speed(&self) -> f32 {
+        self.speed
     }
 
     #[cfg(test)]
@@ -600,6 +644,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Tick(generation, now) => {
             if app.strip.tick(generation, now) {
                 // Settled: the large covers and tilts can start.
+                app.load_visible_art()
+            } else if app.strip.crossed_stop(generation) {
+                // The covers it holds follow where it's drawn.
                 app.load_visible_art()
             } else {
                 Task::none()
@@ -857,14 +904,13 @@ impl App {
         cover_height(height).map(artwork::Kind::Cover)
     }
 
-    /// The art the strip draws, in the order it's needed: the grid
-    /// poster of each stop within `PREWARM` of the one it's heading to,
-    /// from the middle out, then, once the strip rests, the larger `Cover`
-    /// of the middle and its two neighbors. A held `Cover` at least as
-    /// large is kept rather than decoding another. Each key comes once,
-    /// with whether it's drawn dimmed. This is all eviction protects for
-    /// the strip, so large covers past the middle three age out of the
-    /// cache's budget like any art.
+    /// The art the strip draws, in the order it's needed: the grid poster
+    /// of each stop `strip_near` holds, in its order, then, once the strip
+    /// rests, the larger `Cover` of the middle and its two neighbors. A
+    /// held `Cover` at least as large is kept rather than decoding another.
+    /// Each key comes once, with whether it's drawn dimmed. This is all
+    /// eviction protects for the strip, so large covers past the middle
+    /// three age out of the cache's budget like any art.
     pub(crate) fn strip_art(&self) -> Vec<(ArtKey, bool)> {
         let places = self.grid_places();
         let near = self.strip_near(&places);
@@ -901,12 +947,15 @@ impl App {
     }
 
     /// The tilts the strip wants warped, each from the flat art it's made
-    /// of, gray or not, and which way: each stop within `PREWARM` of the
-    /// one it's heading to, turned the way it sits from there, and while
-    /// it glides, also the way it sits from where the strip is drawn, so a
-    /// cover the middle passes on the way has both. At rest the middle's
-    /// two neighbors warp from their large `Cover`; otherwise every warp is
-    /// from the grid's poster, cheap enough to make mid-glide.
+    /// of, gray or not, and which way: each stop `strip_near` holds, turned
+    /// each way the strip carries it more than `MAX_OVERSHOOT` past the
+    /// middle, between where it's drawn and where it heads. A cover the
+    /// middle passes on the way has both, and the one it lands on neither
+    /// for its swing past its stop, which it draws flat. At rest the
+    /// middle's two neighbors warp from their large `Cover`, and from their
+    /// grid poster too until that warp is here, so a blank card waits only
+    /// on the cheap warp; otherwise every warp is from the grid's poster,
+    /// cheap enough to make mid-glide.
     pub(crate) fn strip_tilts(&self) -> Vec<(ArtKey, bool, Tilt)> {
         let places = self.grid_places();
         let target = self.strip.target() as f32;
@@ -922,16 +971,28 @@ impl App {
             let Some(art) = &card.art else {
                 continue;
             };
+            let grid = (art.clone(), artwork::Kind::Grid);
             let source = if settled {
                 self.tilt_source(art, stop)
             } else {
-                (art.clone(), artwork::Kind::Grid)
+                grid.clone()
             };
+            let dimmed = card.not_installed();
+            // Only a side it's carried past the flat zone around the middle
+            // on, so a landing's swing past its stop asks for nothing.
             let at = stop as f32;
-            for (tilt, wanted) in [(Tilt::Left, at < high), (Tilt::Right, at > low)] {
-                if wanted {
-                    tilts.push((source.clone(), card.not_installed(), tilt));
+            let sides = [
+                (Tilt::Left, high - at > MAX_OVERSHOOT),
+                (Tilt::Right, at - low > MAX_OVERSHOOT),
+            ];
+            for (tilt, wanted) in sides {
+                if !wanted {
+                    continue;
                 }
+                if source != grid && !self.images.contains_tilted(&source, dimmed, tilt) {
+                    tilts.push((grid.clone(), dimmed, tilt));
+                }
+                tilts.push((source.clone(), dimmed, tilt));
             }
         }
         tilts
@@ -997,18 +1058,50 @@ impl App {
             .cloned()
     }
 
-    /// The stops whose art the strip holds, nearest the stop it's heading
-    /// to first: those within `PREWARM` of it, more than are ever on
-    /// screen, so a cover sliding in already has its poster and tilt. A
-    /// cover a long jump only flies past isn't among them.
+    /// The stops whose art the strip holds. At rest, those within
+    /// `PREWARM` of its stop, more than are ever on screen, so a cover
+    /// sliding in already has its poster and tilt. While it glides, every
+    /// stop from `PREWARM` behind where it's drawn to `PREWARM` past the
+    /// one it's heading to, so a cover it leaves or passes is turned too;
+    /// a jump longer than that keeps only what's on screen and `PREWARM`
+    /// ahead of where it's drawn, and `PREWARM` around where it lands, so
+    /// Home on a huge library holds no more than a short jump. It's asked
+    /// again at each stop the glide crosses, so the first part follows the
+    /// strip. Nearest where it's drawn first, ahead before behind.
     fn strip_near(&self, places: &Places) -> Vec<usize> {
         let Some(last) = places.strip.len().checked_sub(1) else {
             return Vec::new();
         };
         let target = self.strip.target().min(last);
-        let mut near: Vec<usize> =
-            (target.saturating_sub(PREWARM)..=(target + PREWARM).min(last)).collect();
-        near.sort_by_key(|stop| stop.abs_diff(target));
+        let window = |at: usize| at.saturating_sub(PREWARM)..=(at + PREWARM).min(last);
+        if self.strip.settled() {
+            let mut near: Vec<usize> = window(target).collect();
+            near.sort_by_key(|stop| stop.abs_diff(target));
+            return near;
+        }
+        let position = self.strip.position().clamp(0.0, last as f32);
+        let right = target as f32 >= position;
+        let (floor, ceil) = (position.floor() as usize, position.ceil() as usize);
+        let reach = NEIGHBORS + 1 + PREWARM;
+        let start = if right {
+            floor.saturating_sub(PREWARM)..=(ceil + reach).min(last)
+        } else {
+            floor.saturating_sub(reach)..=(ceil + PREWARM).min(last)
+        };
+        // Where it sets out, cut short of past where it lands, then where
+        // it lands: built from the two, never the stops between.
+        let (low, high) = (floor.min(target), ceil.max(target));
+        let start = (*start.start()).max(low.saturating_sub(PREWARM))
+            ..=(*start.end()).min((high + PREWARM).min(last));
+        let mut near: Vec<usize> = start.clone().collect();
+        near.extend(window(target).filter(|stop| !start.contains(stop)));
+        let behind = |stop: usize| ((stop as f32) < position) == right;
+        near.sort_by(|a, b| {
+            (*a as f32 - position)
+                .abs()
+                .total_cmp(&(*b as f32 - position).abs())
+                .then_with(|| behind(*a).cmp(&behind(*b)))
+        });
         near
     }
 
