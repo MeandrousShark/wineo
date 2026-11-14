@@ -2356,6 +2356,24 @@ fn a_blank_card_shows_its_title_and_an_edge_like_a_name_card() {
 }
 
 #[test]
+fn a_name_card_has_the_blank_cards_edge() {
+    let (_root, mut app) = flat(9);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    let b = cover(&geometry(4.0, 9, WIDE), 2).bounds;
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    // Below the titles, its own and the one behind it.
+    let y = b.y + b.height * 0.75;
+    let edge = pixel(&pixels, Point::new(b.x.floor(), y));
+    let card = pixel(&pixels, Point::new(b.x.floor() + 3.0, y));
+    assert!(
+        (0..3).all(|channel| edge[channel] > card[channel] + 5),
+        "edge {edge:?}, card {card:?}"
+    );
+}
+
+#[test]
 fn a_cover_tilted_right_leaves_its_far_corners_clear_too() {
     let (_root, mut app) = with_art(9, WIDE);
     select(&mut app, "game-04");

@@ -434,8 +434,8 @@ impl Strip {
                 }
                 let alpha = dim * opacity;
                 if share > 0.0 && warped < 1.0 {
-                    // The blank card is a name card with a hairline edge,
-                    // so it stays apart from a section's stack behind it.
+                    // The blank card looks like a name card, its hairline
+                    // edge keeping it apart from a section's stack behind.
                     let edge = self.shaded(palette.border, opacity);
                     fill_outline(renderer, bounds, tilt, 1.0, edge.scale_alpha(share));
                     let card = bounds.shrink(1.0);
@@ -459,7 +459,9 @@ impl Strip {
                 }
             }
             None => {
-                fill_outline(renderer, bounds, tilt, share, surface);
+                let edge = self.shaded(palette.border, opacity);
+                fill_outline(renderer, bounds, tilt, share, edge);
+                fill_outline(renderer, bounds.shrink(1.0), tilt, share, surface);
                 let name = self.shaded(palette.muted, opacity);
                 self.draw_name(renderer, face, bounds, share, name, clip);
             }
