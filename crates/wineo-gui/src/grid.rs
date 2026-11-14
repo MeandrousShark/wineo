@@ -745,7 +745,18 @@ impl App {
         } else {
             Space::new().into()
         };
-        let toasts = column![import_slot, notice_slot, undo_slot, bar_slot].align_x(Center);
+        // The controller hints sit under everything, the marks bar too.
+        let hint_slot: Element<'_, Message> = match self.pad_hint_view() {
+            Some(hints) => {
+                let above = imported || notice || undo || self.action_bar_shown();
+                container(hints)
+                    .padding(iced::Padding::default().top(if above { GAP } else { 0.0 }))
+                    .into()
+            }
+            None => Space::new().into(),
+        };
+        let toasts =
+            column![import_slot, notice_slot, undo_slot, bar_slot, hint_slot].align_x(Center);
         // Always a layer, so the dialogs above keep their places, and their
         // focus, when a toast comes or goes. Empty slots take no input.
         page = page.push(

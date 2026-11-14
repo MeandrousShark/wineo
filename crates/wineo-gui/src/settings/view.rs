@@ -579,6 +579,11 @@ pub(super) fn global_view<'a>(
             desktop_rows(draft.desktop, locked, palette),
             palette
         ),
+        section(
+            "Controller",
+            controller_rows(draft.input.controller, &page.pads, locked, palette),
+            palette
+        ),
         section("Art to fetch", art.into(), palette),
         section(
             "SteamGridDB",
@@ -744,6 +749,36 @@ fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element
     }
     rows.into()
 }
+
+/// The controller switch and the pads connected now. No pad is no
+/// problem, so it reads as a plain note.
+fn controller_rows<'a>(
+    on: bool,
+    pads: &[String],
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let mut rows = column![switch_row(
+        CONTROLLER_SWITCH,
+        on,
+        None,
+        |on| send(Event::GlobalController(on)),
+        None,
+        locked,
+        palette,
+    )]
+    .spacing(12);
+    if pads.is_empty() {
+        rows = rows.push(text(NO_CONTROLLER).size(13).color(palette.muted));
+    }
+    for name in pads {
+        rows = rows.push(text(name.clone()).size(14).color(palette.foreground));
+    }
+    rows.into()
+}
+
+pub(super) const CONTROLLER_SWITCH: &str = "Use a controller in the Library";
+pub(super) const NO_CONTROLLER: &str = "No controller found.";
 
 pub(super) fn version_line() -> String {
     format!("wineo {}", wineo_core::version::VERSION)

@@ -289,12 +289,14 @@ impl Form {
             + usize::from(self.draft.desktop.close != self.loaded.desktop.close)
             + usize::from(self.draft.desktop.on_start != self.loaded.desktop.on_start)
             + usize::from(self.draft.desktop.on_stop != self.loaded.desktop.on_stop)
+            + usize::from(self.draft.input != self.loaded.input)
     }
     /// What to save to `library.toml`, if anything changed there.
     pub(crate) fn library_edits(&self) -> super::load::LibraryEdits {
         super::load::LibraryEdits {
             auto_import: self.auto_import_edit(),
             desktop: (self.draft.desktop != self.loaded.desktop).then_some(self.draft.desktop),
+            input: (self.draft.input != self.loaded.input).then(|| self.draft.input.clone()),
         }
     }
     /// What to save for `auto_import`, if it changed.

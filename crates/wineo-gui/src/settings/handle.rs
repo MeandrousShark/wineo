@@ -266,6 +266,13 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::GlobalController(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.input.controller = on;
+                }
+                Step::none()
+            }
             Event::GlobalArtKind(kind, on) => {
                 if let View::Global(editor) = &self.view {
                     let fetch = editor.form.draft.art_fetch.with(kind, on);
@@ -448,6 +455,7 @@ impl Page {
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
+                    | Event::GlobalController(_)
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -474,6 +482,7 @@ impl Page {
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
+                    | Event::GlobalController(_)
                     | Event::Appearance(_)
             )
         {

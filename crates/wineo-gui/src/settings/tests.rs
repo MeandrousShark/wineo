@@ -3886,4 +3886,6 @@ mod desktop;
 
 mod input;
 
+mod controller;
+
 mod narrow_rows;
