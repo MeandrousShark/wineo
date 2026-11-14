@@ -744,11 +744,15 @@ fn a_click_on_a_side_cover_centers_it_and_on_the_middle_selects_it() {
 }
 
 /// A left press at `point`, and what the widgets publish for it.
+/// Each press comes 50 ms after the last on `clock`, well inside a double
+/// click's time however loaded the machine is.
 fn press_at(
     window: &mut crate::more_menu::tests::Window,
     app: &mut App,
     point: Point,
+    clock: &mut crate::coverflow_widget::clock::Fake,
 ) -> Vec<Message> {
+    clock.advance(std::time::Duration::from_millis(50));
     let mut messages = Vec::new();
     let mut laid = window.lay_out(app);
     messages.extend(laid.event_at(
@@ -770,16 +774,27 @@ fn double_clicked(messages: &[Message]) -> bool {
 #[test]
 fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
     let (_root, mut app) = flat(10);
+    let mut clock = crate::coverflow_widget::clock::Fake::start();
     select(&mut app, "game-04");
     let mut window = crate::more_menu::tests::Window::new(&mut app);
     // A side cover, then the middle it became.
     let side = cover_at(&mut window, &app, 5);
     let point = Point::new(side.x + side.width - 4.0, side.center_y());
-    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
     assert_eq!(selected(&app), "game-05");
     // Pressing there again at once isn't a double click on the cover it
     // centered.
-    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
     select(&mut app, "game-05");
     // The panel comes and goes with these presses, moving the strip, so
     // the middle is found again each time.
@@ -787,26 +802,67 @@ fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
         cover_at(window, app, app.strip.target()).center()
     };
     let point = middle(&mut window, &app);
-    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
     // The middle, then a key moves another one there: the same spot again
     // at once is a plain press on whatever is there now.
     press(&mut app, Named::ArrowRight);
     assert_eq!(selected(&app), "game-06");
-    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
     select(&mut app, "game-06");
     let _ = app.update(Message::ClosePanel);
     app.panel_motion.snap(false);
     let point = middle(&mut window, &app);
-    assert!(!double_clicked(&press_at(&mut window, &mut app, point)));
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
     // Twice on the same middle cover is a double click, though the first
     // press toggled the panel and moved the strip from under the pointer.
-    let messages = press_at(&mut window, &mut app, point);
+    let messages = press_at(&mut window, &mut app, point, &mut clock);
     assert!(
         messages
             .iter()
             .any(|message| matches!(message, Message::DoubleClick(name) if name == "game-06")),
         "{messages:?}"
     );
+}
+
+#[test]
+fn two_presses_on_the_middle_too_far_apart_are_not_a_double_click() {
+    let (_root, mut app) = flat(10);
+    let mut clock = crate::coverflow_widget::clock::Fake::start();
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    app.panel_motion.snap(false);
+    let mut window = crate::more_menu::tests::Window::new(&mut app);
+    let point = cover_at(&mut window, &app, 4).center();
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
+    clock.advance(std::time::Duration::from_millis(400));
+    // The panel the first press opened moved the strip, but the same spot
+    // still counts for the same cover: only the time rules it out.
+    assert!(!double_clicked(&press_at(
+        &mut window,
+        &mut app,
+        point,
+        &mut clock
+    )));
 }
 
 #[test]

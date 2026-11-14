@@ -14,6 +14,7 @@ use iced::{
     Border, Color, Element, Event, Fill, Length, Pixels, Point, Rectangle, Renderer, Size, Theme,
     Vector, alignment, window,
 };
+use std::time::{Duration, Instant};
 
 use crate::Message;
 use crate::coverflow::{self, Event as StripEvent, StopId};
@@ -90,14 +91,78 @@ struct Strip {
     palette: Palette,
 }
 
+/// A left press on the middle game: when, where, and on which copy.
+struct Press {
+    at: Instant,
+    point: Point,
+    slot: crate::slot::SlotId,
+}
+
+impl Press {
+    /// Whether a press at `point` at `at` makes this one a double click,
+    /// by iced's rule: within 300 ms and 6 px.
+    fn doubled_by(&self, point: Point, at: Instant) -> bool {
+        at > self.at
+            && at - self.at <= DOUBLE_CLICK
+            && self.point.distance(point) < DOUBLE_CLICK_DISTANCE
+    }
+}
+
+const DOUBLE_CLICK: Duration = Duration::from_millis(300);
+const DOUBLE_CLICK_DISTANCE: f32 = 6.0;
+
+/// When a press happens: the real clock, or the one a test set, so a
+/// double click doesn't depend on how fast a loaded machine runs it.
+fn now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = clock::FAKE.with(std::cell::Cell::get) {
+        return now;
+    }
+    Instant::now()
+}
+
+#[cfg(test)]
+pub(crate) mod clock {
+    use std::cell::Cell;
+    use std::time::Instant;
+
+    thread_local! {
+        pub(super) static FAKE: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+
+    /// A clock for this thread's presses that only moves when told to,
+    /// back to the real one when dropped.
+    pub(crate) struct Fake(Instant);
+
+    impl Fake {
+        pub(crate) fn start() -> Self {
+            let at = Instant::now();
+            FAKE.with(|fake| fake.set(Some(at)));
+            Self(at)
+        }
+
+        pub(crate) fn advance(&mut self, by: std::time::Duration) {
+            self.0 += by;
+            let at = self.0;
+            FAKE.with(|fake| fake.set(Some(at)));
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            FAKE.with(|fake| fake.set(None));
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     /// The size last sent to the app, which sizes the strip's art and its
     /// page step from it.
     measured: Size,
-    /// The last left press and the stop it was on, so a double click
-    /// counts only on the middle cover it started on.
-    last_click: Option<(mouse::Click, StopId)>,
+    /// The last left press on the middle game, so a double click counts
+    /// only on the middle cover it started on.
+    last_click: Option<Press>,
     /// Wheel travel not yet a whole notch.
     wheel: f32,
 }
@@ -444,23 +509,21 @@ impl Widget<Message, Theme, Renderer> for Strip {
                 let Some(point) = cursor.position_over(bounds) else {
                     return;
                 };
+                let at = now();
                 let previous = state.last_click.take();
                 // A double click stays with the middle cover it started on
                 // while that's still the middle, though the first click
                 // opened the panel and moved the strip from under it.
                 if *button == mouse::Button::Left
-                    && let Some((click, StopId::Card(slot))) = &previous
+                    && let Some(press) = &previous
                     && self.face(self.middle).map(|face| &face.id)
-                        == Some(&StopId::Card(slot.clone()))
+                        == Some(&StopId::Card(press.slot.clone()))
+                    && press.doubled_by(point, at)
                 {
-                    let again = mouse::Click::new(point, *button, Some(*click));
-                    if again.kind() == mouse::click::Kind::Double {
-                        shell.publish(Message::Press(slot.clone()));
-                        shell.publish(Message::DoubleClick(slot.name().to_owned()));
-                        state.last_click = Some((again, StopId::Card(slot.clone())));
-                        shell.capture_event();
-                        return;
-                    }
+                    shell.publish(Message::Press(press.slot.clone()));
+                    shell.publish(Message::DoubleClick(press.slot.name().to_owned()));
+                    shell.capture_event();
+                    return;
                 }
                 let Some(face) = self.hit(bounds, point) else {
                     return;
@@ -479,8 +542,11 @@ impl Widget<Message, Theme, Renderer> for Strip {
                     }
                     (mouse::Button::Left, StopId::Card(slot)) => {
                         shell.publish(Message::Press(slot.clone()));
-                        let click = mouse::Click::new(point, *button, None);
-                        state.last_click = Some((click, id));
+                        state.last_click = Some(Press {
+                            at,
+                            point,
+                            slot: slot.clone(),
+                        });
                     }
                     (mouse::Button::Right, StopId::Card(slot)) if middle => {
                         shell.publish(Message::Context(slot.name().to_owned()));
