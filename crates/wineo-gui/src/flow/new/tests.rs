@@ -3387,9 +3387,11 @@ fn settings_for(name: &str) -> String {
 fn open_existing_with_edits_asks_before_dropping_the_draft() {
     let mut page = page_with_existing_environment("hades");
     let _ = page.update(Event::Name("Hades".to_owned()));
+    // The name alone leaves at once, so something else is what makes it ask.
+    let _ = page.update(Event::Runner("fake".to_owned()));
     let _ = page.update(Event::OpenExisting);
     assert_eq!(page.stage, Stage::Details);
-    assert!(page.leave_prompt, "a typed name is an edit");
+    assert!(page.leave_prompt, "a runner beside the name is an edit");
     assert!(page.take_action().is_none(), "nothing left yet");
 
     // Keep editing keeps the draft, and the way out is forgotten.
@@ -3419,6 +3421,8 @@ fn open_existing_with_edits_asks_before_dropping_the_draft() {
 fn a_discard_from_the_choice_page_still_goes_to_the_add_choices() {
     let mut page = page_with_existing_environment("hades");
     let _ = page.update(Event::Name("Hades".to_owned()));
+    // The name alone leaves at once, so something else is what makes it ask.
+    let _ = page.update(Event::Runner("fake".to_owned()));
     let _ = page.update(Event::OpenExisting);
     let _ = page.update(Event::KeepEditing);
     // Back from the choice page asks too, and its Discard isn't Settings.
@@ -3430,23 +3434,56 @@ fn a_discard_from_the_choice_page_still_goes_to_the_add_choices() {
 }
 
 #[test]
-fn open_existing_without_edits_leaves_without_asking() {
-    // A name needs typing, which is an edit, so nothing but an unnamed
-    // draft has none: the environment file under the empty name stands in.
-    let mut page = page_with_existing_environment("");
-    assert!(!page.has_edits());
+fn open_existing_ignores_the_names_that_found_it_but_asks_about_other_edits() {
+    // Typing the name, or the environment name, and nothing else leaves at once.
+    for by_override in [false, true] {
+        let mut page = page_with_existing_environment("wine-favorite-only");
+        let _ = if by_override {
+            let _ = page.update(Event::EditEnvironment);
+            page.update(Event::EnvironmentName("wine-favorite-only".to_owned()))
+        } else {
+            page.update(Event::Name("wine favorite only".to_owned()))
+        };
+        assert!(page.has_edits(), "Back on the choice page still asks");
+        let _ = page.update(Event::OpenExisting);
+        assert!(!page.leave_prompt, "{by_override}");
+        assert_eq!(
+            format!("{:?}", page.take_action().unwrap()),
+            settings_for("wine-favorite-only"),
+            "{by_override}"
+        );
+    }
+
+    // Any other edit makes it ask, one at a time.
+    let edits: [(&str, Event); 4] = [
+        ("runner", Event::Runner("fake".to_owned())),
+        ("arch", Event::Arch(Arch::Win32)),
+        ("prefix", Event::Prefix("/somewhere".to_owned())),
+        ("template", Event::Template("gaming".to_owned())),
+    ];
+    for (label, edit) in edits {
+        let mut page = page_with_existing_environment("wine-favorite-only");
+        let _ = page.update(Event::Name("wine favorite only".to_owned()));
+        let _ = page.update(edit);
+        let _ = page.update(Event::OpenExisting);
+        assert!(page.leave_prompt, "{label}");
+        assert!(page.take_action().is_none(), "{label}");
+    }
+    // A typed path, on a row that has one.
+    let mut page = page_with_existing_environment("wine-favorite-only");
+    switch(&mut page, Kind::Windows, Source::Executable);
+    let _ = page.update(Event::Name("wine favorite only".to_owned()));
+    let _ = page.update(Event::Path("/games/game.exe".to_owned()));
     let _ = page.update(Event::OpenExisting);
-    assert!(!page.leave_prompt);
-    assert_eq!(
-        format!("{:?}", page.take_action().unwrap()),
-        settings_for("")
-    );
+    assert!(page.leave_prompt, "path");
 }
 
 #[test]
 fn a_check_lands_while_open_existing_asks() {
     let mut page = page_with_existing_environment("hades");
     let _ = page.update(Event::Name("Hades".to_owned()));
+    // The name alone leaves at once, so something else is what makes it ask.
+    let _ = page.update(Event::Runner("fake".to_owned()));
     let waiting = page.check_sequence;
     let _ = page.update(Event::OpenExisting);
     assert!(page.leave_prompt);
@@ -3661,6 +3698,8 @@ fn esc_answers_the_discard_prompt_on_the_choice_page_and_on_details() {
     // On Details, where Open existing opens it, Esc closes it and stays.
     let mut page = page_with_existing_environment("hades");
     let _ = page.update(Event::Name("Hades".to_owned()));
+    // The name alone leaves at once, so something else is what makes it ask.
+    let _ = page.update(Event::Runner("fake".to_owned()));
     let _ = page.update(Event::OpenExisting);
     let mut app = app_on(page);
     assert!(new_page(&app).leave_prompt_open());

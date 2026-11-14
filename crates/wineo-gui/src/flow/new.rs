@@ -632,12 +632,21 @@ impl Page {
     /// don't count.
     fn has_edits(&self) -> bool {
         let draft = &self.draft;
-        let blank = Draft::default();
-        let mut edited = draft.title.trim() != blank.title
+        draft.title.trim() != Draft::default().title
             || draft
                 .environment
                 .as_deref()
-                .is_some_and(|name| !name.trim().is_empty());
+                .is_some_and(|name| !name.trim().is_empty())
+            || self.has_edits_beside_names()
+    }
+
+    /// `has_edits` without the Name and Environment name. They are what
+    /// names the environment Open existing opens, so they alone aren't a
+    /// draft worth asking about.
+    fn has_edits_beside_names(&self) -> bool {
+        let draft = &self.draft;
+        let blank = Draft::default();
+        let mut edited = false;
         if draft.source != Source::Empty {
             edited |= draft.path.trim() != blank.path;
         }
@@ -1157,8 +1166,9 @@ impl Page {
                         name,
                         launch: false,
                     };
-                    // Leaving drops the draft, so a draft with edits asks first.
-                    if self.has_edits() {
+                    // Leaving drops the draft, so one with edits beside the name
+                    // that found this environment asks first.
+                    if self.has_edits_beside_names() {
                         self.leave_prompt = true;
                         self.leave_for = Some(settings);
                     } else {
