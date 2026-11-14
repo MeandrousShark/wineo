@@ -653,6 +653,7 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             random: RandomPool::Launchable,
             layout: ViewLayout::Grid,
             group: GroupBy::None,
+            coverflow_fullscreen: false,
         }
     );
 
@@ -1057,6 +1058,7 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             random: RandomPool::Launchable,
             layout: ViewLayout::Grid,
             group: GroupBy::None,
+            coverflow_fullscreen: false,
         }
     );
 }
@@ -1661,4 +1663,444 @@ fn an_unknown_on_stop_is_not_rewritten_by_reads_or_no_op_edits() {
         fixture.read(),
         "# mine\nschema_version = 1\n\n[desktop]\n# by hand\non_stop   =   \"show\"\n"
     );
+}
+
+#[test]
+fn coverflow_layout_reads_writes_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n\n[view]\nlayout = \"coverflow\"\n");
+    assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Coverflow);
+    assert_eq!(ViewLayout::Coverflow.as_str(), "coverflow");
+    assert_eq!(ViewLayout::parse("coverflow"), Some(ViewLayout::Coverflow));
+    assert!(!set_layout(&fixture.paths, ViewLayout::Coverflow).unwrap());
+
+    let fresh = Fixture::new();
+    assert!(set_layout(&fresh.paths, ViewLayout::Coverflow).unwrap());
+    assert_eq!(
+        fresh.read(),
+        "schema_version = 1\n\n[view]\nlayout = \"coverflow\"\n"
+    );
+    assert_eq!(load(&fresh.paths).view.layout, ViewLayout::Coverflow);
+    assert!(set_layout(&fresh.paths, ViewLayout::Grid).unwrap());
+    assert_eq!(load(&fresh.paths).view.layout, ViewLayout::Grid);
+}
+
+#[test]
+fn a_layout_this_wineo_doesnt_know_reads_as_grid_and_a_read_leaves_the_file_alone() {
+    let fixture = Fixture::new();
+    for newer in ["\"carousel\"", "\"Coverflow\"", "\"coverflow \""] {
+        let text = format!("schema_version = 1\n\n[view]\nlayout = {newer}\n");
+        fixture.write(&text);
+        assert_eq!(
+            load(&fixture.paths).view.layout,
+            ViewLayout::Grid,
+            "{newer}"
+        );
+        assert_eq!(fixture.read(), text);
+        // Picking a layout replaces it, as for any bad value.
+        assert!(set_layout(&fixture.paths, ViewLayout::Coverflow).unwrap());
+        assert_eq!(load(&fixture.paths).view.layout, ViewLayout::Coverflow);
+    }
+}
+
+#[test]
+fn coverflow_fullscreen_defaults_off_and_bad_values_read_as_off() {
+    let fixture = Fixture::new();
+    assert!(!load(&fixture.paths).view.coverflow_fullscreen);
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"added\"\n");
+    assert!(!load(&fixture.paths).view.coverflow_fullscreen);
+    fixture.write("schema_version = 1\n\n[view]\ncoverflow_fullscreen = true\n");
+    assert!(load(&fixture.paths).view.coverflow_fullscreen);
+    for bad in ["\"yes\"", "1", "[]"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\ncoverflow_fullscreen = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(!library.view.coverflow_fullscreen, "{bad}");
+    }
+}
+
+#[test]
+fn set_coverflow_fullscreen_writes_one_line_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    assert!(!set_coverflow_fullscreen(&fixture.paths, false).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    let before = "# mine\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\n";
+    fixture.write(before);
+    assert!(set_coverflow_fullscreen(&fixture.paths, true).unwrap());
+    let after = fixture.read();
+    assert_eq!(after, format!("{before}coverflow_fullscreen = true\n"));
+    assert!(load(&fixture.paths).view.coverflow_fullscreen);
+
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    assert!(!set_coverflow_fullscreen(&fixture.paths, true).unwrap());
+    assert_eq!(fixture.read(), after);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    assert!(set_coverflow_fullscreen(&fixture.paths, false).unwrap());
+    assert!(!load(&fixture.paths).view.coverflow_fullscreen);
+}
+
+#[test]
+fn input_reads_its_defaults_without_a_table() {
+    let fixture = Fixture::new();
+    let input = load(&fixture.paths).input;
+    assert_eq!(input, Input::default());
+    assert!(input.controller);
+    assert!(input.buttons.is_empty());
+    fixture.write("schema_version = 1\n[input]\n");
+    assert_eq!(load(&fixture.paths).input, Input::default());
+    fixture.write("schema_version = 1\ninput = 4\n");
+    assert_eq!(load(&fixture.paths).input, Input::default());
+}
+
+#[test]
+fn the_default_buttons_are_the_documented_map() {
+    let bindings = Input::default().bindings();
+    let expected = [
+        (PadAction::Confirm, PadButton::A),
+        (PadAction::Back, PadButton::B),
+        (PadAction::Favorite, PadButton::Y),
+        (PadAction::Mark, PadButton::X),
+        (PadAction::PageLeft, PadButton::Lb),
+        (PadAction::PageRight, PadButton::Rb),
+        (PadAction::First, PadButton::Lt),
+        (PadAction::Last, PadButton::Rt),
+        (PadAction::Layout, PadButton::View),
+        (PadAction::Fullscreen, PadButton::Start),
+        (PadAction::Random, PadButton::Ls),
+    ];
+    assert_eq!(expected.len(), PadAction::ALL.len());
+    for (action, button) in expected {
+        assert_eq!(bindings.button(action), Some(button), "{action:?}");
+        assert_eq!(bindings.action(button), Some(action), "{button:?}");
+    }
+    assert_eq!(bindings.action(PadButton::Rs), None);
+    assert!(Input::default().conflicts().is_empty());
+}
+
+#[test]
+fn the_stored_names_parse_back_to_what_they_name() {
+    for action in PadAction::ALL {
+        assert_eq!(PadAction::parse(action.as_str()), Some(action));
+    }
+    for button in PadButton::ALL {
+        assert_eq!(PadButton::parse(button.as_str()), Some(button));
+    }
+    let actions: Vec<&str> = PadAction::ALL.map(PadAction::as_str).to_vec();
+    assert_eq!(
+        actions,
+        [
+            "confirm",
+            "back",
+            "favorite",
+            "mark",
+            "page_left",
+            "page_right",
+            "first",
+            "last",
+            "layout",
+            "fullscreen",
+            "random"
+        ]
+    );
+    let buttons: Vec<&str> = PadButton::ALL.map(PadButton::as_str).to_vec();
+    assert_eq!(
+        buttons,
+        [
+            "a", "b", "x", "y", "lb", "rb", "lt", "rt", "view", "start", "ls", "rs"
+        ]
+    );
+    assert_eq!(PadAction::parse("Confirm"), None);
+    assert_eq!(PadButton::parse("A"), None);
+}
+
+#[test]
+fn input_reads_the_switch_and_each_remap() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[input]\ncontroller = false\n[input.buttons]\nfavorite = \"rb\"\nmark = \"rs\"\n",
+    );
+    let input = load(&fixture.paths).input;
+    assert!(!input.controller);
+    assert_eq!(
+        input.buttons,
+        BTreeMap::from([
+            (PadAction::Favorite, PadButton::Rb),
+            (PadAction::Mark, PadButton::Rs),
+        ])
+    );
+    let bindings = input.bindings();
+    assert_eq!(bindings.button(PadAction::Favorite), Some(PadButton::Rb));
+    assert_eq!(bindings.button(PadAction::Mark), Some(PadButton::Rs));
+    // page_right wanted rb, which favorite took first.
+    assert_eq!(bindings.button(PadAction::PageRight), None);
+}
+
+#[test]
+fn a_bad_remap_costs_only_that_key() {
+    let fixture = Fixture::new();
+    // Each bad key sits beside a good one that must survive.
+    for bad in [
+        "mark = \"z\"",
+        "mark = \"A\"",
+        "mark = 3",
+        "mark = [\"a\"]",
+        "jump = \"a\"",
+        "Mark = \"a\"",
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n[input]\ncontroller = false\n[input.buttons]\nfavorite = \"rs\"\n{bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(!library.input.controller, "{bad}");
+        assert_eq!(
+            library.input.buttons,
+            BTreeMap::from([(PadAction::Favorite, PadButton::Rs)]),
+            "{bad}"
+        );
+        assert_eq!(
+            library.input.bindings().button(PadAction::Mark),
+            Some(PadButton::X),
+            "{bad}"
+        );
+    }
+    // A bad switch leaves the remaps alone.
+    fixture.write(
+        "schema_version = 1\n[input]\ncontroller = \"off\"\n[input.buttons]\nfavorite = \"rs\"\n",
+    );
+    let input = load(&fixture.paths).input;
+    assert!(input.controller);
+    assert_eq!(input.buttons.len(), 1);
+    // A buttons value that isn't a table reads as no remaps.
+    fixture.write("schema_version = 1\n[input]\nbuttons = 3\n");
+    assert_eq!(load(&fixture.paths).input, Input::default());
+}
+
+#[test]
+fn a_remap_taken_by_an_earlier_action_falls_back_to_its_default() {
+    // back asks for confirm's button: confirm comes first and keeps it, and
+    // back's own default b is free.
+    let input = Input {
+        buttons: BTreeMap::from([(PadAction::Back, PadButton::A)]),
+        ..Input::default()
+    };
+    let bindings = input.bindings();
+    assert_eq!(bindings.button(PadAction::Confirm), Some(PadButton::A));
+    assert_eq!(bindings.button(PadAction::Back), Some(PadButton::B));
+    assert_eq!(
+        input.conflicts(),
+        [Conflict {
+            action: PadAction::Back,
+            wanted: PadButton::A,
+            taken_by: PadAction::Confirm,
+            button: Some(PadButton::B),
+        }]
+    );
+}
+
+#[test]
+fn a_conflict_whose_default_is_taken_too_leaves_the_action_unbound() {
+    // confirm moves onto favorite's default, so favorite, later in the
+    // order, has neither its remap nor its default.
+    let input = Input {
+        buttons: BTreeMap::from([(PadAction::Confirm, PadButton::Y)]),
+        ..Input::default()
+    };
+    let bindings = input.bindings();
+    assert_eq!(bindings.button(PadAction::Confirm), Some(PadButton::Y));
+    assert_eq!(bindings.button(PadAction::Favorite), None);
+    assert_eq!(bindings.action(PadButton::Y), Some(PadAction::Confirm));
+    // confirm's old button a is now free for nobody: no action defaults to it.
+    assert_eq!(bindings.action(PadButton::A), None);
+    assert_eq!(
+        input.conflicts(),
+        [Conflict {
+            action: PadAction::Favorite,
+            wanted: PadButton::Y,
+            taken_by: PadAction::Confirm,
+            button: None,
+        }]
+    );
+}
+
+#[test]
+fn conflicts_resolve_in_the_listed_order_not_the_file_order() {
+    // Both ask for rs; page_left is listed before random, so it wins however
+    // the file orders them.
+    for text in [
+        "[input.buttons]\nrandom = \"rs\"\npage_left = \"rs\"\n",
+        "[input.buttons]\npage_left = \"rs\"\nrandom = \"rs\"\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(&format!("schema_version = 1\n{text}"));
+        let bindings = load(&fixture.paths).input.bindings();
+        assert_eq!(bindings.button(PadAction::PageLeft), Some(PadButton::Rs));
+        // random falls back to its default ls, which is free.
+        assert_eq!(bindings.button(PadAction::Random), Some(PadButton::Ls));
+        // And lb, page_left's old button, is simply unused.
+        assert_eq!(bindings.action(PadButton::Lb), None);
+    }
+}
+
+#[test]
+fn swapping_two_buttons_is_not_a_conflict() {
+    let input = Input {
+        buttons: BTreeMap::from([
+            (PadAction::Confirm, PadButton::B),
+            (PadAction::Back, PadButton::A),
+        ]),
+        ..Input::default()
+    };
+    assert!(input.conflicts().is_empty());
+    let bindings = input.bindings();
+    assert_eq!(bindings.button(PadAction::Confirm), Some(PadButton::B));
+    assert_eq!(bindings.button(PadAction::Back), Some(PadButton::A));
+}
+
+#[test]
+fn a_default_taken_by_a_remap_leaves_the_later_action_unbound() {
+    // A newer wineo's action that defaults to a button the user moved
+    // another action onto: nothing in the file names it.
+    let input = Input {
+        buttons: BTreeMap::from([(PadAction::Mark, PadButton::Start)]),
+        ..Input::default()
+    };
+    let bindings = input.bindings();
+    assert_eq!(bindings.button(PadAction::Mark), Some(PadButton::Start));
+    assert_eq!(bindings.button(PadAction::Fullscreen), None);
+    assert_eq!(input.conflicts().len(), 1);
+    assert_eq!(input.conflicts()[0].action, PadAction::Fullscreen);
+}
+
+#[test]
+fn set_input_writes_only_what_changes() {
+    let fixture = Fixture::new();
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    let off = Input {
+        controller: false,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ncontroller = false\n"
+    );
+    assert!(!set_input(&fixture.paths, &off).unwrap());
+
+    let remapped = Input {
+        controller: false,
+        buttons: BTreeMap::from([(PadAction::Favorite, PadButton::Rb)]),
+    };
+    assert!(set_input(&fixture.paths, &remapped).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ncontroller = false\n\n[input.buttons]\nfavorite = \"rb\"\n"
+    );
+    assert_eq!(load(&fixture.paths).input, remapped);
+
+    // Back on: the switch is written, not removed, like the other bools.
+    assert!(set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ncontroller = true\n"
+    );
+    assert_eq!(load(&fixture.paths).input, Input::default());
+}
+
+#[test]
+fn a_remap_that_matches_the_default_is_not_written_and_a_reset_removes_the_table() {
+    let fixture = Fixture::new();
+    let same = Input {
+        buttons: BTreeMap::from([(PadAction::Favorite, PadButton::Y)]),
+        ..Input::default()
+    };
+    assert!(!set_input(&fixture.paths, &same).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    let two = Input {
+        buttons: BTreeMap::from([
+            (PadAction::Favorite, PadButton::Rb),
+            (PadAction::Mark, PadButton::Rs),
+        ]),
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &two).unwrap());
+    // Putting one action back removes just its key.
+    let one = Input {
+        buttons: BTreeMap::from([(PadAction::Mark, PadButton::Rs)]),
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &one).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input.buttons]\nmark = \"rs\"\n"
+    );
+    // Reset: the table goes with its last key.
+    assert!(set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(fixture.read(), "schema_version = 1\n");
+    assert_eq!(load(&fixture.paths).input, Input::default());
+}
+
+#[test]
+fn a_no_op_input_edit_leaves_the_file_alone() {
+    let fixture = Fixture::new();
+    // Hand-made: odd spacing, comments, a default-valued remap, and keys
+    // this wineo reads as unset.
+    let text = "# mine\nschema_version = 1\n\n[input]\n# off for now\ncontroller   =   false\nfuture = 1\n\n[input.buttons]\n# swapped\nfavorite = \"y\"   # same as default\nmark = \"z\"\njump = \"a\"\nback = \"rs\"\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).input;
+    assert!(!set_input(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    // A change keeps the comments, the odd spacing, and what it can't read.
+    let mut changed = read.clone();
+    changed.buttons.insert(PadAction::Back, PadButton::Rb);
+    assert!(set_input(&fixture.paths, &changed).unwrap());
+    assert_eq!(
+        fixture.read(),
+        text.replace("back = \"rs\"", "back = \"rb\"")
+    );
+}
+
+#[test]
+fn a_bad_remap_value_stays_until_that_key_is_changed() {
+    let fixture = Fixture::new();
+    let text = "schema_version = 1\n\n[input.buttons]\nmark = \"z\"\n";
+    fixture.write(text);
+    // Reads as unset, so asking for no remap on mark is a no-op.
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(fixture.read(), text);
+    // Picking a real button replaces it.
+    let picked = Input {
+        buttons: BTreeMap::from([(PadAction::Mark, PadButton::Rs)]),
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &picked).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input.buttons]\nmark = \"rs\"\n"
+    );
+}
+
+#[test]
+fn an_input_edit_is_refused_on_a_broken_file() {
+    let fixture = Fixture::new();
+    fixture.write("[input\ncontroller = false\n");
+    assert!(set_input(&fixture.paths, &Input::default()).is_err());
+    let off = Input {
+        controller: false,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &off).is_err());
+    assert_eq!(fixture.read(), "[input\ncontroller = false\n");
 }

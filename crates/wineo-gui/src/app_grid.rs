@@ -200,7 +200,8 @@ impl App {
             }
         }
         let heights: Vec<f32> = match self.layout {
-            grid_motion::ViewLayout::Grid => cards
+            // Coverflow takes the grid's places until its own strip lands.
+            grid_motion::ViewLayout::Grid | grid_motion::ViewLayout::Coverflow => cards
                 .iter()
                 .map(|&index| grid::card_height(&self.cards[index], layout))
                 .collect(),

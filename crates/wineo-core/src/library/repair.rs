@@ -13,12 +13,12 @@ use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 use super::check::{is_newer, is_offset_datetime};
 use super::preset::readable_name;
 use super::record::{Recorded, valid_app_id};
-use super::{GroupBy, RandomPool, SCHEMA_VERSION, SortKey, ViewLayout, read_zoom};
+use super::{GroupBy, RandomPool, SCHEMA_VERSION, SortKey, read_zoom};
 use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
-/// How much of `[view]`, `[appearance]`, or `[desktop]` came back.
+/// How much of `[view]`, `[appearance]`, `[desktop]`, or `[input]` came back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewRecovery {
     /// The file had no such table the repair could find.
@@ -40,6 +40,7 @@ pub struct RepairReport {
     pub view: ViewRecovery,
     pub appearance: ViewRecovery,
     pub desktop: ViewRecovery,
+    pub input: ViewRecovery,
     /// How much of the saved presets came back, counting every field in
     /// every preset the repair could recognize.
     pub presets: ViewRecovery,
@@ -68,6 +69,7 @@ impl RepairReport {
                 ViewRecovery::Absent | ViewRecovery::Recovered
             )
             && matches!(self.desktop, ViewRecovery::Absent | ViewRecovery::Recovered)
+            && matches!(self.input, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.presets, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.steam, ViewRecovery::Absent | ViewRecovery::Recovered)
     }
@@ -114,6 +116,12 @@ impl fmt::Display for RepairReport {
             ViewRecovery::Recovered => f.write_str(" Desktop settings recovered.")?,
             ViewRecovery::Partly => f.write_str(" Desktop settings partly recovered.")?,
             ViewRecovery::Lost => f.write_str(" Desktop settings could not be recovered.")?,
+        }
+        match self.input {
+            ViewRecovery::Absent => {}
+            ViewRecovery::Recovered => f.write_str(" Controller settings recovered.")?,
+            ViewRecovery::Partly => f.write_str(" Controller settings partly recovered.")?,
+            ViewRecovery::Lost => f.write_str(" Controller settings could not be recovered.")?,
         }
         match self.presets {
             ViewRecovery::Absent => {}
@@ -296,7 +304,8 @@ impl<'a> Lines<'a> {
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
     /// None for a header that isn't `[view]`, `[appearance]`, `[desktop]`, `[steam]`,
-    /// `[steam.games]`, `[presets.<name>]`, or `[environments.<name>]`.
+    /// `[steam.games]`, `[input]`, `[input.buttons]`, `[presets.<name>]`, or
+    /// `[environments.<name>]`.
     Header {
         start: usize,
         header: Option<Header>,
@@ -323,6 +332,8 @@ enum Header {
     Desktop,
     Steam,
     SteamGames,
+    Input,
+    InputButtons,
     Preset(String),
     Entry(String),
 }
@@ -472,6 +483,7 @@ struct Salvaged {
     appearance: Option<Section>,
     desktop: Option<Section>,
     steam: Option<SteamSection>,
+    input: Option<InputSection>,
     presets: Vec<(String, Section)>,
     entries: Vec<(String, Section)>,
     dropped_text: bool,
@@ -615,6 +627,78 @@ impl SteamSection {
     }
 }
 
+/// `[input]` with its `buttons` table kept key by key, so one bad remap
+/// costs only itself.
+#[derive(Debug, Default)]
+struct InputSection {
+    other: Section,
+    buttons: Section,
+}
+
+impl InputSection {
+    /// Takes one field of `[input]`, whether the parser read it or the tail
+    /// gave it up.
+    fn read(&mut self, key: &Key, item: &Item) {
+        if key.get() != "buttons" {
+            self.other.keep(key, item.clone(), valid_input_field);
+            return;
+        }
+        match item.as_table_like() {
+            Some(buttons) => {
+                for (action, button) in buttons.iter() {
+                    let key = buttons
+                        .key(action)
+                        .cloned()
+                        .unwrap_or_else(|| Key::new(action));
+                    self.buttons.keep(&key, button.clone(), valid_button_field);
+                }
+            }
+            None => self.buttons.fields += 1,
+        }
+    }
+
+    fn fields(&self) -> usize {
+        self.other.fields + self.buttons.fields
+    }
+
+    fn kept(&self) -> usize {
+        self.other.kept + self.buttons.kept
+    }
+
+    fn recovery(&self) -> ViewRecovery {
+        if self.kept() == self.fields() {
+            ViewRecovery::Recovered
+        } else if self.kept() == 0 {
+            ViewRecovery::Lost
+        } else {
+            ViewRecovery::Partly
+        }
+    }
+
+    fn table(&self) -> Table {
+        let mut table = fresh_table(&self.other.table);
+        if self.buttons.kept > 0 {
+            table.insert("buttons", Item::Table(fresh_table(&self.buttons.table)));
+        }
+        table.set_implicit(true);
+        table
+    }
+}
+
+/// Only the type: a newer wineo's keys stay, and `validate` is where an
+/// unknown one is reported.
+fn valid_input_field(key: &str, item: &Item) -> bool {
+    match key {
+        "controller" => item.as_bool().is_some(),
+        _ => true,
+    }
+}
+
+/// Only that it's text, so an action or button a newer wineo added stays.
+fn valid_button_field(_: &str, item: &Item) -> bool {
+    item.as_str().is_some()
+}
+
 fn valid_game(id: &str, item: &Item) -> bool {
     valid_app_id(id) && item.as_str().and_then(Recorded::from_str).is_some()
 }
@@ -651,6 +735,8 @@ enum Current {
     Desktop,
     Steam,
     SteamGames,
+    Input,
+    InputButtons,
     Preset(usize),
     Entry(usize),
     Unattributed,
@@ -688,6 +774,14 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                     Some(Header::SteamGames) => {
                         salvaged.steam.get_or_insert_default();
                         Current::SteamGames
+                    }
+                    Some(Header::Input) => {
+                        salvaged.input.get_or_insert_default();
+                        Current::Input
+                    }
+                    Some(Header::InputButtons) => {
+                        salvaged.input.get_or_insert_default();
+                        Current::InputButtons
                     }
                     // A name the reader would skip can't be shown or picked.
                     Some(Header::Preset(name)) if readable_name(&name) => {
@@ -761,6 +855,19 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                 .expect("steam section was recorded")
                 .games
                 .offer(text, valid_game),
+            Current::Input => {
+                let input = salvaged.input.as_mut().expect("input section was recorded");
+                match lone_field(text) {
+                    Some((key, item)) => input.read(&key, &item),
+                    None => input.other.fields += 1,
+                }
+            }
+            Current::InputButtons => salvaged
+                .input
+                .as_mut()
+                .expect("input section was recorded")
+                .buttons
+                .offer(text, valid_button_field),
             Current::Preset(index) => salvaged.presets[index].1.offer(text, valid_preset_field),
             Current::Entry(index) => salvaged.entries[index].1.offer(text, valid_entry_field),
         }
@@ -851,6 +958,13 @@ impl Salvaged {
                         steam.read(&key, field);
                     }
                 }
+                ("input", Some(table)) => {
+                    let input = self.input.get_or_insert_default();
+                    for (name, field) in table.iter() {
+                        let key = table.key(name).cloned().unwrap_or_else(|| Key::new(name));
+                        input.read(&key, field);
+                    }
+                }
                 ("presets", Some(presets)) => {
                     for (name, preset) in presets.iter() {
                         let preset = preset.as_table_like().filter(|_| readable_name(name));
@@ -897,6 +1011,12 @@ impl Salvaged {
                 [steam] if steam == "steam" && self.steam.is_some() => Current::Steam,
                 [steam, games] if steam == "steam" && games == "games" && self.steam.is_some() => {
                     Current::SteamGames
+                }
+                [input] if input == "input" && self.input.is_some() => Current::Input,
+                [input, buttons]
+                    if input == "input" && buttons == "buttons" && self.input.is_some() =>
+                {
+                    Current::InputButtons
                 }
                 [presets, name] if presets == "presets" => {
                     match self.presets.iter().position(|(seen, _)| seen == name) {
@@ -954,7 +1074,8 @@ fn last_header(
 }
 
 /// A header line on its own: exactly `[view]`, `[appearance]`, `[desktop]`, `[steam]`,
-/// `[steam.games]`, `[presets.<name>]`, or `[environments.<name>]`.
+/// `[steam.games]`, `[input]`, `[input.buttons]`, `[presets.<name>]`, or
+/// `[environments.<name>]`.
 fn header(line: &str) -> Option<Header> {
     let document = line.parse::<DocumentMut>().ok()?;
     let mut keys = document.iter();
@@ -975,6 +1096,17 @@ fn header(line: &str) -> Option<Header> {
                     .as_table()
                     .is_some_and(|child| child.is_empty())
                     .then_some(Header::SteamGames),
+                _ => None,
+            }
+        }
+        "input" => {
+            let mut children = table.iter();
+            match (children.next(), children.next()) {
+                (None, _) => Some(Header::Input),
+                (Some(("buttons", child)), None) => child
+                    .as_table()
+                    .is_some_and(|child| child.is_empty())
+                    .then_some(Header::InputButtons),
                 _ => None,
             }
         }
@@ -1015,7 +1147,8 @@ fn valid_preset_field(key: &str, item: &Item) -> bool {
         "sort" => item.as_str().and_then(SortKey::from_str).is_some(),
         "descending" | "favorites_first" | "show_hidden" => item.as_bool().is_some(),
         "group" => item.as_str().and_then(GroupBy::parse).is_some(),
-        "layout" => item.as_str().and_then(ViewLayout::parse).is_some(),
+        // Any text, so a layout newer than this release survives its repair.
+        "layout" => item.as_str().is_some(),
         "stores" | "platforms" | "tags" | "not_stores" | "not_platforms" | "not_tags" => item
             .as_array()
             .is_some_and(|list| list.iter().all(|value| value.is_str())),
@@ -1029,8 +1162,9 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
         "descending" | "favorites_first" | "poster_only" => item.as_bool().is_some(),
         "zoom" => read_zoom(item).is_some(),
         "random" => item.as_str().and_then(RandomPool::parse).is_some(),
-        "layout" => item.as_str().and_then(ViewLayout::parse).is_some(),
+        "layout" => item.as_str().is_some(),
         "group" => item.as_str().and_then(GroupBy::parse).is_some(),
+        "coverflow_fullscreen" => item.as_bool().is_some(),
         _ => true,
     }
 }
@@ -1088,6 +1222,9 @@ impl Salvaged {
         if let Some(steam) = self.steam.as_ref().filter(|steam| steam.kept() > 0) {
             document.insert("steam", Item::Table(steam.table()));
         }
+        if let Some(input) = self.input.as_ref().filter(|input| input.kept() > 0) {
+            document.insert("input", Item::Table(input.table()));
+        }
         let mut text = document.to_string();
         if !text.ends_with('\n') {
             text.push('\n');
@@ -1137,6 +1274,10 @@ impl Salvaged {
                 .desktop
                 .as_ref()
                 .map_or(ViewRecovery::Absent, Section::recovery),
+            input: self
+                .input
+                .as_ref()
+                .map_or(ViewRecovery::Absent, InputSection::recovery),
             presets: self.presets_recovery(),
             steam: self
                 .steam

@@ -467,9 +467,9 @@ fn the_toolbar_reads_add_search_sort_filters_then_the_zoom_controls() {
         bounds(&mut laid, POSTER_ONLY_ID).size(),
         Size::new(32.0, 32.0)
     );
-    // The layout segment's two halves make one 64 px control.
+    // The layout segment's three sides make one 96 px control.
     let segment = bounds(&mut laid, crate::layout_switch::ID);
-    assert_eq!(segment.size(), Size::new(64.0, 32.0));
+    assert_eq!(segment.size(), Size::new(96.0, 32.0));
     assert_eq!(slider.x, segment.x + segment.width + 8.0);
 }
 
@@ -1111,27 +1111,29 @@ fn segment_id() -> Vec<iced::widget::Id> {
 
 #[test]
 fn the_segment_keeps_focus_through_its_own_flips_in_both_directions() {
-    use crate::grid_motion::ViewLayout;
-    for start in [ViewLayout::Grid, ViewLayout::List] {
-        let (_root, mut app) = library(4);
-        let _ = app.update(Message::Layout(crate::layout_switch::Event::Set(start)));
-        let mut laid = lay_out(app.view(), app.window_size);
-        focus(&mut laid, crate::layout_switch::ID);
-        let mut tree = laid.into_tree();
-        for key in [
-            Named::ArrowRight,
-            Named::ArrowLeft,
-            Named::Space,
-            Named::Enter,
-        ] {
-            let (next, focused) = press_on_tree(&mut app, tree, key);
-            assert_ne!(app.layout, start, "{key:?} from {start:?} flips");
-            assert_eq!(focused, segment_id(), "{key:?} from {start:?}");
-            let (next, focused) = press_on_tree(&mut app, next, key);
-            assert_eq!(app.layout, start, "{key:?} again flips back");
-            assert_eq!(focused, segment_id(), "{key:?} again");
-            tree = next;
-        }
+    use crate::grid_motion::ViewLayout::{Coverflow, Grid, List};
+    let (_root, mut app) = library(4);
+    let mut laid = lay_out(app.view(), app.window_size);
+    focus(&mut laid, crate::layout_switch::ID);
+    let mut tree = laid.into_tree();
+    // Each key from where the last left it: forward with Right, Space, and
+    // Enter, back with Left, and nothing past either end.
+    for (key, expected) in [
+        (Named::ArrowRight, Coverflow),
+        (Named::ArrowRight, Coverflow),
+        (Named::ArrowLeft, Grid),
+        (Named::Space, Coverflow),
+        (Named::ArrowLeft, Grid),
+        (Named::Enter, Coverflow),
+        (Named::ArrowLeft, Grid),
+        (Named::ArrowLeft, List),
+        (Named::ArrowLeft, List),
+        (Named::ArrowRight, Grid),
+    ] {
+        let (next, focused) = press_on_tree(&mut app, tree, key);
+        assert_eq!(app.layout, expected, "{key:?}");
+        assert_eq!(focused, segment_id(), "{key:?}");
+        tree = next;
     }
 }
 
@@ -1166,7 +1168,7 @@ fn tab_and_shift_tab_leave_the_segment_for_the_right_neighbors_after_a_flip() {
     let tree = laid.into_tree();
     // Grid to list: the slider and the toggle leave, so Tab goes on past
     // the toolbar's end and Shift+Tab goes back to the dice.
-    let (tree, focused) = press_on_tree(&mut app, tree, Named::ArrowRight);
+    let (tree, focused) = press_on_tree(&mut app, tree, Named::ArrowLeft);
     assert_eq!(app.layout, crate::grid_motion::ViewLayout::List);
     assert_eq!(focused, segment_id());
     let (back, before) = step_tab(&mut app, tree, true);
@@ -1188,7 +1190,7 @@ fn tab_and_shift_tab_leave_the_segment_for_the_right_neighbors_after_a_flip() {
     let mut laid = lay_out(app.view(), app.window_size);
     focus(&mut laid, crate::layout_switch::ID);
     let tree = laid.into_tree();
-    let (tree, _) = press_on_tree(&mut app, tree, Named::ArrowLeft);
+    let (tree, _) = press_on_tree(&mut app, tree, Named::ArrowRight);
     assert_eq!(app.layout, crate::grid_motion::ViewLayout::Grid);
     let (tree, next) = step_tab(&mut app, tree, false);
     assert_eq!(next, id(SLIDER_ID));
@@ -1201,6 +1203,11 @@ fn tab_and_shift_tab_leave_the_segment_for_the_right_neighbors_after_a_flip() {
 fn ctrl_l_from_a_focused_zoom_control_leaves_the_toolbar_without_stale_focus() {
     for gone in [SLIDER_ID, POSTER_ONLY_ID] {
         let (_root, mut app) = library(4);
+        // Ctrl+L goes from the grid to coverflow, which keeps the zoom
+        // controls, so start where it leaves for the list.
+        let _ = app.update(Message::Layout(crate::layout_switch::Event::Set(
+            crate::grid_motion::ViewLayout::Coverflow,
+        )));
         let mut laid = lay_out(app.view(), app.window_size);
         focus(&mut laid, gone);
         assert_eq!(laid.focused(), [iced::widget::Id::new(gone)]);

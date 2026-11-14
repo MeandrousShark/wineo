@@ -822,8 +822,7 @@ impl App {
         app.random_pool = saved.view.random;
         app.layout = saved.view.layout;
         app.group = saved.view.group;
-        app.layout_thumb
-            .snap(app.layout == grid_motion::ViewLayout::Grid);
+        app.layout_thumb.snap_to(layout_switch::stop(app.layout));
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);

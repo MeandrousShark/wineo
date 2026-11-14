@@ -242,7 +242,7 @@ fn layout_is_a_known_view_key_and_a_bad_value_is_reported() {
     let inspection = inspect_text("[view]\nlayout = \"table\"\n");
     assert_eq!(
         messages(&inspection, FindingKind::FieldInvalid),
-        ["library.toml: view.layout: expected one of grid, list, found \"table\""]
+        ["library.toml: view.layout: expected one of grid, list, coverflow, found \"table\""]
     );
     assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
     let inspection = inspect_text("[view]\nlayout = true\n");
@@ -468,7 +468,7 @@ not_tags = 5
             r#"library.toml: presets."Couch co-op".favorites_first: expected true or false, found 1"#,
             r#"library.toml: presets."Couch co-op".show_hidden: expected true or false, found "no""#,
             r#"library.toml: presets."Couch co-op".group: expected one of none, recent, tag, source, state, found "genre""#,
-            r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, found true"#,
+            r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, coverflow, found true"#,
             r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
             r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,
             r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found 3"#,
@@ -660,4 +660,97 @@ fn a_bad_on_stop_is_a_field_finding() {
         messages(&inspection, FindingKind::FieldInvalid),
         ["library.toml: desktop.on_stop: expected one of restore, show, found true"]
     );
+}
+
+#[test]
+fn coverflow_is_a_known_layout_in_view_and_presets() {
+    let inspection = inspect_text("[view]\nlayout = \"coverflow\"\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[presets.P]\nlayout = \"coverflow\"\n");
+    assert_eq!(inspection.findings, []);
+    // A layout from a newer wineo warns, naming every one this wineo knows.
+    let inspection = inspect_text("[view]\nlayout = \"carousel\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.layout: expected one of grid, list, coverflow, found \"carousel\""]
+    );
+}
+
+#[test]
+fn coverflow_fullscreen_is_a_known_view_key_and_a_bad_value_is_reported() {
+    let inspection = inspect_text("[view]\ncoverflow_fullscreen = true\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[view]\ncoverflow_fullscreen = \"yes\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.coverflow_fullscreen: expected true or false, found \"yes\""]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+}
+
+#[test]
+fn a_clean_input_table_has_no_findings() {
+    let inspection = inspect_text("[input]\ncontroller = false\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text(
+        "[input]\ncontroller = true\n[input.buttons]\nconfirm = \"b\"\nback = \"a\"\nfavorite = \"rs\"\nlayout = \"view\"\n",
+    );
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\n");
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
+fn bad_input_values_are_field_findings_and_unknown_keys_are_reported() {
+    let inspection = inspect_text(
+        "[input]\ncontroller = \"yes\"\nextra = true\n[input.buttons]\nmark = \"z\"\nfavorite = 3\njump = \"a\"\nback = \"b\"\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: input.controller: expected true or false, found \"yes\"",
+            "library.toml: input.buttons.mark: expected one of a, b, x, y, lb, rb, lt, rt, view, start, ls, rs, found \"z\"",
+            "library.toml: input.buttons.favorite: expected one of a, b, x, y, lb, rb, lt, rt, view, start, ls, rs, found 3",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [
+            "library.toml: input.extra: unknown key, ignored",
+            "library.toml: input.buttons.jump: unknown key, ignored",
+        ]
+    );
+    let inspection = inspect_text("input = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: input: expected a table, found 4"]
+    );
+    let inspection = inspect_text("[input]\nbuttons = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: input.buttons: expected a table, found 4"]
+    );
+}
+
+#[test]
+fn two_actions_on_one_button_is_a_warning_that_says_how_it_resolved() {
+    let inspection = inspect_text("[input.buttons]\nback = \"a\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: input.buttons: back can't use a, which confirm uses; back uses b instead"]
+    );
+    // The default is taken too, so the action is left without a button.
+    let inspection = inspect_text("[input.buttons]\nconfirm = \"y\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: input.buttons: favorite can't use y, which confirm uses; favorite has no button"
+        ]
+    );
+    // A swap is no conflict.
+    let inspection = inspect_text("[input.buttons]\nconfirm = \"b\"\nback = \"a\"\n");
+    assert_eq!(inspection.findings, []);
+    // A bad value is one finding, not a conflict on top of it.
+    let inspection = inspect_text("[input.buttons]\nback = \"z\"\n");
+    assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
 }

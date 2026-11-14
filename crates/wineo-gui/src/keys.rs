@@ -26,6 +26,14 @@ pub(crate) enum Action {
     MarkAll,
     MarkSelected,
     ToggleLayout,
+    /// Home: the first game.
+    First,
+    /// End: the last game.
+    Last,
+    /// PageUp and PageDown: a screenful of rows up or down.
+    Page(Direction),
+    /// F11. Full screen isn't built yet, so it does nothing.
+    ToggleFullscreen,
 }
 
 pub(crate) fn action(
@@ -85,8 +93,26 @@ pub(crate) fn action(
         Key::Named(Named::ArrowUp) if !search_focused => Action::Move(Direction::Up),
         Key::Named(Named::ArrowDown) if !search_focused => Action::Move(Direction::Down),
         Key::Named(Named::Enter) if !search_focused => Action::OpenOrPlay,
+        // A focused text field takes Home and End for its own cursor, so
+        // these wait for the grid like the arrows do.
+        Key::Named(Named::Home) if !search_focused && !jump_modified(modifiers) => Action::First,
+        Key::Named(Named::End) if !search_focused && !jump_modified(modifiers) => Action::Last,
+        Key::Named(Named::PageUp) if !search_focused && !jump_modified(modifiers) => {
+            Action::Page(Direction::Up)
+        }
+        Key::Named(Named::PageDown) if !search_focused && !jump_modified(modifiers) => {
+            Action::Page(Direction::Down)
+        }
+        Key::Named(Named::F11) if !search_focused && !jump_modified(modifiers) => {
+            Action::ToggleFullscreen
+        }
         _ => Action::None,
     }
+}
+
+/// Shift is allowed, as for the letter keys, so Caps Lock doesn't matter.
+fn jump_modified(modifiers: Modifiers) -> bool {
+    modifiers.control() || modifiers.alt() || modifiers.logo()
 }
 
 impl App {
@@ -212,6 +238,10 @@ impl App {
                         | Named::ArrowUp
                         | Named::ArrowDown
                         | Named::Enter
+                        | Named::Home
+                        | Named::End
+                        | Named::PageUp
+                        | Named::PageDown
                 )
             )
         {
@@ -288,38 +318,17 @@ impl App {
                 )
             }
             Action::Move(direction) => {
-                self.interrupt_zoom();
-                let old = self.selected.clone();
-                let places = self.grid_places();
-                // A selection the filters hide stays put when there's
-                // nothing to move to.
-                if places.ids.is_empty() {
-                    return Task::none();
-                }
-                // The arrows walk slots, so stepping onto another copy of
-                // the selected game moves the cursor and leaves the panel.
-                // A cursor on a header starts from there.
-                let current = match self.header_cursor().and_then(|key| {
-                    places
-                        .headers
-                        .iter()
-                        .position(|place| &place.header.key == key)
-                }) {
-                    Some(header) => Some(Spot::Header(header)),
-                    None => self.selected_index(&places).map(Spot::Card),
-                };
-                if let Some(next) = walk(&places, current, direction) {
-                    self.set_cursor(places.ids[next].clone());
-                }
-                if self.selected != old {
-                    self.selection_changed();
-                }
-                Task::batch([
-                    self.scroll_selection(),
-                    self.load_visible_art(),
-                    self.load_panel_art(),
-                ])
+                self.step_cursor(|places, current| walk(places, current, direction))
             }
+            Action::First => self.step_cursor(|places, _| (!places.ids.is_empty()).then_some(0)),
+            Action::Last => self.step_cursor(|places, _| places.ids.len().checked_sub(1)),
+            Action::Page(direction) => {
+                let rows = self.rows_per_screen();
+                self.step_cursor(|places, current| page(places, current, direction, rows))
+            }
+            // Full screen lands with its own step; the key is taken so
+            // nothing else reads it meanwhile.
+            Action::ToggleFullscreen => Task::none(),
             // Same rule as Enter: only a shown card, and only when nothing
             // else has the keys.
             Action::ToggleFavorite => {
@@ -392,6 +401,63 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Moves the cursor to the slot `pick` chooses from where it is now, a
+    /// card or a section's header, and brings it into view.
+    fn step_cursor(
+        &mut self,
+        pick: impl FnOnce(&crate::grid_motion::Places, Option<Spot>) -> Option<usize>,
+    ) -> Task<Message> {
+        self.interrupt_zoom();
+        let old = self.selected.clone();
+        let places = self.grid_places();
+        // A selection the filters hide stays put when there's nothing to
+        // move to.
+        if places.ids.is_empty() {
+            return Task::none();
+        }
+        // The arrows walk slots, so stepping onto another copy of the
+        // selected game moves the cursor and leaves the panel. A cursor on
+        // a header starts from there.
+        let current = match self.header_cursor().and_then(|key| {
+            places
+                .headers
+                .iter()
+                .position(|place| &place.header.key == key)
+        }) {
+            Some(header) => Some(Spot::Header(header)),
+            None => self.selected_index(&places).map(Spot::Card),
+        };
+        if let Some(next) = pick(&places, current) {
+            self.set_cursor(places.ids[next].clone());
+        }
+        if self.selected != old {
+            self.selection_changed();
+        }
+        Task::batch([
+            self.scroll_selection(),
+            self.load_visible_art(),
+            self.load_panel_art(),
+        ])
+    }
+
+    /// How many rows PageUp and PageDown move: the rows that fit in the
+    /// view at once, at least one.
+    fn rows_per_screen(&self) -> usize {
+        let gap = crate::grid_motion::row_gap(self.layout);
+        let tallest = self
+            .grid_places()
+            .slots
+            .iter()
+            .map(|slot| slot.height)
+            .fold(0.0, f32::max);
+        if tallest <= 0.0 {
+            return 1;
+        }
+        ((self.viewport_height + gap) / (tallest + gap))
+            .floor()
+            .max(1.0) as usize
     }
 
     /// The selected game has a copy in view: shown, and not only in
@@ -506,6 +572,28 @@ pub(crate) fn walk(
         .map(|(index, _)| index)
 }
 
+/// The slot PageUp or PageDown moves the cursor to: `rows` steps of the
+/// arrow, stopping at the first or last row rather than wrapping.
+pub(crate) fn page(
+    places: &crate::grid_motion::Places,
+    current: Option<Spot>,
+    direction: Direction,
+    rows: usize,
+) -> Option<usize> {
+    let mut at = walk(places, current, direction)?;
+    // With nothing under the cursor the first press lands on the first
+    // card, like an arrow, instead of going on from there.
+    if current.is_none() {
+        return Some(at);
+    }
+    // The arrow stays on the card at the first or last row, so more steps
+    // than rows left end there.
+    for _ in 1..rows {
+        at = walk(places, Some(Spot::Card(at)), direction).unwrap_or(at);
+    }
+    Some(at)
+}
+
 /// The arrows on one uniform grid, as the art picker's are. `walk` moves
 /// the same way over a flat library.
 pub(crate) fn move_index(
@@ -594,3 +682,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod jump_tests;

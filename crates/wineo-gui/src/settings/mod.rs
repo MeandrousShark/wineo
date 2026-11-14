@@ -343,6 +343,8 @@ impl ChangedFile {
         } else if disk.appearance != texts.appearance
             || disk.auto_import != texts.auto_import
             || disk.desktop != texts.desktop
+            || disk.coverflow_fullscreen != texts.coverflow_fullscreen
+            || disk.input != texts.input
         {
             Self::Library
         } else if disk.themes != texts.themes {
