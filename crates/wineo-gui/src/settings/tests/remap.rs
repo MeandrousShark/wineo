@@ -411,6 +411,28 @@ mod app {
     }
 
     #[test]
+    fn the_rows_open_in_the_connected_pads_labels() {
+        let (_root, paths) = setup();
+        let mut app = App::boot(paths.clone()).0;
+        let dualsense = PadInfo {
+            name: "DualSense Wireless Controller".to_owned(),
+            vendor: Some(0x054c),
+            product: Some(0x0ce6),
+        };
+        let _ = app.update(Message::Pad(PadEvent::Connected(0, dualsense)));
+        let _ = app.open_global_settings();
+        assert_eq!(page(&app).pad_style, crate::pad::Style::PlayStation);
+        let generation = page(&app).generation;
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(&paths),
+        )));
+        let texts = page_texts(page(&app), &paths);
+        assert!(texts.iter().any(|text| text == "L1"), "{texts:?}");
+        assert!(!texts.iter().any(|text| text == "LB"));
+    }
+
+    #[test]
     fn the_wait_gives_up_after_five_seconds_on_the_pad_clock() {
         let (_root, paths) = setup();
         let (mut app, start) = app_in(&paths);

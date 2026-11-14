@@ -947,6 +947,7 @@ impl App {
         self.steam_key_work.sequence = self.steam_key_work.sequence.max(page.steam_key_sequence);
         page.gog.sequence = self.gog_work.sequence;
         page.pads = self.pads.names();
+        page.pad_style = self.pads.recent_style();
         if let Some((sequence, busy)) = self.gog_work.pending {
             page.gog.busy = Some(busy);
             page.gog.busy_sequence = Some(sequence);
