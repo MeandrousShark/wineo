@@ -21,7 +21,9 @@ const SHAPE_HEIGHT: u32 = 1000;
 /// for the fills behind it. Both renderers scale an SVG evenly to fit its
 /// bounds and ignore `preserveAspectRatio`, so each one is drawn at its
 /// cover's own shape, to a thousandth of its height, rather than
-/// stretched.
+/// stretched. It assumes a cover no wider than tall, which a 2:3 poster
+/// never is: the drawing's height is its longer side, the one the
+/// renderers scale to.
 pub(crate) fn shape(tilt: Tilt, size: iced::Size) -> iced::advanced::svg::Handle {
     use std::cell::RefCell;
     use std::collections::HashMap;

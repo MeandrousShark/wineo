@@ -2695,6 +2695,83 @@ fn a_cover_turned_mid_glide_without_its_warp_is_a_blank_card_its_warp_fades_over
 }
 
 #[test]
+fn a_dim_side_cover_shows_the_background_through_it_not_the_cover_behind() {
+    let (_root, mut app) = with_art(9, WIDE);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    red_warps(
+        &mut app,
+        &["game-00", "game-01", "game-02", "game-03"],
+        Tilt::Left,
+    );
+    let geometry = geometry(4.0, 9, WIDE);
+    let (behind, dim, nearer) = (
+        cover(&geometry, 0).bounds,
+        cover(&geometry, 1),
+        cover(&geometry, 2).bounds,
+    );
+    assert!(dim.opacity < 1.0);
+    let y = dim.bounds.center_y();
+    // Over the cover behind it, and clear of it, and of the one in front.
+    let over = Point::new(dim.bounds.x + 3.0, y);
+    let clear = Point::new(behind.x + behind.width + 3.0, y);
+    assert!(behind.contains(over) && !behind.contains(clear));
+    assert!(dim.bounds.contains(clear) && !nearer.contains(clear));
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    assert_eq!(pixel(&pixels, over), pixel(&pixels, clear));
+}
+
+#[test]
+fn a_cover_barely_turned_draws_flat_and_square() {
+    use crate::coverflow_widget::tilted_share;
+    assert_eq!(tilted_share(0.01), 0.0);
+    assert_eq!(tilted_share(-0.015), 0.0);
+    assert_eq!(tilted_share(0.5), 0.5);
+    assert_eq!(tilted_share(-3.0), 1.0);
+}
+
+#[test]
+fn a_late_warp_blends_straight_from_the_card_without_dipping_toward_the_background() {
+    let (_root, mut app) = with_art(9, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    frame(&mut app, &mut clock, 200);
+    // A light card on the dark background, where a dip would show.
+    app.palette.surface = iced::Color::from_rgb(0.9, 0.9, 0.9);
+    let geometry = geometry(4.0, 9, WIDE);
+    let left = cover(&geometry, 2).bounds;
+    let face = Point::new(left.x + left.width * 0.25, left.center_y());
+    assert!(!cover(&geometry, 3).bounds.contains(face));
+    let render = |app: &App| {
+        let mut element = app.strip_view();
+        pixel(&crate::layout_probe::render(&mut element, WIDE), face)
+    };
+    let card = render(&app);
+    let key = (art_of(&app, "game-02"), artwork::Kind::Grid);
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let warp = crate::tilt::warp(&flat, Tilt::Left);
+    let _ = app.update(Message::ArtWarped(key.clone(), false, Tilt::Left, warp));
+    frame(&mut app, &mut clock, 75);
+    assert_eq!(app.warp_shown(&key.0, Tilt::Left), 0.5);
+    let half = render(&app);
+    frame(&mut app, &mut clock, 80);
+    let warp = render(&app);
+    assert!(card[1] > 150 && warp[1] < 40, "{card:?} {warp:?}");
+    // Halfway, half of each, and none of the dark background between.
+    for channel in 0..3 {
+        let mix = (u16::from(card[channel]) + u16::from(warp[channel])) / 2;
+        assert!(
+            u16::from(half[channel]).abs_diff(mix) <= 3,
+            "{half:?}, not between {card:?} and {warp:?}"
+        );
+    }
+}
+
+#[test]
 fn eviction_keeps_the_tilts_the_strip_wants_and_lets_others_go() {
     let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");

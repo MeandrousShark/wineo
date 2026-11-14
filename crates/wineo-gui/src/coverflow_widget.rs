@@ -249,11 +249,31 @@ pub(crate) fn games(count: usize) -> String {
     }
 }
 
+/// Less turned than this, a cover draws flat in a plain rectangle: an SVG
+/// is rasterized again at each new size, so every glide frame, and a
+/// sliver of trapezoid doesn't show.
+const MIN_SHARE: f32 = 0.02;
+
 /// How much of a cover draws in its tilted outline, the trapezoid, rather
 /// than flat: all of it once turned, whether its warp is here or not, and
 /// between the two only as it crosses the middle.
 pub(crate) fn tilted_share(tilt: f32) -> f32 {
-    tilt.abs().min(1.0)
+    let turned = tilt.abs().min(1.0);
+    if turned < MIN_SHARE { 0.0 } else { turned }
+}
+
+/// How much of the blank card a warp fading in at `warped`, drawn at
+/// `alpha` of its own, has the background cover first. The card stays
+/// whole under the warp, and gives way only to what the warp's own fade
+/// shows through once it's in, so the mix goes straight from card to warp
+/// rather than dipping toward the background halfway.
+pub(crate) fn card_gives_way(alpha: f32, warped: f32) -> f32 {
+    let shown = alpha * warped;
+    if shown >= 1.0 {
+        1.0
+    } else {
+        warped * (1.0 - alpha) / (1.0 - shown)
+    }
 }
 
 /// How much of a face's art draws as its warp rather than the blank card
@@ -327,9 +347,6 @@ impl Strip {
     ) {
         let palette = self.palette;
         let (tilt, opacity) = (cover.tilt, cover.opacity);
-        // A faded poster shows the background through it, as in the grid,
-        // and never the covers behind it.
-        fill_outline(renderer, bounds, tilt, share, palette.background);
         let dim = if face.faded {
             crate::panel::DIMMED_OPACITY
         } else {
@@ -339,17 +356,24 @@ impl Strip {
             crate::ui::blend(palette.surface, palette.background, 1.0 - dim),
             opacity,
         );
+        let warped = warp_share(face);
+        // A faded poster shows the background through it, as in the grid,
+        // and never the covers behind it. An opaque card in the same
+        // outline hides it, so it isn't drawn under one.
+        let card_only = surface.a >= 1.0
+            && match face.art {
+                Some(_) => share >= 1.0 && warped == 0.0,
+                None => true,
+            };
+        if !card_only {
+            fill_outline(renderer, bounds, tilt, share, palette.background);
+        }
         match &face.art {
             Some(handle) => {
                 // Turning, the flat art fades into its warp, which fills
                 // the bounds exactly: it's the 2:3 crop the flat art shows.
                 // Flat art never shows turned, so a warp that isn't here
                 // yet has a blank card in its place, which it fades over.
-                let warped = warp_share(face);
-                let blank = share * (1.0 - warped);
-                if blank > 0.0 {
-                    fill_outline(renderer, bounds, tilt, 1.0, surface.scale_alpha(blank));
-                }
                 let flat = 1.0 - share;
                 if flat > 0.0 {
                     renderer.draw_image(
@@ -359,10 +383,19 @@ impl Strip {
                         clip,
                     );
                 }
+                let alpha = dim * opacity;
+                if share > 0.0 && warped < 1.0 {
+                    fill_outline(renderer, bounds, tilt, 1.0, surface.scale_alpha(share));
+                    let behind = card_gives_way(alpha, warped);
+                    if behind > 0.0 {
+                        let veil = palette.background.scale_alpha(share * behind);
+                        fill_outline(renderer, bounds, tilt, 1.0, veil);
+                    }
+                }
                 if let Some(warp) = face.tilted.as_ref().filter(|_| share * warped > 0.0) {
                     renderer.draw_image(
                         iced::advanced::image::Image::new(warp.clone())
-                            .opacity(dim * opacity * share * warped),
+                            .opacity(alpha * share * warped),
                         bounds,
                         clip,
                     );
