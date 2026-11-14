@@ -5,7 +5,11 @@
 use iced::widget::image;
 use iced::{Point, Rectangle, Size, Task};
 
-use crate::grid_motion::{DOCK_WIDTH, GridLayout, Places, Stop, ViewLayout};
+use std::time::{Duration, Instant};
+
+use crate::art_cache::Tilt;
+use crate::coverflow_widget::Caption;
+use crate::grid_motion::{DOCK_WIDTH, GridLayout, Places, Spring, Stop, ViewLayout};
 use crate::keys::Direction;
 use crate::slot::{SectionKey, SlotId};
 use crate::{App, ArtKey, Message, artwork};
@@ -26,8 +30,8 @@ const MIN_SCALE: f32 = 0.5;
 /// How much darker each step from the middle draws.
 const STEP_DIM: f32 = 0.15;
 /// The first neighbor's center from the middle's, in middle widths, and
-/// each later step's, so the side covers overlap.
-const NEAR: f32 = 0.75;
+/// each later step's, so the side covers overlap once tilted.
+const NEAR: f32 = 0.68;
 const FAR: f32 = 0.3;
 /// The room under the middle cover for its title and status line.
 pub(crate) const CAPTION: f32 = 64.0;
@@ -45,6 +49,14 @@ pub(crate) struct Cover {
     pub(crate) bounds: Rectangle,
     pub(crate) scale: f32,
     pub(crate) opacity: f32,
+    /// How far it's turned toward the middle: 0 facing out, -1 fully as a
+    /// cover on the left, 1 as one on the right. Its width narrows with it.
+    pub(crate) tilt: f32,
+}
+
+/// A cover's width, as a share of its flat width, `tilt` of the way turned.
+fn tilted_width(tilt: f32) -> f32 {
+    1.0 - (1.0 - crate::tilt::WIDTH) * tilt.abs().min(1.0)
 }
 
 /// The strip at one position: its covers back to front, and where the
@@ -60,8 +72,14 @@ pub(crate) struct Geometry {
 /// wins in a very narrow window, and never taller than leaves room for the
 /// caption.
 pub(crate) fn middle_size(size: Size) -> Size {
+    middle_size_above(size, 0.0)
+}
+
+/// `middle_size`, with the caption also kept above the bottom `bottom` of
+/// the strip, where the marks and hint bars float.
+fn middle_size_above(size: Size, bottom: f32) -> Size {
     let floor = GridLayout::default().poster_height();
-    let room = (size.height - CAPTION).max(0.0);
+    let room = (size.height - CAPTION - bottom).max(0.0);
     let height = (size.height * HEIGHT_SHARE)
         .max(floor)
         .min(room)
@@ -88,8 +106,18 @@ fn reach(offset: f32) -> f32 {
 /// between two while it moves, in a strip `size` large. Covers more than
 /// `NEIGHBORS` from it fade out over the next stop and then aren't drawn.
 pub(crate) fn geometry(position: f32, count: usize, size: Size) -> Geometry {
-    let middle = middle_size(size);
-    let top = ((size.height - middle.height - CAPTION) / 2.0)
+    geometry_above(position, count, size, 0.0)
+}
+
+/// `geometry`, with the middle cover's caption kept above the bottom
+/// `bottom` of the strip, where the marks and hint bars float: centered as
+/// usual where that's clear, lifted where it isn't, and smaller only when
+/// lifting isn't enough.
+pub(crate) fn geometry_above(position: f32, count: usize, size: Size, bottom: f32) -> Geometry {
+    let middle = middle_size_above(size, bottom);
+    let block = middle.height + CAPTION;
+    let top = ((size.height - block) / 2.0)
+        .min(size.height - bottom - block)
         .max(0.0)
         .round();
     let center = Point::new((size.width / 2.0).round(), top + middle.height / 2.0);
@@ -102,8 +130,9 @@ pub(crate) fn geometry(position: f32, count: usize, size: Size) -> Geometry {
                 return None;
             }
             let scale = scale(distance);
+            let tilt = offset.clamp(-1.0, 1.0);
             let drawn = Size::new(
-                (middle.width * scale).round(),
+                (middle.width * scale * tilted_width(tilt)).round(),
                 (middle.height * scale).round(),
             );
             let x = center.x + reach(offset) * middle.width;
@@ -118,6 +147,7 @@ pub(crate) fn geometry(position: f32, count: usize, size: Size) -> Geometry {
                 ),
                 scale,
                 opacity: (1.0 - STEP_DIM * distance.min(NEIGHBORS as f32)) * fade,
+                tilt,
             })
         })
         .collect();
@@ -146,7 +176,7 @@ pub(crate) fn on_screen(size: Size) -> usize {
     let side = (1..=NEIGHBORS)
         .take_while(|&step| {
             let distance = step as f32;
-            let half = middle.width * scale(distance) / 2.0;
+            let half = middle.width * scale(distance) * tilted_width(1.0) / 2.0;
             reach(distance) * middle.width - half < size.width / 2.0
         })
         .count();
@@ -192,6 +222,15 @@ impl StopId {
                 .get(header)
                 .map(|place| Self::Collapsed(place.header.key.clone())),
         }
+    }
+}
+
+/// The app's card index of the game the stop shows: its own, or a
+/// collapsed section's first.
+fn stop_card(places: &Places, stop: usize) -> Option<usize> {
+    match places.strip.get(stop)? {
+        Stop::Card(index) => places.cards.get(*index).copied(),
+        Stop::Collapsed { first, .. } => *first,
     }
 }
 
@@ -281,38 +320,214 @@ pub(crate) fn page(
     })
 }
 
-/// The strip's place. Moves snap for now, so it rests on the stop it was
-/// sent to.
-#[derive(Debug, Clone, Copy, Default)]
+/// How long the middle's title crossfades when the middle changes, in full
+/// and reduced motion alike.
+pub(crate) const TITLE_FADE: Duration = Duration::from_millis(150);
+/// How far past its stop the strip may swing as it lands, in stops.
+const MAX_OVERSHOOT: f32 = 0.15;
+/// How long the strip's size must hold before its large covers decode for
+/// it, so a window being dragged bigger doesn't decode at every step.
+pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(250);
+
+/// The strip's place: the stop it's heading to and where it's drawn on the
+/// way, a spring like the grid's cards, stepped by the time between frames
+/// so a dropped frame skips ahead rather than slowing the glide.
+#[derive(Debug, Clone)]
 pub(crate) struct Strip {
     target: usize,
-    position: f32,
+    spring: Spring,
+    /// Where the glide set out from, so an overshoot past the stop is
+    /// bounded.
+    from: f32,
+    deadline: Option<Instant>,
+    last_tick: Option<Instant>,
+    generation: u64,
+    /// The caption fading out and how far the new one has come in.
+    title: Option<(Caption, f32)>,
     /// The strip widget's size as last laid out, before the panel's room.
     size: Size,
+    /// The size its large covers decode for, which follows `size` once a
+    /// resize settles.
+    cover_size: Size,
+    /// Counts resizes, so only the last one's wait settles it.
+    resize_generation: u64,
+    resize_pending: bool,
+}
+
+impl Default for Strip {
+    fn default() -> Self {
+        Self {
+            target: 0,
+            spring: Spring::at(0.0, 0.0, Instant::now()),
+            from: 0.0,
+            deadline: None,
+            last_tick: None,
+            generation: 0,
+            title: None,
+            size: Size::ZERO,
+            cover_size: Size::ZERO,
+            resize_generation: 0,
+            resize_pending: false,
+        }
+    }
 }
 
 impl Strip {
+    /// Where the strip is drawn: a stop, or between two while it glides.
     pub(crate) fn position(&self) -> f32 {
-        self.position
+        let target = self.target as f32;
+        let error = self.spring.position() - target;
+        let past = error * (self.from - target) < 0.0 || (self.from == target && error != 0.0);
+        if past {
+            target + MAX_OVERSHOOT * (error / MAX_OVERSHOOT).tanh()
+        } else {
+            self.spring.position()
+        }
     }
 
     pub(crate) fn target(&self) -> usize {
         self.target
     }
 
-    pub(crate) fn center(&mut self, stop: usize) {
+    /// Heads for `stop`, from where it's drawn now. With `snap` it's there
+    /// at once, as reduced motion and a strip nobody sees have it. Either
+    /// way the title crossfades from `before`, the old middle's caption.
+    pub(crate) fn go(&mut self, stop: usize, snap: bool, before: Option<Caption>, now: Instant) {
+        if stop == self.target && (snap || self.deadline.is_some() || self.at_rest()) {
+            if snap {
+                self.snap();
+            }
+            return;
+        }
+        if let Some(before) = before {
+            self.title = Some((before, 0.0));
+            self.last_tick.get_or_insert(now);
+        }
         self.target = stop;
-        self.position = stop as f32;
+        if snap {
+            self.snap();
+            return;
+        }
+        if self.deadline.is_none() {
+            self.last_tick = Some(now);
+        }
+        self.from = self.position();
+        self.deadline = Some(now + crate::grid_motion::DURATION);
     }
 
-    /// Resting on its stop. Covers decode their large art only then, so a
-    /// glide past them queues nothing.
+    /// Puts it on its stop at once, ending a glide but not a title's fade.
+    pub(crate) fn snap(&mut self) {
+        self.spring.rest(self.target as f32);
+        self.from = self.target as f32;
+        self.deadline = None;
+        self.generation = self.generation.wrapping_add(1);
+        if self.title.is_none() {
+            self.last_tick = None;
+        }
+    }
+
+    fn at_rest(&self) -> bool {
+        self.deadline.is_none() && self.spring.position() == self.target as f32
+    }
+
+    /// One frame at `now`. Returns whether the strip came to rest on it.
+    pub(crate) fn tick(&mut self, generation: u64, now: Instant) -> bool {
+        if generation != self.generation || !self.active() {
+            return false;
+        }
+        let previous = self.last_tick.unwrap_or(now);
+        self.last_tick = Some(now);
+        if let Some((_, progress)) = &mut self.title {
+            *progress +=
+                now.saturating_duration_since(previous).as_secs_f32() / TITLE_FADE.as_secs_f32();
+            if *progress >= 1.0 {
+                self.title = None;
+            }
+        }
+        let mut settled = false;
+        if let Some(deadline) = self.deadline {
+            let target = self.target as f32;
+            if now >= deadline {
+                self.spring.rest(target);
+                self.deadline = None;
+                settled = true;
+            } else {
+                self.spring.step(target, previous, deadline, now);
+            }
+        }
+        if !self.active() {
+            self.last_tick = None;
+        }
+        settled
+    }
+
+    /// Gliding, or the title still crossfading.
+    pub(crate) fn active(&self) -> bool {
+        self.deadline.is_some() || self.title.is_some()
+    }
+
+    /// Resting on its stop. Covers decode their large art and warp their
+    /// tilts only then, so a glide past them queues nothing.
     pub(crate) fn settled(&self) -> bool {
-        self.position == self.target as f32
+        self.deadline.is_none()
+    }
+
+    /// The caption fading out under the middle one, and how far along.
+    pub(crate) fn title(&self) -> Option<&(Caption, f32)> {
+        self.title.as_ref()
     }
 
     pub(crate) fn size(&self) -> Size {
         self.size
+    }
+
+    /// Takes the widget's new size. The first one sizes the large covers
+    /// at once; a later one waits for the resize to settle, and gives the
+    /// generation whose wait settles it. `None` when nothing changed.
+    pub(crate) fn measured(&mut self, size: Size) -> Option<Option<u64>> {
+        if size == self.size {
+            return None;
+        }
+        self.size = size;
+        if self.cover_size == Size::ZERO {
+            self.cover_size = size;
+            return Some(None);
+        }
+        self.resize_generation = self.resize_generation.wrapping_add(1);
+        self.resize_pending = true;
+        Some(Some(self.resize_generation))
+    }
+
+    /// The large covers take the size a resize settled on, when the wait
+    /// that ended is the last resize's. Returns whether they did.
+    pub(crate) fn resize_settled(&mut self, generation: u64) -> bool {
+        if !self.resize_pending || generation != self.resize_generation {
+            return false;
+        }
+        self.resize_pending = false;
+        self.cover_size = self.size;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resize_generation(&self) -> u64 {
+        self.resize_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Frames only while it moves or fades, so a still strip asks for none.
+    pub(crate) fn subscription(&self) -> iced::Subscription<Message> {
+        if self.active() {
+            iced::window::frames()
+                .with(self.generation)
+                .map(|(generation, now)| Message::Strip(Event::Tick(generation, now)))
+        } else {
+            iced::Subscription::none()
+        }
     }
 }
 
@@ -327,11 +542,18 @@ pub(crate) enum Event {
     Step(i32),
     /// The widget's size, sent when its layout changes it.
     Measured(Size),
+    /// A frame of the glide or the title's fade.
+    Tick(u64, Instant),
+    /// The wait after the resize with this generation ended.
+    ResizeSettled(u64),
 }
 
 impl Event {
     pub(crate) fn is_input(&self) -> bool {
-        !matches!(self, Self::Measured(_))
+        !matches!(
+            self,
+            Self::Measured(_) | Self::Tick(..) | Self::ResizeSettled(_)
+        )
     }
 }
 
@@ -353,13 +575,40 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             };
             page(places, current, direction, notches.unsigned_abs() as usize)
         }),
-        Event::Measured(size) => {
-            if app.strip.size == size {
-                return Task::none();
+        Event::Tick(generation, now) => {
+            if app.strip.tick(generation, now) {
+                // Settled: the large covers and tilts can start.
+                app.load_visible_art()
+            } else {
+                Task::none()
             }
-            app.strip.size = size;
-            // The middle cover's art follows its size.
-            app.load_visible_art()
+        }
+        Event::Measured(size) => {
+            let Some(resize) = app.strip.measured(size) else {
+                return Task::none();
+            };
+            // More or fewer covers fit now; the large ones wait for the
+            // resize to settle, the last wait replacing any before it.
+            let wait = match resize {
+                Some(generation) => {
+                    let (task, handle) = Task::perform(
+                        async { tokio::time::sleep(RESIZE_SETTLE).await },
+                        move |()| Message::Strip(Event::ResizeSettled(generation)),
+                    )
+                    .abortable();
+                    app.resize_wait = Some(handle.abort_on_drop());
+                    task
+                }
+                None => Task::none(),
+            };
+            Task::batch([app.load_visible_art(), wait])
+        }
+        Event::ResizeSettled(generation) => {
+            if app.strip.resize_settled(generation) {
+                app.load_visible_art()
+            } else {
+                Task::none()
+            }
         }
     }
 }
@@ -436,8 +685,41 @@ impl App {
     /// Centers the strip on the cursor's stop.
     pub(crate) fn center_strip(&mut self) {
         let places = self.grid_places();
-        if let Some(stop) = self.cursor_stop(&places) {
-            self.strip.center(stop);
+        let Some(stop) = self.cursor_stop(&places) else {
+            return;
+        };
+        if stop == self.strip.target() && self.strip.settled() {
+            return;
+        }
+        // Nobody sees a covered or unmeasured strip move, and reduced motion
+        // snaps it; the title fades either way.
+        let snap = self.motion.reduced() || self.panel_hidden() || self.strip.size() == Size::ZERO;
+        let before = (stop != self.strip.target())
+            .then(|| self.caption_at(&places, self.strip.target()))
+            .flatten();
+        self.strip.go(stop, snap, before, crate::clock::now());
+    }
+
+    /// The caption for the stop `at`: its game's title and status, or its
+    /// section's name and count.
+    pub(crate) fn caption_at(&self, places: &Places, at: usize) -> Option<Caption> {
+        match places.strip.get(at)? {
+            Stop::Card(index) => places
+                .cards
+                .get(*index)
+                .and_then(|index| self.cards.get(*index))
+                .map(|card| Caption::Game {
+                    title: card.display_title.clone(),
+                    state: card.state_word(),
+                    dot: card.dot(self.palette),
+                    faded: card.not_installed() || card.hidden,
+                }),
+            Stop::Collapsed { header, .. } => {
+                places.headers.get(*header).map(|place| Caption::Section {
+                    name: place.header.key.title(),
+                    count: place.header.count,
+                })
+            }
         }
     }
 
@@ -541,15 +823,21 @@ impl App {
     /// The `Cover` kind the middle cover decodes at now, if its grid
     /// poster isn't already large enough.
     pub(crate) fn cover_kind(&self) -> Option<artwork::Kind> {
-        let height = middle_size(self.strip_size()).height
+        let size = match self.strip.cover_size {
+            size if size.width > 0.0 && size.height > 0.0 => {
+                area(Rectangle::with_size(size), self.panel_open).size()
+            }
+            _ => self.strip_size(),
+        };
+        let height = middle_size(size).height
             * crate::app_window::factor(self.interface_size)
             * self.display_scale;
         cover_height(height).map(artwork::Kind::Cover)
     }
 
     /// The art the strip draws, in the order it's needed: the grid
-    /// poster of each cover on screen and of the next one past each end,
-    /// from the middle out, then, once the strip rests, the larger `Cover`
+    /// poster of each cover on screen at the stop it's heading to and of
+    /// the next one past each end, from the middle out, then, once the strip rests, the larger `Cover`
     /// of the middle and its two neighbors. A held `Cover` at least as
     /// large is kept rather than decoding another. Each key comes once,
     /// with whether it's drawn dimmed. This is all eviction protects for
@@ -557,13 +845,99 @@ impl App {
     /// cache's budget like any art.
     pub(crate) fn strip_art(&self) -> Vec<(ArtKey, bool)> {
         let places = self.grid_places();
-        let position = self.strip.position();
-        let card_of = |stop: &Stop| match stop {
-            Stop::Card(index) => places.cards.get(*index).copied(),
-            Stop::Collapsed { first, .. } => *first,
+        let near = self.strip_near(&places);
+        let mut seen = std::collections::HashSet::new();
+        let mut keys = Vec::new();
+        let mut push = |key: ArtKey, dimmed: bool| {
+            if seen.insert(key.clone()) {
+                keys.push((key, dimmed));
+            }
         };
-        // The covers on screen and the next one past each end, so a step
-        // finds its poster ready, and nothing more is held for the strip.
+        for stop in &near {
+            if let Some(card) = stop_card(&places, *stop).and_then(|index| self.cards.get(index))
+                && let Some(art) = &card.art
+            {
+                push((art.clone(), artwork::Kind::Grid), card.not_installed());
+            }
+        }
+        if self.strip.settled()
+            && let Some(kind) = self.cover_kind()
+        {
+            let target = self.strip.target();
+            let large = [Some(target), target.checked_sub(1), Some(target + 1)];
+            for stop in large.into_iter().flatten() {
+                let Some(card) = stop_card(&places, stop).and_then(|index| self.cards.get(index))
+                else {
+                    continue;
+                };
+                if let Some(art) = &card.art {
+                    push(self.held_cover(art, kind), card.not_installed());
+                }
+            }
+        }
+        keys
+    }
+
+    /// The tilts the strip wants warped once it rests, each from the flat
+    /// art it's made of, gray or not, and which way: every cover on screen
+    /// but the middle, and the next past each end. The middle's two
+    /// neighbors warp from their large `Cover`, the rest from the grid's
+    /// poster. Nothing while the strip glides.
+    pub(crate) fn strip_tilts(&self) -> Vec<(ArtKey, bool, Tilt)> {
+        if !self.strip.settled() {
+            return Vec::new();
+        }
+        let places = self.grid_places();
+        let target = self.strip.target();
+        self.strip_near(&places)
+            .into_iter()
+            .filter(|stop| *stop != target)
+            .filter_map(|stop| {
+                let card = stop_card(&places, stop).and_then(|index| self.cards.get(index))?;
+                let art = card.art.as_ref()?;
+                let tilt = if stop < target {
+                    Tilt::Left
+                } else {
+                    Tilt::Right
+                };
+                Some((self.tilt_source(art, stop), card.not_installed(), tilt))
+            })
+            .collect()
+    }
+
+    /// The flat art the cover at `stop` warps from: its large `Cover` next
+    /// to the middle, its grid poster elsewhere.
+    fn tilt_source(&self, art: &crate::library::ArtFile, stop: usize) -> ArtKey {
+        match self.cover_kind() {
+            Some(kind) if stop.abs_diff(self.strip.target()) == 1 => self.held_cover(art, kind),
+            _ => (art.clone(), artwork::Kind::Grid),
+        }
+    }
+
+    /// The cover at `stop` turned `tilt`'s way, warped from the art it
+    /// wants or, while that warps, from its grid poster.
+    pub(crate) fn strip_tilted(
+        &self,
+        card: &crate::library::Card,
+        stop: usize,
+        tilt: Tilt,
+    ) -> Option<image::Handle> {
+        let art = card.art.as_ref()?;
+        let dimmed = card.not_installed();
+        self.images
+            .shown_tilted(&self.tilt_source(art, stop), dimmed, tilt)
+            .or_else(|| {
+                self.images
+                    .shown_tilted(&(art.clone(), artwork::Kind::Grid), dimmed, tilt)
+            })
+            .cloned()
+    }
+
+    /// The stops whose art the strip holds, nearest the stop it's heading
+    /// to first: the covers on screen there and the next past each end. A
+    /// cover the strip only glides past isn't among them.
+    fn strip_near(&self, places: &Places) -> Vec<usize> {
+        let position = self.strip.target() as f32;
         let size = self.strip_size();
         let shown = geometry(position, places.strip.len(), size)
             .covers
@@ -585,41 +959,7 @@ impl App {
                 .abs()
                 .total_cmp(&(*b as f32 - position).abs())
         });
-        let mut seen = std::collections::HashSet::new();
-        let mut keys = Vec::new();
-        let mut push = |key: ArtKey, dimmed: bool| {
-            if seen.insert(key.clone()) {
-                keys.push((key, dimmed));
-            }
-        };
-        for stop in &near {
-            if let Some(card) =
-                card_of(&places.strip[*stop]).and_then(|index| self.cards.get(index))
-                && let Some(art) = &card.art
-            {
-                push((art.clone(), artwork::Kind::Grid), card.not_installed());
-            }
-        }
-        if self.strip.settled()
-            && let Some(kind) = self.cover_kind()
-        {
-            let target = self.strip.target();
-            let large = [Some(target), target.checked_sub(1), Some(target + 1)];
-            for stop in large.into_iter().flatten() {
-                let Some(card) = places
-                    .strip
-                    .get(stop)
-                    .and_then(card_of)
-                    .and_then(|index| self.cards.get(index))
-                else {
-                    continue;
-                };
-                if let Some(art) = &card.art {
-                    push(self.held_cover(art, kind), card.not_installed());
-                }
-            }
-        }
-        keys
+        near
     }
 
     /// The `Cover` key for `art` at `kind`, or a larger one already held.
@@ -667,7 +1007,7 @@ impl App {
 impl App {
     /// The strip with the section's label above it.
     pub(crate) fn strip_view(&self) -> iced::Element<'_, Message> {
-        use crate::coverflow_widget::{Caption, Face};
+        use crate::coverflow_widget::Face;
         let places = self.grid_places();
         let position = self.strip.position();
         let middle = self.strip.target();
@@ -682,10 +1022,19 @@ impl App {
                     }
                 };
                 let card = card.and_then(|index| self.cards.get(index));
+                // The side it's on as drawn now, which a glide can change.
+                let side = if (stop as f32) < position {
+                    Tilt::Left
+                } else {
+                    Tilt::Right
+                };
                 Some(Face {
                     stop,
                     id: StopId::of(&places, places.strip[stop])?,
                     art: card.and_then(|card| self.strip_handle(card, stop)),
+                    tilted: card
+                        .filter(|_| stop as f32 != position)
+                        .and_then(|card| self.strip_tilted(card, stop, side)),
                     title: card
                         .map(|card| card.display_title.clone())
                         .unwrap_or_default(),
@@ -697,18 +1046,10 @@ impl App {
                 })
             })
             .collect();
-        let caption = match places.strip.get(middle) {
-            Some(Stop::Card(index)) => places
-                .cards
-                .get(*index)
-                .and_then(|index| self.cards.get(*index))
-                .map(|card| Caption {
-                    title: card.display_title.clone(),
-                    state: card.state_word(),
-                    dot: card.dot(self.palette),
-                    faded: card.not_installed() || card.hidden,
-                }),
-            _ => None,
+        let captions = crate::coverflow_widget::Captions {
+            now: self.caption_at(&places, middle),
+            before: self.strip.title().map(|(caption, _)| caption.clone()),
+            progress: self.strip.title().map_or(1.0, |(_, progress)| *progress),
         };
         // The middle stop's section, collapsed or open, which the label
         // collapses or opens.
@@ -735,7 +1076,8 @@ impl App {
                 position,
                 middle,
                 self.panel_open,
-                caption,
+                self.bar_room(),
+                captions,
                 self.palette,
             ),
         ]

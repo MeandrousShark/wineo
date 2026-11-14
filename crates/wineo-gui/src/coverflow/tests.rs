@@ -292,7 +292,11 @@ fn boot() -> (tempfile::TempDir, App) {
         (key == "HOME").then(|| home.as_os_str().to_owned())
     })
     .unwrap();
-    (root, App::boot(paths).0)
+    let mut app = App::boot(paths).0;
+    // Moves snap, so the tests of what the strip shows and does see it at
+    // rest; the motion tests turn full motion back on.
+    app.motion.system_reduced = true;
+    (root, app)
 }
 
 /// Three tag sections of six games each, a, b, and c, in coverflow.
@@ -449,6 +453,86 @@ fn a_selection_filtered_out_hands_the_middle_to_the_first_game() {
     // The new selection holds and the strip recenters on it.
     assert_eq!(selected(&app), "game-10");
     assert_eq!(app.strip.target(), 10);
+}
+
+/// Presses right `presses` times from rest, then lets two frames pass so
+/// the strip is between stops. Returns where it's drawn.
+fn glide_midway(app: &mut App, clock: &mut crate::clock::Fake, presses: usize) -> f32 {
+    for _ in 0..presses {
+        press(app, Named::ArrowRight);
+    }
+    frame(app, clock, 16);
+    frame(app, clock, 50);
+    let at = app.strip.position();
+    assert!(!app.strip.settled());
+    assert!(at.fract() != 0.0 && at < app.strip.target() as f32, "{at}");
+    at
+}
+
+#[test]
+fn filtering_mid_glide_retargets_from_where_the_strip_is() {
+    // The selection survives the filter and its stop moves down.
+    let (_root, mut app, mut clock) = moving(30, 12);
+    let at = glide_midway(&mut app, &mut clock, 3);
+    assert_eq!(app.strip.target(), 15);
+    let _ = app.update(Message::SearchChanged("game-1".into()));
+    assert_eq!((selected(&app), app.strip.target()), ("game-15", 5));
+    assert_eq!(middle(&app), "game-15");
+    assert_eq!(app.strip.position(), at, "no jump on the filter");
+    assert!(!app.strip.settled());
+    frame(&mut app, &mut clock, 16);
+    let early = app.strip.position();
+    assert!(early < at && early > 5.0, "{early} from {at}");
+    frame(&mut app, &mut clock, 400);
+    assert_eq!(app.strip.position(), 5.0);
+    assert!(app.strip.settled());
+
+    // A selection the filter drops hands the middle to the first game,
+    // glide from the fractional position and all.
+    let (_root, mut app, mut clock) = moving(30, 2);
+    let at = glide_midway(&mut app, &mut clock, 6);
+    assert_eq!(app.strip.target(), 8);
+    let _ = app.update(Message::SearchChanged("game-1".into()));
+    assert_eq!((selected(&app), app.strip.target()), ("game-10", 0));
+    assert_eq!(middle(&app), "game-10");
+    assert_eq!(app.strip.position(), at);
+    // It carries its motion into the new glide before turning back.
+    frame(&mut app, &mut clock, 16);
+    let early = app.strip.position();
+    assert!((early - at).abs() < 1.0, "{early} from {at}");
+    frame(&mut app, &mut clock, 100);
+    assert!(
+        app.strip.position() < at,
+        "{} from {at}",
+        app.strip.position()
+    );
+    frame(&mut app, &mut clock, 400);
+    assert_eq!(app.strip.position(), 0.0);
+    assert!(app.strip.settled());
+    assert_eq!(middle(&app), selected(&app));
+
+    // Nothing matches: the strip rests with nothing to draw and nothing
+    // left to glide to.
+    let (_root, mut app, mut clock) = moving(30, 2);
+    glide_midway(&mut app, &mut clock, 6);
+    let _ = app.update(Message::SearchChanged("no such game".into()));
+    assert!(app.grid_places().strip.is_empty());
+    for _ in 0..3 {
+        frame(&mut app, &mut clock, 400);
+    }
+    assert!(app.strip.settled() && !app.strip.active());
+    assert_eq!(app.strip.position(), app.strip.target() as f32);
+    assert!(geometry(app.strip.position(), 0, WIDE).covers.is_empty());
+    {
+        let mut element = app.strip_view();
+        let _ = crate::layout_probe::render(&mut element, WIDE);
+    }
+    // The filter clearing brings the strip back to the selection.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    frame(&mut app, &mut clock, 400);
+    assert!(app.strip.settled());
+    assert_eq!(app.strip.position(), app.strip.target() as f32);
+    assert_eq!(middle(&app), selected(&app));
 }
 
 #[test]
@@ -750,7 +834,7 @@ fn press_at(
     window: &mut crate::more_menu::tests::Window,
     app: &mut App,
     point: Point,
-    clock: &mut crate::coverflow_widget::clock::Fake,
+    clock: &mut crate::clock::Fake,
 ) -> Vec<Message> {
     clock.advance(std::time::Duration::from_millis(50));
     let mut messages = Vec::new();
@@ -774,7 +858,7 @@ fn double_clicked(messages: &[Message]) -> bool {
 #[test]
 fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
     let (_root, mut app) = flat(10);
-    let mut clock = crate::coverflow_widget::clock::Fake::start();
+    let mut clock = crate::clock::Fake::start();
     select(&mut app, "game-04");
     let mut window = crate::more_menu::tests::Window::new(&mut app);
     // A side cover, then the middle it became.
@@ -842,7 +926,7 @@ fn a_quick_second_click_on_another_middle_cover_isnt_a_double_click() {
 #[test]
 fn two_presses_on_the_middle_too_far_apart_are_not_a_double_click() {
     let (_root, mut app) = flat(10);
-    let mut clock = crate::coverflow_widget::clock::Fake::start();
+    let mut clock = crate::clock::Fake::start();
     select(&mut app, "game-04");
     let _ = app.update(Message::ClosePanel);
     app.panel_motion.snap(false);
@@ -1009,7 +1093,7 @@ fn the_strip_wants_the_drawn_posters_and_the_middle_three_large() {
         keys.iter().map(|(key, _)| key.clone()).collect()
     );
     // A small window decodes nothing larger than the grid poster.
-    let _ = app.update(Message::Strip(Event::Measured(Size::new(900.0, 600.0))));
+    resize(&mut app, Size::new(900.0, 600.0));
     assert!(kinds(&app.strip_art(), is_cover).is_empty());
 }
 
@@ -1017,7 +1101,9 @@ fn the_strip_wants_the_drawn_posters_and_the_middle_three_large() {
 fn no_large_cover_is_asked_for_while_the_strip_moves() {
     let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
-    app.strip.position = 9.4;
+    let clock = crate::clock::Fake::start();
+    app.strip.go(11, false, None, clock.now());
+    assert!(!app.strip.settled());
     let keys = app.strip_art();
     assert!(kinds(&keys, is_cover).is_empty(), "{keys:?}");
     assert!(!kinds(&keys, is_grid).is_empty());
@@ -1045,7 +1131,7 @@ fn a_larger_cover_already_held_is_kept_after_a_shrink() {
     let pixel = image::Handle::from_rgba(1, 1, vec![0; 4]);
     let held = (art_of(&app, "game-10"), big);
     app.art_loaded(held.clone(), false, pixel);
-    let _ = app.update(Message::Strip(Event::Measured(Size::new(1800.0, 1100.0))));
+    resize(&mut app, Size::new(1800.0, 1100.0));
     let smaller = app.cover_kind().expect("still large");
     assert_ne!(smaller, big);
     let keys = app.strip_art();
@@ -1454,6 +1540,13 @@ fn entering_full_screen_resizes_the_strip_to_the_new_window() {
     assert_eq!(selected(&app), "game-12");
 }
 
+/// The strip resized to `size` and the resize settled.
+fn resize(app: &mut App, size: Size) {
+    let _ = app.update(Message::Strip(Event::Measured(size)));
+    let generation = app.strip.resize_generation();
+    let _ = app.update(Message::Strip(Event::ResizeSettled(generation)));
+}
+
 /// `sectioned`, with `game` also tagged `also`.
 fn sectioned_with(game: &str, also: &str) -> (tempfile::TempDir, App) {
     let (root, mut app) = sectioned();
@@ -1685,7 +1778,7 @@ fn picking_the_cards_game_by_name_shows_the_hidden_panel_instead_of_closing_it()
 fn a_second_press_six_pixels_away_is_not_a_double_click() {
     for (offset, double) in [(6.0, false), (5.0, true)] {
         let (_root, mut app) = flat(10);
-        let mut clock = crate::coverflow_widget::clock::Fake::start();
+        let mut clock = crate::clock::Fake::start();
         select(&mut app, "game-04");
         let _ = app.update(Message::ClosePanel);
         app.panel_motion.snap(false);
@@ -1703,5 +1796,601 @@ fn a_second_press_six_pixels_away_is_not_a_double_click() {
             double,
             "{offset} px"
         );
+    }
+}
+
+/// `flat(count)` with full motion, at rest on `game-{at}` with its panel
+/// shut, and a clock that only moves when told to.
+fn moving(count: usize, at: usize) -> (tempfile::TempDir, App, crate::clock::Fake) {
+    let (root, mut app) = flat(count);
+    let clock = crate::clock::Fake::start();
+    select(&mut app, &format!("game-{at:02}"));
+    let _ = app.update(Message::ClosePanel);
+    app.strip.snap();
+    let _ = app.update(Message::Strip(Event::Tick(
+        app.strip.generation(),
+        clock.now() + std::time::Duration::from_secs(1),
+    )));
+    app.motion.system_reduced = false;
+    assert!(!app.strip.active());
+    (root, app, clock)
+}
+
+/// A frame `ms` after the clock's now.
+fn frame(app: &mut App, clock: &mut crate::clock::Fake, ms: u64) {
+    clock.advance(std::time::Duration::from_millis(ms));
+    let _ = app.update(Message::Strip(Event::Tick(
+        app.strip.generation(),
+        clock.now(),
+    )));
+}
+
+#[test]
+fn a_move_glides_to_its_stop_and_then_asks_for_no_more_frames() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(app.strip.target(), 6);
+    assert_eq!(app.strip.position(), 5.0, "nothing moves before a frame");
+    assert!(app.strip.active() && !app.strip.settled());
+    frame(&mut app, &mut clock, 16);
+    let early = app.strip.position();
+    assert!(early > 5.0 && early < 6.0, "{early}");
+    frame(&mut app, &mut clock, 50);
+    assert!(app.strip.position() > early);
+    frame(&mut app, &mut clock, 300);
+    assert_eq!(app.strip.position(), 6.0);
+    assert!(app.strip.settled());
+    assert!(!app.strip.active(), "the title's fade ended first");
+    // A frame after it rests changes nothing.
+    let generation = app.strip.generation();
+    frame(&mut app, &mut clock, 16);
+    assert_eq!(
+        (app.strip.position(), app.strip.generation()),
+        (6.0, generation)
+    );
+}
+
+#[test]
+fn a_dropped_frame_skips_ahead_to_where_the_glide_would_be() {
+    let clock = crate::clock::Fake::start();
+    let start = clock.now();
+    let mut smooth = Strip::default();
+    let mut dropped = Strip::default();
+    for strip in [&mut smooth, &mut dropped] {
+        strip.size = WIDE;
+        strip.go(8, false, None, start);
+    }
+    let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+    for ms in [16, 32, 48] {
+        smooth.tick(smooth.generation(), at(ms));
+    }
+    dropped.tick(dropped.generation(), at(48));
+    assert!((smooth.position() - dropped.position()).abs() < 1e-3);
+    assert!(dropped.position() > 0.5, "{}", dropped.position());
+}
+
+#[test]
+fn a_long_jump_swings_past_its_stop_by_a_fraction_of_a_cover_at_most() {
+    let clock = crate::clock::Fake::start();
+    let start = clock.now();
+    let mut strip = Strip::default();
+    strip.go(40, false, None, start);
+    let mut furthest: f32 = 0.0;
+    for ms in (5..=300).step_by(5) {
+        strip.tick(
+            strip.generation(),
+            start + std::time::Duration::from_millis(ms),
+        );
+        furthest = furthest.max(strip.position());
+    }
+    assert!(furthest <= 40.0 + MAX_OVERSHOOT, "{furthest}");
+    assert!(furthest > 39.0);
+    assert_eq!(strip.position(), 40.0);
+}
+
+#[test]
+fn a_held_key_glides_through_without_stopping_at_each_cover() {
+    let (_root, mut app, mut clock) = moving(30, 2);
+    let mut last = app.strip.position();
+    for _ in 0..8 {
+        press(&mut app, Named::ArrowRight);
+        // Two frames between repeats, 30 ms apart.
+        for _ in 0..2 {
+            frame(&mut app, &mut clock, 15);
+            let now = app.strip.position();
+            assert!(now > last, "{now} after {last}");
+            last = now;
+        }
+    }
+    assert_eq!(app.strip.target(), 10);
+    assert!(app.strip.position() < 10.0, "it trails the held key");
+    frame(&mut app, &mut clock, 300);
+    assert_eq!(app.strip.position(), 10.0);
+    assert!(app.strip.settled());
+}
+
+#[test]
+fn reduced_motion_snaps_the_strip_and_keeps_the_titles_crossfade() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    app.motion.system_reduced = true;
+    let before = app.caption_at(&app.grid_places(), 5);
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(app.strip.position(), 6.0);
+    assert!(app.strip.settled());
+    assert_eq!(
+        app.strip.title().map(|(caption, _)| caption.clone()),
+        before
+    );
+    assert_eq!(app.strip.title().map(|(_, progress)| *progress), Some(0.0));
+    assert!(app.strip.active(), "frames for the fade");
+    frame(&mut app, &mut clock, 75);
+    let half = app.strip.title().map(|(_, progress)| *progress).unwrap();
+    assert!((half - 0.5).abs() < 1e-3, "{half}");
+    frame(&mut app, &mut clock, 75);
+    assert!(app.strip.title().is_none());
+    assert!(!app.strip.active());
+}
+
+#[test]
+fn full_motion_crossfades_the_title_too() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    press(&mut app, Named::ArrowRight);
+    assert!(app.strip.title().is_some());
+    frame(&mut app, &mut clock, TITLE_FADE.as_millis() as u64);
+    assert!(app.strip.title().is_none());
+    assert!(app.strip.active(), "still gliding");
+}
+
+#[test]
+fn a_covered_strip_ends_its_glide_where_it_was_heading() {
+    let (_root, mut app, mut clock) = moving(20, 5);
+    press(&mut app, Named::End);
+    frame(&mut app, &mut clock, 16);
+    assert!(!app.strip.settled());
+    let _ = app.update(Message::OpenSettings);
+    assert!(app.settings.is_some());
+    assert!(app.strip.settled());
+    assert_eq!(app.strip.position(), 19.0);
+    // A frame for the glide that ended is ignored.
+    let stale = app.strip.generation().wrapping_sub(1);
+    let _ = app.update(Message::Strip(Event::Tick(stale, clock.now())));
+    assert_eq!(app.strip.position(), 19.0);
+}
+
+#[test]
+fn switching_into_coverflow_shows_the_strip_on_its_stop_at_once() {
+    let (_root, mut app, _clock) = moving(20, 2);
+    let _ = app.switch_layout(ViewLayout::Grid);
+    select(&mut app, "game-15");
+    let _ = app.switch_layout(ViewLayout::Coverflow);
+    assert_eq!(app.strip.target(), 15);
+    assert_eq!(app.strip.position(), 15.0);
+    assert!(app.strip.settled());
+}
+
+#[test]
+fn side_covers_turn_toward_the_middle_and_narrow_as_they_turn() {
+    let rest = geometry(10.0, 30, WIDE);
+    let middle = cover(&rest, 10);
+    assert_eq!(middle.tilt, 0.0);
+    assert_eq!(cover(&rest, 9).tilt, -1.0);
+    assert_eq!(cover(&rest, 13).tilt, 1.0);
+    let flat = 330.0 * scale(1.0);
+    assert_eq!(
+        cover(&rest, 11).bounds.width,
+        (flat * crate::tilt::WIDTH).round()
+    );
+    // Halfway between two stops, both are half turned, each its own way.
+    let between = geometry(10.5, 30, WIDE);
+    assert_eq!(cover(&between, 10).tilt, -0.5);
+    assert_eq!(cover(&between, 11).tilt, 0.5);
+    let half = cover(&between, 10).bounds.width;
+    let full = (330.0 * scale(0.5) * crate::tilt::WIDTH).round();
+    assert!(half > full, "{half} > {full}");
+}
+
+fn tilts_named(app: &App) -> Vec<(String, Tilt, bool)> {
+    let mut named: Vec<_> = app
+        .strip_tilts()
+        .into_iter()
+        .map(|((file, kind), _, tilt)| {
+            let name = file
+                .path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            (name, tilt, matches!(kind, artwork::Kind::Cover(_)))
+        })
+        .collect();
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    named
+}
+
+#[test]
+fn the_strip_wants_each_side_cover_tilted_its_way_and_the_neighbors_from_their_large_cover() {
+    let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
+    select(&mut app, "game-10");
+    let tilts = tilts_named(&app);
+    // The nine on screen and one past each end, but the middle.
+    assert_eq!(tilts.len(), 10, "{tilts:?}");
+    assert!(tilts.iter().all(|(name, _, _)| name != "game-10"));
+    for (name, tilt, large) in &tilts {
+        let stop: usize = name["game-".len()..].parse().unwrap();
+        assert_eq!(*tilt == Tilt::Left, stop < 10, "{name}");
+        assert_eq!(*large, stop.abs_diff(10) == 1, "{name}");
+    }
+    // With no large cover at this size, the neighbors warp from the grid's.
+    resize(&mut app, Size::new(900.0, 600.0));
+    assert!(tilts_named(&app).iter().all(|(_, _, large)| !large));
+}
+
+/// Gives every game solid red grid art, as if decoded.
+fn red_posters(app: &mut App) {
+    for card in app.cards.clone() {
+        let key = (card.art.clone().unwrap(), artwork::Kind::Grid);
+        app.images.insert(
+            key,
+            false,
+            image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495)),
+        );
+    }
+}
+
+fn warping_names(app: &App) -> std::collections::BTreeSet<String> {
+    app.warping
+        .iter()
+        .map(|((file, _), _, _)| {
+            file.path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn a_warp_waits_for_its_flat_art_and_then_starts() {
+    let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
+    red_posters(&mut app);
+    select(&mut app, "game-10");
+    let warping = warping_names(&app);
+    // Every grid-sourced side cover is warping; the neighbors wait for
+    // their large covers.
+    assert!(
+        warping.contains("game-08") && warping.contains("game-12"),
+        "{warping:?}"
+    );
+    assert!(
+        !warping.contains("game-09") && !warping.contains("game-11"),
+        "{warping:?}"
+    );
+    let kind = app.cover_kind().unwrap();
+    let key = (art_of(&app, "game-11"), kind);
+    let _ = app.update(Message::ArtLoaded(
+        key.clone(),
+        false,
+        Ok(image::Handle::from_rgba(480, 720, vec![0; 480 * 720 * 4])),
+    ));
+    assert!(app.warping.contains(&(key, false, Tilt::Right)));
+}
+
+#[test]
+fn a_warp_for_a_cover_no_longer_near_the_middle_is_dropped() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    red_posters(&mut app);
+    select(&mut app, "game-10");
+    let wanted = (art_of(&app, "game-12"), artwork::Kind::Grid);
+    let stale = (art_of(&app, "game-25"), artwork::Kind::Grid);
+    let warped = || Some(image::Handle::from_rgba(1, 1, vec![0; 4]));
+    let _ = app.update(Message::ArtWarped(
+        stale.clone(),
+        false,
+        Tilt::Right,
+        warped(),
+    ));
+    assert!(!app.images.contains_tilted(&stale, false, Tilt::Right));
+    // The wrong way round for where it sits is stale too.
+    let _ = app.update(Message::ArtWarped(
+        wanted.clone(),
+        false,
+        Tilt::Left,
+        warped(),
+    ));
+    assert!(!app.images.contains_tilted(&wanted, false, Tilt::Left));
+    let _ = app.update(Message::ArtWarped(
+        wanted.clone(),
+        false,
+        Tilt::Right,
+        warped(),
+    ));
+    assert!(app.images.contains_tilted(&wanted, false, Tilt::Right));
+    assert!(!app.warping.contains(&(wanted, false, Tilt::Right)));
+}
+
+#[test]
+fn nothing_large_or_tilted_is_queued_while_the_strip_glides() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    red_posters(&mut app);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-05");
+    app.motion.system_reduced = false;
+    app.warping.clear();
+    app.loading.clear();
+    press(&mut app, Named::PageDown);
+    assert!(!app.strip.settled());
+    frame(&mut app, &mut clock, 16);
+    assert!(app.warping.is_empty(), "{:?}", warping_names(&app));
+    let kind = app.cover_kind().unwrap();
+    assert!(app.loading.iter().all(|((_, held), _)| *held != kind));
+    frame(&mut app, &mut clock, 300);
+    assert!(app.strip.settled());
+    assert!(!app.warping.is_empty());
+    assert!(app.loading.iter().any(|((_, held), _)| *held == kind));
+}
+
+#[test]
+fn a_tilted_cover_draws_its_warp_with_the_far_corners_clear() {
+    let (_root, mut app) = with_art(9, WIDE);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    let geometry = geometry(4.0, 9, WIDE);
+    let left = cover(&geometry, 2).bounds;
+    let render = |app: &App| {
+        let mut element = app.strip_view();
+        crate::layout_probe::render(&mut element, WIDE)
+    };
+    // Flat until its warp arrives, so its far top corner is art.
+    let corner = Point::new(left.x + 2.0, left.y + 2.0);
+    assert!(pixel(&render(&app), corner)[0] > 60);
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let warp = crate::tilt::warp(&flat, Tilt::Left).unwrap();
+    app.images.insert_tilted(
+        (art_of(&app, "game-02"), artwork::Kind::Grid),
+        false,
+        Tilt::Left,
+        warp,
+    );
+    let pixels = render(&app);
+    let background = pixel(&pixels, Point::new(5.0, 5.0));
+    assert_eq!(
+        pixel(&pixels, corner),
+        background,
+        "the trapezoid leaves it clear"
+    );
+    // Where that clear corner crosses the cover behind it, that cover
+    // shows: nothing square is drawn behind or over the warp.
+    let behind = cover(&geometry, 1).bounds;
+    let over = Point::new(left.x + 2.0, behind.y + 3.0);
+    assert!(behind.contains(over) && over.y < left.y + left.height * crate::tilt::INSET);
+    let seen = pixel(&pixels, over);
+    assert!(seen[0] > background[0] + 40, "{seen:?}");
+    // Its near top corner and its middle are art, dimmed.
+    let near = pixel(&pixels, Point::new(left.x + left.width - 3.0, left.y + 3.0));
+    assert!(near[0] > background[0] + 40, "{near:?}");
+    assert!(pixel(&pixels, left.center())[0] > background[0] + 40);
+}
+
+#[test]
+fn eviction_keeps_the_tilts_the_strip_wants_and_lets_others_go() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    select(&mut app, "game-10");
+    let wanted = (art_of(&app, "game-12"), artwork::Kind::Grid);
+    let other = (art_of(&app, "game-25"), artwork::Kind::Grid);
+    app.images = crate::art_cache::ArtCache::with_budget(4);
+    let warped = || image::Handle::from_rgba(1, 1, vec![0; 4]);
+    // The wanted one is the older, so only its protection keeps it.
+    app.images
+        .insert_tilted(wanted.clone(), false, Tilt::Right, warped());
+    app.images
+        .insert_tilted(other.clone(), false, Tilt::Right, warped());
+    app.evict_art();
+    assert!(app.images.contains_tilted(&wanted, false, Tilt::Right));
+    assert!(!app.images.contains_tilted(&other, false, Tilt::Right));
+}
+
+#[test]
+fn a_resize_asks_for_a_larger_cover_only_once_it_settles() {
+    let (_root, mut app) = with_art(20, WIDE);
+    select(&mut app, "game-10");
+    let before = app.cover_kind().expect("a large cover");
+    app.loading.clear();
+    let larger = |app: &App| {
+        app.loading
+            .iter()
+            .any(|((_, kind), _)| matches!(kind, artwork::Kind::Cover(_)) && *kind != before)
+    };
+    // A drag through two sizes asks for nothing larger yet.
+    let _ = app.update(Message::Strip(Event::Measured(Size::new(2200.0, 1300.0))));
+    let first = app.strip.resize_generation();
+    let _ = app.update(Message::Strip(Event::Measured(Size::new(2400.0, 1400.0))));
+    assert_eq!(app.cover_kind(), Some(before));
+    assert!(!larger(&app));
+    // The first step's wait ending is stale: the drag went on.
+    let _ = app.update(Message::Strip(Event::ResizeSettled(first)));
+    assert_eq!(app.cover_kind(), Some(before));
+    assert!(!larger(&app));
+    // The last one's settles it.
+    let last = app.strip.resize_generation();
+    let _ = app.update(Message::Strip(Event::ResizeSettled(last)));
+    assert_ne!(app.cover_kind(), Some(before));
+    assert!(larger(&app));
+    // The strip itself took the new size at once all the same.
+    assert_eq!(app.strip.size(), Size::new(2400.0, 1400.0));
+}
+
+#[test]
+fn in_a_short_window_the_caption_lifts_clear_of_the_bars() {
+    let bottom = 80.0;
+    // Tall enough, nothing moves.
+    assert_eq!(
+        geometry_above(10.0, 30, WIDE, bottom),
+        geometry(10.0, 30, WIDE)
+    );
+    // Short: the cover and caption lift, the cover keeping its size.
+    let short = Size::new(1600.0, 420.0);
+    let lifted = geometry_above(10.0, 30, short, bottom);
+    let caption = lifted.caption;
+    assert!(
+        caption.y + caption.height <= short.height - bottom,
+        "{caption:?}"
+    );
+    assert_eq!(
+        cover(&lifted, 10).bounds.size(),
+        cover(&geometry(10.0, 30, short), 10).bounds.size()
+    );
+    assert!(cover(&lifted, 10).bounds.y < cover(&geometry(10.0, 30, short), 10).bounds.y);
+    // Shorter still, the cover shrinks to fit above them.
+    let shorter = Size::new(1600.0, 330.0);
+    let squeezed = geometry_above(10.0, 30, shorter, bottom);
+    assert!(squeezed.caption.y + squeezed.caption.height <= shorter.height - bottom);
+    assert!(cover(&squeezed, 10).bounds.y >= 0.0);
+}
+
+#[test]
+fn the_marks_bar_lifts_the_strip_in_a_short_window() {
+    let short = Size::new(1600.0, 420.0);
+    let (_root, mut app) = with_art(9, short);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    let drawn = |app: &App| {
+        let mut element = app.strip_view();
+        crate::layout_probe::render(&mut element, short)
+    };
+    let pixel_at = |pixels: &[u8], point: Point| -> [u8; 4] {
+        let index = (point.y as usize * short.width as usize + point.x as usize) * 4;
+        pixels[index..index + 4].try_into().unwrap()
+    };
+    let flat = cover(&geometry(4.0, 9, short), 4).bounds;
+    let below_lifted = Point::new(flat.center_x(), flat.y + flat.height - 3.0);
+    assert!(
+        pixel_at(&drawn(&app), below_lifted)[0] > 150,
+        "the cover reaches here"
+    );
+    app.marked.insert("game-02".into());
+    assert!(app.bar_room() > 0.0);
+    let lifted = cover(&geometry_above(4.0, 9, short, app.bar_room()), 4).bounds;
+    assert!(lifted.y + lifted.height < below_lifted.y);
+    let seen = pixel_at(&drawn(&app), below_lifted);
+    assert!(seen[0] < 100, "lifted off it: {seen:?}");
+}
+
+#[test]
+fn a_log_left_open_on_the_cards_game_is_hidden_with_the_panel() {
+    let (_root, mut app) = sectioned();
+    select(&mut app, "b-0");
+    app.log_view = true;
+    assert!(app.panel_log_visible());
+    collapse(&mut app, "b");
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-0", "the same game, so the log stayed");
+    assert!(app.log_view);
+    assert!(!app.panel_log_visible());
+    assert!(!app.library_overlay_open(), "the pad isn't held up by it");
+    // Nor by the panel's other views, left open on that game.
+    app.version = Some(crate::version_picker::Picker::for_test("b-0".into()));
+    app.show_checkup_results("b-0");
+    assert!(!app.version_visible());
+    assert!(!app.checkup_visible());
+    assert!(!app.library_overlay_open());
+    app.version = None;
+    // Esc falls through it, as it does past the hidden panel.
+    let _ = app.update(Message::SearchChanged("-".into()));
+    press(&mut app, Named::Escape);
+    assert!(app.search.is_empty());
+}
+
+/// A poster `width` by `height` of opaque noise, so nothing about it is
+/// cheaper to draw than real art.
+fn noise(width: u32, height: u32, seed: u32) -> image::Handle {
+    let mut state = seed.wrapping_mul(2_654_435_761) | 1;
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for _ in 0..width * height {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let [r, g, b, _] = state.to_le_bytes();
+        pixels.extend_from_slice(&[r, g, b, 255]);
+    }
+    image::Handle::from_rgba(width, height, pixels)
+}
+
+/// The tiny-skia frame time of a held slide through the strip at full
+/// screen sizes: each frame builds the strip, lays it out, and draws it
+/// with the CPU renderer, covers tilted and the middle's large cover in.
+/// Only meaningful in an optimized build:
+/// `cargo test -p wineo-gui --profile release-test frame_time -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement, run optimized by hand"]
+fn frame_time_of_a_held_slide_under_tiny_skia() {
+    use std::time::{Duration, Instant};
+    for size in [Size::new(2560.0, 1440.0), Size::new(1920.0, 1080.0)] {
+        let (_root, mut app) = with_art(40, size);
+        app.motion.system_reduced = false;
+        let mut clock = crate::clock::Fake::start();
+        select(&mut app, "game-05");
+        let _ = app.update(Message::ClosePanel);
+        app.panel_motion.snap(true);
+        let kind = app.cover_kind();
+        for (index, card) in app.cards.clone().iter().enumerate() {
+            let art = card.art.clone().unwrap();
+            let poster = noise(320, 480, index as u32 + 1);
+            for tilt in [Tilt::Left, Tilt::Right] {
+                let warp = crate::tilt::warp(&poster, tilt).unwrap();
+                app.images
+                    .insert_tilted((art.clone(), artwork::Kind::Grid), false, tilt, warp);
+            }
+            app.images
+                .insert((art.clone(), artwork::Kind::Grid), false, poster);
+            if let Some(kind) = kind {
+                let artwork::Kind::Cover(height) = kind else {
+                    unreachable!()
+                };
+                let height = u32::from(height);
+                let large = noise(height * 2 / 3, height, index as u32);
+                // The middle's neighbors settle on warps of the large
+                // cover, so the frame measured draws those, not the small
+                // grid ones. The slide passes every stop, so every card
+                // has them.
+                for tilt in [Tilt::Left, Tilt::Right] {
+                    let warp = crate::tilt::warp(&large, tilt).unwrap();
+                    app.images
+                        .insert_tilted((art.clone(), kind), false, tilt, warp);
+                }
+                app.images.insert((art, kind), false, large);
+            }
+        }
+        let mut renderer = crate::layout_probe::renderer();
+        let mut times = Vec::new();
+        for frame in 0..240 {
+            // A held key repeats every 30 ms; frames come every 16.7 ms.
+            if frame % 2 == 0 && app.strip.target() < 35 {
+                press(&mut app, Named::ArrowRight);
+            }
+            clock.advance(Duration::from_micros(16_700));
+            let _ = app.update(Message::Strip(Event::Tick(
+                app.strip.generation(),
+                clock.now(),
+            )));
+            let started = Instant::now();
+            let mut element = app.strip_view();
+            let _ = crate::layout_probe::render_with(&mut renderer, &mut element, size);
+            if frame >= 30 {
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        let median = times[times.len() / 2];
+        let p95 = times[times.len() * 95 / 100];
+        eprintln!(
+            "{}x{}: median {median:.1} ms, p95 {p95:.1} ms over {} frames",
+            size.width,
+            size.height,
+            times.len()
+        );
+        assert!(!times.is_empty());
     }
 }

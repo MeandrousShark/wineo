@@ -295,8 +295,12 @@ impl App {
             _ => self.chosen_target(card),
         }
     }
+    /// The panel's log shows: open, and in a panel that isn't hidden by a
+    /// coverflow card.
     pub(crate) fn panel_log_visible(&self) -> bool {
-        self.log_view && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
+        self.log_view
+            && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
+            && !self.panel_hidden_by_card()
     }
     /// Closes the log, and the Version view, which takes the same place in
     /// the panel, so whatever leaves one leaves both.

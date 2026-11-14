@@ -21,7 +21,7 @@ use crate::{CARD_WIDTH, GAP, SCROLL_ID};
 pub(crate) use wineo_core::library::ViewLayout;
 use wineo_core::library::{ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
-const DURATION: Duration = Duration::from_millis(300);
+pub(crate) const DURATION: Duration = Duration::from_millis(300);
 /// Cards that arrive or leave fade over this long.
 pub(crate) const FADE: Duration = Duration::from_millis(150);
 const FREQUENCY: f32 = 28.0;
@@ -155,7 +155,7 @@ impl GridLayout {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Spring {
+pub(crate) struct Spring {
     position: f32,
     velocity: f32,
     raw_position: f32,
@@ -164,7 +164,7 @@ struct Spring {
 }
 
 impl Spring {
-    fn at(position: f32, velocity: f32, delay_until: Instant) -> Self {
+    pub(crate) fn at(position: f32, velocity: f32, delay_until: Instant) -> Self {
         Self {
             position,
             velocity,
@@ -197,8 +197,12 @@ impl Spring {
         self.velocity = self.raw_velocity * envelope + error * derivative;
     }
 
+    pub(crate) fn position(&self) -> f32 {
+        self.position
+    }
+
     /// One frame toward `target`, starting no earlier than its delay.
-    fn step(&mut self, target: f32, previous: Instant, deadline: Instant, now: Instant) {
+    pub(crate) fn step(&mut self, target: f32, previous: Instant, deadline: Instant, now: Instant) {
         let start = previous.max(self.delay_until);
         if now > start {
             self.advance(target, now.duration_since(start).as_secs_f32());
@@ -206,7 +210,7 @@ impl Spring {
         self.present(target, deadline, now);
     }
 
-    fn rest(&mut self, target: f32) {
+    pub(crate) fn rest(&mut self, target: f32) {
         self.position = target;
         self.velocity = 0.0;
         self.raw_position = target;

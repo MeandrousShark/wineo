@@ -29,11 +29,13 @@ pub(crate) enum Tilt {
 
 impl Tilt {
     const ALL: [Self; 3] = [Self::None, Self::Left, Self::Right];
+    pub(crate) const SIDES: [Self; 2] = [Self::Left, Self::Right];
 }
 
 /// Library art by key, whether it was decoded gray, and its tilt. A card
 /// normally holds one gray or color variant; the other only lingers while
-/// the wanted one decodes. Everything here is flat art for now.
+/// the wanted one decodes. A tilt is coverflow's warp of the flat art its
+/// key names.
 pub(crate) struct ArtCache<K> {
     entries: HashMap<(K, bool, Tilt), Entry>,
     bytes: usize,
@@ -89,15 +91,25 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
     }
 
     pub(crate) fn insert(&mut self, key: K, dimmed: bool, handle: image::Handle) {
+        self.insert_tilted(key, dimmed, Tilt::None, handle);
+    }
+
+    pub(crate) fn insert_tilted(
+        &mut self,
+        key: K,
+        dimmed: bool,
+        tilt: Tilt,
+        handle: image::Handle,
+    ) {
         let bytes = match &handle {
             image::Handle::Rgba { pixels, .. } => pixels.len(),
             _ => 0,
         };
-        self.remove(&key, dimmed);
+        self.remove_tilted(&key, dimmed, tilt);
         self.clock = self.clock.wrapping_add(1);
         self.bytes += bytes;
         self.entries.insert(
-            (key, dimmed, Tilt::None),
+            (key, dimmed, tilt),
             Entry {
                 handle,
                 bytes,
@@ -106,8 +118,25 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
         );
     }
 
+    pub(crate) fn contains_tilted(&self, key: &K, dimmed: bool, tilt: Tilt) -> bool {
+        self.entries.contains_key(&(key.clone(), dimmed, tilt))
+    }
+
+    /// The tilt asked for, gray or not as asked, or the other while that
+    /// one is still warping.
+    pub(crate) fn shown_tilted(&self, key: &K, dimmed: bool, tilt: Tilt) -> Option<&image::Handle> {
+        self.entries
+            .get(&(key.clone(), dimmed, tilt))
+            .or_else(|| self.entries.get(&(key.clone(), !dimmed, tilt)))
+            .map(|entry| &entry.handle)
+    }
+
     pub(crate) fn remove(&mut self, key: &K, dimmed: bool) {
-        if let Some(old) = self.entries.remove(&(key.clone(), dimmed, Tilt::None)) {
+        self.remove_tilted(key, dimmed, Tilt::None);
+    }
+
+    fn remove_tilted(&mut self, key: &K, dimmed: bool, tilt: Tilt) {
+        if let Some(old) = self.entries.remove(&(key.clone(), dimmed, tilt)) {
             self.bytes -= old.bytes;
         }
     }
@@ -140,12 +169,19 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
     /// Drops the least recently used art until the cache fits its budget,
     /// never anything in `protected`. Protected art alone can exceed the
     /// budget on a very large window, and then the cache stays over.
+    #[cfg(test)]
     pub(crate) fn evict(&mut self, protected: impl Fn(&K) -> bool) {
+        self.evict_where(|key, _| protected(key));
+    }
+
+    /// `evict`, protecting by key and tilt, so a cover's flat art can stay
+    /// while a tilt it no longer needs goes.
+    pub(crate) fn evict_where(&mut self, protected: impl Fn(&K, Tilt) -> bool) {
         while self.bytes > self.budget {
             let Some(oldest) = self
                 .entries
                 .iter()
-                .filter(|((key, _, _), _)| !protected(key))
+                .filter(|((key, _, tilt), _)| !protected(key, *tilt))
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone())
             else {
@@ -194,6 +230,27 @@ mod tests {
         assert_eq!(cache.bytes(), 8);
         cache.evict(|_| true);
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn tilts_are_kept_apart_from_flat_art_and_evicted_by_their_own_protection() {
+        let mut cache = ArtCache::with_budget(12);
+        let (flat, left) = (handle(4), handle(4));
+        cache.insert("a", false, flat.clone());
+        cache.insert_tilted("a", false, Tilt::Left, left.clone());
+        assert_eq!(cache.shown(&"a", false), Some(&flat));
+        assert_eq!(cache.shown_tilted(&"a", false, Tilt::Left), Some(&left));
+        assert_eq!(cache.shown_tilted(&"a", true, Tilt::Left), Some(&left));
+        assert_eq!(cache.shown_tilted(&"a", false, Tilt::Right), None);
+        assert!(cache.contains_tilted(&"a", false, Tilt::Left));
+        assert!(!cache.contains_tilted(&"a", true, Tilt::Left));
+        cache.insert_tilted("a", false, Tilt::Right, handle(8));
+        // Over budget: the flat art is protected, the tilts by tilt.
+        cache.evict_where(|_, tilt| tilt != Tilt::Left);
+        assert!(!cache.contains_tilted(&"a", false, Tilt::Left));
+        assert!(cache.contains(&"a", false));
+        assert!(cache.contains_tilted(&"a", false, Tilt::Right));
+        assert_eq!(cache.bytes(), 12);
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod bulk_tags;
 mod checkup;
 mod checkup_work;
 mod chips;
+mod clock;
 mod collapse;
 mod coverflow;
 mod coverflow_widget;
@@ -99,6 +100,7 @@ mod test_runners;
 mod test_script;
 mod theme;
 mod tile_title;
+mod tilt;
 mod toolbar_squeeze;
 mod tools_navigation;
 mod tools_page;
@@ -318,6 +320,11 @@ pub(crate) struct App {
     /// The grid art `load_visible_art` last found around the viewport, which
     /// eviction leaves alone.
     visible_art: HashSet<ArtKey>,
+    /// The tilts coverflow's strip wants, by the flat art each warps from,
+    /// which eviction keeps and a finished warp must still be among.
+    visible_tilts: HashSet<(ArtKey, art_cache::Tilt)>,
+    /// Tilts being warped off the UI thread.
+    warping: HashSet<(ArtKey, bool, art_cache::Tilt)>,
     /// Caps concurrent art decodes, since a huge source costs far more memory
     /// than its thumbnail.
     decodes: Arc<tokio::sync::Semaphore>,
@@ -341,6 +348,8 @@ pub(crate) struct App {
     scroll_offset: f32,
     scroll_visible_until: Option<Instant>,
     scroll_wake: wake::Wake,
+    /// The wait for coverflow's last resize to settle, aborted by the next.
+    resize_wait: Option<iced::task::Handle>,
     pub(crate) operation: Option<Operation>,
     /// The game an install or uninstall request is being handed to Steam for.
     pub(crate) steam_request: Option<String>,
@@ -554,6 +563,8 @@ pub(crate) enum Message {
     SystemMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
+    /// A tilt of the art, gray or not, warped off the UI thread.
+    ArtWarped(ArtKey, bool, art_cache::Tilt, Option<image::Handle>),
     Scrolled(scrollable::Viewport),
     GridCardLocated(slot::SlotId, u64, grid_motion::CardBounds),
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
@@ -790,6 +801,8 @@ impl App {
             images: art_cache::ArtCache::default(),
             loading: HashSet::new(),
             visible_art: HashSet::new(),
+            visible_tilts: HashSet::new(),
+            warping: HashSet::new(),
             decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
             failed_images: HashSet::new(),
@@ -806,6 +819,7 @@ impl App {
             scroll_offset: 0.0,
             scroll_visible_until: None,
             scroll_wake: wake::Wake::default(),
+            resize_wait: None,
             operation: None,
             steam_request: None,
             panel_error: None,
@@ -1128,6 +1142,12 @@ impl App {
         } else {
             self.zooming.subscription()
         };
+        // Frames only while the strip shows and moves or fades.
+        let strip = if self.layout == grid_motion::ViewLayout::Coverflow && !self.panel_hidden() {
+            self.strip.subscription()
+        } else {
+            Subscription::none()
+        };
         let collapse = if !self.panel_hidden() && self.collapse.animating() {
             window::frames()
                 .with(self.collapse.generation())
@@ -1204,6 +1224,7 @@ impl App {
             self.details_fade.subscription(),
             zoom,
             collapse,
+            strip,
             layout_thumb,
             if self.pad_reading {
                 pad::reader::subscription()
@@ -1678,6 +1699,9 @@ impl App {
                 Task::none()
             }
             Message::ArtLoaded(key, dimmed, result) => self.art_result(key, dimmed, result)?,
+            Message::ArtWarped(key, dimmed, tilt, warped) => {
+                self.art_warped(key, dimmed, tilt, warped)
+            }
             Message::Scrolled(viewport) => self.grid_scrolled(viewport),
             Message::GridCardLocated(slot, generation, bounds) => {
                 self.grid_card_located(slot, generation, bounds)?

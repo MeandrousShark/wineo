@@ -1,5 +1,6 @@
 //! Draws coverflow's strip from `coverflow::geometry` and turns presses
-//! and the wheel on it into messages. Covers are flat for now.
+//! and the wheel on it into messages. The covers beside the middle one
+//! draw as warps tilted toward it, flat until their warp is ready.
 
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
@@ -39,6 +40,8 @@ pub(crate) struct Face {
     pub(crate) stop: usize,
     pub(crate) id: StopId,
     pub(crate) art: Option<image::Handle>,
+    /// Its art warped toward the middle, for the side it's on, once warped.
+    pub(crate) tilted: Option<image::Handle>,
     /// The title the name card shows when there's no art.
     pub(crate) title: String,
     /// Hidden or not installed, which the grid fades too.
@@ -49,25 +52,42 @@ pub(crate) struct Face {
     pub(crate) section: Option<(String, usize)>,
 }
 
-/// The middle game's lines under its cover.
-#[derive(Debug, Clone)]
-pub(crate) struct Caption {
-    pub(crate) title: String,
-    pub(crate) state: &'static str,
-    pub(crate) dot: Color,
-    pub(crate) faded: bool,
+/// The lines under the middle cover: a game's title and status, or a
+/// collapsed section's name and count.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Caption {
+    Game {
+        title: String,
+        state: &'static str,
+        dot: Color,
+        faded: bool,
+    },
+    /// A collapsed section's name and game count.
+    Section { name: String, count: usize },
+}
+
+/// The captions under the middle cover: the one for the middle now, and
+/// while the title crossfades, the one it's replacing and how far the new
+/// one has come in.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Captions {
+    pub(crate) now: Option<Caption>,
+    pub(crate) before: Option<Caption>,
+    pub(crate) progress: f32,
 }
 
 /// The strip of `count` stops at `position`, drawing `faces`, with the
 /// cover at `middle` taking the clicks a grid card does. `open` keeps the
 /// docked panel's room.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn strip<'a>(
     faces: Vec<Face>,
     count: usize,
     position: f32,
     middle: usize,
     open: bool,
-    caption: Option<Caption>,
+    bottom: f32,
+    captions: Captions,
     palette: Palette,
 ) -> Element<'a, Message> {
     Element::new(Strip {
@@ -76,7 +96,8 @@ pub(crate) fn strip<'a>(
         position,
         middle,
         open,
-        caption,
+        bottom,
+        captions,
         palette,
     })
 }
@@ -87,7 +108,9 @@ struct Strip {
     position: f32,
     middle: usize,
     open: bool,
-    caption: Option<Caption>,
+    /// How much of the strip's bottom the marks and hint bars cover.
+    bottom: f32,
+    captions: Captions,
     palette: Palette,
 }
 
@@ -111,50 +134,6 @@ impl Press {
 const DOUBLE_CLICK: Duration = Duration::from_millis(300);
 const DOUBLE_CLICK_DISTANCE: f32 = 6.0;
 
-/// When a press happens: the real clock, or the one a test set, so a
-/// double click doesn't depend on how fast a loaded machine runs it.
-fn now() -> Instant {
-    #[cfg(test)]
-    if let Some(now) = clock::FAKE.with(std::cell::Cell::get) {
-        return now;
-    }
-    Instant::now()
-}
-
-#[cfg(test)]
-pub(crate) mod clock {
-    use std::cell::Cell;
-    use std::time::Instant;
-
-    thread_local! {
-        pub(super) static FAKE: Cell<Option<Instant>> = const { Cell::new(None) };
-    }
-
-    /// A clock for this thread's presses that only moves when told to,
-    /// back to the real one when dropped.
-    pub(crate) struct Fake(Instant);
-
-    impl Fake {
-        pub(crate) fn start() -> Self {
-            let at = Instant::now();
-            FAKE.with(|fake| fake.set(Some(at)));
-            Self(at)
-        }
-
-        pub(crate) fn advance(&mut self, by: std::time::Duration) {
-            self.0 += by;
-            let at = self.0;
-            FAKE.with(|fake| fake.set(Some(at)));
-        }
-    }
-
-    impl Drop for Fake {
-        fn drop(&mut self) {
-            FAKE.with(|fake| fake.set(None));
-        }
-    }
-}
-
 #[derive(Default)]
 struct State {
     /// The size last sent to the app, which sizes the strip's art and its
@@ -174,7 +153,8 @@ impl Strip {
 
     fn geometry(&self, bounds: Rectangle) -> (Rectangle, coverflow::Geometry) {
         let area = coverflow::area(bounds, self.open);
-        let geometry = coverflow::geometry(self.position, self.count, area.size());
+        let geometry =
+            coverflow::geometry_above(self.position, self.count, area.size(), self.bottom);
         (area, geometry)
     }
 
@@ -262,7 +242,37 @@ pub(crate) fn games(count: usize) -> String {
 }
 
 impl Strip {
-    fn draw_face(&self, renderer: &mut Renderer, face: &Face, bounds: Rectangle, clip: Rectangle) {
+    /// A cover's outline filled in `color`: the tilt's trapezoid once it's
+    /// more turned than not, a rectangle before that.
+    fn fill_shape(&self, renderer: &mut Renderer, bounds: Rectangle, tilt: f32, color: Color) {
+        if tilt.abs() < 0.5 {
+            quad(renderer, bounds, color, Border::default());
+            return;
+        }
+        let shape = if tilt < 0.0 {
+            crate::tilt::LEFT_SHAPE
+        } else {
+            crate::tilt::RIGHT_SHAPE
+        };
+        // The renderer's tint ignores its alpha, so the shape fades by
+        // opacity.
+        renderer.draw_svg(
+            iced::advanced::svg::Svg::new(iced::advanced::svg::Handle::from_memory(shape))
+                .color(Color { a: 1.0, ..color })
+                .opacity(color.a),
+            bounds,
+            bounds,
+        );
+    }
+
+    fn draw_face(
+        &self,
+        renderer: &mut Renderer,
+        face: &Face,
+        bounds: Rectangle,
+        tilt: f32,
+        clip: Rectangle,
+    ) {
         let palette = self.palette;
         let edge = Border::default().width(1).color(palette.border);
         if face.section.is_some() {
@@ -279,20 +289,34 @@ impl Strip {
         }
         // A faded poster shows the background through it, as in the grid,
         // and never the covers behind it.
-        quad(renderer, bounds, palette.background, Border::default());
+        self.fill_shape(renderer, bounds, tilt, palette.background);
         let dim = if face.faded {
             crate::panel::DIMMED_OPACITY
         } else {
             1.0
         };
+        // Turning, the flat art fades into its warp, which fills the bounds
+        // exactly: it's the 2:3 crop the flat art shows.
+        let turned = tilt.abs().min(1.0);
+        let warp = face.tilted.as_ref().filter(|_| turned > 0.0);
         match &face.art {
             Some(handle) => {
                 if let Some(frame) = bounds.intersection(&clip) {
-                    renderer.draw_image(
-                        iced::advanced::image::Image::new(handle.clone()).opacity(dim),
-                        cover_fit(handle, bounds),
-                        frame,
-                    );
+                    let flat = if warp.is_some() { 1.0 - turned } else { 1.0 };
+                    if flat > 0.0 {
+                        renderer.draw_image(
+                            iced::advanced::image::Image::new(handle.clone()).opacity(dim * flat),
+                            cover_fit(handle, bounds),
+                            frame,
+                        );
+                    }
+                    if let Some(warp) = warp {
+                        renderer.draw_image(
+                            iced::advanced::image::Image::new(warp.clone()).opacity(dim * turned),
+                            bounds,
+                            frame,
+                        );
+                    }
                 }
             }
             None => {
@@ -332,17 +356,29 @@ impl Strip {
     /// The badges over a cover's art, as a grid poster draws them and
     /// scaled with the cover: the mark's check top left, the favorite's
     /// star top right. Nothing else shows on a cover.
-    fn draw_badges(&self, renderer: &mut Renderer, face: &Face, bounds: Rectangle) {
+    fn draw_badges(&self, renderer: &mut Renderer, face: &Face, bounds: Rectangle, tilt: f32) {
         use crate::library_actions::{MARK_BACKDROP, MARK_ICON, MARK_MARGIN, MARK_SIZE, STAR};
         let scale = bounds.height / crate::grid_motion::GridLayout::default().poster_height();
         let (size, icon, margin) = (MARK_SIZE * scale, MARK_ICON * scale, MARK_MARGIN * scale);
+        let side = if tilt < 0.0 {
+            crate::art_cache::Tilt::Left
+        } else {
+            crate::art_cache::Tilt::Right
+        };
         let chip = |left: bool| {
             let x = if left {
                 bounds.x + margin
             } else {
                 bounds.x + bounds.width - margin - size
             };
-            Rectangle::new(Point::new(x, bounds.y + margin), Size::new(size, size))
+            // A tilted cover's top slopes down to its far edge; the badge
+            // keeps its margin below it.
+            let across = (x + size / 2.0 - bounds.x) / bounds.width;
+            let drop = crate::tilt::top_inset(side, across) * tilt.abs().min(1.0) * bounds.height;
+            Rectangle::new(
+                Point::new(x, bounds.y + drop + margin),
+                Size::new(size, size),
+            )
         };
         let glyph = |renderer: &mut Renderer, chip: Rectangle, bytes: &'static [u8], color| {
             let inset = (size - icon) / 2.0;
@@ -380,26 +416,31 @@ impl Strip {
         }
     }
 
-    fn draw_caption(&self, renderer: &mut Renderer, caption: Rectangle, clip: Rectangle) {
-        let palette = self.palette;
-        let Some(face) = self.face(self.middle) else {
-            return;
-        };
-        let x = caption.center_x();
+    /// The middle's title and status line at `alpha`, as the title
+    /// crossfades.
+    fn draw_caption(
+        &self,
+        renderer: &mut Renderer,
+        caption: &Caption,
+        area: Rectangle,
+        alpha: f32,
+        clip: Rectangle,
+    ) {
+        let palette = self.palette.faded(alpha);
+        let x = area.center_x();
         let title_font = crate::fonts::semibold();
         let body = renderer.default_font();
-        let (title, faded) = match (&face.section, &self.caption) {
-            (Some((name, _)), _) => (name.clone(), false),
-            (None, Some(caption)) => (caption.title.clone(), caption.faded),
-            (None, None) => return,
+        let (title, faded) = match caption {
+            Caption::Section { name, .. } => (name.clone(), false),
+            Caption::Game { title, faded, .. } => (title.clone(), *faded),
         };
-        let title = crate::tile_title::fit(&title, caption.width, TITLE_SIZE, title_font);
+        let title = crate::tile_title::fit(&title, area.width, TITLE_SIZE, title_font);
         line(
             renderer,
             title,
             x,
-            caption.y,
-            caption.width,
+            area.y,
+            area.width,
             TITLE_SIZE,
             title_font,
             if faded {
@@ -409,21 +450,21 @@ impl Strip {
             },
             clip,
         );
-        let y = caption.y + TITLE_SIZE * 1.3 + 6.0;
-        match (&face.section, &self.caption) {
-            (Some((_, count)), _) => line(
+        let y = area.y + TITLE_SIZE * 1.3 + 6.0;
+        match caption {
+            Caption::Section { count, .. } => line(
                 renderer,
                 games(*count),
                 x,
                 y,
-                caption.width,
+                area.width,
                 STATUS_SIZE,
                 body,
                 palette.muted,
                 clip,
             ),
-            (None, Some(caption)) => {
-                let width = crate::tile_title::line_width(caption.state, STATUS_SIZE, body);
+            Caption::Game { state, dot, .. } => {
+                let width = crate::tile_title::line_width(state, STATUS_SIZE, body);
                 let gap = 8.0;
                 let left = x - (DOT + gap + width) / 2.0;
                 let height = STATUS_SIZE * 1.3;
@@ -433,12 +474,12 @@ impl Strip {
                         Point::new(left, y + (height - DOT) / 2.0),
                         Size::new(DOT, DOT),
                     ),
-                    caption.dot,
+                    dot.scale_alpha(alpha),
                     Border::default().rounded(DOT / 2.0),
                 );
                 line(
                     renderer,
-                    caption.state.to_owned(),
+                    (*state).to_owned(),
                     left + DOT + gap + width / 2.0,
                     y,
                     width + 2.0,
@@ -448,7 +489,6 @@ impl Strip {
                     clip,
                 );
             }
-            (None, None) => {}
         }
     }
 }
@@ -509,7 +549,7 @@ impl Widget<Message, Theme, Renderer> for Strip {
                 let Some(point) = cursor.position_over(bounds) else {
                     return;
                 };
-                let at = now();
+                let at = crate::clock::now();
                 let previous = state.last_click.take();
                 // A double click stays with the middle cover it started on
                 // while that's still the middle, though the first click
@@ -624,22 +664,22 @@ impl Widget<Message, Theme, Renderer> for Strip {
             // Each cover is a layer of its own, since a layer draws its
             // quads before its images, whatever order they came in.
             renderer.with_layer(clip, |renderer| {
-                self.draw_face(renderer, face, bounds, clip);
+                self.draw_face(renderer, face, bounds, cover.tilt, clip);
             });
             // The badges' icons draw after their layer's quads, so the
             // shade over them is a layer of its own.
             if Self::badged(face) {
                 renderer.with_layer(clip, |renderer| {
-                    self.draw_badges(renderer, face, bounds);
+                    self.draw_badges(renderer, face, bounds, cover.tilt);
                 });
             }
             if cover.opacity < 1.0 {
                 renderer.with_layer(clip, |renderer| {
-                    quad(
+                    self.fill_shape(
                         renderer,
                         bounds,
+                        cover.tilt,
                         shade.scale_alpha(1.0 - cover.opacity),
-                        Border::default(),
                     );
                 });
             }
@@ -673,7 +713,19 @@ impl Widget<Message, Theme, Renderer> for Strip {
                     clip,
                 );
             }
-            self.draw_caption(renderer, geometry.caption + origin, clip);
+            let area = geometry.caption + origin;
+            let captions = &self.captions;
+            if let Some(before) = &captions.before {
+                self.draw_caption(renderer, before, area, 1.0 - captions.progress, clip);
+            }
+            if let Some(now) = &captions.now {
+                let alpha = if captions.before.is_some() {
+                    captions.progress
+                } else {
+                    1.0
+                };
+                self.draw_caption(renderer, now, area, alpha, clip);
+            }
         });
     }
 }
