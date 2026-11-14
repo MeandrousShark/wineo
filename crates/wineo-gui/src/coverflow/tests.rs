@@ -1452,6 +1452,22 @@ fn the_caption_draws_its_title_and_status_one_line_each() {
         .map(|&(x, _)| x);
     let (left, right) = title.fold((f32::MAX, 0.0f32), |(l, r), x| (l.min(x), r.max(x)));
     assert!(right - left > 40.0, "title {} px wide", right - left);
+    // So does the status line under it: its dot and "inactive", one line
+    // high.
+    let status: Vec<(f32, f32)> = ink
+        .iter()
+        .copied()
+        .filter(|&(_, y)| y > caption.y + 22.0)
+        .collect();
+    let (top, bottom) = status
+        .iter()
+        .fold((f32::MAX, 0.0f32), |(t, b), &(_, y)| (t.min(y), b.max(y)));
+    let (left, right) = status
+        .iter()
+        .fold((f32::MAX, 0.0f32), |(l, r), &(x, _)| (l.min(x), r.max(x)));
+    assert!(!status.is_empty(), "the status line draws");
+    assert!(bottom - top < 13.0 * 1.3, "status {} px tall", bottom - top);
+    assert!(right - left > 40.0, "status {} px wide", right - left);
 }
 
 fn pixel(pixels: &[u8], point: Point) -> [u8; 4] {
@@ -2240,6 +2256,19 @@ fn nothing_large_is_queued_while_the_strip_glides_but_grid_warps_are() {
     frame(&mut app, &mut clock, 300);
     assert!(app.strip.settled());
     assert!(app.loading.iter().any(|((_, held), _)| *held == kind));
+    // Resting, the neighbors want their large warps, which start once
+    // their covers decode.
+    let target = app.strip.target();
+    for (stop, tilt) in [(target - 1, Tilt::Left), (target + 1, Tilt::Right)] {
+        let large = (art_of(&app, &format!("game-{stop:02}")), kind);
+        assert!(app.visible_tilts.contains(&(large.clone(), tilt)), "{stop}");
+        let _ = app.update(Message::ArtLoaded(
+            large.clone(),
+            false,
+            Ok(image::Handle::from_rgba(480, 720, vec![0; 480 * 720 * 4])),
+        ));
+        assert!(app.warping.contains(&(large, false, tilt)), "{stop}");
+    }
 }
 
 #[test]
