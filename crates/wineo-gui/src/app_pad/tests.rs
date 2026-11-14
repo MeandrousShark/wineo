@@ -76,9 +76,8 @@ fn move_to(app: &mut App, name: &str) {
 }
 
 /// What `task` sends, with its widget operations run in the app's laid out
-/// view. Anything that waits, like a wakeup, is cut off.
+/// view. Anything that waits, like a wakeup, is left unrun.
 fn outputs(app: &App, task: Task<Message>) -> Vec<Message> {
-    use iced::futures::StreamExt;
     if task.units() == 0 {
         return Vec::new();
     }
@@ -92,22 +91,59 @@ fn outputs(app: &App, task: Task<Message>) -> Vec<Message> {
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(20), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid
-                    .get_or_insert_with(|| {
-                        crate::layout_probe::lay_out(app.view(), app.window_size)
-                    })
-                    .run(operation),
-                _ => {}
-            }
-        }
+    each_ready(&runtime, &mut stream, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid
+            .get_or_insert_with(|| crate::layout_probe::lay_out(app.view(), app.window_size))
+            .run(operation),
+        _ => {}
     });
     messages
+}
+
+/// Takes every action `stream` has ready now, and stops when it has none
+/// and nothing woke it: a wakeup's sleep, or work on another thread.
+/// Nothing here waits on the clock, so a loaded machine can't cut a press's
+/// key path short; that path is all widget operations and their answers.
+/// A batch's stream says Pending now and then just to take turns, waking
+/// itself first, so a wake means poll again.
+fn each_ready<S>(
+    runtime: &tokio::runtime::Runtime,
+    stream: &mut S,
+    mut take: impl FnMut(iced_runtime::Action<Message>),
+) where
+    S: iced::futures::Stream<Item = iced_runtime::Action<Message>> + Unpin,
+{
+    use iced::futures::StreamExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct Woken(AtomicBool);
+    impl Wake for Woken {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    // Sleeps in the stream need the runtime's timer to exist, not to run.
+    let _runtime = runtime.enter();
+    let woken = Arc::new(Woken(AtomicBool::new(false)));
+    let waker = Waker::from(woken.clone());
+    let mut context = Context::from_waker(&waker);
+    // A stream that only ever wakes itself would never finish.
+    for _ in 0..100_000 {
+        woken.0.store(false, Ordering::SeqCst);
+        match stream.poll_next_unpin(&mut context) {
+            Poll::Ready(Some(action)) => take(action),
+            Poll::Ready(None) => return,
+            Poll::Pending if woken.0.load(Ordering::SeqCst) => {}
+            Poll::Pending => return,
+        }
+    }
+    panic!("the task kept waking itself without finishing");
 }
 
 /// Runs the key path a press starts: the text field check, the page's
@@ -822,7 +858,6 @@ fn drive_in(
     laid: &mut crate::layout_probe::Laid<'_, Message>,
     task: Task<Message>,
 ) -> Vec<Message> {
-    use iced::futures::StreamExt;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
     };
@@ -831,16 +866,10 @@ fn drive_in(
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(20), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid.run(operation),
-                _ => {}
-            }
-        }
+    each_ready(&runtime, &mut stream, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid.run(operation),
+        _ => {}
     });
     messages
 }
