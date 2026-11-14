@@ -147,6 +147,10 @@ pub fn fetch_game(
         );
         fetched.push((kind, result));
     }
+    // A cancel during the last kind would otherwise read as that kind failing.
+    if cancel.is_canceled() {
+        return Err(Error::Canceled("download").into());
+    }
     Ok(fetched)
 }
 

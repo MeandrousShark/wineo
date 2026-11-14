@@ -858,3 +858,26 @@ fn fetch_game_stops_at_the_token_before_the_next_kind() {
     let grid = Api::images_url(7, Kind::Grid, 0, Filters::Ranked);
     assert!(!api.urls().contains(&grid), "{:?}", api.urls());
 }
+
+#[test]
+fn fetch_game_canceled_during_its_last_kind_says_so() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    let cancel = Token::new();
+    let listed = json!({ "success": true, "data": [{ "id": 1, "url": "https://cdn.example/1", "score": 0 }] }).to_string();
+    let during = cancel.clone();
+    api.answer(
+        Api::images_url(7, Kind::Icon, 0, Filters::Ranked),
+        200,
+        move || {
+            during.cancel();
+            Box::new(io::Cursor::new(listed.clone().into_bytes()))
+        },
+    );
+    let err = fetch_game_with(&paths, &api, &[Kind::Icon], &cancel).unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<Error>(),
+        Some(Error::Canceled(_))
+    ));
+    assert_eq!(names(&paths.art_dir("hades")), ["art.toml"]);
+}
