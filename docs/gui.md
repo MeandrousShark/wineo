@@ -862,7 +862,12 @@ details** returns there with the draft.
 Installer setup sets up DXVK and
 vkd3d-proton in the prefix before the installer runs, then scans installed
 programs once it's done, even if it exited with an error, so you can choose
-the game's target rather than registering the installer. A canceled
+the program to run rather than registering the installer. **Choose a
+target** has Back alone at the top, which skips the target like **Skip for
+now**, and keeps **Confirm** and **Skip for now** pinned at the bottom left
+while the program list scrolls. Confirm stays off until a program is
+chosen, and its reason, or a failed add, shows beside it. Adding a target and cleaning up the
+installer can't be canceled, so their progress page shows no Cancel. A canceled
 installer keeps the environment and skips the scan: `Installer canceled. Add
 a target in Settings.` The **Name** is saved as the game's title, so its
 card shows it, and it names the desktop entry. It follows the title rules
@@ -872,7 +877,10 @@ lowercase, with spaces and punctuation turned into dashes, accents folded,
 and apostrophes and trademark symbols dropped, so "Assassin's Creed:
 Origins" becomes `assassins-creed-origins`. The derived name shows under
 the field; **Edit**
-lets you choose a different one, up to 64 characters. The installer log can
+lets you choose a different one, up to 64 characters; cleared, it shows
+the derived name as its placeholder. When that name belongs to an existing
+environment, **Open existing environment settings** opens it, asking first
+only if you've changed anything besides the name. The installer log can
 be selected and copied like the panel's log. When the chosen runner isn't
 installed, the Summary offers **Download GE-Proton** or **Download
 Proton-CachyOS**. It already shows what that Proton build will use, 64-bit,
@@ -992,7 +1000,8 @@ be mixed with fetched art, and the local choice wins for that kind. If
 artwork fails after registration, retry or skip it.
 
 Windows creation keeps runner, architecture, and prefix overrides under
-**Additional wine options**. Picking a template tagged `game` shows a card
+**Additional wine options**. The architecture list starts with **Use
+template or global default**, which clears an override. Picking a template tagged `game` shows a card
 under the Template picker, until it's answered once: "Use Proton and Wine
 builds from Steam, Heroic, and Lutris too?" with **No** and **Yes**. The
 answer is saved and the runner choices refresh in place. Heroic import asks
@@ -1002,7 +1011,7 @@ where it is instead of copying it. Runners from other launchers read like
 portable folder. Selecting a template shows a compact summary
 of the settings it changes. Native creation hides the Wine-only controls.
 
-The new environment finish page has an unchecked **Launch game when this
+The new environment finish page has an unchecked **Launch it when this
 page closes** option when a playable target is ready. If checked, leaving for
 the library or Settings launches that target once. Closing the application
 does not launch it.
