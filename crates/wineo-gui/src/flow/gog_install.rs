@@ -413,6 +413,7 @@ impl Install {
                 .flat_map(|done| done.programs.iter().flatten())
                 .map(|(_, exe)| program_id(exe))
                 .collect(),
+            focus: None,
         })
     }
 

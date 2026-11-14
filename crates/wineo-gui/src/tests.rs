@@ -611,6 +611,14 @@ fn late_art_and_add_results_use_current_key_availability() {
         app.flow_generation = 1;
         app.flow = Some(flow::Page::choose(paths.clone()));
         let _ = app.flow_update(1, flow::Event::New);
+        // Details, where the checkbox is.
+        let _ = app.flow_update(
+            1,
+            flow::Event::Create(Box::new(flow::new::Event::Start(
+                flow::new::Kind::Windows,
+                flow::new::Source::Empty,
+            ))),
+        );
         // The fetch checkbox reads the key when it's drawn, whenever the
         // settings it needs arrive.
         let configured = || flow::Event::Create(Box::new(flow::new::Page::options_loaded(&paths)));
@@ -645,6 +653,17 @@ fn late_art_and_add_results_use_current_key_availability() {
         }
         let _ = app.art_update("game".to_owned(), 7, art_page::Event::Change);
         assert_eq!(app.art_pages["game"].is_changing(), available);
+        // Turned off then on again, so each click is seen to reach Details.
+        let _ = app.flow_update(
+            1,
+            flow::Event::Create(Box::new(flow::new::Event::FetchArt(false))),
+        );
+        assert!(
+            !app.flow
+                .as_ref()
+                .unwrap()
+                .fetch_checked(app.steamgriddb_available)
+        );
         let _ = app.flow_update(
             1,
             flow::Event::Create(Box::new(flow::new::Event::FetchArt(true))),
@@ -722,6 +741,13 @@ fn escape_dismisses_the_new_flow_discard_prompt_and_keeps_the_draft() {
     let generation = app.flow_generation;
     let _ = app.flow_update(
         generation,
+        flow::Event::Create(Box::new(flow::new::Event::Start(
+            flow::new::Kind::Windows,
+            flow::new::Source::Empty,
+        ))),
+    );
+    let _ = app.flow_update(
+        generation,
         flow::Event::Create(Box::new(flow::new::Event::Name("draft".into()))),
     );
     let escape = || {
@@ -731,6 +757,9 @@ fn escape_dismisses_the_new_flow_discard_prompt_and_keeps_the_draft() {
             iced::event::Status::Ignored,
         )
     };
+    // Details goes back to the choice page, which asks.
+    let _ = app.update(escape());
+    assert!(!app.flow.as_ref().unwrap().new_leave_prompt_open());
     let _ = app.update(escape());
     assert!(app.flow.as_ref().unwrap().new_leave_prompt_open());
     let _ = app.update(escape());
