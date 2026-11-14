@@ -23,9 +23,9 @@ fn page() -> Page {
     page
 }
 
-/// Goes back to the choice page with Change and picks another row.
+/// Goes back to the choice page and picks another row.
 fn switch(page: &mut Page, kind: Kind, source: Source) {
-    let _ = page.update(Event::Change);
+    let _ = page.back();
     assert_eq!(page.stage, Stage::Choose);
     let _ = page.update(Event::Start(kind, source));
     assert_eq!(page.stage, Stage::Details);
@@ -2129,14 +2129,12 @@ fn the_choice_page_lists_windows_then_native_rows_that_open_details() {
 #[test]
 fn coming_back_to_the_choice_page_lands_on_the_row_details_came_from() {
     for (kind, source) in ROWS {
-        for back in [Event::Back, Event::Change] {
-            let mut page = choosing();
-            let _ = page.update(Event::Start(kind, source));
-            let _ = page.update(back.clone());
-            assert_eq!(page.stage, Stage::Choose);
-            let id = start_of(kind, source).unwrap().id;
-            assert_eq!(page.rows().unwrap().focus.as_deref(), Some(id), "{back:?}");
-        }
+        let mut page = choosing();
+        let _ = page.update(Event::Start(kind, source));
+        let _ = page.update(Event::Back);
+        assert_eq!(page.stage, Stage::Choose);
+        let id = start_of(kind, source).unwrap().id;
+        assert_eq!(page.rows().unwrap().focus.as_deref(), Some(id));
     }
 }
 
@@ -2150,7 +2148,7 @@ fn back_from_untouched_details_or_choose_asks_nothing() {
         let _ = page.update(Event::Options(read_options(&paths)));
         // Picking rows, going back and forth, isn't an edit.
         let _ = page.update(Event::Start(Kind::Native, Source::Executable));
-        let _ = page.update(Event::Change);
+        let _ = page.back();
         let _ = page.update(Event::Start(kind, source));
         // Neither is the fetch checkbox, nor its default.
         assert!(page.fetch_checked(true));
@@ -2432,68 +2430,67 @@ fn a_held_esc_on_the_discard_prompt_keeps_it_open() {
 
 #[test]
 fn leaving_details_drops_its_running_check_and_picker() {
-    for leave in [Event::Back, Event::Change] {
-        let root = tempfile::tempdir().unwrap();
-        let paths =
-            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
-        let mut page = offer_page(&paths);
-        // An edit whose wait is still pending.
-        let _ = page.update(Event::Name("Hades".to_owned()));
-        let waiting = page.check_sequence;
-        let _ = page.update(leave.clone());
-        assert!(
-            is_none(page.update(Event::Settled(waiting))),
-            "{leave:?}: no check starts off Details"
-        );
-        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
-        let opened = page.check_sequence;
-        assert!(is_none(page.update(Event::Settled(waiting))), "{leave:?}");
-        assert_eq!(page.check_sequence, opened, "{leave:?}");
+    let leave = Event::Back;
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    // An edit whose wait is still pending.
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let waiting = page.check_sequence;
+    let _ = page.update(leave.clone());
+    assert!(
+        is_none(page.update(Event::Settled(waiting))),
+        "{leave:?}: no check starts off Details"
+    );
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    let opened = page.check_sequence;
+    assert!(is_none(page.update(Event::Settled(waiting))), "{leave:?}");
+    assert_eq!(page.check_sequence, opened, "{leave:?}");
 
-        // A check still running.
-        let _ = page.update(Event::Name("Hades 2".to_owned()));
-        let _ = page.update(Event::Settled(page.check_sequence));
-        let checking = page.check_sequence;
-        assert!(page.checking);
-        let _ = page.update(Event::Browse);
-        let browsing = page.picker_sequence;
-        let _ = page.update(leave.clone());
-        let shown = |page: &Page| page.summary.as_ref().map(|s| s.draft.title.clone());
-        let before = shown(&page);
-        let _ = page.update(Event::Checked(
-            checking,
-            Box::new(page.draft.clone()),
-            prepare(&paths, &page.draft).map(Box::new),
-        ));
-        assert_eq!(shown(&page), before, "{leave:?}: nothing lands off Details");
-        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
-        let _ = page.update(Event::Checked(
-            checking,
-            Box::new(page.draft.clone()),
-            prepare(&paths, &page.draft).map(Box::new),
-        ));
-        assert!(
-            page.checking,
-            "{leave:?}: only the check Details opened with lands"
-        );
-        let _ = page.update(Event::Picked(
-            browsing,
-            Ok(Some(PathBuf::from("/games/hades.exe"))),
-        ));
-        assert_eq!(page.draft.path, "", "{leave:?}");
-    }
+    // A check still running.
+    let _ = page.update(Event::Name("Hades 2".to_owned()));
+    let _ = page.update(Event::Settled(page.check_sequence));
+    let checking = page.check_sequence;
+    assert!(page.checking);
+    let _ = page.update(Event::Browse);
+    let browsing = page.picker_sequence;
+    let _ = page.update(leave.clone());
+    let shown = |page: &Page| page.summary.as_ref().map(|s| s.draft.title.clone());
+    let before = shown(&page);
+    let _ = page.update(Event::Checked(
+        checking,
+        Box::new(page.draft.clone()),
+        prepare(&paths, &page.draft).map(Box::new),
+    ));
+    assert_eq!(shown(&page), before, "{leave:?}: nothing lands off Details");
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    let _ = page.update(Event::Checked(
+        checking,
+        Box::new(page.draft.clone()),
+        prepare(&paths, &page.draft).map(Box::new),
+    ));
+    assert!(
+        page.checking,
+        "{leave:?}: only the check Details opened with lands"
+    );
+    let _ = page.update(Event::Picked(
+        browsing,
+        Ok(Some(PathBuf::from("/games/hades.exe"))),
+    ));
+    assert_eq!(page.draft.path, "", "{leave:?}");
 }
 
 #[test]
-fn details_title_has_change_and_the_choice_page_shows_no_details_error() {
+fn details_title_has_no_change_link_and_the_choice_page_shows_no_details_error() {
     let size = iced::Size::new(900.0, 720.0);
     let mut page = page();
-    assert_eq!(click_label(&page, size, "Change"), ["Change"]);
+    assert!(labeled(&texts(&page, size), "Change").is_empty());
 
     let error = "Could not open the file picker";
     page.error = Some(error.to_owned());
     assert_eq!(labeled(&texts(&page, size), error).len(), 1);
-    let _ = page.update(Event::Change);
+    let _ = page.back();
     assert!(labeled(&texts(&page, size), error).is_empty());
 }
 
@@ -3426,7 +3423,7 @@ fn a_discard_from_the_choice_page_still_goes_to_the_add_choices() {
     let _ = page.update(Event::OpenExisting);
     let _ = page.update(Event::KeepEditing);
     // Back from the choice page asks too, and its Discard isn't Settings.
-    let _ = page.update(Event::Change);
+    let _ = page.update(Event::Back);
     let _ = page.update(Event::Back);
     assert!(page.leave_prompt);
     let _ = page.update(Event::Discard);

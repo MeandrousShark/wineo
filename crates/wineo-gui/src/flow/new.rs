@@ -329,8 +329,6 @@ pub(crate) enum Event {
     KeepEditing,
     /// A row on the choice page.
     Start(Kind, Source),
-    /// Details' Change, back to the choice page.
-    Change,
     Name(String),
     EditEnvironment,
     EnvironmentName(String),
@@ -1202,7 +1200,6 @@ impl Page {
             {
                 return self.pick(kind, source);
             }
-            Event::Change if self.stage == Stage::Details => self.change(),
             Event::Name(value) if self.stage == Stage::Details => {
                 self.draft.title = value;
                 self.name_touched = true;
@@ -1959,20 +1956,7 @@ impl Page {
             },
             palette,
         );
-        let heading: Element<'_, Event> = if self.stage == Stage::Details {
-            crate::ends::ends(
-                title.width(Fill),
-                button("Change")
-                    .padding(0)
-                    .style(move |_, status| crate::chips::link(palette, status))
-                    .on_press(Event::Change),
-                12.0,
-                crate::ends::MIN_LEFT,
-            )
-        } else {
-            title.into()
-        };
-        let mut body = column![heading].spacing(10).width(Fill);
+        let mut body = column![title].spacing(10).width(Fill);
         match self.stage {
             Stage::Choose => body = body.push(start_list(palette)),
             Stage::Details => {
