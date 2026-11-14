@@ -57,10 +57,14 @@ fn fake_runner(paths: &Paths) {
 }
 
 #[test]
-fn details_and_artwork_fit_narrow_and_wide_dialogs() {
+fn details_and_the_fetch_checkbox_fit_narrow_and_wide_dialogs() {
     use crate::layout_probe::probe;
-    let page = page();
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let page = offer_page(&paths);
     assert_eq!(page.stage, Stage::Details);
+    assert!(page.fetch_checked(true), "the checkbox shows, on");
     for (width, height) in [(280.0, 240.0), (900.0, 720.0)] {
         let mut view = page.view_with_key_availability(Palette::DARK, true);
         let probe = probe(&mut view, iced::Size::new(width, height));
@@ -127,12 +131,13 @@ fn details_back_returns_to_add_choices() {
 }
 
 #[test]
-fn typing_a_title_derives_the_environment_name_and_seeds_art_search() {
+fn typing_a_title_derives_the_environment_name_and_is_what_the_fetch_searches() {
     let mut page = page();
     let _ = page.update(Event::Name("The Sims 4".to_owned()));
     assert_eq!(page.draft.environment_name(), "the-sims-4");
-    assert_eq!(page.art.search_text(), "The Sims 4");
     assert!(page.draft != Draft::default(), "a title counts as an edit");
+    let (searched, _) = fetched_with(&mut page, Ok(Vec::new()));
+    assert_eq!(searched, ["the-sims-4 The Sims 4"]);
 }
 
 #[test]
@@ -201,15 +206,7 @@ fn executable_creation_uses_the_slug_for_the_environment_and_the_title_for_the_t
     assert_eq!(request.name, "the-sims-4");
     assert_eq!(request.target_name.as_deref(), Some("The Sims 4"));
 
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     let environment = Environment::load(&paths, "the-sims-4").unwrap();
     assert_eq!(
@@ -233,15 +230,7 @@ fn native_executable_titles_its_target() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     let environment = Environment::load(&paths, "half-life-2").unwrap();
     assert_eq!(
@@ -275,15 +264,7 @@ fn an_empty_windows_registration_shows_the_typed_name_on_its_card() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     assert!(read_config(&paths, "hollow-knight").contains("title = \"Hollow Knight\"\n"));
     assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
@@ -300,15 +281,7 @@ fn an_empty_native_registration_shows_the_typed_name_on_its_card() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     assert!(read_config(&paths, "hollow-knight").contains("title = \"Hollow Knight\"\n"));
     assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
@@ -334,15 +307,7 @@ fn executables_without_a_desktop_entry_still_show_the_typed_name() {
     let runner = review.runner.clone().unwrap();
     let request = create_request(&draft, review.clone(), runner);
     assert_eq!(request.title.as_deref(), Some("Hollow Knight"));
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     assert_eq!(card_title_of(&paths, "hollow-knight"), "Hollow Knight");
 }
@@ -363,15 +328,7 @@ fn an_installer_target_added_with_desktop_off_keeps_the_typed_name() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft.clone(),
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft.clone(), review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
 
     // The Target step's own write, with "Create desktop entry" left off.
@@ -406,15 +363,7 @@ fn an_empty_name_with_an_environment_override_creates_without_a_title() {
         };
         assert_eq!(draft.target_title(), None);
         let review = prepare(&paths, &draft).unwrap();
-        let report = perform(
-            &paths,
-            draft,
-            review,
-            artwork::Draft::new(),
-            Token::new(),
-            |_| {},
-            |_| {},
-        );
+        let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
         assert!(report.registered, "{kind}: {:?}", report.notes);
         assert!(
             !read_config(&paths, "my-env").contains("title"),
@@ -459,15 +408,7 @@ fn a_name_at_the_title_limit_is_written_as_the_title() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     assert_eq!(card_title_of(&paths, "long-title"), title);
 }
@@ -512,15 +453,7 @@ fn native_creation_keeps_library_warning_in_report() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     assert!(report.notes.iter().any(|note| {
         note.starts_with("Can't update library.toml:")
@@ -603,7 +536,7 @@ fn finished_launch_needs_opt_in_and_playable_target() {
         cleanup_resolved: true,
         ..Report::new()
     });
-    page.finish();
+    let _ = page.finish();
     let _ = page.update(Event::ToLibrary);
     assert!(matches!(
         page.take_action(),
@@ -611,7 +544,7 @@ fn finished_launch_needs_opt_in_and_playable_target() {
     ));
 
     page.launch = true;
-    page.finish();
+    let _ = page.finish();
     assert!(page.launch, "artwork retry preserves the launch choice");
     if let Some(report) = &mut page.report {
         report.cleanup_resolved = false;
@@ -648,15 +581,7 @@ fn installer_creates_environment_without_registering_it_as_target() {
         ..Draft::default()
     };
     let review = prepare(&paths, &draft).unwrap();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        Token::new(),
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, Token::new(), |_| {}, |_| {});
     assert!(report.registered, "{:?}", report.notes);
     assert!(report.cleanup_resolved, "{:?}", report.notes);
     assert!(!report.playable);
@@ -705,7 +630,6 @@ fn install_with(installer: &str, cancel_when_running: bool) -> Report {
         &paths,
         draft,
         review,
-        artwork::Draft::new(),
         token,
         |line| {
             if cancel_when_running && line == "Running installer..." {
@@ -769,15 +693,7 @@ fn cancellation_before_creation_leaves_no_environment() {
     let review = prepare(&paths, &draft).unwrap();
     let token = Token::new();
     token.cancel();
-    let report = perform(
-        &paths,
-        draft,
-        review,
-        artwork::Draft::new(),
-        token,
-        |_| {},
-        |_| {},
-    );
+    let report = perform(&paths, draft, review, token, |_| {}, |_| {});
     assert!(!report.registered);
     assert!(!paths.environment_config("canceled-game").exists());
 }
@@ -1294,4 +1210,574 @@ fn other_events_stay_blocked_while_the_discard_prompt_shows() {
     }));
     assert!(page.leave_prompt);
     assert_eq!(page.draft.kind, kind);
+}
+
+/// What a fake fetcher saw on a call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Call {
+    name: String,
+    title: String,
+    /// What `busy_with` said about the environment's lock.
+    lock: String,
+}
+
+type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
+
+/// A fetcher that records each call and answers `answer`, or an error once
+/// its token is canceled.
+fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
+    let calls = Calls::default();
+    let seen = calls.clone();
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, token| {
+        let lock = format!(
+            "{:?}",
+            wineo_core::operation::Locks::new(paths).busy_with(name)
+        );
+        seen.lock().unwrap().push(Call {
+            name: name.to_owned(),
+            title: title.to_owned(),
+            lock,
+        });
+        if token.is_canceled() {
+            return Err("canceled".to_owned());
+        }
+        answer.clone()
+    });
+    (fetcher, calls)
+}
+
+/// Runs `task` to its end and returns the events it produced, giving up
+/// after a few seconds so a stuck worker fails the test instead of hanging.
+fn outputs(task: Task<Event>) -> Vec<Event> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut events = Vec::new();
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_secs(20), stream.next()).await
+        {
+            if let iced_runtime::Action::Output(event) = action {
+                events.push(event);
+            }
+        }
+        events
+    })
+}
+
+/// Feeds `task`'s events back into `page`, and theirs, until nothing is left.
+fn drive(page: &mut Page, task: Task<Event>, key_available: bool) {
+    let mut pending = vec![task];
+    for _ in 0..64 {
+        let Some(task) = pending.pop() else {
+            return;
+        };
+        for event in outputs(task) {
+            pending.push(page.update_with_key_availability(event, key_available));
+        }
+    }
+    panic!("the page kept starting work");
+}
+
+/// Starts the fetch on `page` with a fetcher answering `answer`, runs it,
+/// and says what it was asked for and how the page ended.
+fn fetched_with(page: &mut Page, answer: Result<Vec<String>, String>) -> (Vec<String>, Stage) {
+    let (fetcher, calls) = fake_fetcher(answer);
+    page.fetcher = fetcher;
+    let task = page.start_fetch();
+    drive(page, task, true);
+    let calls = calls.lock().unwrap();
+    (
+        calls
+            .iter()
+            .map(|call| format!("{} {}", call.name, call.title))
+            .collect(),
+        page.stage,
+    )
+}
+
+/// A page whose environment registered, with the checkbox on at Create.
+fn registered(fetch: bool) -> (Page, Calls) {
+    let mut page = page();
+    page.draft.title = "Hollow Knight".to_owned();
+    page.fetch_art = fetch;
+    page.report = Some(Report {
+        registered: true,
+        ..Report::new()
+    });
+    let (fetcher, calls) = fake_fetcher(Ok(vec!["No logo artwork found".to_owned()]));
+    page.fetcher = fetcher;
+    (page, calls)
+}
+
+fn call_count(calls: &Calls) -> usize {
+    calls.lock().unwrap().len()
+}
+
+#[test]
+fn the_fetch_runs_after_creation_outside_the_create_lock() {
+    for kind in [Kind::Windows, Kind::Native] {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        fake_runner(&paths);
+        let mut page = offer_page(&paths);
+        let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
+        page.fetcher = fetcher;
+        let _ = page.update(Event::Kind(kind));
+        let _ = page.update(Event::Name("Hollow Knight".to_owned()));
+        let _ = page.update(Event::Runner("fake".to_owned()));
+        let task = page.update(Event::Next);
+        drive(&mut page, task, true);
+        assert_eq!(page.stage, Stage::Review, "{kind}: {:?}", page.error);
+        let task = page.update_with_key_availability(Event::Create, true);
+        drive(&mut page, task, true);
+        assert_eq!(page.stage, Stage::Finished, "{kind}");
+        let report = page.report.as_ref().unwrap();
+        assert!(report.registered, "{kind}: {:?}", report.notes);
+        assert_eq!(report.art_error, None, "{kind}");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [Call {
+                name: "hollow-knight".to_owned(),
+                title: "Hollow Knight".to_owned(),
+                lock: "Ok(None)".to_owned(),
+            }],
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn skip_back_and_esc_cancel_the_fetch_and_land_on_finished() {
+    for how in ["Skip", "Back"] {
+        let (mut page, calls) = registered(true);
+        let task = page.finish();
+        assert_eq!(page.stage, Stage::Working, "{how}");
+        assert!(page.fetching, "{how}");
+        assert!(!page.busy(), "{how}: fetching doesn't hold the window");
+        let token = page.fetch_token.clone().unwrap();
+        let _ = match how {
+            "Skip" => page.update(Event::SkipFetch),
+            // Esc arrives as Back.
+            _ => page.back(),
+        };
+        assert!(token.is_canceled(), "{how}");
+        assert_eq!(page.status, "Skipping artwork...", "{how}");
+        assert_eq!(page.stage, Stage::Working, "{how}: the worker lands it");
+        drive(&mut page, task, true);
+        assert_eq!(call_count(&calls), 1, "{how}");
+        assert_eq!(page.stage, Stage::Finished, "{how}");
+        let report = page.report.as_ref().unwrap();
+        assert_eq!(report.art_error, None, "{how}");
+        assert!(
+            report.notes.contains(&"Artwork skipped".to_owned()),
+            "{how}: {:?}",
+            report.notes
+        );
+    }
+}
+
+#[test]
+fn the_desktop_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let exe = root.path().join("game.sh");
+    write_script(&exe, "#!/bin/sh\n");
+    Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "game",
+        Some(&exe.display().to_string()),
+        Some("Game"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let entries = || -> Vec<PathBuf> {
+        fs::read_dir(paths.applications_dir())
+            .map(|dir| dir.map(|entry| entry.unwrap().path()).collect())
+            .unwrap_or_default()
+    };
+    // Creation alone leaves the entry to whoever reconciles next.
+    assert!(entries().is_empty());
+    let (fetcher, _) = fake_fetcher(Ok(Vec::new()));
+
+    let token = Token::new();
+    token.cancel();
+    assert_eq!(
+        fetch_art(&paths, "game", "Game", &token, &fetcher),
+        Err("canceled".to_owned())
+    );
+    assert!(entries().is_empty(), "a skip writes nothing more");
+
+    assert_eq!(
+        fetch_art(&paths, "game", "Game", &Token::new(), &fetcher),
+        Ok(Vec::new())
+    );
+    assert_eq!(entries().len(), 1);
+}
+
+#[test]
+fn retry_artwork_fetches_again_through_the_same_skip() {
+    let (mut page, calls) = registered(true);
+    let (fetcher, _) = fake_fetcher(Err("offline".to_owned()));
+    page.fetcher = fetcher;
+    let task = page.finish();
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    let error = page.report.as_ref().unwrap().art_error.clone().unwrap();
+    assert!(error.starts_with("offline"), "{error}");
+
+    // Retry runs the fetch again even though it already ran once.
+    let (fetcher, retried) = fake_fetcher(Ok(vec!["No logo artwork found".to_owned()]));
+    page.fetcher = fetcher;
+    let task = page.update(Event::RetryArt);
+    assert!(page.fetching);
+    assert_eq!(page.stage, Stage::Working);
+    let _ = page.update(Event::SkipFetch);
+    assert!(page.fetch_token.as_ref().unwrap().is_canceled());
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&retried), 1);
+    assert_eq!(call_count(&calls), 0);
+    let report = page.report.as_ref().unwrap();
+    assert_eq!(report.art_error, None);
+    assert!(report.notes.contains(&"Artwork skipped".to_owned()));
+
+    // A retry that gets through clears the error and keeps the notes.
+    page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    let report = page.report.as_ref().unwrap();
+    assert_eq!(report.art_error, None);
+    assert!(report.notes.contains(&"No logo artwork found".to_owned()));
+    assert_eq!(call_count(&retried), 2);
+}
+
+/// Presses Create on a reviewed `page` with the key `key_available`, lands
+/// a registered creation, and runs whatever finishing starts.
+fn create_and_register(page: &mut Page, key_available: bool) {
+    page.draft.title = "Hollow Knight".to_owned();
+    page.stage = Stage::Review;
+    page.review = Some(Review {
+        runner: None,
+        runner_row: None,
+        template: None,
+        arch: Arch::Win64,
+        prefix: None,
+        adopted: false,
+        omitted_components: false,
+        prerequisite: None,
+    });
+    // The creation itself never runs; its result is landed below.
+    let _ = page.update_with_key_availability(Event::Create, key_available);
+    assert_eq!(page.stage, Stage::Working);
+    let report = Report {
+        registered: true,
+        ..Report::new()
+    };
+    let task =
+        page.update_with_key_availability(Event::Done(page.generation, report), key_available);
+    drive(page, task, key_available);
+    assert_eq!(page.stage, Stage::Finished);
+}
+
+#[test]
+fn the_checkbox_is_on_by_default_and_toggling_it_is_not_an_edit() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    assert_eq!(page.art_offer(true), ArtOffer::Fetch(true));
+    let _ = page.update_with_key_availability(Event::FetchArt(false), true);
+    assert_eq!(page.art_offer(true), ArtOffer::Fetch(false));
+    let _ = page.update_with_key_availability(Event::FetchArt(true), true);
+    let _ = page.back();
+    assert!(!page.leave_prompt);
+    assert!(matches!(page.take_action(), Some(Action::Choose)));
+
+    let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
+    page.fetcher = fetcher;
+    create_and_register(&mut page, true);
+    assert_eq!(call_count(&calls), 1);
+
+    let mut page = offer_page(&paths);
+    let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
+    page.fetcher = fetcher;
+    let _ = page.update_with_key_availability(Event::FetchArt(false), true);
+    create_and_register(&mut page, true);
+    assert_eq!(call_count(&calls), 0, "turned off");
+}
+
+#[test]
+fn no_key_or_no_kinds_shows_a_note_and_never_fetches() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    assert_eq!(page.art_offer(false), ArtOffer::NoKey);
+    let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
+    page.fetcher = fetcher;
+    create_and_register(&mut page, false);
+    assert_eq!(call_count(&calls), 0, "no key");
+
+    write_global(&paths, "[art]\nfetch = []\n");
+    let mut page = offer_page(&paths);
+    assert_eq!(page.art_offer(true), ArtOffer::Off);
+    assert_eq!(page.art_offer(false), ArtOffer::Off);
+    let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
+    page.fetcher = fetcher;
+    create_and_register(&mut page, true);
+    assert_eq!(call_count(&calls), 0, "no kinds");
+}
+
+#[test]
+fn a_key_that_vanishes_before_create_turns_the_fetch_off() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    let _ = page.update_with_key_availability(Event::FetchArt(true), true);
+    assert_eq!(page.art_offer(true), ArtOffer::Fetch(true));
+    let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
+    page.fetcher = fetcher;
+    create_and_register(&mut page, false);
+    assert_eq!(call_count(&calls), 0);
+    assert!(!page.fetch_art);
+}
+
+#[test]
+fn the_fetch_waits_for_target_and_runs_once_it_closes() {
+    for leave in [Event::SkipTarget, Event::Back] {
+        let (mut page, calls) = registered(true);
+        page.report.as_mut().unwrap().offer_programs = true;
+        page.stage = Stage::Working;
+        let report = page.report.clone().unwrap();
+        let _ = page.update(Event::Done(page.generation, report));
+        assert_eq!(page.stage, Stage::Target);
+        assert_eq!(call_count(&calls), 0);
+        let task = page.update(leave.clone());
+        assert!(page.fetching, "{leave:?}");
+        drive(&mut page, task, true);
+        assert_eq!(call_count(&calls), 1, "{leave:?}");
+        assert_eq!(page.stage, Stage::Finished);
+    }
+
+    // Confirm's target lands, then the fetch runs.
+    let (mut page, calls) = registered(true);
+    page.stage = Stage::Working;
+    let task = page.update(Event::TargetAdded(page.generation, Ok(Vec::new())));
+    assert!(page.fetching);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 1);
+    assert_eq!(page.stage, Stage::Finished);
+}
+
+#[test]
+fn a_canceled_installer_fetches_only_if_it_registered() {
+    for registered_env in [true, false] {
+        let (mut page, calls) = registered(true);
+        page.stage = Stage::Working;
+        let mut report = page.report.clone().unwrap();
+        report.registered = registered_env;
+        report
+            .notes
+            .push("Installer canceled. Add a target in Settings.".to_owned());
+        let task = page.update(Event::Done(page.generation, report));
+        drive(&mut page, task, true);
+        assert_eq!(page.stage, Stage::Finished);
+        assert_eq!(call_count(&calls), usize::from(registered_env));
+    }
+}
+
+#[test]
+fn a_skipped_fetch_does_not_run_again_after_clean_up_returns_to_target() {
+    let (mut page, calls) = registered(true);
+    page.draft.source = Source::Installer;
+    page.report.as_mut().unwrap().cleanup_resolved = false;
+    page.stage = Stage::Working;
+    let report = page.report.clone().unwrap();
+    let task = page.update(Event::Done(page.generation, report));
+    assert!(page.fetching);
+    let _ = page.update(Event::SkipFetch);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    assert_eq!(call_count(&calls), 1);
+
+    // Clean up installer runs nothing real here; its answer lands as if it did.
+    let _ = page.update(Event::CleanUp);
+    assert_eq!(page.stage, Stage::Working);
+    let _ = page.update(Event::Cleaned(page.generation, Ok(true)));
+    assert_eq!(page.stage, Stage::Target);
+    let task = page.update(Event::SkipTarget);
+    assert!(!page.fetching);
+    assert_eq!(page.stage, Stage::Finished);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 1);
+}
+
+#[test]
+fn choose_artwork_leaves_for_the_art_page_without_launching() {
+    let (mut page, _) = registered(false);
+    page.report.as_mut().unwrap().playable = true;
+    page.launch = true;
+    let _ = page.finish();
+    let _ = page.update(Event::ChooseArt);
+    assert!(matches!(
+        page.take_action(),
+        Some(Action::Art { name }) if name == "hollow-knight"
+    ));
+
+    // Nothing to choose art for when creation didn't register.
+    page.report.as_mut().unwrap().registered = false;
+    let _ = page.update(Event::ChooseArt);
+    assert!(page.take_action().is_none());
+}
+
+#[test]
+fn finished_buttons_wrap_in_small_dialogs() {
+    use crate::layout_probe::{bounds_at, probe};
+    let (mut page, _) = registered(false);
+    page.report.as_mut().unwrap().playable = true;
+    page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
+    let _ = page.finish();
+    // The body's children: the title, the library line, the artwork error,
+    // Retry, Skip, the launch checkbox, then Open settings, Choose
+    // artwork..., and Back to library in a row.
+    let body = [0, 0, 0, 0];
+    let path = |child: &[usize]| [&body[..], child].concat();
+    for (width, height) in [(280.0, 240.0), (400.0, 300.0)] {
+        let mut view = page.view_with_key_availability(Palette::DARK, true);
+        let probe = probe(&mut view, iced::Size::new(width, height));
+        let frame = iced::Rectangle::with_size(iced::Size::new(width, height));
+        let spilled = probe.outside(frame);
+        assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        // Squeezed onto one line, the labels would wrap inside taller buttons.
+        let one_line = bounds_at(&probe.node, &path(&[3])).height;
+        let buttons: Vec<_> = (0..3)
+            .map(|button| bounds_at(&probe.node, &path(&[6, button])))
+            .collect();
+        for bounds in &buttons {
+            assert!(
+                (bounds.height - one_line).abs() < 0.01,
+                "{width}x{height}: {buttons:?}"
+            );
+        }
+        assert!(
+            buttons[2].y > buttons[0].y,
+            "{width}x{height}: the row wraps, {buttons:?}"
+        );
+    }
+}
+
+#[test]
+fn closing_while_fetching_asks_nothing_and_cancels_the_fetch() {
+    let mut app = crate::tests::app();
+    let (mut page, _) = registered(true);
+    // The fetch's task is dropped unrun; only its token matters here.
+    let _ = page.finish();
+    assert!(page.fetching);
+    let token = page.fetch_token.clone().unwrap();
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    assert!(!app.management_busy(), "fetching blocks nothing");
+    assert!(!app.foreground_busy());
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(!app.close_prompt);
+    assert!(app.exiting);
+    assert!(token.is_canceled());
+}
+
+/// The app with a SteamGridDB key, on the New page that `page` is.
+fn app_with_key(page: Page) -> crate::App {
+    let mut app = crate::tests::app();
+    let _ = app.update(crate::Message::SteamGridDbKeyPresenceLoaded(1, true));
+    assert!(app.steamgriddb_available);
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    app
+}
+
+fn new_page(app: &crate::App) -> &Page {
+    match &app.flow {
+        Some(crate::flow::Page::New(page)) => page,
+        _ => panic!("not on the New page"),
+    }
+}
+
+#[test]
+fn ctrl_enter_on_review_keeps_the_fetch_the_checkbox_shows() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    page.draft.title = "Hollow Knight".to_owned();
+    page.stage = Stage::Review;
+    page.review = Some(Review {
+        runner: None,
+        runner_row: None,
+        template: None,
+        arch: Arch::Win64,
+        prefix: None,
+        adopted: false,
+        omitted_components: false,
+        prerequisite: None,
+    });
+    let mut app = app_with_key(page);
+    assert!(app.flow.as_ref().unwrap().fetch_checked(true));
+    // The creation's task comes back unrun.
+    let _ = app.update(crate::Message::Key(
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+        iced::keyboard::Modifiers::CTRL,
+        iced::event::Status::Ignored,
+    ));
+    let page = new_page(&app);
+    assert_eq!(page.stage, Stage::Working);
+    assert!(page.fetch_art, "Create kept the checkbox as it showed");
+}
+
+/// Whether every way the window can close cancels a fetch that isn't busy.
+#[test]
+fn a_close_that_waits_still_cancels_the_fetch() {
+    // Waiting on a library.toml write, with nothing to ask about.
+    let (mut page, _) = registered(true);
+    let _ = page.finish();
+    let token = page.fetch_token.clone().unwrap();
+    let mut app = app_with_key(page);
+    // The flow covers the library, so the write started before it opened.
+    let flow = app.flow.take();
+    let _ = app.update(crate::Message::Sort(
+        crate::sort_control::Event::FlipDirection,
+    ));
+    app.flow = flow;
+    assert!(app.library_writes_pending());
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.closing && app.close_quietly && !app.exiting);
+    assert!(token.is_canceled());
+
+    // Waiting on foreground work the close prompt asked to stop.
+    let (mut page, _) = registered(true);
+    let _ = page.finish();
+    let token = page.fetch_token.clone().unwrap();
+    let mut app = app_with_key(page);
+    app.operation = Some(crate::Operation {
+        name: "other".into(),
+        kind: crate::OperationKind::Start,
+        token: Some(Token::new()),
+        cancelled: false,
+        status: "Starting...".into(),
+        install_done: None,
+        installing: false,
+        after_hook: false,
+    });
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.close_prompt);
+    assert!(!token.is_canceled(), "the prompt can still be taken back");
+    let _ = app.update(crate::Message::CancelAndClose);
+    assert!(app.closing && !app.exiting);
+    assert!(token.is_canceled());
 }

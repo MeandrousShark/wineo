@@ -45,7 +45,7 @@ impl App {
                         .flow
                         .as_mut()
                         .unwrap()
-                        .submit()
+                        .submit(self.steamgriddb_available)
                         .map(move |event| Message::Flow(generation, event));
                     task.chain(self.flow_update(generation, flow::Event::AfterSubmit))
                 }

@@ -21,6 +21,12 @@ impl App {
         {
             return Task::none();
         }
+        let title = self
+            .cards
+            .iter()
+            .find(|card| card.name == name)
+            .map(|card| card.display_title.clone())
+            .unwrap_or_default();
         let Some(identity) = art_page::EnvironmentIdentity::read(&self.paths, &name) else {
             self.close_missing_art(&name);
             return Task::none();
@@ -64,6 +70,8 @@ impl App {
             );
         }
         let page = self.art_pages.get_mut(&name).unwrap();
+        // A cached page may have opened under an older title.
+        page.title = title;
         let generation = page.generation;
         let load = if page.busy() {
             Task::none()

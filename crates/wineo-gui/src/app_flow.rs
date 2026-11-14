@@ -145,10 +145,11 @@ impl App {
                 return Task::none();
             }
         };
-        let (name, launch, settings) = match action {
+        let (name, launch, settings, art) = match action {
             flow::Action::Choose | flow::Action::SteamKey => return checks,
-            flow::Action::Library { name, launch } => (name, launch, false),
-            flow::Action::Settings { name, launch } => (Some(name), launch, true),
+            flow::Action::Library { name, launch } => (name, launch, false, false),
+            flow::Action::Settings { name, launch } => (Some(name), launch, true, false),
+            flow::Action::Art { name } => (Some(name), false, false, true),
         };
         let Some(name) = name else {
             return checks;
@@ -189,6 +190,11 @@ impl App {
             {
                 page.open_add_after_load = true;
             }
+        }
+        // Something opened while the library loaded makes this refuse,
+        // which leaves the card selected with its panel open.
+        if art {
+            tasks.push(self.open_art(name));
         }
         Task::batch(tasks)
     }

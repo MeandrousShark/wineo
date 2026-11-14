@@ -157,6 +157,11 @@ impl App {
     /// this one. Only the first call starts them; every exit path waits on
     /// the same result.
     pub(crate) fn start_leaving(&mut self) {
+        // A New page fetching art isn't busy, so no close waits on it or
+        // cancels it, and every way out comes through here.
+        if let Some(flow) = &self.flow {
+            flow.cancel_fetch();
+        }
         if self.left {
             return;
         }

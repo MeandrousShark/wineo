@@ -591,11 +591,9 @@ fn late_art_and_add_results_use_current_key_availability() {
         app.flow_generation = 1;
         app.flow = Some(flow::Page::choose(paths.clone()));
         let _ = app.flow_update(1, flow::Event::New);
-        let configured = || {
-            flow::Event::Create(Box::new(flow::new::Event::Art(
-                flow::artwork::Event::Configured(1, Ok(wineo_core::config::ArtFetch::Icon)),
-            )))
-        };
+        // The fetch checkbox reads the key when it's drawn, whenever the
+        // settings it needs arrive.
+        let configured = || flow::Event::Create(Box::new(flow::new::Page::options_loaded(&paths)));
         let loaded = || {
             Message::ArtPage(
                 "game".to_owned(),
@@ -629,11 +627,15 @@ fn late_art_and_add_results_use_current_key_availability() {
         assert_eq!(app.art_pages["game"].is_changing(), available);
         let _ = app.flow_update(
             1,
-            flow::Event::Create(Box::new(flow::new::Event::Art(
-                flow::artwork::Event::Fetch(true),
-            ))),
+            flow::Event::Create(Box::new(flow::new::Event::FetchArt(true))),
         );
-        assert_eq!(app.flow.as_ref().unwrap().art_fetching(), available);
+        assert_eq!(
+            app.flow
+                .as_ref()
+                .unwrap()
+                .fetch_checked(app.steamgriddb_available),
+            available
+        );
 
         let _ = app.update(Message::SteamGridDbKeyChangedAt(1, !available));
         assert_eq!(app.steamgriddb_available, available);

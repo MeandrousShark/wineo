@@ -563,9 +563,9 @@ fn hero_previews_decode_large_enough_for_the_banner() {
 }
 
 #[test]
-fn banner_statuses_list_hero_logo_and_icon_with_something_to_say() {
+fn notes_list_what_each_kind_has_to_say() {
     let mut draft = Draft::new();
-    assert!(draft.banner_statuses().is_empty());
+    assert!(Kind::ALL.iter().all(|kind| draft.notes(*kind).is_empty()));
     draft.fetch = true;
     draft.kinds = Kind::ALL.to_vec();
     draft.remote.insert(
@@ -589,26 +589,18 @@ fn banner_statuses_list_hero_logo_and_icon_with_something_to_say() {
             ..Local::default()
         },
     );
+    assert_eq!(draft.notes(Kind::Hero), vec![]);
+    assert!(draft.is_selected(Kind::Hero));
     assert_eq!(
-        draft.banner_statuses(),
-        vec![
-            (Kind::Hero, vec![], true),
-            (
-                Kind::Logo,
-                vec![Note::Info("Fetching...".to_owned())],
-                false
-            ),
-            (
-                Kind::Icon,
-                vec![Note::Info("No icon artwork found".to_owned())],
-                false
-            ),
-        ]
+        draft.notes(Kind::Logo),
+        vec![Note::Info("Fetching...".to_owned())]
     );
+    assert!(!draft.is_selected(Kind::Logo));
     assert_eq!(
         draft.notes(Kind::Icon),
         vec![Note::Info("No icon artwork found".to_owned())]
     );
+    assert!(!draft.is_selected(Kind::Icon));
 }
 
 #[test]
