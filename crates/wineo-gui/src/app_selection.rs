@@ -115,13 +115,17 @@ impl App {
     }
 
     pub(crate) fn select_card(&mut self, name: String) -> Task<Message> {
-        if self.selected.as_deref() == Some(&name) && self.panel_open {
+        // A panel a card hides isn't showing this game, so a pick of it
+        // shows the panel rather than closing it unseen.
+        if self.selected.as_deref() == Some(&name)
+            && self.panel_open
+            && !self.panel_hidden_by_card()
+        {
             self.card_click_target = Some((name, self.target.clone()));
             self.close_panel();
             Task::none()
         } else {
             let was_open = self.panel_open;
-            self.leave_header();
             self.close_log();
             if self.selected.as_deref() != Some(&name) {
                 self.close_checkup();

@@ -1655,3 +1655,53 @@ fn a_search_that_moves_the_selection_asks_no_large_cover_for_the_old_place() {
         ["game-10", "game-11"]
     );
 }
+
+#[test]
+fn picking_the_cards_game_by_name_shows_the_hidden_panel_instead_of_closing_it() {
+    // b-0 also shows in c: the pick lands there with the panel on it.
+    let (_root, mut app) = sectioned_with("b-0", "c");
+    collapse(&mut app, "b");
+    select(&mut app, "a-5");
+    press(&mut app, Named::ArrowRight);
+    assert!(app.panel_open && app.panel_hidden_by_card());
+    assert_eq!(selected(&app), "b-0");
+    let _ = app.update(Message::OpenCard("b-0".into()));
+    assert!(app.panel_open, "not closed");
+    assert!(!app.panel_hidden_by_card());
+    assert_eq!(middle(&app), "b-0");
+    assert_eq!(app.selected_slot().unwrap().section(), &tag("c"));
+    // Shown only in its collapsed section, it stays on the card with the
+    // panel kept open for the next game.
+    let (_root, mut app) = sectioned();
+    collapse(&mut app, "b");
+    select(&mut app, "a-5");
+    press(&mut app, Named::ArrowRight);
+    let _ = app.update(Message::OpenCard("b-0".into()));
+    assert!(app.panel_open, "not closed");
+    assert_eq!(middle(&app), "[b]");
+}
+
+#[test]
+fn a_second_press_six_pixels_away_is_not_a_double_click() {
+    for (offset, double) in [(6.0, false), (5.0, true)] {
+        let (_root, mut app) = flat(10);
+        let mut clock = crate::coverflow_widget::clock::Fake::start();
+        select(&mut app, "game-04");
+        let _ = app.update(Message::ClosePanel);
+        app.panel_motion.snap(false);
+        let mut window = crate::more_menu::tests::Window::new(&mut app);
+        let point = cover_at(&mut window, &app, 4).center();
+        assert!(!double_clicked(&press_at(
+            &mut window,
+            &mut app,
+            point,
+            &mut clock
+        )));
+        let second = Point::new(point.x + offset, point.y);
+        assert_eq!(
+            double_clicked(&press_at(&mut window, &mut app, second, &mut clock)),
+            double,
+            "{offset} px"
+        );
+    }
+}
