@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use wineo_core::library::PadButton;
 
+use super::reader::Read;
 use super::*;
 
 fn info(name: &str, vendor: u16, product: u16) -> PadInfo {
@@ -337,18 +338,18 @@ impl reader::Clock for FakeClock {
 /// counted.
 struct Fake {
     reads: std::rc::Rc<std::cell::Cell<usize>>,
-    next: Box<dyn FnMut(usize) -> Option<PadEvent>>,
+    next: Box<dyn FnMut(usize) -> reader::Read>,
 }
 
 impl reader::Source for Fake {
-    fn next(&mut self) -> Option<PadEvent> {
+    fn next(&mut self) -> reader::Read {
         let read = self.reads.get();
         self.reads.set(read + 1);
         (self.next)(read)
     }
 }
 
-fn fake(next: impl FnMut(usize) -> Option<PadEvent> + 'static) -> Fake {
+fn fake(next: impl FnMut(usize) -> reader::Read + 'static) -> Fake {
     Fake {
         reads: std::rc::Rc::default(),
         next: Box::new(next),
@@ -357,14 +358,26 @@ fn fake(next: impl FnMut(usize) -> Option<PadEvent> + 'static) -> Fake {
 
 #[test]
 fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
-    // Quick Nones between events never add up to a back-off, as long as
+    // Quick empty reads between events never add up to a back-off, as long as
     // an event comes between: ten here, but never more than five in a row.
-    let mut events = vec![Some(PadEvent::Pressed(0, Raw::DPadRight))];
-    events.extend([None, None, None, None, None]);
-    events.push(Some(PadEvent::Released(0, Raw::DPadRight)));
-    events.extend([None, None, None, None, None]);
-    events.push(Some(PadEvent::Disconnected(0)));
-    events.push(Some(PadEvent::Connected(1, xbox())));
+    let mut events = vec![Read::Event(PadEvent::Pressed(0, Raw::DPadRight))];
+    events.extend([
+        Read::Nothing,
+        Read::Nothing,
+        Read::Nothing,
+        Read::Nothing,
+        Read::Nothing,
+    ]);
+    events.push(Read::Event(PadEvent::Released(0, Raw::DPadRight)));
+    events.extend([
+        Read::Nothing,
+        Read::Nothing,
+        Read::Nothing,
+        Read::Nothing,
+        Read::Nothing,
+    ]);
+    events.push(Read::Event(PadEvent::Disconnected(0)));
+    events.push(Read::Event(PadEvent::Connected(1, xbox())));
     let clock = FakeClock::new();
     let start = reader::Clock::now(&clock);
     let sent = std::cell::RefCell::new(Vec::new());
@@ -378,7 +391,7 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
         },
     );
     let sent = sent.into_inner();
-    // The tap's release comes with no wait at all, as gilrs returns None
+    // The tap's release comes with no wait at all, as gilrs says nothing
     // after every drained batch, so no repeat can fire in between.
     assert_eq!(sent[1].1, sent[0].1);
     assert_eq!(reader::Clock::now(&clock), start);
@@ -400,11 +413,15 @@ fn reads_that_keep_failing_back_off() {
     let clock = FakeClock::new();
     let start = reader::Clock::now(&clock);
     let time = clock.clone();
-    // Fails at once until the window has passed, or after so many reads
+    // Says nothing at once until the window has passed, or after so many reads
     // that it was spinning, so a broken back-off ends too.
     let source = fake(move |read| {
         let passed = reader::Clock::now(&time).saturating_duration_since(start);
-        (passed >= window || read >= 10_000).then_some(PadEvent::Disconnected(0))
+        if passed >= window || read >= 10_000 {
+            Read::Event(PadEvent::Disconnected(0))
+        } else {
+            Read::Nothing
+        }
     });
     let reads = source.reads.clone();
     reader::pump(source, retry, &clock, |_| false);
@@ -416,7 +433,7 @@ fn reads_that_keep_failing_back_off() {
 
 #[test]
 fn a_slow_none_is_a_read_that_waited_and_never_backs_off() {
-    // Each None comes after a wait, as after a hotplug that isn't a pad:
+    // Each empty read comes after a wait, as after a hotplug that isn't a pad:
     // none of them count toward backing off, so the pump never sleeps.
     let clock = FakeClock::new();
     let start = reader::Clock::now(&clock);
@@ -424,9 +441,9 @@ fn a_slow_none_is_a_read_that_waited_and_never_backs_off() {
     let source = fake(move |read| {
         if read < 12 {
             time.advance(Duration::from_millis(60));
-            None
+            Read::Nothing
         } else {
-            Some(PadEvent::Disconnected(0))
+            Read::Event(PadEvent::Disconnected(0))
         }
     });
     reader::pump(source, Duration::from_secs(5), &clock, |_| false);
@@ -434,4 +451,37 @@ fn a_slow_none_is_a_read_that_waited_and_never_backs_off() {
         reader::Clock::now(&clock).saturating_duration_since(start),
         Duration::from_millis(12 * 60)
     );
+}
+
+#[test]
+fn events_nothing_reads_show_the_device_works() {
+    // A right-stick sweep: each event nothing reads is followed by gilrs's
+    // drain read, ten times over, then the tap's release. That's more
+    // empty reads than the back-off allows in a row, but each has an event
+    // before it, so no fake time passes.
+    let mut reads = vec![Read::Event(PadEvent::Pressed(0, Raw::South))];
+    for _ in 0..10 {
+        reads.extend([Read::Ignored, Read::Nothing]);
+    }
+    reads.push(Read::Event(PadEvent::Released(0, Raw::South)));
+    let clock = FakeClock::new();
+    let start = reader::Clock::now(&clock);
+    let sent = std::cell::RefCell::new(Vec::new());
+    reader::pump(
+        fake(move |read| reads[read].clone()),
+        reader::RETRY_AFTER,
+        &clock,
+        |event| {
+            sent.borrow_mut().push(event);
+            sent.borrow().len() < 2
+        },
+    );
+    assert_eq!(
+        sent.into_inner(),
+        [
+            PadEvent::Pressed(0, Raw::South),
+            PadEvent::Released(0, Raw::South)
+        ]
+    );
+    assert_eq!(reader::Clock::now(&clock), start);
 }

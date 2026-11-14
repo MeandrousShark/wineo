@@ -15,13 +15,25 @@ use iced::futures::{SinkExt, Stream};
 use super::{Axis, PadEvent, PadInfo, Raw};
 use crate::Message;
 
+/// What one read found.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Read {
+    Event(PadEvent),
+    /// An event nothing here reads, like the right stick or a trigger's
+    /// travel. The device works, so it counts like an event, but nothing is
+    /// sent.
+    Ignored,
+    /// No event. Often normal: gilrs says so once a batch of events is
+    /// drained, after a hotplug that isn't a pad, and for events its
+    /// filters drop. Only a run of them right away means the read itself
+    /// is failing.
+    Nothing,
+}
+
 /// Where events come from: gilrs in the app, made-up ones in tests.
 pub(crate) trait Source {
-    /// Blocks until the next event. `None` is often normal: gilrs returns
-    /// it once a batch of events is drained, after a hotplug that isn't a
-    /// pad, and for events its filters drop. Only a run of them right away
-    /// means the read itself is failing.
-    fn next(&mut self) -> Option<PadEvent>;
+    /// Blocks until the next read has something to say.
+    fn next(&mut self) -> Read;
 }
 
 /// The wait once reads keep failing, so a broken device can't spin a core.
@@ -64,15 +76,18 @@ pub(crate) fn pump(
     loop {
         let asked = clock.now();
         match source.next() {
-            Some(event) => {
+            Read::Event(event) => {
                 quick_nones = 0;
                 if !send(event) {
                     return;
                 }
             }
+            Read::Ignored => quick_nones = 0,
             // It waited in the read first, so the read works.
-            None if clock.now().saturating_duration_since(asked) >= QUICK => quick_nones = 0,
-            None => {
+            Read::Nothing if clock.now().saturating_duration_since(asked) >= QUICK => {
+                quick_nones = 0;
+            }
+            Read::Nothing => {
                 quick_nones += 1;
                 if quick_nones > QUICK_NONES {
                     clock.sleep(retry);
@@ -134,35 +149,33 @@ impl Gilrs {
 }
 
 impl Source for Gilrs {
-    fn next(&mut self) -> Option<PadEvent> {
-        loop {
-            let event = self.0.next_event_blocking(None)?;
-            let id = usize::from(event.id);
-            let translated = match event.event {
-                gilrs::EventType::Connected => {
-                    Some(PadEvent::Connected(id, info(&self.0.gamepad(event.id))))
-                }
-                gilrs::EventType::Disconnected => Some(PadEvent::Disconnected(id)),
-                gilrs::EventType::ButtonPressed(button, _) => {
-                    raw(button).map(|raw| PadEvent::Pressed(id, raw))
-                }
-                gilrs::EventType::ButtonReleased(button, _) => {
-                    raw(button).map(|raw| PadEvent::Released(id, raw))
-                }
-                gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickX, value, _) => {
-                    Some(PadEvent::Stick(id, Axis::X, value))
-                }
-                gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickY, value, _) => {
-                    Some(PadEvent::Stick(id, Axis::Y, value))
-                }
-                _ => None,
-            };
-            // Events nothing reads, like the right stick or a trigger's
-            // travel, don't wake the app.
-            if translated.is_some() {
-                return translated;
+    fn next(&mut self) -> Read {
+        let Some(event) = self.0.next_event_blocking(None) else {
+            return Read::Nothing;
+        };
+        let id = usize::from(event.id);
+        let translated = match event.event {
+            gilrs::EventType::Connected => {
+                Some(PadEvent::Connected(id, info(&self.0.gamepad(event.id))))
             }
-        }
+            gilrs::EventType::Disconnected => Some(PadEvent::Disconnected(id)),
+            gilrs::EventType::ButtonPressed(button, _) => {
+                raw(button).map(|raw| PadEvent::Pressed(id, raw))
+            }
+            gilrs::EventType::ButtonReleased(button, _) => {
+                raw(button).map(|raw| PadEvent::Released(id, raw))
+            }
+            gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickX, value, _) => {
+                Some(PadEvent::Stick(id, Axis::X, value))
+            }
+            gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickY, value, _) => {
+                Some(PadEvent::Stick(id, Axis::Y, value))
+            }
+            _ => None,
+        };
+        // Events nothing reads don't wake the app, but they show the
+        // device works.
+        translated.map_or(Read::Ignored, Read::Event)
     }
 }
 
