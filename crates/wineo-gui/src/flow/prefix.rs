@@ -4,12 +4,14 @@ use iced::widget::{column, container, pick_list, row, text, text_input};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::desktop;
 use wineo_core::external_runners::Source;
 use wineo_core::import::{self, ImportRequest, Inspection};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
+use super::artwork::{ArtOffer, Fetcher, default_fetcher, fetch_art};
 use super::frame;
 use crate::chips::input_style;
 use crate::runner_label;
@@ -31,6 +33,7 @@ pub(crate) enum Event {
     Arch(Option<Arch>),
     Dependencies(bool),
     RunnersLoaded(Result<Box<RunnerListing>, String>),
+    FetchArt(bool),
     ReviewLoaded(u64, Result<Box<Review>, String>),
     Progress(u64, String),
     Warning(u64, String),
@@ -41,6 +44,10 @@ pub(crate) enum Event {
     ArtRetried(u64, Result<(), String>),
     SkipArt,
     ArtSkipped(u64, Result<(), String>),
+    SkipFetch,
+    /// The fetch after the import, with its own sequence number.
+    ArtFetched(u64, Result<Vec<String>, String>),
+    ChooseArt,
     UseRetained,
     Back,
     KeepEditing,
@@ -49,7 +56,6 @@ pub(crate) enum Event {
     Library,
     Cancel,
     ForceStop,
-    Art(super::artwork::Event),
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +80,8 @@ impl RunnerChoice {
 pub(crate) struct RunnerListing {
     choices: Vec<RunnerChoice>,
     default: String,
+    /// Whether Art to fetch has any kind on.
+    fetch_kinds: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -119,14 +127,31 @@ pub(crate) struct Page {
     token: Option<Token>,
     generation: u64,
     action: Option<super::Action>,
-    art: super::artwork::Draft,
+    /// Whether Art to fetch has any kind on, once the settings are read.
+    fetch_kinds: Option<bool>,
+    /// The fetch checkbox: None until it's clicked, then what it was set to.
+    /// Not an edit, so it never makes Back ask about discarding.
+    fetch_choice: Option<bool>,
+    /// The checkbox as it showed at Import, since the key may be gone by a
+    /// Retry.
+    fetch_art: bool,
+    /// Set while Working fetches art rather than doing work Cancel stops.
+    fetching: bool,
+    fetch_token: Option<Token>,
+    /// Counts fetches apart from `generation`, which the import's late
+    /// Warning events carry, so starting a fetch doesn't drop them.
+    fetch_sequence: u64,
+    fetcher: Fetcher,
+    /// Whether ArtFailed came from the fetch, not the desktop entry.
+    fetch_failed: bool,
+    notes: Vec<String>,
     imported_name: Option<String>,
     recovery_path: Option<PathBuf>,
 }
 
 impl Page {
     pub(crate) fn new(paths: Paths) -> (Self, Task<Event>) {
-        let mut page = Self {
+        let page = Self {
             paths: paths.clone(),
             source: String::new(),
             name: String::new(),
@@ -146,17 +171,23 @@ impl Page {
             token: None,
             generation: 0,
             action: None,
-            art: super::artwork::Draft::new(),
+            fetch_kinds: None,
+            fetch_choice: None,
+            fetch_art: false,
+            fetching: false,
+            fetch_token: None,
+            fetch_sequence: 0,
+            fetcher: default_fetcher(),
+            fetch_failed: false,
+            notes: Vec::new(),
             imported_name: None,
             recovery_path: None,
         };
-        let load_paths = paths.clone();
         let load = task::blocking(
-            move || runner_choices(&load_paths),
+            move || runner_choices(&paths),
             |result| Event::RunnersLoaded(result.map(Box::new)),
         );
-        let art = page.art.configure(paths, String::new()).map(Event::Art);
-        (page, Task::batch([load, art]))
+        (page, load)
     }
 
     pub(crate) fn update_with_key_availability(
@@ -197,7 +228,7 @@ impl Page {
                 self.name = value;
                 self.dirty = true;
                 self.clear_review();
-                self.art.set_title(&self.name).map(Event::Art)
+                Task::none()
             }
             Event::Runner(value) => {
                 self.runner = value;
@@ -255,6 +286,7 @@ impl Page {
                     self.runner = listing.default;
                 }
                 self.runners = listing.choices;
+                self.fetch_kinds = Some(listing.fetch_kinds);
                 Task::none()
             }
             Event::RunnersLoaded(Err(error)) => {
@@ -287,8 +319,9 @@ impl Page {
                 }
                 Task::none()
             }
+            // A late one mustn't overwrite "Fetching artwork...".
             Event::Progress(generation, status) => {
-                if generation == self.generation && self.step == Step::Working {
+                if generation == self.generation && self.step == Step::Working && !self.fetching {
                     self.status = status;
                 }
                 Task::none()
@@ -299,7 +332,14 @@ impl Page {
                 }
                 Task::none()
             }
-            Event::Import => self.begin_import(),
+            Event::Import => self.begin_import(key_available),
+            // Not an edit, so it never makes Back ask about discarding.
+            Event::FetchArt(on) => {
+                if self.step == Step::Details {
+                    self.fetch_choice = Some(on);
+                }
+                Task::none()
+            }
             Event::Next => self.begin_review(),
             Event::ImportFinished(generation, result) => {
                 if generation != self.generation || self.step != Step::Working {
@@ -310,13 +350,16 @@ impl Page {
                     Ok(outcome) => {
                         let outcome = *outcome;
                         self.imported_name = Some(outcome.name);
-                        self.step = if let Some(error) = outcome.art_error {
+                        if let Some(error) = outcome.art_error {
                             self.error = Some(error);
-                            Step::ArtFailed
+                            self.fetch_failed = false;
+                            self.step = Step::ArtFailed;
+                        } else if self.fetch_art {
+                            return self.start_fetch();
                         } else {
                             self.error = None;
-                            Step::Finished
-                        };
+                            self.step = Step::Finished;
+                        }
                     }
                     Err(error) => {
                         if !self.adopt
@@ -357,6 +400,49 @@ impl Page {
                 self.token = None;
                 self.step = Step::Finished;
                 self.error = result.err();
+                self.notes.push("Artwork skipped".to_owned());
+                Task::none()
+            }
+            Event::SkipFetch => {
+                self.skip_fetch();
+                Task::none()
+            }
+            Event::ArtFetched(sequence, result) => {
+                if sequence != self.fetch_sequence || !self.fetching {
+                    return Task::none();
+                }
+                self.fetching = false;
+                let skipped = self
+                    .fetch_token
+                    .take()
+                    .is_some_and(|token| token.is_canceled());
+                match result {
+                    Ok(notes) => {
+                        self.notes.extend(notes);
+                        self.error = None;
+                        self.step = Step::Finished;
+                    }
+                    Err(_) if skipped => {
+                        self.notes.push("Artwork skipped".to_owned());
+                        self.error = None;
+                        self.step = Step::Finished;
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.fetch_failed = true;
+                        self.step = Step::ArtFailed;
+                    }
+                }
+                Task::none()
+            }
+            // Leaves for the library without launching, since there's nothing
+            // to launch, and opens the Art page for what was imported.
+            Event::ChooseArt => {
+                if self.step == Step::Finished
+                    && let Some(name) = self.imported_name.clone()
+                {
+                    self.action = Some(super::Action::Art { name });
+                }
                 Task::none()
             }
             Event::UseRetained => {
@@ -406,10 +492,6 @@ impl Page {
                 self.cancel(true);
                 Task::none()
             }
-            Event::Art(event) => self
-                .art
-                .update_with_key_availability(event, key_available)
-                .map(Event::Art),
         }
     }
 
@@ -420,55 +502,67 @@ impl Page {
     ) -> Element<'_, Event> {
         let body = match self.step {
             Step::Details => self.details(palette, key_available),
-            Step::Review => self.review_view(palette, key_available),
+            Step::Review => self.review_view(palette),
             Step::Working => column![
                 text(self.status.as_str()).color(palette.muted),
-                self.token.as_ref().map(|token| {
-                    let (label, event) = if token.is_canceled() {
-                        ("Force stop", Event::ForceStop)
-                    } else {
-                        ("Cancel", Event::Cancel)
-                    };
-                    secondary_button(label, palette)
-                        .on_press(event)
-                })
+                if self.fetching {
+                    let skipping = self.fetch_token.as_ref().is_some_and(Token::is_canceled);
+                    Some(
+                        secondary_button("Skip", palette)
+                            .on_press_maybe((!skipping).then_some(Event::SkipFetch)),
+                    )
+                } else {
+                    self.token.as_ref().map(|token| {
+                        let (label, event) = if token.is_canceled() {
+                            ("Force stop", Event::ForceStop)
+                        } else {
+                            ("Cancel", Event::Cancel)
+                        };
+                        secondary_button(label, palette).on_press(event)
+                    })
+                }
             ]
             .spacing(14)
             .into(),
             Step::ArtFailed => column![
-                text(format!(
-                    "{} was imported, but artwork could not be copied.",
-                    self.imported_name.as_deref().unwrap_or("Environment")
-                ))
-                .color(palette.warning),
+                text(self.art_failed_line()).color(palette.warning),
                 row![
-                    secondary_button("Retry artwork", palette)
-                        .on_press(Event::RetryArt),
-                    secondary_button("Skip artwork", palette)
-                        .on_press(Event::SkipArt)
+                    secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
+                    secondary_button("Skip artwork", palette).on_press(Event::SkipArt)
                 ]
                 .spacing(8),
             ]
             .spacing(12)
             .into(),
-            Step::Finished => column![
-                text(format!(
-                    "Imported {}.",
-                    self.imported_name.as_deref().unwrap_or("environment")
-                ))
-                .color(palette.success),
-                text("Scan installed programs and choose game targets now, or add them later in Settings.")
-                    .color(palette.muted),
-                row![
-                    secondary_button("Set up targets", palette)
-                        .on_press(Event::OpenSettings),
-                    secondary_button("Back to library", palette)
-                        .on_press(Event::Library)
+            Step::Finished => {
+                let mut finished = column![
+                    text(format!(
+                        "Imported {}.",
+                        self.imported_name.as_deref().unwrap_or("environment")
+                    ))
+                    .color(palette.success),
+                    text("Scan installed programs and choose game targets now, or add them later in Settings.")
+                        .color(palette.muted),
                 ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .into(),
+                .spacing(12);
+                for note in &self.notes {
+                    finished = finished.push(text(note.as_str()).size(13).color(palette.muted));
+                }
+                finished
+                    .push(
+                        row![
+                            secondary_button("Set up targets", palette)
+                                .on_press(Event::OpenSettings),
+                            secondary_button("Choose artwork...", palette)
+                                .on_press(Event::ChooseArt),
+                            secondary_button("Back to library", palette).on_press(Event::Library)
+                        ]
+                        .spacing(8)
+                        .wrap()
+                        .vertical_spacing(8),
+                    )
+                    .into()
+            }
         };
         let mut content = column![
             text("Import prefix").size(22).color(palette.foreground),
@@ -527,8 +621,34 @@ impl Page {
         }
     }
 
+    /// Fetching art isn't busy: closing may go ahead, since the fetch stops
+    /// at its token and writes only to an environment that's still there.
     pub(crate) fn busy(&self) -> bool {
-        matches!(self.step, Step::Working)
+        matches!(self.step, Step::Working) && !self.fetching
+    }
+
+    /// What ArtFailed says, by what failed: the fetch, or the desktop entry.
+    fn art_failed_line(&self) -> String {
+        format!(
+            "{} was imported, but {}.",
+            self.imported_name.as_deref().unwrap_or("Environment"),
+            if self.fetch_failed {
+                "fetching its artwork failed"
+            } else {
+                "its desktop entry could not be refreshed"
+            }
+        )
+    }
+
+    fn art_offer(&self, key_available: bool) -> ArtOffer {
+        ArtOffer::new(self.fetch_kinds, key_available, self.fetch_choice)
+    }
+
+    /// Stops the art fetch, if one runs, when the window closes.
+    pub(crate) fn cancel_fetch(&self) {
+        if let Some(token) = &self.fetch_token {
+            token.cancel();
+        }
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
@@ -547,13 +667,15 @@ impl Page {
         self.action.take()
     }
 
-    pub(crate) fn submit(&mut self) -> Task<Event> {
+    /// Ctrl+Enter. `key_available` matters, since Import captures the fetch
+    /// checkbox as it shows.
+    pub(crate) fn submit(&mut self, key_available: bool) -> Task<Event> {
         if self.busy() {
             return Task::none();
         }
         match self.step {
             Step::Details => self.begin_review(),
-            Step::Review => self.begin_import(),
+            Step::Review => self.begin_import(key_available),
             Step::ArtFailed => self.retry_art(),
             Step::Finished => {
                 self.action = Some(super::Action::Library {
@@ -569,11 +691,12 @@ impl Page {
     pub(crate) fn back(&mut self) -> Task<Event> {
         // Esc answers the discard prompt like Keep editing instead of asking again.
         if self.discard_prompt {
-            return self.update_with_key_availability(Event::KeepEditing, false);
+            self.discard_prompt = false;
+            return Task::none();
         }
         match self.step {
             Step::Details => {
-                if self.dirty || self.art.is_dirty() {
+                if self.dirty {
                     self.discard_prompt = true;
                 } else {
                     self.action = Some(super::Action::Choose);
@@ -592,7 +715,10 @@ impl Page {
                 });
                 Task::none()
             }
-            Step::Working => Task::none(),
+            Step::Working => {
+                self.skip_fetch();
+                Task::none()
+            }
         }
     }
 
@@ -670,11 +796,15 @@ impl Page {
                     .spacing(8),
                 );
         }
-        fields = fields.push(self.art.view(palette, key_available).map(Event::Art));
+        fields = fields.push(self.art_offer(key_available).view(
+            palette,
+            "Import",
+            Event::FetchArt,
+        ));
         fields.into()
     }
 
-    fn review_view(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
+    fn review_view(&self, palette: Palette) -> Element<'_, Event> {
         let Some(review) = &self.review else {
             return text("Preparing review...").into();
         };
@@ -729,7 +859,6 @@ impl Page {
                 }
             }
         }
-        content = content.push(self.art.view(palette, key_available).map(Event::Art));
         if self.recovery_path.is_some() {
             content = content.push(text("A complete copy was retained. Review it with Use in place to register that folder.").size(13).color(palette.warning));
         }
@@ -756,18 +885,13 @@ impl Page {
         let adopt = self.adopt;
         let destination = self.destination.clone();
         let arch = self.arch;
-        let task = task::blocking(
+        task::blocking(
             move || inspect_review(&paths, &source, &name, &runner, adopt, &destination, arch),
             move |result| Event::ReviewLoaded(generation, result.map(Box::new)),
-        );
-        let art = self
-            .art
-            .configure(self.paths.clone(), self.name.clone())
-            .map(Event::Art);
-        Task::batch([task, art])
+        )
     }
 
-    fn begin_import(&mut self) -> Task<Event> {
+    fn begin_import(&mut self, key_available: bool) -> Task<Event> {
         if self.step != Step::Review || self.busy() {
             return Task::none();
         }
@@ -778,10 +902,10 @@ impl Page {
             self.error = Some("Choose the prefix architecture before importing.".to_owned());
             return Task::none();
         }
-        if let Err(error) = self.art.validate() {
-            self.error = Some(error);
-            return Task::none();
-        }
+        // The fetch runs after the import, by when the key may be gone.
+        self.fetch_art = self.art_offer(key_available) == ArtOffer::Fetch(true);
+        self.fetch_failed = false;
+        self.notes.clear();
         let token = Token::new();
         self.token = Some(token.clone());
         self.step = Step::Working;
@@ -799,7 +923,6 @@ impl Page {
             arch: self.arch,
         };
         let paths = self.paths.clone();
-        let art = self.art.clone();
         let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
         let progress_generation = generation;
         let work = Task::perform(
@@ -835,7 +958,9 @@ impl Page {
                                 }
                             },
                         )?;
-                        let art_error = apply_art(&paths, &imported.name, &art).err();
+                        // Art leaves the worker, but the entry still gets
+                        // refreshed, so a card made from the import has one.
+                        let art_error = refresh_entry(&paths, &imported.name).err();
                         Ok::<_, anyhow::Error>(ImportOutcome {
                             name: imported.name,
                             art_error,
@@ -858,18 +983,60 @@ impl Page {
         let Some(name) = self.imported_name.clone() else {
             return Task::none();
         };
+        // The fetch is what failed, or never ran, so run it again.
+        if self.fetch_art {
+            return self.start_fetch();
+        }
         self.step = Step::Working;
-        self.status = "Copying artwork...".to_owned();
+        self.status = "Refreshing desktop entries...".to_owned();
         self.error = None;
         self.token = Some(Token::new());
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
-        let art = self.art.clone();
         task::blocking(
-            move || apply_art(&paths, &name, &art),
+            move || refresh_entry(&paths, &name),
             move |result| Event::ArtRetried(generation, result),
         )
+    }
+
+    /// Fetches art on Working, with Skip, then reapplies the desktop entry.
+    /// Retry artwork comes here too. It counts on its own sequence, so the
+    /// import's late events, which carry `generation`, still land.
+    fn start_fetch(&mut self) -> Task<Event> {
+        let Some(name) = self.imported_name.clone() else {
+            return Task::none();
+        };
+        self.fetch_sequence = self.fetch_sequence.wrapping_add(1);
+        let sequence = self.fetch_sequence;
+        let token = Token::new();
+        self.fetch_token = Some(token.clone());
+        self.token = None;
+        self.fetching = true;
+        self.fetch_failed = false;
+        self.step = Step::Working;
+        self.status = "Fetching artwork...".to_owned();
+        self.error = None;
+        let paths = self.paths.clone();
+        // The Name as typed, since Import prefix has no separate title.
+        let title = self.name.clone();
+        let fetcher = self.fetcher.clone();
+        task::blocking(
+            move || fetch_art(&paths, &name, &title, &token, &fetcher),
+            move |result| Event::ArtFetched(sequence, result),
+        )
+    }
+
+    /// The fetch's result lands, and Working leaves, once the worker sees the
+    /// token.
+    fn skip_fetch(&mut self) {
+        if self.fetching
+            && let Some(token) = &self.fetch_token
+            && !token.is_canceled()
+        {
+            token.cancel();
+            self.status = "Skipping artwork...".to_owned();
+        }
     }
 
     fn skip_art(&mut self) -> Task<Event> {
@@ -885,11 +1052,7 @@ impl Page {
         let generation = self.generation;
         let paths = self.paths.clone();
         task::blocking(
-            move || {
-                wineo_core::desktop::apply(&paths, &name, false)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            },
+            move || refresh_entry(&paths, &name),
             move |result| Event::ArtSkipped(generation, result),
         )
     }
@@ -922,7 +1085,11 @@ fn runner_choices(paths: &Paths) -> Result<RunnerListing, String> {
         .or_else(|| choices.first())
         .map(|runner| runner.selection.clone())
         .unwrap_or_default();
-    Ok(RunnerListing { choices, default })
+    Ok(RunnerListing {
+        choices,
+        default,
+        fetch_kinds: !global.art.fetch.kinds().is_empty(),
+    })
 }
 
 fn choice(paths: &Paths, runner: Runner) -> RunnerChoice {
@@ -934,9 +1101,8 @@ fn choice(paths: &Paths, runner: Runner) -> RunnerChoice {
     }
 }
 
-fn apply_art(paths: &Paths, name: &str, art: &super::artwork::Draft) -> Result<(), String> {
-    art.apply(paths, name)?;
-    wineo_core::desktop::apply(paths, name, false)
+fn refresh_entry(paths: &Paths, name: &str) -> Result<(), String> {
+    desktop::apply(paths, name, false)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -990,13 +1156,15 @@ fn inspect_review(
     })
 }
 
+const DISCARD_BODY: &str = "Your prefix and name will be lost.";
+
 fn discard_prompt(palette: Palette) -> Element<'static, Event> {
     container(
         column![
             text("Discard this import?")
                 .size(18)
                 .color(palette.foreground),
-            text("Your prefix, name, and artwork selections will be lost.").color(palette.muted),
+            text(DISCARD_BODY).color(palette.muted),
             row![
                 secondary_button("Keep editing", palette).on_press(Event::KeepEditing),
                 secondary_button("Discard", palette).on_press(Event::Discard)
@@ -1014,6 +1182,9 @@ fn discard_prompt(palette: Palette) -> Element<'static, Event> {
     .center(Fill)
     .into()
 }
+
+#[cfg(test)]
+mod art_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1166,7 +1337,7 @@ mod tests {
         page.source = source.display().to_string();
         page.name = "imported".to_owned();
         page.runner = "fake-wine".to_owned();
-        let _task = page.submit();
+        let _task = page.submit(false);
         assert_eq!(page.step, Step::Working);
         drop(_task);
 
@@ -1182,13 +1353,13 @@ mod tests {
         .unwrap();
         page.step = Step::Review;
         page.review = Some(review);
-        let _task = page.submit();
+        let _task = page.submit(false);
         assert_eq!(page.status, "Importing prefix...");
         drop(_task);
 
         page.action = None;
         let status = page.status.clone();
-        let _task = page.submit();
+        let _task = page.submit(false);
         assert!(page.action.is_none());
         assert_eq!(page.status, status);
     }

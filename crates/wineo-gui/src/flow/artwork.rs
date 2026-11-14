@@ -11,6 +11,7 @@ use wineo_core::art::{self, Kind};
 use wineo_core::art_fetch::{self, Mode};
 use wineo_core::cancel::Token;
 use wineo_core::config::{ArtFetch, GlobalConfig};
+use wineo_core::desktop;
 use wineo_core::download::{Https, Lazy};
 use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::paths::Paths;
@@ -100,7 +101,6 @@ pub(crate) struct Draft {
     fetch: bool,
     kinds: Vec<Kind>,
     search: String,
-    search_edited: bool,
     searching: bool,
     matches: Vec<Match>,
     selected: Option<Match>,
@@ -120,26 +120,6 @@ pub(crate) struct Draft {
 impl Draft {
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    pub(crate) fn is_dirty(&self) -> bool {
-        self.fetch
-            || self.search_edited
-            || self.selected.is_some()
-            || self.local.values().any(|local| !local.path.is_empty())
-    }
-
-    pub(crate) fn set_title(&mut self, title: &str) -> Task<Event> {
-        if !self.search_edited && self.search != title {
-            self.clear_fetched();
-            self.search = title.to_owned();
-            self.sequence = self.sequence.wrapping_add(1);
-            self.searching = false;
-            self.matches.clear();
-            self.selected = None;
-            self.error = None;
-        }
-        Task::none()
     }
 
     pub(crate) fn configure(&mut self, paths: Paths, title: String) -> Task<Event> {
@@ -256,7 +236,6 @@ impl Draft {
             Event::SearchText(value) if key_available => {
                 self.clear_fetched();
                 self.search = value;
-                self.search_edited = true;
                 self.sequence = self.sequence.wrapping_add(1);
                 self.searching = false;
                 self.selected = None;
@@ -1013,6 +992,99 @@ pub(crate) fn fetch_default(
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)
+}
+
+/// Fetches art for an environment, from its name, the title to search for,
+/// and the token that stops it. Tests swap in their own, so nothing they run
+/// reaches SteamGridDB.
+pub(crate) type Fetcher =
+    Arc<dyn Fn(&Paths, &str, &str, &Token) -> Result<Vec<String>, String> + Send + Sync>;
+
+pub(crate) fn default_fetcher() -> Fetcher {
+    Arc::new(|paths, name, title, token| fetch_default(paths, name, title, &Lazy::new(), token))
+}
+
+/// What a flow's Details offers for fetching art after the environment
+/// registers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArtOffer {
+    /// The settings haven't been read yet.
+    Unknown,
+    /// Art to fetch has no kind on.
+    Off,
+    NoKey,
+    /// The checkbox, and whether it's on.
+    Fetch(bool),
+}
+
+impl ArtOffer {
+    /// `fetch_kinds` is whether Art to fetch has any kind on, once read, and
+    /// `choice` is what the user set the checkbox to, if they did. The key is
+    /// read when the page draws, so a default follows it.
+    pub(crate) fn new(
+        fetch_kinds: Option<bool>,
+        key_available: bool,
+        choice: Option<bool>,
+    ) -> Self {
+        match fetch_kinds {
+            None => Self::Unknown,
+            Some(false) => Self::Off,
+            Some(true) if !key_available => Self::NoKey,
+            Some(true) => Self::Fetch(choice.unwrap_or(true)),
+        }
+    }
+
+    /// The checkbox, or a note on why there's none. `after` names the button
+    /// whose result the Art page picks up from, like "Create".
+    pub(crate) fn view<'a, M: Clone + 'a>(
+        self,
+        palette: Palette,
+        after: &str,
+        on_toggle: impl Fn(bool) -> M + 'a,
+    ) -> Option<Element<'a, M>> {
+        let note = match self {
+            Self::Unknown => return None,
+            Self::Fetch(on) => {
+                return Some(
+                    checkbox(on)
+                        .label("Fetch art using the top SteamGridDB match")
+                        .on_toggle(on_toggle)
+                        .into(),
+                );
+            }
+            Self::Off => "Art to fetch is off in Settings.".to_owned(),
+            Self::NoKey => {
+                format!(
+                    "Add a SteamGridDB key in Settings to fetch art, or choose it after {after}."
+                )
+            }
+        };
+        Some(text(note).size(12).color(palette.muted).into())
+    }
+}
+
+/// The fetch after an environment registers, then the desktop entry again,
+/// since its icon comes from the art.
+pub(crate) fn fetch_art(
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    token: &Token,
+    fetcher: &Fetcher,
+) -> Result<Vec<String>, String> {
+    let fetched = fetcher(paths, name, title, token);
+    // Skipped, so nothing more is written; a later launch refreshes the entry.
+    if fetched.is_err() && token.is_canceled() {
+        return fetched;
+    }
+    let desktop = desktop::apply(paths, name, false).map_err(|error| error.to_string());
+    match (fetched, desktop) {
+        (Ok(notes), Ok(_)) => Ok(notes),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+        (Err(art_error), Err(desktop_error)) => {
+            Err(format!("{art_error}; desktop entry: {desktop_error}"))
+        }
+    }
 }
 
 #[cfg(test)]
