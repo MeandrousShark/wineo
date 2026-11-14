@@ -186,16 +186,18 @@ Plan 0054 added these.
   square icon button, an outline poster over a short title line, with the
   tag chips' selected look while on (15% primary tint, primary border and
   icon); its tooltip says "Hide titles" or "Show titles".
-- The layout switch is a segment, 64 x 32 px: two 32 px sides, a list icon
-  (dots and lines) on the left and a grid icon (2 x 2 squares) on the right,
-  each with a tooltip ("Show as list", "Show as grid"). One thumb sits under
+- The layout switch is a segment, 96 x 32 px: three 32 px sides, a list
+  icon (dots and lines), a grid icon (2 x 2 squares), and a coverflow icon,
+  each with a tooltip ("Show as list", "Show as grid", "Show as
+  coverflow"). One thumb sits under
   the chosen side with the poster-only toggle's selected look, and the
   chosen side's icon is primary; hovering a side adds a faint foreground
   tint. The thumb slides with the panel's spring and snaps under reduced
   motion. The keyboard treats the segment as one control, like a radio
   group: it's a single Tab stop, its focus ring goes around the whole
-  segment, and Left, Right, Space, and Enter flip it while it has focus,
-  so the arrows don't reach the library then. Held arrows don't repeat the
+  segment, and while it has focus Left moves to the side before and Right,
+  Space, and Enter to the side after, stopping at the ends, so the arrows
+  don't reach the library then. Ctrl+L wraps around. Held arrows don't repeat the
   flip. A click picks a side and never takes focus, since the thumb already
   shows the change. In the list, an empty slot holds the slider and
   toggle's place, so the toolbar keeps its shape. With the switch the toolbar's right end starts clipping
@@ -510,6 +512,65 @@ column change halfway through a zoom never jumps.
   lands. A scroll waiting on motion runs once when the last motion ends,
   or is dropped.
 
+## Coverflow
+
+The strip is one custom widget drawn back to front from a fractional
+position, so every frame is a pure function of that position and the
+Library's size.
+
+- The middle cover is 55% of the Library's height, at most 40% of the
+  strip's width, 2:3. Up to four neighbors per side, each 0.125 smaller
+  than the one before and never below half the middle, and each 0.15 more
+  dimmed. The nearest neighbor sits 0.68 of the middle's width from its
+  center, so it tucks under the middle; the rest step 0.3.
+- Side covers tilt toward the middle: 60% as wide as flat, the far edge
+  inset 10% top and bottom, cropped to the 2:3 middle. The tilt is a warp
+  made once per cover on the decode thread and cached left and right, never
+  drawn per frame. A cover crossfades from flat to tilted as it turns.
+  Covers are square, since tiny-skia ignores image corner radius, and the
+  shapes behind and over a tilted cover are trapezoids so no square corner
+  shows over its neighbors.
+- Anything over a cover (badges, dimming, the caption) gets its own layer,
+  since both renderers draw a layer's quads before its images. A cover
+  carries only the mark check and the favorite star, drawn as on a grid
+  card, with the grid's gray and fade for not installed or hidden.
+- The caption is the title and one state line in a 64 px band, 12 px under
+  the middle cover. In a short window it lifts above the marks bar and the
+  controller hint bar, and the middle cover shrinks only when lifting isn't
+  enough.
+- A collapsed section's card is its first game's cover with two blank
+  cards offset behind it, the section name and count in the caption; an
+  art-less first game gives the name card. The open section's name sits
+  above the strip as a button that collapses it.
+- The middle cover and its two neighbors decode at the middle's size in
+  physical pixels, rounded up to 240 px steps and at most 1440 px tall, with
+  the grid poster shown until it arrives. That decode and every warp wait
+  until the strip rests, and a result for a cover that has moved away is
+  dropped. A cover that comes on screen mid-glide draws flat until then. A
+  resize moves the covers at once but asks for the larger decode only after
+  250 ms without another resize.
+- Motion: the position follows the grid cards' spring, stepped by elapsed
+  time so a dropped frame skips ahead, with the swing past a stop capped at
+  0.15 of a cover. A held key or stick glides through without stopping. The
+  middle title crossfades over 150 ms. Reduced motion, a covered strip, and
+  switching into coverflow snap; the title still fades. Frames are asked for
+  only while something moves.
+
+## Controller hints and remapping
+
+- The hint bar is 32 px at the bottom of the Library, under the marks bar:
+  a 20 px button symbol in a pill and a word for Open (Play with the panel
+  open), Back, Favorite, Mark, and Random, each only when bound, and
+  without Favorite and Mark on a section header or collapsed card. Symbols
+  follow the last controller pressed: letter rings for Xbox and Nintendo,
+  the four shapes for PlayStation, and words like LB, L1, or ZL for the
+  rest. It shows after a controller press and hides on any mouse move or
+  click, with no timer.
+- Each remap row in Global settings is a button showing the action and its
+  symbol, or "Unbound" in the warning color. A waiting row says "Press a
+  button..." for 5 s. Reset to defaults is enabled only while something is
+  remapped.
+
 ## Reviews and management pages
 
 New environment's Summary uses one grouped surface with Application, Source,
@@ -579,6 +640,7 @@ are examples; the actual application's existing data and behavior take priority.
 ## Review checklist
 
 Check light and dark palettes, mouse and keyboard focus, long paths, and a
-small window. Preserve scroll position and stable widget-tree paths. Ensure
+small window. Library changes are also checked in coverflow, in a short and a
+narrow window, and with a controller. Preserve scroll position and stable widget-tree paths. Ensure
 footers stay reachable, grouped content scrolls, and animations stop when idle.
 New visual directions need maintainer approval before replacing these rules.

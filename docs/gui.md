@@ -328,8 +328,9 @@ like `Couldn't tag 2 of 3 (Hades, Celeste): ...`, `Couldn't untag ...`, or
 
 ### List view
 
-The switch left of the zoom slider shows the library as a grid of posters
-or as a list, and Ctrl+L flips between them. The list has one 56 px row per
+The switch left of the zoom slider shows the library as a grid of posters,
+a list, or [coverflow](#coverflow), and Ctrl+L cycles through them in that
+order: list, grid, coverflow. The list has one 56 px row per
 game: a small poster, the title with the environment name under it when
 they differ, then State, Playtime, Last played, Source, and Tags. A row
 shows what its poster does: the star, the eye, the Steam mark, a GOG pill,
@@ -350,6 +351,63 @@ for the way back. Switching keeps the sort, the marks, and the selection,
 and keeps your place: the selected game if it's in view, otherwise
 whatever was at the same spot. The choice saves to `library.toml`
 (`layout` under `[view]`).
+
+### Coverflow
+
+Coverflow shows the same games in the same order as the grid and list, with
+the same sort, filters, search, presets, and hidden games, as one strip of
+covers. The selected game sits in the middle at about 55% of the Library's
+height, with up to four neighbors on each side, each smaller, overlapping,
+tilted toward the middle, and dimmed. A tall narrow window shrinks the middle
+cover so it's at most 40% of the strip's width. The strip centers in the
+space beside the panel.
+
+Under the middle cover are its title and the state the list shows in its
+State column, like `running` or `not installed`. In a short window they move
+up clear of the marks and controller bars, and the cover shrinks only when
+that isn't enough. A game without art gets its name card at cover size. A
+not installed or hidden game is gray and faded, as in the grid, and a cover
+shows only two badges: the mark check and the favorite star. The rest are in
+the panel and the state line.
+
+Left and Right move one cover and stop at the ends. Grouped, Up and Down
+jump to the first game of the previous or next section, whose name shows
+above the strip; ungrouped, they do nothing. Home and End go to the first
+and last cover, and PageUp and PageDown move by the number of covers on
+screen. The middle cover is always the selection, so Enter, F, Space, R,
+Delete, and search work as in the grid. With nothing selected, the first
+cover becomes the selection.
+
+A collapsed section is one stacked card: its first game's cover with two
+blank cards behind it, and the section's name and game count under it.
+Enter or a click opens it, landing on its first game, and the section name
+above the strip collapses it again (Tab reaches it like the grid's
+headers). F, Space, and Delete do nothing on a card. While a card is in the
+middle, the panel hides, so it never shows a game you can't see, and comes
+back on the next game if it was open. Esc and Back on a card don't close it.
+
+Click a side cover to bring it to the middle. A click on the middle cover
+does what a click on a grid card does, a double click plays it, and a right
+click opens its menu. The wheel, up and down or sideways, moves one cover
+per notch.
+
+The strip glides to each move on the same spring as the grid's cards, and a
+held key or stick glides straight through. With reduced motion (see
+[Appearance](#appearance)) it jumps instead, and the middle title still
+fades. The zoom slider and the titles button leave the toolbar, as in the
+list.
+
+### Full screen
+
+F11, or Start on a controller, makes the window full screen in any layout
+and back. With **Open coverflow in full screen** on in Global settings,
+switching to coverflow goes full screen too, and leaving coverflow leaves
+it, unless you were already full screen when you switched. Full screen
+started by F11 stays until you press F11 again. If the desktop takes the
+window out of full screen, wineo goes along, and the window returns to the
+size it had before. A window hidden to the tray comes back full screen if it
+was. Only the setting is saved: F11's full screen isn't remembered between
+starts, while the setting opens coverflow full screen at startup.
 
 ### Zoom and poster-only
 
@@ -1154,6 +1212,19 @@ section works in a portable folder too. **Games folder** (with
 and in what language games install; they save with the Save bar, and a
 portable folder leaves them alone.
 
+**Coverflow**: **Open coverflow in full screen**, off by default. See
+[Full screen](#full-screen).
+
+**Controller**: **Use a controller in the Library**, on by default, and the
+names of the connected controllers, or "No controller found." Below them,
+each controller action has a row showing its button. Click a row, or press
+Enter or Space on it, and it says "Press a button..." for 5 seconds; the
+next controller button takes the action. A button another action had swaps
+with it, so every button stays used once. Any key, click, or second click
+on the row stops waiting. **Reset to defaults** puts every button back. The
+rows save with the Save bar to `[input.buttons]` in `library.toml` (see
+[config files](config-files.md)). See [Controller](#controller).
+
 The General tab ends with the version, like `wineo 1.5.0`, the same line
 `wineo --version` prints. A build that isn't a tagged release adds which
 commit it is, like `wineo 1.4.1+12.g7e952c93` (12 commits past v1.4.1),
@@ -1224,7 +1295,10 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Key | Does |
 |---|---|
 | Arrow keys | Move between cards or rows; Up and Down cross section headers to the nearest card above or below |
-| Ctrl+L | Switch between the grid and the list (Library only) |
+| Ctrl+L | Switch to the next layout: list, grid, coverflow (Library only) |
+| Home, End | Go to the first or last game (Library only) |
+| PageUp, PageDown | Move a screenful of rows, or of covers in coverflow (Library only) |
+| F11 | Full screen, or back to a window |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
 | Space | Mark or unmark the selected card, when no button or field has focus (Library only) |
@@ -1242,7 +1316,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 | Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then section headers while grouped, then panel actions |
-| Left, Right, Space, Enter (on the layout switch) | Switch between the grid and the list |
+| Left, Right, Space, Enter (on the layout switch) | Left goes to the layout before, the others to the next |
 | Enter, Space (on a section header) | Collapse the section, or open it |
 | Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
@@ -1311,6 +1385,44 @@ In an Add, import, or clone flow:
 | Tab, Shift+Tab | Move between controls |
 | Esc | Go back, asking before discarding a filled draft |
 
+## Controller
+
+With **Use a controller in the Library** on (the default), a game
+controller drives the Library in every layout, the way the keyboard does,
+and backs out of whatever Esc closes. Pages, flows, settings, and menus stay
+keyboard and mouse. Xbox, PlayStation, and Nintendo controllers work, and
+so does Steam's virtual controller, which wineo ignores while a real one is
+connected. Buttons are named by the Xbox layout in `library.toml` and shown
+by the layout of the controller you used last.
+
+| Button | Does |
+|---|---|
+| D-pad, left stick | Move, like the arrow keys; holding repeats after 250 ms |
+| A | Open the panel, or play when it's open (Enter) |
+| B | Back, like Esc |
+| Y | Favorite (F) |
+| X | Mark (Space) |
+| LB, RB | A screenful back or forward (PageUp, PageDown) |
+| LT, RT | First or last game (Home, End) |
+| View | Next layout (Ctrl+L) |
+| Start (Menu) | Full screen (F11) |
+| Left stick click | Pick at random (R) |
+
+On a Nintendo controller, the button printed A confirms and the one printed
+B goes back, wherever they sit. Every button above can be changed in
+[Global settings](#global-settings); movement can't.
+
+After you press a button, a bar at the bottom of the Library shows what the
+main buttons do, in your controller's own symbols. Moving or clicking the
+mouse hides it.
+
+The controller only works while wineo's window has focus and you've used
+it, so presses meant for a game don't reach the Library. Starting a game,
+running a tool, or hiding the window stops it until the window has focus
+again or you press a key or click. With Steam running, Steam's desktop
+layout can turn controller presses into keys, which moves twice for each
+press; turn that off in Steam's controller settings.
+
 ## Look
 
 The app follows your desktop's light or dark preference and switches when
@@ -1323,4 +1435,5 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 
 ## Not yet
 
-- Gamepad navigation.
+- Using pages, flows, settings, and menus with a controller.
+- A separate button map per controller, and rumble.

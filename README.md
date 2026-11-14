@@ -275,8 +275,9 @@ couple of seconds.
 </p>
 
 - **Library.** Every environment is a poster card with its art, whether
-  it's running, and how long you've played it, or a row in the list view
-  with columns you can sort by. Search by title, name, or tag; sort by name,
+  it's running, and how long you've played it, a row in the list view
+  with columns you can sort by, or a cover in a coverflow strip that glides
+  from game to game and can open full screen. Search by title, name, or tag; sort by name,
   last played, playtime, date added, source, or tags; and filter by store
   (Steam, GOG, Epic, Amazon), platform, or tag. Star favorites, hide what
   you don't want to see, zoom the grid from 60% to 200%, or switch to
@@ -305,8 +306,10 @@ couple of seconds.
   contrast, Dracula, and Catppuccin Macchiato and Latte), or make your own,
   saved as plain TOML files you can share. An option raises text contrast
   in any theme.
-- **Keyboard.** Arrow keys move between cards, Enter opens a card and then
-  plays it, F stars it, and Ctrl+= and Ctrl+- zoom.
+- **Keyboard and controller.** Arrow keys move between cards, Enter opens a
+  card and then plays it, F stars it, Ctrl+= and Ctrl+- zoom, and F11 goes
+  full screen. An Xbox, PlayStation, or Nintendo controller drives the
+  library too, with buttons you can remap in Settings.
 
 Start it with `wineo-gui`, or from your app menu once it has an entry (see
 [After installing](#after-installing)). Everything it does is covered in
