@@ -571,13 +571,13 @@ impl Page {
     fn has_edits(&self) -> bool {
         let draft = &self.draft;
         let blank = Draft::default();
-        let mut edited = draft.title != blank.title
+        let mut edited = draft.title.trim() != blank.title
             || draft
                 .environment
                 .as_deref()
                 .is_some_and(|name| !name.trim().is_empty());
         if draft.source != Source::Empty {
-            edited |= draft.path != blank.path;
+            edited |= draft.path.trim() != blank.path;
         }
         if draft.source == Source::Executable {
             edited |= draft.desktop != blank.desktop;

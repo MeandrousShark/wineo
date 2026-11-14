@@ -2034,9 +2034,14 @@ fn fields_the_picked_row_hides_are_not_edits() {
     // A cleared Environment name override is no override.
     let _ = page.update(Event::EnvironmentName(" ".to_owned()));
     assert!(!page.has_edits());
-    // Nor are blank runner and prefix overrides.
+    // Nor are blank runner and prefix overrides, a blank Name, or a blank
+    // installer path.
     let _ = page.update(Event::Runner("  ".to_owned()));
     let _ = page.update(Event::Prefix(" ".to_owned()));
+    assert!(!page.has_edits());
+    let _ = page.update(Event::Name("   ".to_owned()));
+    assert!(!page.has_edits());
+    let _ = page.update(Event::Path(" ".to_owned()));
     assert!(!page.has_edits());
 }
 

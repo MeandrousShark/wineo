@@ -21,8 +21,7 @@ fn once_per_press(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
 impl App {
     /// A held key's repeat as the press it repeats, or None when it's a
     /// number key, Esc, or Ctrl+Enter and a flow is open or took its first
-    /// press. Any
-    /// other press forgets the held key.
+    /// press. Any other press forgets the held key.
     pub(crate) fn unrepeated(&mut self, message: Message) -> Option<Message> {
         match message {
             Message::KeyRepeat(key, modifiers, status) => {
