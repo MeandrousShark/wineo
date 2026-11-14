@@ -1,10 +1,12 @@
-//! Keyboard focus on the Add choices, through the app's own keys.
+//! Keyboard focus on the Add choices and New's choice page, through the
+//! app's own keys.
 
 use iced::Task;
 use iced::advanced::widget::Tree;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::Id;
 
+use super::new::{Kind, Source};
 use super::{CHOICE_IDS, Page};
 use crate::focus_button::{focusables, landed, press, press_key, run_task, walk_rows};
 use crate::layout_probe::{Laid, relay_out};
@@ -221,4 +223,154 @@ fn the_arrows_scroll_adds_list_in_a_short_dialog() {
     // The viewport is shorter than the first row and the list's 4 px
     // padding, so the row's own top is what shows.
     assert!(laid.offsets()[0] <= 4.0, "{:?}", laid.offsets());
+}
+
+/// Runs `task` on the window laid over `tree`, as the runtime does, feeds
+/// what it sends back to `app`, and returns the widget state after.
+fn settle(app: &mut App, tree: Tree, task: Task<Message>) -> Tree {
+    let (sent, tree) = {
+        let mut laid = relaid(app, tree);
+        let sent = crate::more_menu::tests::drive(&mut laid, task);
+        (sent, laid.into_tree())
+    };
+    for message in sent {
+        let _ = app.update(message);
+    }
+    tree
+}
+
+/// New's rows in order, as `Kind` and `Source`.
+const NEW_ROWS: [(Kind, Source); 5] = [
+    (Kind::Windows, Source::Installer),
+    (Kind::Windows, Source::Executable),
+    (Kind::Windows, Source::Empty),
+    (Kind::Native, Source::Executable),
+    (Kind::Native, Source::Empty),
+];
+
+/// New's choice page, opened with Add's 1, with Down pressed `downs` times.
+fn new_at(downs: usize) -> (App, Tree) {
+    let (mut app, tree) = add_at(0);
+    let (_, tree, task) = key(
+        &mut app,
+        tree,
+        Key::Character("1".into()),
+        Modifiers::empty(),
+    );
+    assert!(choosing(&app));
+    let mut tree = settle(&mut app, tree, task);
+    for _ in 0..downs {
+        let (_, next, task) = key(
+            &mut app,
+            tree,
+            Key::Named(Named::ArrowDown),
+            Modifiers::empty(),
+        );
+        tree = settle(&mut app, next, task);
+    }
+    (app, tree)
+}
+
+fn choosing(app: &App) -> bool {
+    matches!(&app.flow, Some(Page::New(page)) if page.choosing())
+}
+
+fn details_for(app: &App) -> Option<(Kind, Source)> {
+    match &app.flow {
+        Some(Page::New(page)) => page.details_for(),
+        _ => None,
+    }
+}
+
+fn new_row_ids(app: &App) -> Vec<String> {
+    app.flow.as_ref().and_then(Page::rows).unwrap().ids
+}
+
+#[test]
+fn new_opens_on_its_first_row_and_the_arrows_walk_its_rows() {
+    let (app, tree) = new_at(0);
+    let ids = new_row_ids(&app);
+    assert_eq!(ids.len(), NEW_ROWS.len());
+    let mut laid = relaid(&app, tree);
+    assert_eq!(laid.focused(), [Id::from(ids[0].clone())]);
+    walk_rows(&mut laid, &ids);
+}
+
+#[test]
+fn the_number_keys_pick_news_rows_with_another_row_focused() {
+    for (index, row) in NEW_ROWS.into_iter().enumerate() {
+        let (mut app, tree) = new_at(2);
+        let ids = new_row_ids(&app);
+        let (now, tree) = focused(&app, tree);
+        assert_eq!(now, [Id::from(ids[2].clone())]);
+        let digit = (index + 1).to_string();
+        let (published, _, _) = key(
+            &mut app,
+            tree,
+            Key::Character(digit.as_str().into()),
+            Modifiers::empty(),
+        );
+        assert!(published.is_empty(), "{published:?}");
+        assert_eq!(details_for(&app), Some(row), "{digit}");
+    }
+    // Past the last row, a number does nothing.
+    let (mut app, tree) = new_at(0);
+    let _ = key(
+        &mut app,
+        tree,
+        Key::Character("6".into()),
+        Modifiers::empty(),
+    );
+    assert!(choosing(&app));
+}
+
+#[test]
+fn enter_opens_news_focused_row() {
+    let (mut app, tree) = new_at(3);
+    let (published, _, _) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::empty());
+    assert_eq!(published.len(), 1, "{published:?}");
+    assert_eq!(details_for(&app), Some(NEW_ROWS[3]));
+}
+
+#[test]
+fn ctrl_enter_opens_news_focused_row_the_first_when_it_opens() {
+    for downs in [0, 3] {
+        let (mut app, tree) = new_at(downs);
+        let (published, tree, task) =
+            key(&mut app, tree, Key::Named(Named::Enter), Modifiers::CTRL);
+        assert!(published.is_empty(), "the row chose too: {published:?}");
+        assert!(choosing(&app), "it opens once the focused row is found");
+        let _ = settle(&mut app, tree, task);
+        assert_eq!(details_for(&app), Some(NEW_ROWS[downs]), "{downs}");
+    }
+}
+
+#[test]
+fn back_and_change_land_on_the_row_details_came_from() {
+    let (mut app, tree) = new_at(3);
+    let ids = new_row_ids(&app);
+    let (_, tree, task) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::empty());
+    let tree = settle(&mut app, tree, task);
+    assert_eq!(details_for(&app), Some(NEW_ROWS[3]));
+
+    let (_, tree, task) = key(
+        &mut app,
+        tree,
+        Key::Named(Named::Escape),
+        Modifiers::empty(),
+    );
+    let tree = settle(&mut app, tree, task);
+    assert!(choosing(&app));
+    let (now, tree) = focused(&app, tree);
+    assert_eq!(now, [Id::from(ids[3].clone())], "Back");
+
+    let (_, tree, task) = key(&mut app, tree, Key::Named(Named::Enter), Modifiers::empty());
+    let tree = settle(&mut app, tree, task);
+    assert_eq!(details_for(&app), Some(NEW_ROWS[3]));
+    let change = super::Event::Create(Box::new(super::new::Event::Change));
+    let task = app.update(Message::Flow(app.flow_generation, change));
+    let tree = settle(&mut app, tree, task);
+    assert!(choosing(&app));
+    let (now, _) = focused(&app, tree);
+    assert_eq!(now, [Id::from(ids[3].clone())], "Change");
 }

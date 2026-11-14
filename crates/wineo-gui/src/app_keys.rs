@@ -49,6 +49,7 @@ impl App {
         }
         let generation = self.flow_generation;
         let width = self.flow_width();
+        let new_choosing = matches!(&self.flow, Some(flow::Page::New(page)) if page.choosing());
         let own = if status == iced::event::Status::Captured {
             None
         } else {
@@ -68,6 +69,12 @@ impl App {
                         _ => return ControlFlow::Break(Task::none()),
                     };
                     self.flow_update(self.flow_generation, event)
+                }
+                Key::Character(digit) if new_choosing => {
+                    let Some(event) = flow::new::Page::numbered(digit) else {
+                        return ControlFlow::Break(Task::none());
+                    };
+                    self.flow_update(self.flow_generation, event.into())
                 }
                 Key::Named(Named::Enter) if modifiers.control() => {
                     let generation = self.flow_generation;

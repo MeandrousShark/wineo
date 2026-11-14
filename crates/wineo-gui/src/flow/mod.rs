@@ -387,6 +387,7 @@ impl Page {
             Self::Choose(_) => Some(ListRows {
                 list: CHOICE_LIST,
                 ids: CHOICE_IDS.map(str::to_owned).to_vec(),
+                focus: None,
             }),
             Self::New(page) => page.rows(),
             Self::Heroic(page) => page.rows(),

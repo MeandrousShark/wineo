@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::widget::{button, checkbox, column, container, pick_list, radio, row, text, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input};
 use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
@@ -40,6 +40,69 @@ use crate::ui::{self, PickListStyle};
 const LOG_ID: &str = "install-log";
 
 const PROGRAM_LIST: &str = "new-programs";
+
+const START_LIST: &str = "new-starts";
+
+/// A row on the choice page: the kind and starting point it picks, and what
+/// Details is titled for it.
+struct Start {
+    kind: Kind,
+    source: Source,
+    id: &'static str,
+    title: &'static str,
+    detail: &'static str,
+    heading: &'static str,
+}
+
+/// The choice page's rows in order. Number keys pick them from 1.
+const STARTS: [Start; 5] = [
+    Start {
+        kind: Kind::Windows,
+        source: Source::Installer,
+        id: "new-windows-installer",
+        title: "Run an installer",
+        detail: "Set up a prefix, then run its setup.",
+        heading: "New environment - Windows installer",
+    },
+    Start {
+        kind: Kind::Windows,
+        source: Source::Executable,
+        id: "new-windows-existing",
+        title: "Existing install",
+        detail: "A program already on disk.",
+        heading: "New environment - Windows existing install",
+    },
+    Start {
+        kind: Kind::Windows,
+        source: Source::Empty,
+        id: "new-windows-empty",
+        title: "Empty",
+        detail: "A prefix to fill later.",
+        heading: "New environment - Empty Windows",
+    },
+    Start {
+        kind: Kind::Native,
+        source: Source::Executable,
+        id: "new-native-existing",
+        title: "Existing install",
+        detail: "A Linux program already on disk.",
+        heading: "New environment - Native Linux existing install",
+    },
+    Start {
+        kind: Kind::Native,
+        source: Source::Empty,
+        id: "new-native-empty",
+        title: "Empty",
+        detail: "Register it, add a target later.",
+        heading: "New environment - Empty native Linux",
+    },
+];
+
+fn start_of(kind: Kind, source: Source) -> Option<&'static Start> {
+    STARTS
+        .iter()
+        .find(|start| start.kind == kind && start.source == source)
+}
 
 /// A program row's id on the target step.
 fn program_id(exe: &str) -> String {
@@ -110,6 +173,7 @@ impl std::fmt::Display for Source {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
+    Choose,
     Details,
     Review,
     Working,
@@ -240,8 +304,10 @@ pub(crate) enum Event {
     OpenExisting,
     Discard,
     KeepEditing,
-    Kind(Kind),
-    Source(Source),
+    /// A row on the choice page.
+    Start(Kind, Source),
+    /// Details' Change, back to the choice page.
+    Change,
     Name(String),
     EditEnvironment,
     EnvironmentName(String),
@@ -297,6 +363,8 @@ pub(crate) enum Event {
 pub(crate) struct Page {
     paths: Paths,
     draft: Draft,
+    /// Set once a row on the choice page is picked, so coming back focuses it.
+    picked: bool,
     /// The fetch checkbox: None until it's clicked, then what it was set to.
     /// Whether it shows depends on the key, which can come and go.
     fetch_choice: Option<bool>,
@@ -340,13 +408,14 @@ impl Page {
         let mut page = Self {
             paths,
             draft: Draft::default(),
+            picked: false,
             fetch_choice: None,
             fetch_art: false,
             art_started: false,
             fetching: false,
             fetch_token: None,
             fetcher: default_fetcher(),
-            stage: Stage::Details,
+            stage: Stage::Choose,
             options: None,
             template_preview: None,
             additional_wine_options: false,
@@ -455,6 +524,12 @@ impl Page {
         }
     }
 
+    /// The kind and starting point Details is open for, if it shows.
+    #[cfg(test)]
+    pub(crate) fn details_for(&self) -> Option<(Kind, Source)> {
+        (self.stage == Stage::Details).then_some((self.draft.kind, self.draft.source))
+    }
+
     #[cfg(test)]
     pub(crate) fn leave_prompt_open(&self) -> bool {
         self.leave_prompt
@@ -476,17 +551,94 @@ impl Page {
         self.action.take()
     }
 
-    /// The target step's program list.
+    /// The choice page's rows, landing on the one Details came from, or the
+    /// target step's program list.
     pub(crate) fn rows(&self) -> Option<ListRows> {
-        (self.stage == Stage::Target).then(|| ListRows {
-            list: PROGRAM_LIST,
-            ids: self
-                .report
-                .iter()
-                .flat_map(|report| &report.programs)
-                .map(|(_, exe)| program_id(exe))
-                .collect(),
-        })
+        match self.stage {
+            Stage::Choose => Some(ListRows {
+                list: START_LIST,
+                ids: STARTS.iter().map(|start| start.id.to_owned()).collect(),
+                focus: self
+                    .picked
+                    .then(|| start_of(self.draft.kind, self.draft.source))
+                    .flatten()
+                    .map(|start| start.id.to_owned()),
+            }),
+            Stage::Target => Some(ListRows {
+                list: PROGRAM_LIST,
+                ids: self
+                    .report
+                    .iter()
+                    .flat_map(|report| &report.programs)
+                    .map(|(_, exe)| program_id(exe))
+                    .collect(),
+                focus: None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the choice page shows, where number keys pick its rows.
+    pub(crate) fn choosing(&self) -> bool {
+        self.stage == Stage::Choose
+    }
+
+    /// The choice page's row for number key `digit`.
+    pub(crate) fn numbered(digit: &str) -> Option<Event> {
+        let index = digit.parse::<usize>().ok()?.checked_sub(1)?;
+        let start = STARTS.get(index)?;
+        Some(Event::Start(start.kind, start.source))
+    }
+
+    /// Whether the draft has anything typed or chosen on Details that its
+    /// kind and starting point show. The row picked and the fetch checkbox
+    /// don't count.
+    fn has_edits(&self) -> bool {
+        let draft = &self.draft;
+        let blank = Draft::default();
+        let mut edited = draft.title != blank.title
+            || draft
+                .environment
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty());
+        if draft.source != Source::Empty {
+            edited |= draft.path != blank.path;
+        }
+        if draft.source == Source::Executable {
+            edited |= draft.desktop != blank.desktop;
+        }
+        if draft.kind == Kind::Windows {
+            edited |= draft.prefix != blank.prefix
+                || draft.runner != blank.runner
+                || draft.template != blank.template
+                || draft.arch != blank.arch;
+        }
+        edited
+    }
+
+    /// Opens Details for a row. Another row than the draft's keeps the names
+    /// but not the path, since an installer and a program path mean
+    /// different things, and resets the desktop entry.
+    fn pick(&mut self, kind: Kind, source: Source) {
+        if (kind, source) != (self.draft.kind, self.draft.source) {
+            self.draft.kind = kind;
+            self.draft.source = source;
+            self.draft.path.clear();
+            self.draft.desktop = Draft::default().desktop;
+            self.edited();
+        }
+        self.picked = true;
+        self.stage = Stage::Details;
+    }
+
+    /// Back to the choice page with the draft kept. A check still running
+    /// is dropped, so coming back to Details doesn't jump to Review.
+    fn change(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
+        self.reviewing = None;
+        self.status.clear();
+        self.stage = Stage::Choose;
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
@@ -496,13 +648,14 @@ impl Page {
         }
         self.picker_sequence = self.picker_sequence.wrapping_add(1);
         match self.stage {
-            Stage::Details => {
-                if self.draft == Draft::default() {
-                    self.action = Some(Action::Choose);
-                } else {
+            Stage::Choose => {
+                if self.has_edits() {
                     self.leave_prompt = true;
+                } else {
+                    self.action = Some(Action::Choose);
                 }
             }
+            Stage::Details => self.change(),
             Stage::Review => self.stage = Stage::Details,
             Stage::Working if self.fetching => self.skip_fetch(),
             Stage::Working => self.cancel(false),
@@ -519,6 +672,7 @@ impl Page {
             return Task::none();
         }
         let event = match self.stage {
+            Stage::Choose => return open_focused_start(),
             Stage::Details => Event::Next,
             Stage::Review => Event::Create,
             Stage::Target => Event::AddTarget,
@@ -870,20 +1024,12 @@ impl Page {
                 self.action = Some(Action::Choose);
             }
             Event::KeepEditing => self.leave_prompt = false,
-            Event::Kind(kind) if self.stage == Stage::Details => {
-                self.draft.kind = kind;
-                if kind == Kind::Native && self.draft.source == Source::Installer {
-                    self.draft.source = Source::Empty;
-                }
-                self.edited();
+            Event::Start(kind, source)
+                if self.stage == Stage::Choose && start_of(kind, source).is_some() =>
+            {
+                self.pick(kind, source);
             }
-            Event::Source(value) if self.stage == Stage::Details => {
-                self.draft.source = match value {
-                    Source::Installer if self.draft.kind != Kind::Windows => Source::Empty,
-                    value => value,
-                };
-                self.edited();
-            }
+            Event::Change if self.stage == Stage::Details => self.change(),
             Event::Name(value) if self.stage == Stage::Details => {
                 self.draft.title = value;
                 self.edited();
@@ -1323,39 +1469,13 @@ impl Page {
                 .on_input(Event::EnvironmentName),
             );
         }
-        form = form.push(
-            row![
-                name_field,
-                column![
-                    text("Type"),
-                    pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind).wineo_style(palette)
-                ]
-                .spacing(4)
-                .width(180),
-            ]
-            .spacing(12),
-        );
+        form = form.push(name_field);
         if !environment.is_empty() && self.paths.environment_config(&environment).exists() {
             form = form.push(
                 ui::secondary_button("Open existing environment settings", palette)
                     .on_press(Event::OpenExisting),
             );
         }
-        let sources = if self.draft.kind == Kind::Windows {
-            vec![Source::Installer, Source::Executable, Source::Empty]
-        } else {
-            vec![Source::Executable, Source::Empty]
-        };
-        let mut choices = column![text("Starting point")].spacing(4);
-        for source in sources {
-            choices = choices.push(radio(
-                source.to_string(),
-                source,
-                Some(self.draft.source),
-                Event::Source,
-            ));
-        }
-        form = form.push(choices);
         if self.draft.source != Source::Empty {
             let hint = if self.draft.source == Source::Installer {
                 "Installer path"
@@ -1509,9 +1629,11 @@ impl Page {
         key_available: bool,
     ) -> Element<'_, Event> {
         let mut footer: Option<Element<'_, Event>> = None;
-        let heading = ui::page_title(
+        let title = ui::page_title(
             match self.stage {
-                Stage::Details => "New environment",
+                Stage::Choose => "New environment",
+                Stage::Details => start_of(self.draft.kind, self.draft.source)
+                    .map_or("New environment", |start| start.heading),
                 Stage::Review => "Review new environment",
                 Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
                 Stage::Working if self.fetching => "Getting artwork",
@@ -1521,8 +1643,22 @@ impl Page {
             },
             palette,
         );
+        let heading: Element<'_, Event> = if self.stage == Stage::Details {
+            crate::ends::ends(
+                title.width(Fill),
+                button("Change")
+                    .padding(0)
+                    .style(move |_, status| crate::chips::link(palette, status))
+                    .on_press(Event::Change),
+                12.0,
+                crate::ends::MIN_LEFT,
+            )
+        } else {
+            title.into()
+        };
         let mut body = column![heading].spacing(10).width(Fill);
         match self.stage {
+            Stage::Choose => body = body.push(start_list(palette)),
             Stage::Details => {
                 body = body.push(self.details_form(palette, key_available));
                 footer = Some(
@@ -1780,7 +1916,9 @@ impl Page {
                 }
             }
         }
-        if let Some(error) = &self.error {
+        if let Some(error) = &self.error
+            && self.stage != Stage::Choose
+        {
             body = body.push(text(error).color(palette.danger));
         }
         let max_width = if self.stage == Stage::Details {
@@ -1794,7 +1932,7 @@ impl Page {
         // (iced matches a column's children by position) and its scroll offset
         // and focus survive. The prompt sits above Back, outside the scroll, so
         // it is never below the fold of a long form.
-        if matches!(self.stage, Stage::Details | Stage::Review) {
+        if matches!(self.stage, Stage::Choose | Stage::Details | Stage::Review) {
             let mut top = column![].spacing(12);
             if self.leave_prompt {
                 top = top.push(
@@ -1821,6 +1959,49 @@ impl Page {
         }
         frame::page_frame(page)
     }
+}
+
+/// Ctrl+Enter on the choice page opens the row that has focus, if one does.
+fn open_focused_start() -> Task<Event> {
+    use iced::advanced::widget::{operate, operation::focusable::find_focused};
+    operate(find_focused()).then(|id| {
+        STARTS
+            .iter()
+            .find(|start| iced::widget::Id::new(start.id) == id)
+            .map_or_else(Task::none, |start| {
+                Task::done(Event::Start(start.kind, start.source))
+            })
+    })
+}
+
+/// The choice page's rows, under their kinds, in one surface.
+fn start_list(palette: Palette) -> Element<'static, Event> {
+    let rows = |kind: Kind| -> Vec<ui::ListRow<'static, Event>> {
+        STARTS
+            .iter()
+            .enumerate()
+            .filter(|(_, start)| start.kind == kind)
+            .map(|(index, start)| {
+                ui::ListRow::new(
+                    start.id,
+                    ui::list_row(
+                        column![
+                            ui::list_row_text(format!("{} - {}", index + 1, start.title)),
+                            text(start.detail).size(12).color(palette.muted)
+                        ]
+                        .spacing(2),
+                        palette,
+                    ),
+                    Event::Start(start.kind, start.source),
+                )
+            })
+            .collect()
+    };
+    ui::labeled_list_group(
+        START_LIST,
+        Kind::ALL.map(|kind| (kind.to_string(), rows(kind))),
+        palette,
+    )
 }
 
 fn review_summary(

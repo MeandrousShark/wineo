@@ -404,6 +404,7 @@ impl Page {
         (self.step == Step::Sources).then(|| ListRows {
             list: SOURCE_LIST,
             ids: self.sources.iter().map(source_id).collect(),
+            focus: None,
         })
     }
 

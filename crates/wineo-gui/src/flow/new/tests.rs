@@ -4,11 +4,30 @@ use std::ffi::OsString;
 use super::*;
 use wineo_core::config::TITLE_MAX_CHARS;
 
-fn page() -> Page {
+/// A new page, on the choice page it opens on.
+fn choosing() -> Page {
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
-    Page::new(paths).0
+    let page = Page::new(paths).0;
+    assert_eq!(page.stage, Stage::Choose);
+    page
+}
+
+/// Details for an empty Windows environment, picked on the choice page.
+fn page() -> Page {
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    assert_eq!(page.stage, Stage::Details);
+    page
+}
+
+/// Goes back to the choice page with Change and picks another row.
+fn switch(page: &mut Page, kind: Kind, source: Source) {
+    let _ = page.update(Event::Change);
+    assert_eq!(page.stage, Stage::Choose);
+    let _ = page.update(Event::Start(kind, source));
+    assert_eq!(page.stage, Stage::Details);
 }
 
 #[test]
@@ -121,9 +140,15 @@ fn back_from_review_preserves_details() {
 fn details_back_returns_to_add_choices() {
     let mut page = page();
     let _ = page.back();
+    assert_eq!(page.stage, Stage::Choose);
+    assert!(page.take_action().is_none());
+    let _ = page.back();
     assert!(matches!(page.take_action(), Some(Action::Choose)));
 
+    let mut page = self::page();
     page.draft.title = "draft".to_owned();
+    let _ = page.back();
+    assert!(!page.leave_prompt, "Details goes back to the choice page");
     let _ = page.back();
     assert!(page.leave_prompt);
     let _ = page.update(Event::Discard);
@@ -392,7 +417,7 @@ fn a_name_at_the_title_limit_is_written_as_the_title() {
     // Two-byte characters, so the limit is counted in characters, not bytes.
     let title = "\u{e9}".repeat(TITLE_MAX_CHARS);
     let mut page = Page::new(paths.clone()).0;
-    let _ = page.update(Event::Kind(Kind::Native));
+    let _ = page.update(Event::Start(Kind::Native, Source::Empty));
     let _ = page.update(Event::Name(title.clone()));
     // The name can't come from letters like these, so it is typed.
     let _ = page.update(Event::EnvironmentName("long-title".to_owned()));
@@ -522,7 +547,7 @@ fn gaming_template_shows_effects_and_extra_options_only_for_windows() {
     assert!(!page.additional_wine_options_visible());
     let _ = page.update(Event::ToggleAdditionalWineOptions);
     assert!(page.additional_wine_options_visible());
-    let _ = page.update(Event::Kind(Kind::Native));
+    switch(&mut page, Kind::Native, Source::Empty);
     assert!(!page.additional_wine_options_visible());
 }
 
@@ -698,9 +723,12 @@ fn cancellation_before_creation_leaves_no_environment() {
     assert!(!paths.environment_config("canceled-game").exists());
 }
 
+/// Details for an empty Windows environment, with the options loaded.
 fn offer_page(paths: &Paths) -> Page {
     let mut page = Page::new(paths.clone()).0;
     let _ = page.update(Event::Options(read_options(paths)));
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    assert_eq!(page.stage, Stage::Details);
     page
 }
 
@@ -719,7 +747,7 @@ fn the_offer_shows_for_a_game_only_while_unanswered_and_not_portable() {
     assert!(!page.offer_shown());
     let _ = page.update(Event::Template("gaming".to_owned()));
     assert!(page.offer_shown());
-    let _ = page.update(Event::Kind(Kind::Native));
+    switch(&mut page, Kind::Native, Source::Empty);
     assert!(!page.offer_shown());
 
     write_global(&paths, "external_runners = false\n");
@@ -1188,12 +1216,13 @@ fn a_second_back_dismisses_the_discard_prompt_and_keeps_the_draft() {
     let mut page = page();
     page.draft.title = "draft".to_owned();
     let _ = page.update(Event::Back);
+    let _ = page.update(Event::Back);
     assert!(page.leave_prompt);
     // Esc sends Back again, which must answer the prompt like Keep editing.
     let _ = page.update(Event::Back);
     assert!(!page.leave_prompt);
     assert_eq!(page.draft.title, "draft");
-    assert_eq!(page.stage, Stage::Details);
+    assert_eq!(page.stage, Stage::Choose);
     assert!(page.take_action().is_none());
 }
 
@@ -1202,14 +1231,19 @@ fn other_events_stay_blocked_while_the_discard_prompt_shows() {
     let mut page = page();
     page.draft.title = "draft".to_owned();
     let _ = page.update(Event::Back);
+    let _ = page.update(Event::Back);
     let kind = page.draft.kind;
-    let _ = page.update(Event::Kind(if kind == Kind::Native {
-        Kind::Windows
-    } else {
-        Kind::Native
-    }));
+    let _ = page.update(Event::Start(
+        if kind == Kind::Native {
+            Kind::Windows
+        } else {
+            Kind::Native
+        },
+        Source::Empty,
+    ));
     assert!(page.leave_prompt);
     assert_eq!(page.draft.kind, kind);
+    assert_eq!(page.stage, Stage::Choose);
 }
 
 /// What a fake fetcher saw on a call.
@@ -1329,7 +1363,7 @@ fn the_fetch_runs_after_creation_outside_the_create_lock() {
         let mut page = offer_page(&paths);
         let (fetcher, calls) = fake_fetcher(Ok(Vec::new()));
         page.fetcher = fetcher;
-        let _ = page.update(Event::Kind(kind));
+        switch(&mut page, kind, Source::Empty);
         let _ = page.update(Event::Name("Hollow Knight".to_owned()));
         let _ = page.update(Event::Runner("fake".to_owned()));
         let task = page.update(Event::Next);
@@ -1498,6 +1532,7 @@ fn the_checkbox_is_on_by_default_and_toggling_it_is_not_an_edit() {
     let _ = page.update_with_key_availability(Event::FetchArt(false), true);
     assert_eq!(page.art_offer(true), ArtOffer::Fetch(false));
     let _ = page.update_with_key_availability(Event::FetchArt(true), true);
+    let _ = page.back();
     let _ = page.back();
     assert!(!page.leave_prompt);
     assert!(matches!(page.take_action(), Some(Action::Choose)));
@@ -1780,4 +1815,446 @@ fn a_close_that_waits_still_cancels_the_fetch() {
     let _ = app.update(crate::Message::CancelAndClose);
     assert!(app.closing && !app.exiting);
     assert!(token.is_canceled());
+}
+
+const ROWS: [(Kind, Source); 5] = [
+    (Kind::Windows, Source::Installer),
+    (Kind::Windows, Source::Executable),
+    (Kind::Windows, Source::Empty),
+    (Kind::Native, Source::Executable),
+    (Kind::Native, Source::Empty),
+];
+
+/// Each focusable's id and bounds on a laid out page, in order.
+fn focusable_bounds<M>(
+    laid: &mut crate::layout_probe::Laid<'_, M>,
+) -> Vec<(String, iced::Rectangle)> {
+    use iced::advanced::widget::Operation;
+    use iced::advanced::widget::operation::Focusable;
+    use std::sync::Mutex;
+    struct All(Arc<Mutex<Vec<(String, iced::Rectangle)>>>);
+    impl Operation for All {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            bounds: iced::Rectangle,
+            _state: &mut dyn Focusable,
+        ) {
+            if let Some(id) = id {
+                self.0.lock().unwrap().push((format!("{id:?}"), bounds));
+            }
+        }
+    }
+    let found = Arc::new(Mutex::new(Vec::new()));
+    laid.run(Box::new(All(found.clone())));
+    found.lock().unwrap().clone()
+}
+
+/// The choice page's rows' bounds, in order.
+fn start_rows(laid: &mut crate::layout_probe::Laid<'_, Event>) -> Vec<iced::Rectangle> {
+    focusable_bounds(laid)
+        .into_iter()
+        .filter(|(id, _)| STARTS.iter().any(|start| id.contains(start.id)))
+        .map(|(_, bounds)| bounds)
+        .collect()
+}
+
+#[test]
+fn the_choice_page_lists_windows_then_native_rows_that_open_details() {
+    use crate::layout_probe::lay_out;
+    let page = choosing();
+    let rows = page.rows().unwrap();
+    assert_eq!(rows.list, START_LIST);
+    assert_eq!(rows.ids.len(), ROWS.len());
+    assert_eq!(rows.focus, None, "the first row has focus when it opens");
+
+    let size = iced::Size::new(900.0, 720.0);
+    let mut laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+    let bounds = start_rows(&mut laid);
+    assert_eq!(bounds.len(), ROWS.len());
+    for (row, (kind, source)) in bounds.iter().zip(ROWS) {
+        let at = iced::mouse::Cursor::Available(row.center());
+        let left = iced::mouse::Button::Left;
+        let mut published = laid.event_at(
+            &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+            at,
+        );
+        published.extend(laid.event_at(
+            &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+            at,
+        ));
+        let published: Vec<_> = published.iter().map(|e| format!("{e:?}")).collect();
+        assert_eq!(published, [format!("Start({kind:?}, {source:?})")]);
+    }
+    // Inside a group only a separator parts the rows; the Native Linux
+    // label parts the groups.
+    let gap = |above: usize| bounds[above + 1].y - (bounds[above].y + bounds[above].height);
+    assert!(gap(2) > gap(1) + 10.0, "{bounds:?}");
+    assert!((gap(0) - gap(1)).abs() < 0.01 && (gap(3) - gap(0)).abs() < 0.01);
+
+    for (index, (kind, source)) in ROWS.into_iter().enumerate() {
+        let digit = (index + 1).to_string();
+        assert!(
+            matches!(Page::numbered(&digit), Some(Event::Start(k, s)) if (k, s) == (kind, source)),
+            "{digit}"
+        );
+        let mut page = choosing();
+        let _ = page.update(Event::Start(kind, source));
+        assert_eq!(page.details_for(), Some((kind, source)));
+        assert!(page.rows().is_none(), "Details has no rows");
+    }
+    for digit in ["0", "6", "a"] {
+        assert!(Page::numbered(digit).is_none(), "{digit}");
+    }
+    // A Native installer is no row.
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Native, Source::Installer));
+    assert_eq!(page.stage, Stage::Choose);
+}
+
+#[test]
+fn coming_back_to_the_choice_page_lands_on_the_row_details_came_from() {
+    for (kind, source) in ROWS {
+        for back in [Event::Back, Event::Change] {
+            let mut page = choosing();
+            let _ = page.update(Event::Start(kind, source));
+            let _ = page.update(back.clone());
+            assert_eq!(page.stage, Stage::Choose);
+            let id = start_of(kind, source).unwrap().id;
+            assert_eq!(page.rows().unwrap().focus.as_deref(), Some(id), "{back:?}");
+        }
+    }
+}
+
+#[test]
+fn back_from_untouched_details_or_choose_asks_nothing() {
+    for (kind, source) in ROWS {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let mut page = Page::new(paths.clone()).0;
+        let _ = page.update(Event::Options(read_options(&paths)));
+        // Picking rows, going back and forth, isn't an edit.
+        let _ = page.update(Event::Start(Kind::Native, Source::Executable));
+        let _ = page.update(Event::Change);
+        let _ = page.update(Event::Start(kind, source));
+        // Neither is the fetch checkbox, nor its default.
+        assert!(page.fetch_checked(true));
+        let _ = page.update_with_key_availability(Event::FetchArt(false), true);
+        let _ = page.back();
+        assert_eq!(page.stage, Stage::Choose);
+        assert!(page.take_action().is_none());
+        let _ = page.back();
+        assert!(!page.leave_prompt, "{kind} {source}");
+        assert!(matches!(page.take_action(), Some(Action::Choose)));
+    }
+}
+
+#[test]
+fn a_typed_edit_asks_before_the_choice_page_discards_it() {
+    let edits = [
+        (
+            (Kind::Native, Source::Empty),
+            Event::Name("Hades".to_owned()),
+        ),
+        (
+            (Kind::Native, Source::Empty),
+            Event::EnvironmentName("hades".to_owned()),
+        ),
+        (
+            (Kind::Native, Source::Executable),
+            Event::Path("/games/hades.sh".to_owned()),
+        ),
+        ((Kind::Native, Source::Executable), Event::Desktop(true)),
+        (
+            (Kind::Windows, Source::Installer),
+            Event::Path("/setup.exe".to_owned()),
+        ),
+        (
+            (Kind::Windows, Source::Empty),
+            Event::Template("gaming".to_owned()),
+        ),
+        (
+            (Kind::Windows, Source::Empty),
+            Event::Runner("fake".to_owned()),
+        ),
+        ((Kind::Windows, Source::Empty), Event::Arch(Arch::Win32)),
+        (
+            (Kind::Windows, Source::Empty),
+            Event::Prefix("/prefixes/hades".to_owned()),
+        ),
+    ];
+    for ((kind, source), edit) in edits {
+        let mut page = choosing();
+        let _ = page.update(Event::Start(kind, source));
+        let _ = page.update(edit.clone());
+        let _ = page.back();
+        assert_eq!(page.stage, Stage::Choose, "{edit:?}");
+        assert!(
+            !page.leave_prompt,
+            "{edit:?}: Details goes back without asking"
+        );
+        let _ = page.back();
+        assert!(page.leave_prompt, "{edit:?}");
+        assert!(page.take_action().is_none(), "{edit:?}");
+    }
+}
+
+#[test]
+fn fields_the_picked_row_hides_are_not_edits() {
+    // The wine options a Windows row showed, once Native is picked.
+    let mut page = page();
+    let _ = page.update(Event::Template("gaming".to_owned()));
+    let _ = page.update(Event::Runner("fake".to_owned()));
+    let _ = page.update(Event::Arch(Arch::Win32));
+    let _ = page.update(Event::Prefix("/prefixes/game".to_owned()));
+    assert!(page.has_edits());
+    switch(&mut page, Kind::Native, Source::Empty);
+    assert!(!page.has_edits());
+    let _ = page.back();
+    let _ = page.back();
+    assert!(!page.leave_prompt);
+    assert!(matches!(page.take_action(), Some(Action::Choose)));
+
+    // A path and desktop entry only Existing install shows.
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Native, Source::Empty));
+    page.draft.path = "/games/left-over.sh".to_owned();
+    page.draft.desktop = true;
+    assert!(!page.has_edits());
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Installer));
+    page.draft.desktop = true;
+    assert!(!page.has_edits());
+    // A cleared Environment name override is no override.
+    let _ = page.update(Event::EnvironmentName(" ".to_owned()));
+    assert!(!page.has_edits());
+}
+
+#[test]
+fn another_row_keeps_the_names_and_clears_the_path_and_desktop_entry() {
+    let mut page = choosing();
+    let _ = page.update(Event::Start(Kind::Windows, Source::Executable));
+    let _ = page.update(Event::Name("Hollow Knight".to_owned()));
+    let _ = page.update(Event::EditEnvironment);
+    let _ = page.update(Event::EnvironmentName("hk".to_owned()));
+    let _ = page.update(Event::Path("/games/hk/hk.exe".to_owned()));
+    let _ = page.update(Event::Desktop(true));
+    let _ = page.update(Event::Template("gaming".to_owned()));
+    let _ = page.update(Event::Browse);
+    let browsing = page.picker_sequence;
+
+    switch(&mut page, Kind::Windows, Source::Installer);
+    assert_eq!(page.draft.title, "Hollow Knight");
+    assert_eq!(page.draft.environment.as_deref(), Some("hk"));
+    assert_eq!(page.draft.path, "");
+    assert_eq!(page.draft.desktop, Draft::default().desktop);
+    assert_eq!(page.draft.template, "gaming");
+    // The program picked for the old row doesn't land in the installer path.
+    let _ = page.update(Event::Picked(
+        browsing,
+        Ok(Some(PathBuf::from("/games/hk/hk.exe"))),
+    ));
+    assert_eq!(page.draft.path, "");
+
+    // The same row again keeps everything.
+    let _ = page.update(Event::Path("/downloads/setup.exe".to_owned()));
+    switch(&mut page, Kind::Windows, Source::Installer);
+    assert_eq!(page.draft.path, "/downloads/setup.exe");
+    assert!(page.has_edits());
+}
+
+#[test]
+fn the_choice_page_fits_small_dialogs_and_the_window_minimum() {
+    use crate::layout_probe::{bounds_at, lay_out, probe, within};
+    let mut page = choosing();
+    for prompt in [false, true] {
+        page.leave_prompt = prompt;
+        for (width, height) in [(280.0, 240.0), (400.0, 300.0)] {
+            let case = format!("{width}x{height}, prompt {prompt}");
+            let size = iced::Size::new(width, height);
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, size);
+            assert_eq!(probe.scrollables.len(), 1, "{case}");
+            let spilled = probe.outside(iced::Rectangle::with_size(size));
+            assert!(spilled.is_empty(), "{case}: {spilled:?}");
+            let top = bounds_at(&probe.node, &[0, 0]);
+            assert!(within(top, inset), "{case}: {top:?}");
+            let (viewport, _) = probe.scrollables[0];
+            assert!(viewport.y >= top.y + top.height - 0.01, "{case}");
+            assert!(viewport.height > 0.0, "{case}");
+
+            let mut laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+            for row in start_rows(&mut laid) {
+                assert!(
+                    row.x >= inset.x - 0.01 && row.x + row.width <= inset.x + inset.width + 0.01,
+                    "{case}: {row:?}"
+                );
+            }
+        }
+    }
+}
+
+/// `key` pressed on the window, as the event subscription delivers it, held
+/// down when `repeat`.
+fn pressed(key: iced::keyboard::Key, repeat: bool) -> crate::Message {
+    use iced::keyboard::{Event, Location, Modifiers, key::NativeCode, key::Physical};
+    crate::event_message(
+        iced::Event::Keyboard(Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat,
+        }),
+        iced::event::Status::Ignored,
+    )
+    .unwrap()
+}
+
+/// Updates `app` with `message`, then runs the widget work its task asks
+/// for and feeds back what that publishes, as the runtime would.
+fn update_through(app: &mut crate::App, message: crate::Message) {
+    let task = app.update(message);
+    let published = {
+        let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+        crate::more_menu::tests::drive(&mut laid, task)
+    };
+    for message in published {
+        let _ = app.update(message);
+    }
+}
+
+#[test]
+fn a_held_number_key_picks_once() {
+    let one = || iced::keyboard::Key::Character("1".into());
+    let mut app = crate::tests::app();
+    let _ = app.update(crate::Message::Add);
+    let _ = app.update(pressed(one(), false));
+    assert!(new_page(&app).choosing(), "1 on Add opens New");
+    for _ in 0..3 {
+        let _ = app.update(pressed(one(), true));
+    }
+    assert!(new_page(&app).choosing(), "the held 1 walks no further");
+    let _ = app.update(pressed(one(), false));
+    assert_eq!(
+        new_page(&app).details_for(),
+        Some((Kind::Windows, Source::Installer)),
+        "a new press does"
+    );
+}
+
+#[test]
+fn a_held_esc_walks_no_further_than_its_first_press() {
+    let esc = || iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape);
+    let (mut app, generation) = working();
+    let _ = done(&mut app, generation, &["game.exe"]);
+    assert_eq!(new_page(&app).stage, Stage::Target);
+    let _ = app.update(pressed(esc(), false));
+    assert_eq!(
+        new_page(&app).stage,
+        Stage::Finished,
+        "Esc skips the target"
+    );
+    for _ in 0..3 {
+        let _ = app.update(pressed(esc(), true));
+    }
+    assert_eq!(new_page(&app).stage, Stage::Finished, "the held Esc stays");
+    let _ = app.update(pressed(esc(), false));
+    assert!(app.flow.is_none(), "a new press leaves Finished");
+
+    // The library doesn't get the rest of that hold either.
+    app.search = "kept".into();
+    update_through(&mut app, pressed(esc(), true));
+    assert_eq!(app.search, "kept");
+    update_through(&mut app, pressed(esc(), false));
+    assert_eq!(app.search, "", "a new press reaches the library");
+    // Other keys' repeats still arrive as presses.
+    app.search = "kept".into();
+    let _ = app.update(pressed(iced::keyboard::Key::Character("a".into()), false));
+    update_through(&mut app, pressed(esc(), true));
+    assert_eq!(app.search, "");
+}
+
+#[test]
+fn a_held_esc_on_the_discard_prompt_keeps_it_open() {
+    let esc = || iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape);
+    let mut page = page();
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let mut app = crate::tests::app();
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    let _ = app.update(pressed(esc(), false));
+    assert!(new_page(&app).choosing());
+    let _ = app.update(pressed(esc(), false));
+    assert!(new_page(&app).leave_prompt_open());
+    for _ in 0..3 {
+        let _ = app.update(pressed(esc(), true));
+    }
+    assert!(new_page(&app).leave_prompt_open());
+}
+
+#[test]
+fn leaving_details_drops_its_running_check_and_picker() {
+    for leave in [Event::Back, Event::Change] {
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let mut page = offer_page(&paths);
+        let _ = page.update(Event::Name("Hades".to_owned()));
+        let _ = page.update(Event::Next);
+        let checking = page.generation;
+        assert_eq!(page.reviewing, Some(checking));
+        let _ = page.update(Event::Browse);
+        let browsing = page.picker_sequence;
+        let _ = page.update(leave.clone());
+        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+        let _ = page.update(Event::Reviewed(
+            checking,
+            prepare(&paths, &page.draft).map(Box::new),
+        ));
+        assert_eq!(page.stage, Stage::Details, "{leave:?}: no jump to Review");
+        let _ = page.update(Event::Picked(
+            browsing,
+            Ok(Some(PathBuf::from("/games/hades.exe"))),
+        ));
+        assert_eq!(page.draft.path, "", "{leave:?}");
+    }
+}
+
+#[test]
+fn details_title_has_change_and_the_choice_page_shows_no_details_error() {
+    use crate::layout_probe::{click_at, lay_out};
+    let size = iced::Size::new(900.0, 720.0);
+    // The page, then Back's slot and the scroll body, its padding, then
+    // the body's children.
+    let body = [0, 1, 0, 0];
+    let mut page = page();
+    let view = || page.view_with_key_availability(Palette::DARK, true);
+    let change = [&body[..], &[0, 1]].concat();
+    assert_eq!(click_at(view(), size, &change), ["Change"]);
+
+    page.error = Some("Name needs letters or digits.".to_owned());
+    let children = |page: &Page| {
+        let laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+        let mut layout = iced::advanced::Layout::new(&laid.node);
+        for index in body {
+            layout = layout.children().nth(index).unwrap();
+        }
+        layout.children().count()
+    };
+    // The title, the form, and the error.
+    assert_eq!(children(&page), 3);
+    let _ = page.update(Event::Change);
+    // The title and the rows.
+    assert_eq!(children(&page), 2);
 }
