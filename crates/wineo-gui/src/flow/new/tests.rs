@@ -2100,8 +2100,8 @@ fn the_choice_page_lists_windows_then_native_rows_that_open_details() {
         let published: Vec<_> = published.iter().map(|e| format!("{e:?}")).collect();
         assert_eq!(published, [format!("Start({kind:?}, {source:?})")]);
     }
-    // Inside a group only a separator parts the rows; the Native Linux
-    // label parts the groups.
+    // Inside a section only a separator parts the rows; the Native Linux
+    // heading and its own surface part the sections.
     let gap = |above: usize| bounds[above + 1].y - (bounds[above].y + bounds[above].height);
     assert!(gap(2) > gap(1) + 10.0, "{bounds:?}");
     assert!((gap(0) - gap(1)).abs() < 0.01 && (gap(3) - gap(0)).abs() < 0.01);
@@ -4043,4 +4043,74 @@ fn back_and_esc_on_target_after_clean_up_never_fetch_again() {
         assert_eq!(page.stage, Stage::Finished, "{esc_key}");
         assert_eq!(call_count(&calls), 1, "{esc_key}");
     }
+}
+
+/// The pixel at (`x`, `y`) of `render`'s RGBA output, as `[r, g, b, a]`.
+fn pixel_at(pixels: &[u8], width: u32, x: f32, y: f32) -> [u8; 4] {
+    let at = (y as usize * width as usize + x as usize) * 4;
+    pixels[at..at + 4].try_into().unwrap()
+}
+
+fn rgba8(color: iced::Color) -> [u8; 4] {
+    color.into_rgba8()
+}
+
+#[test]
+fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
+    use crate::layout_probe::{lay_out, render};
+    let page = choosing();
+    let size = iced::Size::new(900.0, 720.0);
+    let mut laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+    let rows = start_rows(&mut laid);
+    let texts = texts(&page, size);
+    let windows = labeled(&texts, "Windows");
+    let native = labeled(&texts, "Native Linux");
+    assert_eq!((windows.len(), native.len()), (1, 1), "{texts:?}");
+    let (windows, native) = (windows[0], native[0]);
+
+    // Each heading sits above its first row, level with the other, and the
+    // Native Linux heading comes after the last Windows row.
+    assert!(
+        windows.y + windows.height < rows[0].y,
+        "{windows:?} {rows:?}"
+    );
+    assert!(rows[2].y + rows[2].height < native.y, "{native:?} {rows:?}");
+    assert!(native.y + native.height < rows[3].y, "{native:?} {rows:?}");
+    assert!((windows.x - native.x).abs() < 0.01);
+
+    // Two surfaces: the page's own backdrop shows between the last Windows
+    // row and the Native Linux heading, while right under that row (inside
+    // its surface) and beside the separators the surface color does.
+    let palette = Palette::DARK;
+    let mut view = page.view_with_key_availability(palette, true);
+    let pixels = render(&mut view, size);
+    let width = size.width as u32;
+    let x = rows[2].x + rows[2].width - 12.0;
+    let below_windows = rows[2].y + rows[2].height + 2.0;
+    let between = (rows[2].y + rows[2].height + native.y) / 2.0;
+    let above_native_rows = rows[3].y - 2.0;
+    assert_eq!(
+        pixel_at(&pixels, width, x, below_windows),
+        rgba8(palette.surface),
+        "the Windows surface runs on a little below its last row"
+    );
+    assert_ne!(
+        pixel_at(&pixels, width, x, between),
+        rgba8(palette.surface),
+        "the gap between the sections is not surface"
+    );
+    assert_eq!(
+        pixel_at(&pixels, width, x, above_native_rows),
+        rgba8(palette.surface),
+        "the Native Linux rows have a surface of their own"
+    );
+    // The CPU renderer doesn't snap a separator to a pixel row, so it may
+    // spread over two.
+    let divider = rows[0].y + rows[0].height;
+    assert!(
+        (0..2).any(
+            |step| pixel_at(&pixels, width, x, divider + step as f32) != rgba8(palette.surface)
+        ),
+        "a separator parts rows inside a section"
+    );
 }

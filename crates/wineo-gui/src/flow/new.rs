@@ -127,14 +127,18 @@ pub(crate) enum Kind {
 
 impl Kind {
     const ALL: [Self; 2] = [Self::Windows, Self::Native];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Windows => "Windows",
+            Self::Native => "Native Linux",
+        }
+    }
 }
 
 impl std::fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Windows => "Windows",
-            Self::Native => "Native Linux",
-        })
+        f.write_str(self.label())
     }
 }
 
@@ -2176,7 +2180,7 @@ fn open_focused_start() -> Task<Event> {
     })
 }
 
-/// The choice page's rows, under their kinds, in one surface.
+/// The choice page's rows, a section for each kind.
 fn start_list(palette: Palette) -> Element<'static, Event> {
     let rows = |kind: Kind| -> Vec<ui::ListRow<'static, Event>> {
         STARTS
@@ -2199,9 +2203,9 @@ fn start_list(palette: Palette) -> Element<'static, Event> {
             })
             .collect()
     };
-    ui::labeled_list_group(
+    ui::sectioned_list_group(
         START_LIST,
-        Kind::ALL.map(|kind| (kind.to_string(), rows(kind))),
+        Kind::ALL.map(|kind| (kind.label(), rows(kind))),
         palette,
     )
 }

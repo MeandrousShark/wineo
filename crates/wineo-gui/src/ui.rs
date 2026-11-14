@@ -290,60 +290,61 @@ pub(crate) fn list_group<'a, M: Clone + 'a>(
     rows: impl IntoIterator<Item = ListRow<'a, M>>,
     palette: Palette,
 ) -> Element<'a, M> {
-    grouped_rows(list, [(None, rows.into_iter().collect())], palette)
+    let (surface, ids) = group_surface(rows, palette);
+    crate::focus_button::rows(list, surface, ids)
 }
 
-/// `list_group` with its rows in groups under muted labels, still in one
-/// surface, so Up and Down walk on from one group into the next.
-pub(crate) fn labeled_list_group<'a, M: Clone + 'a>(
+/// `list_group` with its rows in sections, each its own grouped surface under
+/// a section heading, like the Settings pages. Up and Down still walk the
+/// rows as one list, so they carry on from one section into the next.
+pub(crate) fn sectioned_list_group<'a, M: Clone + 'a>(
     list: &'static str,
-    groups: impl IntoIterator<Item = (String, Vec<ListRow<'a, M>>)>,
+    sections: impl IntoIterator<Item = (&'a str, Vec<ListRow<'a, M>>)>,
     palette: Palette,
 ) -> Element<'a, M> {
-    grouped_rows(
-        list,
-        groups.into_iter().map(|(label, rows)| (Some(label), rows)),
-        palette,
-    )
+    let mut column = Column::new().width(Fill).spacing(24);
+    let mut ids = Vec::new();
+    for (label, rows) in sections {
+        let (surface, section_ids) = group_surface(rows, palette);
+        ids.extend(section_ids);
+        column = column.push(
+            Column::new()
+                .width(Fill)
+                .spacing(8)
+                .push(section_heading(label, palette))
+                .push(surface),
+        );
+    }
+    crate::focus_button::rows(list, column.into(), ids)
 }
 
-fn grouped_rows<'a, M: Clone + 'a>(
-    list: &'static str,
-    groups: impl IntoIterator<Item = (Option<String>, Vec<ListRow<'a, M>>)>,
+/// One surface of rows with a separator between each pair, and the ids of
+/// the rows for the list that wraps it.
+fn group_surface<'a, M: Clone + 'a>(
+    rows: impl IntoIterator<Item = ListRow<'a, M>>,
     palette: Palette,
-) -> Element<'a, M> {
+) -> (Element<'a, M>, Vec<(String, bool)>) {
     let mut column = Column::new().width(Fill);
     let mut ids = Vec::new();
-    for (label, rows) in groups {
-        if let Some(label) = label {
-            column = column.push(
-                container(text(label).size(12).color(palette.muted))
-                    .padding(iced::Padding::from([4, 12]).top(if ids.is_empty() { 6 } else { 14 })),
-            );
+    for (index, row) in rows.into_iter().enumerate() {
+        if index > 0 {
+            column = column.push(separator(palette));
         }
-        for (index, row) in rows.into_iter().enumerate() {
-            if index > 0 {
-                column = column.push(separator(palette));
-            }
-            let press = row.enabled.then(|| row.on_press.clone());
-            column = column.push(crate::focus_button::row(
-                row.row.on_press_maybe(press).into(),
-                row.enabled,
-                row.id.clone(),
-                row.on_press,
-            ));
-            ids.push((row.id, row.enabled));
-        }
+        let press = row.enabled.then(|| row.on_press.clone());
+        column = column.push(crate::focus_button::row(
+            row.row.on_press_maybe(press).into(),
+            row.enabled,
+            row.id.clone(),
+            row.on_press,
+        ));
+        ids.push((row.id, row.enabled));
     }
-    crate::focus_button::rows(
-        list,
-        container(column)
-            .width(Fill)
-            .padding(4)
-            .style(move |_| section_style(palette))
-            .into(),
-        ids,
-    )
+    let surface = container(column)
+        .width(Fill)
+        .padding(4)
+        .style(move |_| section_style(palette))
+        .into();
+    (surface, ids)
 }
 
 pub(crate) fn secondary_style(palette: Palette, status: button::Status) -> button::Style {
