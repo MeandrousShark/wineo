@@ -134,7 +134,10 @@ cat >"$root/runners/fake/bin/wine" <<'WINE'
 case $1 in
     wineboot)
         if [ "${2:-}" = --init ]; then
-            mkdir -p "$WINEPREFIX/drive_c"
+            # wineo finds C: and Z: paths through these links, like real Wine.
+            mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+            ln -sfn ../drive_c "$WINEPREFIX/dosdevices/c:"
+            ln -sfn / "$WINEPREFIX/dosdevices/z:"
             printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
             printf 'WINE REGISTRY Version 2\n' >"$WINEPREFIX/user.reg"
         fi
