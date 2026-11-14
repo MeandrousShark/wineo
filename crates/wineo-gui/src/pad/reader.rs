@@ -36,8 +36,13 @@ pub(crate) trait Source {
     fn next(&mut self) -> Read;
 }
 
-/// The wait once reads keep failing, so a broken device can't spin a core.
-pub(crate) const RETRY_AFTER: Duration = Duration::from_secs(1);
+/// The wait before each read once quick empty reads pile up. It's short
+/// because a working pad can pile them up too: gilrs's deadzone and jitter
+/// filters drop an axis event and hand back the drain's empty read, so a
+/// thumb resting on the stick looks like a failing read. Short, a misfire
+/// adds at most this much to the next press, while a device that really
+/// fails is held to about a hundred reads a second, which costs nothing.
+pub(crate) const RETRY_AFTER: Duration = Duration::from_millis(10);
 /// A `None` back sooner than this didn't wait for anything.
 const QUICK: Duration = Duration::from_millis(50);
 /// Quick `None`s in a row, with no event between, before the reader backs

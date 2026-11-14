@@ -408,7 +408,7 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
 
 #[test]
 fn reads_that_keep_failing_back_off() {
-    let retry = Duration::from_millis(20);
+    let retry = reader::RETRY_AFTER;
     let window = Duration::from_millis(300);
     let clock = FakeClock::new();
     let start = reader::Clock::now(&clock);
@@ -429,6 +429,40 @@ fn reads_that_keep_failing_back_off() {
     // the read that ends it.
     let expected = 8 + (window.as_millis() / retry.as_millis()) as usize + 1;
     assert_eq!(reads.get(), expected);
+}
+
+#[test]
+fn a_press_after_dropped_axis_events_waits_at_most_one_short_retry() {
+    // A thumb resting on the stick: gilrs's filters drop each axis event
+    // and the read comes back empty, 1 ms apart, far more than the quick
+    // count allows. The press read after them is sent within one retry.
+    let clock = FakeClock::new();
+    let start = reader::Clock::now(&clock);
+    let ready = start + Duration::from_millis(40);
+    let time = clock.clone();
+    let read_at = std::rc::Rc::new(std::cell::Cell::new(None));
+    let seen = read_at.clone();
+    let source = fake(move |_| {
+        let now = reader::Clock::now(&time);
+        if now >= ready {
+            seen.set(Some(now));
+            Read::Event(PadEvent::Pressed(0, Raw::South))
+        } else {
+            time.advance(Duration::from_millis(1));
+            Read::Nothing
+        }
+    });
+    let sent = std::cell::Cell::new(None);
+    reader::pump(source, reader::RETRY_AFTER, &clock, |event| {
+        assert_eq!(event, PadEvent::Pressed(0, Raw::South));
+        sent.set(Some(reader::Clock::now(&clock)));
+        false
+    });
+    // At most 10 ms late, a literal so a longer retry fails here.
+    let bound = Duration::from_millis(10);
+    let late = sent.get().unwrap() - ready;
+    assert!(late <= bound, "{late:?}");
+    assert!(read_at.get().unwrap() - ready <= bound);
 }
 
 #[test]
