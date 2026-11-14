@@ -252,6 +252,8 @@ fn a_tool_run_shuts_the_gate() {
 fn enter_on_a_tool_page_starts_the_run_and_shuts_the_gate() {
     use crate::tools_page::{Event, Kind};
     let (home, mut app) = ready();
+    let start = std::time::Instant::now();
+    app.pad_clock = Some(start);
     for card in &mut app.cards {
         card.prefix = Some(home.path().join("prefix"));
     }
@@ -269,6 +271,12 @@ fn enter_on_a_tool_page_starts_the_run_and_shuts_the_gate() {
     ));
     assert!(app.tool_pages[&("alpha".to_owned(), Kind::Winetricks)].busy());
     assert!(!app.pad_gate_open());
+    // The same Enter's trailing press doesn't open it again.
+    let _ = app.update(Message::Pressed);
+    assert!(!app.pad_gate_open());
+    app.pad_clock = Some(start + PRESS_GRACE);
+    let _ = app.update(Message::Pressed);
+    assert!(app.pad_gate_open());
 }
 
 #[test]
