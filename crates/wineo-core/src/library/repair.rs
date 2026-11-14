@@ -18,7 +18,7 @@ use crate::error::{Error, IoContext, Result};
 use crate::operation::Locks;
 use crate::paths::Paths;
 
-/// How much of `[view]`, `[appearance]`, or `[desktop]` came back.
+/// How much of `[view]`, `[appearance]`, `[desktop]`, or `[input]` came back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewRecovery {
     /// The file had no such table the repair could find.
@@ -40,6 +40,7 @@ pub struct RepairReport {
     pub view: ViewRecovery,
     pub appearance: ViewRecovery,
     pub desktop: ViewRecovery,
+    pub input: ViewRecovery,
     /// How much of the saved presets came back, counting every field in
     /// every preset the repair could recognize.
     pub presets: ViewRecovery,
@@ -68,6 +69,7 @@ impl RepairReport {
                 ViewRecovery::Absent | ViewRecovery::Recovered
             )
             && matches!(self.desktop, ViewRecovery::Absent | ViewRecovery::Recovered)
+            && matches!(self.input, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.presets, ViewRecovery::Absent | ViewRecovery::Recovered)
             && matches!(self.steam, ViewRecovery::Absent | ViewRecovery::Recovered)
     }
@@ -114,6 +116,12 @@ impl fmt::Display for RepairReport {
             ViewRecovery::Recovered => f.write_str(" Desktop settings recovered.")?,
             ViewRecovery::Partly => f.write_str(" Desktop settings partly recovered.")?,
             ViewRecovery::Lost => f.write_str(" Desktop settings could not be recovered.")?,
+        }
+        match self.input {
+            ViewRecovery::Absent => {}
+            ViewRecovery::Recovered => f.write_str(" Controller settings recovered.")?,
+            ViewRecovery::Partly => f.write_str(" Controller settings partly recovered.")?,
+            ViewRecovery::Lost => f.write_str(" Controller settings could not be recovered.")?,
         }
         match self.presets {
             ViewRecovery::Absent => {}
@@ -655,6 +663,16 @@ impl InputSection {
 
     fn kept(&self) -> usize {
         self.other.kept + self.buttons.kept
+    }
+
+    fn recovery(&self) -> ViewRecovery {
+        if self.kept() == self.fields() {
+            ViewRecovery::Recovered
+        } else if self.kept() == 0 {
+            ViewRecovery::Lost
+        } else {
+            ViewRecovery::Partly
+        }
     }
 
     fn table(&self) -> Table {
@@ -1256,6 +1274,10 @@ impl Salvaged {
                 .desktop
                 .as_ref()
                 .map_or(ViewRecovery::Absent, Section::recovery),
+            input: self
+                .input
+                .as_ref()
+                .map_or(ViewRecovery::Absent, InputSection::recovery),
             presets: self.presets_recovery(),
             steam: self
                 .steam
@@ -1265,12 +1287,7 @@ impl Salvaged {
                 .steam
                 .as_ref()
                 .map_or(0, |steam| steam.fields() - steam.kept()),
-            // `[input]` has no line of its own in the report.
-            dropped_text: self.dropped_text
-                || self
-                    .input
-                    .as_ref()
-                    .is_some_and(|input| input.kept() < input.fields()),
+            dropped_text: self.dropped_text,
             backup,
         }
     }

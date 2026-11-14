@@ -118,6 +118,7 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
             view: ViewRecovery::Recovered,
             appearance: ViewRecovery::Absent,
             desktop: ViewRecovery::Absent,
+            input: ViewRecovery::Absent,
             presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
@@ -180,6 +181,7 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
             view: ViewRecovery::Partly,
             appearance: ViewRecovery::Absent,
             desktop: ViewRecovery::Absent,
+            input: ViewRecovery::Absent,
             presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
@@ -499,6 +501,7 @@ fn wording_for_no_entries_and_lost_view() {
         view: ViewRecovery::Lost,
         appearance: ViewRecovery::Absent,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -516,6 +519,7 @@ fn wording_for_no_entries_and_lost_view() {
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Absent,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -1133,6 +1137,7 @@ fn appearance_wording_for_a_lost_table() {
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Lost,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -1527,6 +1532,7 @@ fn presets_wording_is_after_appearance_and_before_steam() {
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Recovered,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Partly,
         steam: ViewRecovery::Recovered,
         steam_dropped: 0,
@@ -1861,4 +1867,39 @@ fn repair_continues_input_and_its_buttons_past_a_broken_line() {
     let input = load(&fixture.paths).input;
     assert_eq!(input.buttons.len(), 2, "{}", fixture.read());
     assert!(!fixture.read().contains("layout"), "{}", fixture.read());
+}
+
+#[test]
+fn the_report_says_how_much_of_input_came_back() {
+    let brk = "[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n";
+    let report = |text: &str| {
+        let fixture = Fixture::new();
+        fixture.write(&format!("schema_version = 1\n{text}{brk}"));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap()
+    };
+    let none = report("");
+    assert_eq!(none.input, ViewRecovery::Absent);
+    assert!(none.complete(), "{none}");
+    assert!(!none.to_string().contains("Controller"));
+
+    let whole = report("[input]\ncontroller = false\n[input.buttons]\nmark = \"rs\"\n");
+    assert_eq!(whole.input, ViewRecovery::Recovered);
+    assert!(whole.complete(), "{whole}");
+    assert!(whole.to_string().contains("Controller settings recovered."));
+
+    let part = report("[input]\ncontroller = false\n[input.buttons]\nmark = 3\n");
+    assert_eq!(part.input, ViewRecovery::Partly);
+    assert!(!part.complete());
+    assert!(
+        part.to_string()
+            .contains("Controller settings partly recovered.")
+    );
+
+    let lost = report("[input]\ncontroller = 1\n");
+    assert_eq!(lost.input, ViewRecovery::Lost);
+    assert!(!lost.complete());
+    assert!(
+        lost.to_string()
+            .contains("Controller settings could not be recovered.")
+    );
 }
