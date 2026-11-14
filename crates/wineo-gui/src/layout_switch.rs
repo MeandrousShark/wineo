@@ -150,6 +150,12 @@ impl App {
         self.star_hovered = None;
         self.snap_grid();
         let _ = self.motion_ended(false);
+        // The strip doesn't scroll: the kept selection goes to its middle,
+        // or with none shown, the first stop does.
+        if layout == ViewLayout::Coverflow {
+            let centered = self.sync_strip();
+            return Task::batch([stopped, centered, self.load_visible_art()]);
+        }
         let places = self.grid_places();
         let height = places.height + self.bar_room();
         let end = (height - self.viewport_height).max(0.0);

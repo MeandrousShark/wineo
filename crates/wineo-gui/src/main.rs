@@ -19,6 +19,8 @@ mod checkup;
 mod checkup_work;
 mod chips;
 mod collapse;
+mod coverflow;
+mod coverflow_widget;
 mod details_fade;
 mod download_progress;
 mod downloads_page;
@@ -182,8 +184,13 @@ pub(crate) struct App {
     zooming: zoom::Zoom,
     /// Titles hide until a poster is pointed at or selected.
     poster_only: bool,
-    /// Posters in a grid, or one row per game.
+    /// Posters in a grid, one row per game, or coverflow's strip.
     layout: grid_motion::ViewLayout,
+    /// Coverflow's place along its strip.
+    strip: coverflow::Strip,
+    /// The display's own scale factor, under the interface size, which
+    /// coverflow's large covers decode for.
+    display_scale: f32,
     /// The layout segment's thumb: 0 on the list side, 1 on the grid's.
     layout_thumb: panel_motion::PanelMotion,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
@@ -606,6 +613,9 @@ pub(crate) enum Message {
     Zoom(zoom::Event),
     Random(random_pick::Event),
     Layout(layout_switch::Event),
+    Strip(coverflow::Event),
+    /// The display's scale factor, asked for when the window opens.
+    DisplayScale(f32),
     /// The toolbar's More button and menu.
     More(more_menu::Event),
     /// Search's icon and drop-down, once it collapses.
@@ -649,6 +659,8 @@ impl App {
             zooming: zoom::Zoom::default(),
             poster_only: false,
             layout: grid_motion::ViewLayout::Grid,
+            strip: coverflow::Strip::default(),
+            display_scale: 1.0,
             layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
@@ -1136,6 +1148,7 @@ impl App {
         }
         // One place for every path that changes the selection.
         self.sync_cursor();
+        let strip = self.sync_strip();
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
         self.sync_star_pops();
@@ -1198,7 +1211,7 @@ impl App {
         } else {
             Task::none()
         };
-        Task::batch([task, focus, wakes, rescaled])
+        Task::batch([task, strip, focus, wakes, rescaled])
     }
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
@@ -1271,6 +1284,7 @@ impl App {
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
                 || matches!(message, Message::Layout(event) if event.is_input())
+                || matches!(message, Message::Strip(event) if event.is_input())
                 || matches!(message, Message::More(event) if event.is_input())
                 || matches!(message, Message::Search(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
@@ -1339,6 +1353,11 @@ impl App {
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
             Message::Layout(event) => layout_switch::update(self, event),
+            Message::Strip(event) => coverflow::update(self, event),
+            Message::DisplayScale(scale) => {
+                self.display_scale = scale;
+                self.load_visible_art()
+            }
             Message::More(event) => more_menu::update(self, event),
             Message::Search(event) => search_drop::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
@@ -1367,6 +1386,8 @@ impl App {
             }
             Message::ImportToast => self.import_toast_clicked(),
             Message::DoubleClick(name) => self.double_click_card(name),
+            // A card hiding the panel leaves it open for the next game.
+            Message::ClosePanel if self.panel_hidden_by_card() => Task::none(),
             Message::ClosePanel => {
                 self.close_panel();
                 Task::none()
@@ -1558,10 +1579,15 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Window(
-                _,
-                window::Event::Resized(size) | window::Event::Opened { size, .. },
-            ) => self.window_resized(size),
+            Message::Window(_, window::Event::Resized(size)) => self.window_resized(size),
+            Message::Window(id, window::Event::Opened { size, .. }) => Task::batch([
+                self.window_resized(size),
+                window::scale_factor(id).map(Message::DisplayScale),
+            ]),
+            Message::Window(_, window::Event::Rescaled(scale)) => {
+                self.display_scale = scale;
+                self.load_visible_art()
+            }
             Message::Window(_, window::Event::CloseRequested) => self.close_requested(),
             Message::CloseWaitOver(generation) => {
                 if self.close_wake.fired(generation) && self.close_by.is_some() {
@@ -1882,9 +1908,9 @@ impl App {
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
     fn start_collapse(&mut self, now: Instant) {
-        // The posters fall; a list has none.
+        // The grid's posters fall; the list and the strip have no grid.
         if !self.collapse.idle()
-            || self.layout == grid_motion::ViewLayout::List
+            || self.layout != grid_motion::ViewLayout::Grid
             || self.section != sidebar::Section::Library
             || self.panel_hidden()
             || self.filtered().is_empty()

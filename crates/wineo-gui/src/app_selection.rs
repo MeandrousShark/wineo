@@ -81,8 +81,12 @@ impl App {
         let stale = match &self.cursor {
             None => false,
             Some(Cursor::Card(slot)) => Some(slot.name()) != self.selected.as_deref(),
+            // Coverflow keeps a header with nothing selected, since its
+            // collapsed card is a place of its own; `sync_strip` selects
+            // the section's first game.
             Some(Cursor::Header(key)) => {
-                self.selected.is_none()
+                (self.selected.is_none()
+                    && self.layout != crate::grid_motion::ViewLayout::Coverflow)
                     || !self
                         .grid_places()
                         .headers

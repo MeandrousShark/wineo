@@ -314,9 +314,23 @@ pub(crate) struct Places {
     pub(crate) height: f32,
     pub(crate) layout: GridLayout,
     pub(crate) mode: ViewLayout,
+    /// Coverflow's stops in shown order: every card and every collapsed
+    /// section. Empty in the grid and the list.
+    pub(crate) strip: Vec<Stop>,
     indices: HashMap<SlotId, usize>,
     /// Each game's first slot in shown order.
     first: HashMap<String, usize>,
+}
+
+/// A place in coverflow's strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// A card's slot, by its index in `Places::ids`.
+    Card(usize),
+    /// A collapsed section's card, by its index in `Places::headers`, and
+    /// the app's card index of the section's first game, whose poster it
+    /// shows.
+    Collapsed { header: usize, first: Option<usize> },
 }
 
 /// A section header to lay out: what it shows and the card slot it sits
@@ -408,6 +422,68 @@ impl Places {
             })
             .collect();
         let (points, height) = (arranged.cards, arranged.height);
+        let slots = points
+            .into_iter()
+            .zip(sizes)
+            .map(|(point, size)| Rectangle::new(point, size))
+            .collect();
+        Self::indexed(ids, slots, headers, columns, height, layout, mode)
+    }
+
+    /// Coverflow's places: one row in shown order, a stop for each card
+    /// and each collapsed section. A slot sits at its stop's index along x,
+    /// one unit wide, since the strip is drawn from stops rather than
+    /// pixels; an open section's header sits at its first card's stop.
+    /// `firsts` holds each header's first game, as `Stop::Collapsed` does.
+    pub(crate) fn strip(
+        ids: Vec<SlotId>,
+        headers: Vec<Header>,
+        firsts: &[Option<usize>],
+        layout: GridLayout,
+    ) -> Self {
+        let unit = |stop: usize| Rectangle::new(Point::new(stop as f32, 0.0), Size::new(1.0, 1.0));
+        let mut strip = Vec::with_capacity(ids.len() + headers.len());
+        let mut header_slots = Vec::with_capacity(headers.len());
+        let mut next = headers.iter().enumerate().peekable();
+        for card in 0..=ids.len() {
+            while let Some((index, header)) = next.next_if(|(_, header)| header.at <= card) {
+                header_slots.push(unit(strip.len()));
+                if header.collapsed {
+                    strip.push(Stop::Collapsed {
+                        header: index,
+                        first: firsts.get(index).copied().flatten(),
+                    });
+                }
+            }
+            if card < ids.len() {
+                strip.push(Stop::Card(card));
+            }
+        }
+        let slots = strip
+            .iter()
+            .enumerate()
+            .filter(|(_, stop)| matches!(stop, Stop::Card(_)))
+            .map(|(at, _)| unit(at))
+            .collect();
+        let headers = headers
+            .into_iter()
+            .zip(header_slots)
+            .map(|(header, slot)| HeaderPlace { header, slot })
+            .collect();
+        let mut places = Self::indexed(ids, slots, headers, 1, 1.0, layout, ViewLayout::Coverflow);
+        places.strip = strip;
+        places
+    }
+
+    fn indexed(
+        ids: Vec<SlotId>,
+        slots: Vec<Rectangle>,
+        headers: Vec<HeaderPlace>,
+        columns: usize,
+        height: f32,
+        layout: GridLayout,
+        mode: ViewLayout,
+    ) -> Self {
         let mut first = HashMap::new();
         for (index, id) in ids.iter().enumerate() {
             first.entry(id.name().to_owned()).or_insert(index);
@@ -421,16 +497,13 @@ impl Places {
             first,
             ids,
             cards: Vec::new(),
-            slots: points
-                .into_iter()
-                .zip(sizes)
-                .map(|(point, size)| Rectangle::new(point, size))
-                .collect(),
+            slots,
             headers,
             columns,
             height,
             layout,
             mode,
+            strip: Vec::new(),
         }
     }
 
@@ -934,8 +1007,10 @@ impl GridMotion {
 }
 
 fn columns(width: f32, layout: GridLayout, mode: ViewLayout) -> usize {
-    if mode == ViewLayout::List {
-        return 1;
+    match mode {
+        // The strip is one row, which its own widget lays out.
+        ViewLayout::List | ViewLayout::Coverflow => return 1,
+        ViewLayout::Grid => {}
     }
     ((width - 2.0 * PADDING + GAP) / (layout.card_width + GAP))
         .floor()
@@ -947,8 +1022,10 @@ fn columns(width: f32, layout: GridLayout, mode: ViewLayout) -> usize {
 /// and a single column wider than `width` gets no shift rather than a
 /// negative one.
 fn shift(width: f32, layout: GridLayout, mode: ViewLayout) -> f32 {
-    if mode == ViewLayout::List {
-        return 0.0;
+    match mode {
+        // The strip centers itself in the width beside the dock.
+        ViewLayout::List | ViewLayout::Coverflow => return 0.0,
+        ViewLayout::Grid => {}
     }
     let columns = columns(width, layout, mode) as f32;
     let used = 2.0 * PADDING + columns * layout.card_width + (columns - 1.0) * GAP;
@@ -988,16 +1065,19 @@ pub(crate) fn width_for_viewport(
     mode: ViewLayout,
 ) -> f32 {
     match mode {
-        ViewLayout::Grid | ViewLayout::Coverflow => layout.card_width,
+        ViewLayout::Grid => layout.card_width,
         ViewLayout::List => (available(width, open) - 2.0 * PADDING).max(0.0),
+        // A stop is one unit of the strip; see `Places::strip`.
+        ViewLayout::Coverflow => 1.0,
     }
 }
 
 /// The gap between rows of slots.
 pub(crate) fn row_gap(mode: ViewLayout) -> f32 {
     match mode {
-        ViewLayout::Grid | ViewLayout::Coverflow => GAP,
+        ViewLayout::Grid => GAP,
         ViewLayout::List => ROW_GAP,
+        ViewLayout::Coverflow => 0.0,
     }
 }
 

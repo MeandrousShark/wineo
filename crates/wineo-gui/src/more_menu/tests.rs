@@ -201,6 +201,15 @@ impl Window {
         found
     }
 
+    /// Hands `event` to the widgets with the cursor at `point`, keeping
+    /// their state, then what they publish to the app.
+    pub(crate) fn event_at(&mut self, app: &mut App, event: iced::Event, point: iced::Point) {
+        let mut laid = self.lay_out(app);
+        let messages = laid.event_at(&event, iced::mouse::Cursor::Available(point));
+        self.0 = Some(laid.into_tree());
+        self.send(app, messages);
+    }
+
     /// A left click at `point`, pressed and released.
     pub(crate) fn click(&mut self, app: &mut App, point: iced::Point) {
         use iced::mouse::{Button, Cursor, Event};
