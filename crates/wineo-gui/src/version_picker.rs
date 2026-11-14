@@ -453,7 +453,7 @@ fn handle(app: &mut App, event: Event) -> Task<Message> {
             } else {
                 app.close_checkup();
             }
-            app.selected = Some(name.clone());
+            app.select_game(name.clone());
             if !app.panel_open {
                 app.panel_open = true;
                 app.panel_motion.open(Instant::now());

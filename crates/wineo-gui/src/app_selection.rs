@@ -81,8 +81,12 @@ impl App {
         let stale = match &self.cursor {
             None => false,
             Some(Cursor::Card(slot)) => Some(slot.name()) != self.selected.as_deref(),
+            // Coverflow keeps a header with nothing selected, since its
+            // collapsed card is a place of its own; `sync_strip` selects
+            // the section's first game.
             Some(Cursor::Header(key)) => {
-                self.selected.is_none()
+                (self.selected.is_none()
+                    && self.layout != crate::grid_motion::ViewLayout::Coverflow)
                     || !self
                         .grid_places()
                         .headers
@@ -95,6 +99,14 @@ impl App {
         }
     }
 
+    /// Selects the game `name` from outside the grid (a page, a menu, a
+    /// flow), off any header, so a collapsed section's card never holds a
+    /// selection it doesn't stand for.
+    pub(crate) fn select_game(&mut self, name: String) {
+        self.leave_header();
+        self.selected = Some(name);
+    }
+
     /// Takes the cursor off a header, leaving a card's copy alone.
     pub(crate) fn leave_header(&mut self) {
         if self.header_cursor().is_some() {
@@ -103,18 +115,22 @@ impl App {
     }
 
     pub(crate) fn select_card(&mut self, name: String) -> Task<Message> {
-        if self.selected.as_deref() == Some(&name) && self.panel_open {
+        // A panel a card hides isn't showing this game, so a pick of it
+        // shows the panel rather than closing it unseen.
+        if self.selected.as_deref() == Some(&name)
+            && self.panel_open
+            && !self.panel_hidden_by_card()
+        {
             self.card_click_target = Some((name, self.target.clone()));
             self.close_panel();
             Task::none()
         } else {
             let was_open = self.panel_open;
-            self.leave_header();
             self.close_log();
             if self.selected.as_deref() != Some(&name) {
                 self.close_checkup();
             }
-            self.selected = Some(name.clone());
+            self.select_game(name.clone());
             self.panel_open = true;
             if !was_open {
                 self.panel_motion.open(Instant::now());

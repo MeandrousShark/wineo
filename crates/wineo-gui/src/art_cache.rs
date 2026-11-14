@@ -17,10 +17,25 @@ struct Entry {
     used: u64,
 }
 
-/// Library art by key and whether it was decoded dimmed. A card normally
-/// holds one variant; the other only lingers while the wanted one decodes.
+/// Which way coverflow's warp leans a side cover, kept apart in the cache
+/// from the flat art it's made from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub(crate) enum Tilt {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+impl Tilt {
+    const ALL: [Self; 3] = [Self::None, Self::Left, Self::Right];
+}
+
+/// Library art by key, whether it was decoded gray, and its tilt. A card
+/// normally holds one gray or color variant; the other only lingers while
+/// the wanted one decodes. Everything here is flat art for now.
 pub(crate) struct ArtCache<K> {
-    entries: HashMap<(K, bool), Entry>,
+    entries: HashMap<(K, bool, Tilt), Entry>,
     bytes: usize,
     clock: u64,
     budget: usize,
@@ -45,15 +60,21 @@ impl<K> ArtCache<K> {
 
 impl<K: Clone + Eq + Hash> ArtCache<K> {
     pub(crate) fn contains(&self, key: &K, dimmed: bool) -> bool {
-        self.entries.contains_key(&(key.clone(), dimmed))
+        self.entries
+            .contains_key(&(key.clone(), dimmed, Tilt::None))
+    }
+
+    /// Every key held, once per variant.
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
+        self.entries.keys().map(|(key, _, _)| key)
     }
 
     /// The variant asked for, or the other one while it is still decoding,
     /// so a card switching between dimmed and not never draws blank.
     pub(crate) fn shown(&self, key: &K, dimmed: bool) -> Option<&image::Handle> {
         self.entries
-            .get(&(key.clone(), dimmed))
-            .or_else(|| self.entries.get(&(key.clone(), !dimmed)))
+            .get(&(key.clone(), dimmed, Tilt::None))
+            .or_else(|| self.entries.get(&(key.clone(), !dimmed, Tilt::None)))
             .map(|entry| &entry.handle)
     }
 
@@ -76,7 +97,7 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
         self.clock = self.clock.wrapping_add(1);
         self.bytes += bytes;
         self.entries.insert(
-            (key, dimmed),
+            (key, dimmed, Tilt::None),
             Entry {
                 handle,
                 bytes,
@@ -86,7 +107,7 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
     }
 
     pub(crate) fn remove(&mut self, key: &K, dimmed: bool) {
-        if let Some(old) = self.entries.remove(&(key.clone(), dimmed)) {
+        if let Some(old) = self.entries.remove(&(key.clone(), dimmed, Tilt::None)) {
             self.bytes -= old.bytes;
         }
     }
@@ -96,15 +117,17 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
     pub(crate) fn touch(&mut self, key: &K) {
         self.clock = self.clock.wrapping_add(1);
         for dimmed in [false, true] {
-            if let Some(entry) = self.entries.get_mut(&(key.clone(), dimmed)) {
-                entry.used = self.clock;
+            for tilt in Tilt::ALL {
+                if let Some(entry) = self.entries.get_mut(&(key.clone(), dimmed, tilt)) {
+                    entry.used = self.clock;
+                }
             }
         }
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
         let mut bytes = 0;
-        self.entries.retain(|(key, _), entry| {
+        self.entries.retain(|(key, _, _), entry| {
             let kept = keep(key);
             if kept {
                 bytes += entry.bytes;
@@ -122,13 +145,15 @@ impl<K: Clone + Eq + Hash> ArtCache<K> {
             let Some(oldest) = self
                 .entries
                 .iter()
-                .filter(|((key, _), _)| !protected(key))
+                .filter(|((key, _, _), _)| !protected(key))
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone())
             else {
                 return;
             };
-            self.remove(&oldest.0, oldest.1);
+            if let Some(old) = self.entries.remove(&oldest) {
+                self.bytes -= old.bytes;
+            }
         }
     }
 }

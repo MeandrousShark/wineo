@@ -185,7 +185,7 @@ impl App {
                 .chain(walk);
             }
             // Down only leaves when there's a card to go to.
-            if key == Key::Named(Named::ArrowDown) && !self.grid_places().ids.is_empty() {
+            if key == Key::Named(Named::ArrowDown) && !self.nowhere_to_go() {
                 self.search_open = false;
             }
         }
@@ -253,12 +253,14 @@ impl App {
             self.clear_marks();
             return Task::none();
         }
+        let coverflow = self.layout == crate::grid_motion::ViewLayout::Coverflow;
         match action(
             &key,
             modifiers,
             search_focused,
             self.panel_log_visible() || self.version_visible(),
-            self.panel_open,
+            // A panel a card hides stays open for the next game.
+            self.panel_open && !self.panel_hidden_by_card(),
             self.search.is_empty(),
         ) {
             Action::None => Task::none(),
@@ -282,21 +284,27 @@ impl App {
                 self.interrupt_zoom();
                 // With nothing in view there's nowhere to go, so the kept
                 // selection and the search's focus both stay.
-                if self.grid_places().ids.is_empty() {
+                if self.nowhere_to_go() {
                     return Task::none();
                 }
-                let old = self.selected.clone();
-                if let Some(first) = self.grid_places().ids.first() {
-                    self.set_cursor(first.clone());
-                }
-                if self.selected != old {
-                    self.selection_changed();
-                }
+                let landed = if coverflow {
+                    self.step_strip(|_, _| Some(0))
+                } else {
+                    let old = self.selected.clone();
+                    if let Some(first) = self.grid_places().ids.first() {
+                        self.set_cursor(first.clone());
+                    }
+                    if self.selected != old {
+                        self.selection_changed();
+                    }
+                    Task::none()
+                };
                 iced::advanced::widget::operate(
                     iced::advanced::widget::operation::focusable::unfocus::<()>(),
                 )
                 .discard()
                 .chain(Task::batch([
+                    landed,
                     self.scroll_selection(),
                     self.load_visible_art(),
                     self.load_panel_art(),
@@ -306,11 +314,25 @@ impl App {
                         .map(Message::SearchFocusChanged),
                 )
             }
+            Action::Move(direction) if coverflow => self
+                .step_strip(|places, current| crate::coverflow::walk(places, current, direction)),
             Action::Move(direction) => {
                 self.step_cursor(|places, current| walk(places, current, direction))
             }
+            Action::First if coverflow => {
+                self.step_strip(|places, _| (!places.strip.is_empty()).then_some(0))
+            }
             Action::First => self.step_cursor(|places, _| (!places.ids.is_empty()).then_some(0)),
+            Action::Last if coverflow => {
+                self.step_strip(|places, _| places.strip.len().checked_sub(1))
+            }
             Action::Last => self.step_cursor(|places, _| places.ids.len().checked_sub(1)),
+            Action::Page(direction) if coverflow => {
+                let covers = self.covers_per_screen();
+                self.step_strip(|places, current| {
+                    crate::coverflow::page(places, current, direction, covers)
+                })
+            }
             Action::Page(direction) => {
                 let rows = self.rows_per_screen();
                 self.step_cursor(|places, current| page(places, current, direction, rows))
@@ -318,7 +340,11 @@ impl App {
             // Same rule as Enter: only a shown card, and only when nothing
             // else has the keys.
             Action::ToggleFavorite => {
-                if captured || self.panel_takes_keys() || !self.selected_shown() {
+                if captured
+                    || self.panel_takes_keys()
+                    || !self.selected_shown()
+                    || self.panel_hidden_by_card()
+                {
                     return Task::none();
                 }
                 match self.selected.clone() {
@@ -354,7 +380,11 @@ impl App {
             // whether anything has focus is asked rather than read from the
             // capture.
             Action::MarkSelected => {
-                if captured || !self.marking_keys_free() || !self.selected_shown() {
+                if captured
+                    || !self.marking_keys_free()
+                    || !self.selected_shown()
+                    || self.panel_hidden_by_card()
+                {
                     return Task::none();
                 }
                 iced::advanced::widget::operate(
@@ -363,6 +393,14 @@ impl App {
                 .map(|count| Message::SpaceFocus(count.focused.is_some()))
             }
             Action::OpenOrPlay => {
+                // A collapsed section's card opens it. Its games aren't
+                // shown, so this comes before the shown selection's check.
+                if self.panel_hidden_by_card()
+                    && self.action_menu.is_none()
+                    && let Some(key) = self.header_cursor().cloned()
+                {
+                    return self.open_collapsed(key);
+                }
                 if self.panel_takes_keys() || !self.selected_shown() {
                     Task::none()
                 } else if self.panel_open {
@@ -433,6 +471,13 @@ impl App {
             .max(1.0) as usize
     }
 
+    /// Nothing is in view to move to: no card, and in coverflow no
+    /// collapsed section's card either.
+    fn nowhere_to_go(&self) -> bool {
+        let places = self.grid_places();
+        places.ids.is_empty() && places.strip.is_empty()
+    }
+
     /// The selected game has a copy in view: shown, and not only in
     /// collapsed sections (plan 0062, question 22).
     pub(crate) fn selected_shown(&self) -> bool {
@@ -456,6 +501,11 @@ impl App {
     /// Brings the card the cursor is on into view, now or, while the grid
     /// moves, once it settles.
     pub(crate) fn scroll_selection(&mut self) -> Task<Message> {
+        // The strip has no scroll: the cursor's stop goes to the middle.
+        if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+            self.center_strip();
+            return Task::none();
+        }
         let Some(name) = self.selected.clone() else {
             return Task::none();
         };

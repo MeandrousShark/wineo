@@ -50,7 +50,7 @@ impl App {
                 .find(|card| card.name == name)
                 .and_then(|card| card.default_target.clone());
         }
-        self.selected = Some(name.clone());
+        self.select_game(name.clone());
         if !self.art_pages.contains_key(&name) {
             self.art_generation = self.art_generation.wrapping_add(1);
             self.art_pages.insert(

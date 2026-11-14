@@ -304,12 +304,17 @@ impl App {
 
     pub(crate) fn pad_hint_view(&self) -> Option<iced::Element<'_, Message>> {
         let style = self.pad_hint.filter(|_| self.pad_hint_shown())?;
-        let hints = pad::glyph::hints(
+        Some(pad::glyph::bar(self.pad_hints(), style, self.palette))
+    }
+
+    /// The bar's hints. A panel a coverflow card hides isn't open to A,
+    /// which opens the card's section instead.
+    pub(crate) fn pad_hints(&self) -> Vec<(wineo_core::library::PadButton, &'static str)> {
+        pad::glyph::hints(
             &self.input.bindings(),
-            self.panel_open,
+            self.panel_open && !self.panel_hidden_by_card(),
             self.header_cursor().is_some(),
-        );
-        Some(pad::glyph::bar(hints, style, self.palette))
+        )
     }
 
     /// A tool run started, by its button, Enter, or any other route: its
