@@ -904,8 +904,10 @@ impl App {
     /// the way it sits from where the strip heads, and while it glides,
     /// also the way it sits from where the strip is drawn, so a cover the
     /// middle passes on the way has both. At rest the middle's two
-    /// neighbors warp from their large `Cover`; otherwise every warp is
-    /// from the grid's poster, cheap enough to make mid-glide.
+    /// neighbors warp from their large `Cover`, and from their grid poster
+    /// too until that warp is here, so a blank card waits only on the
+    /// cheap warp; otherwise every warp is from the grid's poster, cheap
+    /// enough to make mid-glide.
     pub(crate) fn strip_tilts(&self) -> Vec<(ArtKey, bool, Tilt)> {
         let places = self.grid_places();
         let target = self.strip.target() as f32;
@@ -921,16 +923,22 @@ impl App {
             let Some(art) = &card.art else {
                 continue;
             };
+            let grid = (art.clone(), artwork::Kind::Grid);
             let source = if settled {
                 self.tilt_source(art, stop)
             } else {
-                (art.clone(), artwork::Kind::Grid)
+                grid.clone()
             };
+            let dimmed = card.not_installed();
             let at = stop as f32;
             for (tilt, wanted) in [(Tilt::Left, at < high), (Tilt::Right, at > low)] {
-                if wanted {
-                    tilts.push((source.clone(), card.not_installed(), tilt));
+                if !wanted {
+                    continue;
                 }
+                if source != grid && !self.images.contains_tilted(&source, dimmed, tilt) {
+                    tilts.push((grid.clone(), dimmed, tilt));
+                }
+                tilts.push((source.clone(), dimmed, tilt));
             }
         }
         tilts

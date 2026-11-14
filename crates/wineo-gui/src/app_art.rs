@@ -104,7 +104,10 @@ impl App {
             .map(|(key, _, tilt)| (key.clone(), *tilt))
             .collect();
         self.evict_art();
-        Task::batch([self.load_images(keys), self.warp_images(tilts)])
+        // Warps first: a batch first polls its tasks in order, and the
+        // decode limit hands out permits in the order they're asked for, so
+        // a cheap warp for a cover on screen never waits on a large decode.
+        Task::batch([self.warp_images(tilts), self.load_images(keys)])
     }
 
     /// Warps each tilt whose flat art is here and that isn't yet, off the

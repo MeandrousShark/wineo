@@ -2038,12 +2038,25 @@ fn the_strip_wants_each_side_cover_tilted_its_way_and_the_neighbors_from_their_l
     let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
     let tilts = tilts_named(&app);
-    // Six each way, but the middle.
-    assert_eq!(tilts.len(), 12, "{tilts:?}");
+    // Six each way, but the middle, and the neighbors from their grid
+    // poster too until their large warp is here.
+    assert_eq!(tilts.len(), 14, "{tilts:?}");
     assert!(tilts.iter().all(|(name, _, _)| name != "game-10"));
     for (name, tilt, large) in &tilts {
         let stop: usize = name["game-".len()..].parse().unwrap();
         assert_eq!(*tilt == Tilt::Left, stop < 10, "{name}");
+        assert!(!large || stop.abs_diff(10) == 1, "{name}");
+    }
+    let kind = app.cover_kind().unwrap();
+    for (name, tilt) in [("game-09", Tilt::Left), ("game-11", Tilt::Right)] {
+        let warp = image::Handle::from_rgba(1, 1, vec![0; 4]);
+        app.images
+            .insert_tilted((art_of(&app, name), kind), false, tilt, warp);
+    }
+    let tilts = tilts_named(&app);
+    assert_eq!(tilts.len(), 12, "{tilts:?}");
+    for (name, _, large) in &tilts {
+        let stop: usize = name["game-".len()..].parse().unwrap();
         assert_eq!(*large, stop.abs_diff(10) == 1, "{name}");
     }
     // With no large cover at this size, the neighbors warp from the grid's.
@@ -2098,17 +2111,13 @@ fn a_warp_waits_for_its_flat_art_and_then_starts() {
     red_posters(&mut app);
     select(&mut app, "game-10");
     let warping = warping_names(&app);
-    // Every grid-sourced side cover is warping; the neighbors wait for
-    // their large covers.
-    assert!(
-        warping.contains("game-08") && warping.contains("game-12"),
-        "{warping:?}"
-    );
-    assert!(
-        !warping.contains("game-09") && !warping.contains("game-11"),
-        "{warping:?}"
-    );
+    // Every side cover warps its grid poster, the neighbors too while
+    // their large covers decode; the large warps wait for those.
+    for name in ["game-08", "game-09", "game-11", "game-12"] {
+        assert!(warping.contains(name), "{name}: {warping:?}");
+    }
     let kind = app.cover_kind().unwrap();
+    assert!(app.warping.iter().all(|((_, held), _, _)| *held != kind));
     let key = (art_of(&app, "game-11"), kind);
     let _ = app.update(Message::ArtLoaded(
         key.clone(),
@@ -2116,6 +2125,59 @@ fn a_warp_waits_for_its_flat_art_and_then_starts() {
         Ok(image::Handle::from_rgba(480, 720, vec![0; 480 * 720 * 4])),
     ));
     assert!(app.warping.contains(&(key, false, Tilt::Right)));
+}
+
+#[test]
+fn at_rest_a_neighbor_waiting_on_its_large_warp_shows_its_grid_warp_first() {
+    let (_root, mut app) = with_art(9, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    red_posters(&mut app);
+    frame(&mut app, &mut clock, 200);
+    // Snapped there, as reduced motion does, with nothing warped yet.
+    app.warping.clear();
+    let _ = app.load_art_now();
+    let grid = (art_of(&app, "game-05"), artwork::Kind::Grid);
+    let large = (
+        art_of(&app, "game-05"),
+        app.cover_kind().expect("a large cover"),
+    );
+    assert!(app.warping.contains(&(grid.clone(), false, Tilt::Right)));
+    assert!(!app.warping.contains(&(large.clone(), false, Tilt::Right)));
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let _ = app.update(Message::ArtWarped(
+        grid.clone(),
+        false,
+        Tilt::Right,
+        crate::tilt::warp(&flat, Tilt::Right),
+    ));
+    // Kept, and faded in over the blank card it replaces.
+    assert!(app.images.contains_tilted(&grid, false, Tilt::Right));
+    assert_eq!(app.warp_shown(&grid.0, Tilt::Right), 0.0);
+    assert!(app.strip.active());
+    frame(&mut app, &mut clock, 200);
+    assert!(!app.strip.active());
+    // The large warp, once its cover decodes, takes over without a fade.
+    let _ = app.update(Message::ArtLoaded(
+        large.clone(),
+        false,
+        Ok(image::Handle::from_rgba(480, 720, vec![0; 480 * 720 * 4])),
+    ));
+    assert!(app.warping.contains(&(large.clone(), false, Tilt::Right)));
+    let _ = app.update(Message::ArtWarped(
+        large.clone(),
+        false,
+        Tilt::Right,
+        crate::tilt::warp(&flat, Tilt::Right),
+    ));
+    assert!(app.images.contains_tilted(&large, false, Tilt::Right));
+    assert_eq!(app.warp_shown(&grid.0, Tilt::Right), 1.0);
+    assert!(!app.strip.active());
+    // With it here, the grid one is no longer wanted.
+    let _ = app.load_art_now();
+    assert!(!app.visible_tilts.contains(&(grid, Tilt::Right)));
+    assert!(app.visible_tilts.contains(&(large, Tilt::Right)));
 }
 
 #[test]
