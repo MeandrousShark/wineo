@@ -301,9 +301,12 @@ fn back_does_nothing_on_working_when_nothing_fetches() {
 #[test]
 fn a_late_warning_still_shows_and_a_late_progress_does_not_overwrite_the_fetch() {
     let root = tempfile::tempdir().unwrap();
-    let (mut page, _calls, _task) = fetching(root.path());
+    let (mut page, _calls) = reviewed(root.path());
+    page.imported_name = Some("imported".to_owned());
     // The import's stream carries the generation it started under.
     let generation = page.generation;
+    let _task = page.start_fetch();
+    assert!(page.fetching);
     let _ = page.update_with_key_availability(
         Event::Warning(generation, "a file could not be copied".to_owned()),
         true,
@@ -322,6 +325,75 @@ fn a_late_warning_still_shows_and_a_late_progress_does_not_overwrite_the_fetch()
         true,
     );
     assert_eq!(page.status, "Copied 500 files...");
+}
+
+#[test]
+fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, calls) = reviewed(root.path());
+    page.name = "Hollow Knight".to_owned();
+    page.fetch_art = true;
+    page.step = Step::Working;
+    let generation = page.generation;
+    let outcome = ImportOutcome {
+        name: "hollow-knight".to_owned(),
+        art_error: None,
+    };
+    let task = page.update_with_key_availability(
+        Event::ImportFinished(generation, Ok(Box::new(outcome))),
+        true,
+    );
+    drive(&mut page, task, true);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "hollow-knight");
+    assert_eq!(calls[0].title, "Hollow Knight");
+}
+
+#[test]
+fn the_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
+    for skip in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut page, _calls) = reviewed(root.path());
+        let exe = root.path().join("game.sh");
+        write_script(&exe, "#!/bin/sh\n");
+        Environment::create_native_titled(
+            &page.paths,
+            &GlobalConfig::default(),
+            "imported",
+            Some(&exe.display().to_string()),
+            Some("Game"),
+            true,
+            |_| {},
+        )
+        .unwrap();
+        let entries = |page: &Page| {
+            fs::read_dir(page.paths.applications_dir())
+                .map(|dir| {
+                    dir.filter(|entry| {
+                        entry
+                            .as_ref()
+                            .unwrap()
+                            .path()
+                            .extension()
+                            .is_some_and(|ext| ext == "desktop")
+                    })
+                    .count()
+                })
+                .unwrap_or(0)
+        };
+        // Creation alone leaves the entry to whoever reconciles next.
+        assert_eq!(entries(&page), 0);
+        page.imported_name = Some("imported".to_owned());
+        page.fetch_art = true;
+        let task = page.start_fetch();
+        if skip {
+            let _ = page.update_with_key_availability(Event::SkipFetch, true);
+        }
+        drive(&mut page, task, true);
+        assert_eq!(page.step, Step::Finished, "skip {skip}");
+        assert_eq!(entries(&page), usize::from(!skip), "skip {skip}");
+    }
 }
 
 #[test]
