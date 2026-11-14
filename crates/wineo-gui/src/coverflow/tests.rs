@@ -2653,11 +2653,16 @@ fn a_long_glide_warps_the_covers_it_leaves_and_passes_both_ways() {
     assert_eq!(stops_of(&app.strip_art())[..3], [5, 6, 4]);
 }
 
-/// 2000 games with art, named with four digits so the strip's order is
-/// the names', resting on `game-{at}` in full motion with the panel shut.
+/// 2000 games with art: `library_at(2000, at)`.
 fn huge_at(at: usize) -> (tempfile::TempDir, App) {
+    library_at(2000, at)
+}
+
+/// `count` games with art, named with four digits so the strip's order is
+/// the names', resting on `game-{at}` in full motion with the panel shut.
+fn library_at(count: usize, at: usize) -> (tempfile::TempDir, App) {
     let (root, mut app) = boot();
-    let cards = (0..2000)
+    let cards = (0..count)
         .map(|index| art_card(&format!("game-{index:04}")))
         .collect();
     let _ = app.update(Message::Loaded(Ok(cards)));
@@ -2705,6 +2710,57 @@ fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
             assert!(stops.contains(&stop), "{stop} at {position}");
         }
     }
+}
+
+#[test]
+fn the_art_held_follows_a_long_glide_asking_once_per_stop_crossed() {
+    let (_root, mut app) = library_at(60, 5);
+    let mut clock = crate::clock::Fake::start();
+    key_down(&mut app, Named::End);
+    assert_eq!(app.strip.target(), 59);
+    let held = |app: &App| -> Vec<usize> {
+        let keys: Vec<(ArtKey, bool)> = app
+            .visible_art
+            .iter()
+            .filter(|(_, kind)| *kind == artwork::Kind::Grid)
+            .map(|key| (key.clone(), false))
+            .collect();
+        stops_of(&keys)
+    };
+    // A key nobody wants, which any new ask for art replaces.
+    let marker = (
+        crate::tests::art_file("/tmp/game-9999.png", 1),
+        artwork::Kind::Grid,
+    );
+    let (mut asked, mut skipped) = (0, 0);
+    for _ in 0..200 {
+        let before = app.strip.position().floor();
+        app.visible_art.insert(marker.clone());
+        frame(&mut app, &mut clock, 4);
+        if app.strip.settled() {
+            break;
+        }
+        let position = app.strip.position();
+        let fresh = !app.visible_art.contains(&marker);
+        assert_eq!(fresh, position.floor() != before, "at {position}");
+        if fresh {
+            asked += 1;
+        } else {
+            skipped += 1;
+        }
+        // Everything drawn where it is now is held, all the way there.
+        let held = held(&app);
+        for stop in 0..60usize {
+            if (stop as f32 - position).abs() < NEIGHBORS as f32 + 1.0 {
+                assert!(held.contains(&stop), "{stop} at {position}: {held:?}");
+            }
+        }
+    }
+    assert!(app.strip.settled());
+    assert!(
+        asked > 10 && skipped > 0,
+        "asked {asked}, skipped {skipped}"
+    );
 }
 
 #[test]

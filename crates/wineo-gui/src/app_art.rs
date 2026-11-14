@@ -85,6 +85,9 @@ impl App {
 
     pub(crate) fn load_art_now(&mut self) -> Task<Message> {
         let coverflow = self.layout == crate::grid_motion::ViewLayout::Coverflow;
+        if coverflow {
+            self.strip.art_asked();
+        }
         let keys = if coverflow {
             self.strip_art()
         } else {

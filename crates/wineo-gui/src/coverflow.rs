@@ -18,7 +18,8 @@ use crate::{App, ArtKey, Message, artwork};
 pub(crate) const NEIGHBORS: usize = 4;
 /// Stops on each side of the strip's stop, and while it glides of where
 /// it's drawn, whose posters and tilts are kept ready: those on screen and
-/// two more, so a cover a glide brings in is already turned.
+/// two more, so a cover a glide brings in is already turned. A glide asks
+/// again at each stop it crosses, so the window moves with it.
 const PREWARM: usize = NEIGHBORS + 2;
 /// The middle cover's height, as a share of the strip's.
 const HEIGHT_SHARE: f32 = 0.55;
@@ -363,6 +364,9 @@ pub(crate) struct Strip {
     /// When the last warp to arrive for a cover on screen is done fading
     /// in, which keeps frames coming until then.
     warp_fade: Option<Instant>,
+    /// The stop the strip was drawn at, rounded down, when its art was
+    /// last asked for, so a glide asks again only once per stop crossed.
+    art_stop: Option<i32>,
 }
 
 impl Default for Strip {
@@ -380,6 +384,7 @@ impl Default for Strip {
             resize_generation: 0,
             resize_pending: false,
             warp_fade: None,
+            art_stop: None,
         }
     }
 }
@@ -485,6 +490,16 @@ impl Strip {
     pub(crate) fn fade_warp(&mut self, now: Instant) {
         self.warp_fade = Some(now + WARP_FADE);
         self.last_tick.get_or_insert(now);
+    }
+
+    /// Notes that the art for where the strip is drawn now was asked for.
+    pub(crate) fn art_asked(&mut self) {
+        self.art_stop = Some(self.position().floor() as i32);
+    }
+
+    /// Gliding into a stop it hasn't asked for art at yet.
+    pub(crate) fn crossed_stop(&self) -> bool {
+        !self.settled() && self.art_stop != Some(self.position().floor() as i32)
     }
 
     /// Resting on its stop. The middle three decode their large art and
@@ -600,6 +615,9 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Tick(generation, now) => {
             if app.strip.tick(generation, now) {
                 // Settled: the large covers and tilts can start.
+                app.load_visible_art()
+            } else if app.strip.crossed_stop() {
+                // The covers it holds follow where it's drawn.
                 app.load_visible_art()
             } else {
                 Task::none()
@@ -1010,8 +1028,10 @@ impl App {
     /// stop from `PREWARM` behind where it's drawn to `PREWARM` past the
     /// one it's heading to, so a cover it leaves or passes is turned too;
     /// a jump longer than that keeps only what's on screen and `PREWARM`
-    /// ahead at each end, so Home on a huge library asks for no more than
-    /// a short one. Nearest where it's drawn first, ahead before behind.
+    /// ahead of where it's drawn, and `PREWARM` around where it lands, so
+    /// Home on a huge library holds no more than a short jump. It's asked
+    /// again at each stop the glide crosses, so the first part follows the
+    /// strip. Nearest where it's drawn first, ahead before behind.
     fn strip_near(&self, places: &Places) -> Vec<usize> {
         let Some(last) = places.strip.len().checked_sub(1) else {
             return Vec::new();
