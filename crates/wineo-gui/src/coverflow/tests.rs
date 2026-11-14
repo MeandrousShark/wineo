@@ -1342,3 +1342,26 @@ fn a_favorite_cover_shows_the_star_and_a_marked_one_the_check() {
     // Scaled with the cover: twice the grid's 24 px at this size.
     assert!(star.width > 1.9 * crate::library_actions::MARK_SIZE);
 }
+
+#[test]
+fn delete_does_nothing_on_a_section_card() {
+    let (_root, mut app) = sectioned();
+    // b-0 shows in c too, so Delete can't fall back on it being hidden.
+    let mut cards = app.cards.clone();
+    for card in &mut cards {
+        if card.name == "b-0" {
+            card.tags.push("c".into());
+        }
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    collapse(&mut app, "b");
+    select(&mut app, "a-5");
+    press(&mut app, Named::ArrowRight);
+    assert_eq!(middle(&app), "[b]");
+    press(&mut app, Named::Delete);
+    assert!(app.removal.is_none());
+    // On a game it asks as anywhere.
+    press(&mut app, Named::ArrowLeft);
+    press(&mut app, Named::Delete);
+    assert!(app.removal.is_some());
+}
