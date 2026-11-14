@@ -337,7 +337,7 @@ fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
     let generation = page.generation;
     let outcome = ImportOutcome {
         name: "hollow-knight".to_owned(),
-        art_error: None,
+        entry_error: None,
     };
     let task = page.update_with_key_availability(
         Event::ImportFinished(generation, Ok(Box::new(outcome))),
@@ -350,40 +350,46 @@ fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
     assert_eq!(calls[0].title, "Hollow Knight");
 }
 
+/// Registers a native environment `name` with a desktop target. Creation
+/// leaves its entry to whoever reconciles next, so none exists yet.
+fn native_environment(paths: &Paths, root: &Path, name: &str) {
+    let exe = root.join("game.sh");
+    write_script(&exe, "#!/bin/sh\n");
+    Environment::create_native_titled(
+        paths,
+        &GlobalConfig::default(),
+        name,
+        Some(&exe.display().to_string()),
+        Some("Game"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+}
+
+fn desktop_entries(paths: &Paths) -> usize {
+    fs::read_dir(paths.applications_dir())
+        .map(|dir| {
+            dir.filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "desktop")
+            })
+            .count()
+        })
+        .unwrap_or(0)
+}
+
 #[test]
 fn the_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
     for skip in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let (mut page, _calls) = reviewed(root.path());
-        let exe = root.path().join("game.sh");
-        write_script(&exe, "#!/bin/sh\n");
-        Environment::create_native_titled(
-            &page.paths,
-            &GlobalConfig::default(),
-            "imported",
-            Some(&exe.display().to_string()),
-            Some("Game"),
-            true,
-            |_| {},
-        )
-        .unwrap();
-        let entries = |page: &Page| {
-            fs::read_dir(page.paths.applications_dir())
-                .map(|dir| {
-                    dir.filter(|entry| {
-                        entry
-                            .as_ref()
-                            .unwrap()
-                            .path()
-                            .extension()
-                            .is_some_and(|ext| ext == "desktop")
-                    })
-                    .count()
-                })
-                .unwrap_or(0)
-        };
-        // Creation alone leaves the entry to whoever reconciles next.
-        assert_eq!(entries(&page), 0);
+        native_environment(&page.paths, root.path(), "imported");
+        assert_eq!(desktop_entries(&page.paths), 0);
         page.imported_name = Some("imported".to_owned());
         page.fetch_art = true;
         let task = page.start_fetch();
@@ -392,7 +398,11 @@ fn the_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
         }
         drive(&mut page, task, true);
         assert_eq!(page.step, Step::Finished, "skip {skip}");
-        assert_eq!(entries(&page), usize::from(!skip), "skip {skip}");
+        assert_eq!(
+            desktop_entries(&page.paths),
+            usize::from(!skip),
+            "skip {skip}"
+        );
     }
 }
 
@@ -401,7 +411,8 @@ fn a_fetch_result_from_an_older_fetch_is_ignored() {
     let root = tempfile::tempdir().unwrap();
     let (mut page, _calls, _task) = fetching(root.path());
     let stale = page.fetch_sequence.wrapping_sub(1);
-    let _ = page.update_with_key_availability(Event::ArtFetched(stale, Ok(Vec::new())), true);
+    let _ =
+        page.update_with_key_availability(Event::ArtFetched(stale, (Ok(Vec::new()), Ok(()))), true);
     assert_eq!(page.step, Step::Working);
     assert!(page.fetching);
 }
@@ -469,7 +480,7 @@ fn a_failed_entry_refresh_in_the_worker_lands_on_art_failed_and_retry_fetches_fi
     let generation = page.generation;
     let outcome = ImportOutcome {
         name: "imported".to_owned(),
-        art_error: Some("no applications folder".to_owned()),
+        entry_error: Some("no applications folder".to_owned()),
     };
     let task = page.update_with_key_availability(
         Event::ImportFinished(generation, Ok(Box::new(outcome))),
@@ -507,19 +518,146 @@ fn retry_without_the_checkbox_only_reapplies_the_entry() {
 }
 
 #[test]
-fn skip_artwork_on_art_failed_reapplies_the_entry_and_finishes() {
+fn skip_artwork_on_art_failed_reapplies_the_entry_and_says_what_was_skipped() {
+    // What failed was the fetch, never ran, or got through and left the entry.
+    for (fetch_art, fetch_done, skipped) in [
+        (true, false, true),
+        (false, false, false),
+        (true, true, false),
+    ] {
+        let case = format!("fetch {fetch_art}, done {fetch_done}");
+        let root = tempfile::tempdir().unwrap();
+        let (mut page, calls) = reviewed(root.path());
+        native_environment(&page.paths, root.path(), "imported");
+        page.imported_name = Some("imported".to_owned());
+        page.fetch_art = fetch_art;
+        page.fetch_done = fetch_done;
+        page.error = Some("offline".to_owned());
+        page.step = Step::ArtFailed;
+        let task = page.update_with_key_availability(Event::SkipArt, true);
+        assert_eq!(page.status, "Refreshing desktop entries...", "{case}");
+        assert!(page.error.is_none(), "{case}: the old failure is cleared");
+        drive(&mut page, task, true);
+        assert_eq!(page.step, Step::Finished, "{case}");
+        assert!(page.error.is_none(), "{case}");
+        assert_eq!(call_count(&calls), 0, "{case}: Skip artwork never fetches");
+        assert_eq!(desktop_entries(&page.paths), 1, "{case}: the entry is back");
+        assert_eq!(
+            page.notes.contains(&"Artwork skipped".to_owned()),
+            skipped,
+            "{case}: {:?}",
+            page.notes
+        );
+    }
+}
+
+#[test]
+fn a_fetch_that_got_through_keeps_its_notes_when_only_the_entry_failed() {
     let root = tempfile::tempdir().unwrap();
     let (mut page, calls) = reviewed(root.path());
     page.imported_name = Some("imported".to_owned());
     page.fetch_art = true;
-    page.error = Some("offline".to_owned());
-    page.step = Step::ArtFailed;
-    let task = page.update_with_key_availability(Event::SkipArt, true);
+    let _task = page.start_fetch();
+    let sequence = page.fetch_sequence;
+    let notes = vec!["No logo artwork found".to_owned()];
+    let _ = page.update_with_key_availability(
+        Event::ArtFetched(sequence, (Ok(notes.clone()), Err("no folder".to_owned()))),
+        true,
+    );
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(page.error.as_deref(), Some("no folder"));
+    assert!(!page.fetch_failed, "the fetch didn't fail");
+    assert_eq!(page.notes, notes);
+    assert_eq!(
+        page.art_failed_line(),
+        "imported was imported, but its desktop entry could not be refreshed."
+    );
+
+    // Retry has only the entry left, so it doesn't download again.
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    assert!(!page.fetching);
     assert_eq!(page.status, "Refreshing desktop entries...");
     drive(&mut page, task, true);
     assert_eq!(page.step, Step::Finished);
-    assert!(page.error.is_none());
-    assert_eq!(call_count(&calls), 0, "Skip artwork never fetches");
+    assert_eq!(call_count(&calls), 0);
+    assert_eq!(page.notes, notes);
+}
+
+#[test]
+fn a_failed_fetch_blames_the_fetch_even_when_the_entry_failed_too() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, _) = reviewed(root.path());
+    page.imported_name = Some("imported".to_owned());
+    page.fetch_art = true;
+    let _task = page.start_fetch();
+    let sequence = page.fetch_sequence;
+    let _ = page.update_with_key_availability(
+        Event::ArtFetched(
+            sequence,
+            (Err("offline".to_owned()), Err("no folder".to_owned())),
+        ),
+        true,
+    );
+    assert_eq!(page.step, Step::ArtFailed);
+    assert!(page.fetch_failed);
+    assert!(!page.fetch_done);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("offline; desktop entry: no folder")
+    );
+}
+
+#[test]
+fn a_failed_or_canceled_import_never_fetches() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, calls) = reviewed(root.path());
+    let _ = page.update_with_key_availability(Event::Import, true);
+    assert!(page.fetch_art);
+    let generation = page.generation;
+    let task = page.update_with_key_availability(
+        Event::ImportFinished(generation, Err("disk full".to_owned())),
+        true,
+    );
+    assert_eq!(page.step, Step::Review);
+    assert_eq!(page.error.as_deref(), Some("disk full"));
+    assert!(!page.fetching);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 0);
+
+    // A real import canceled before it starts copying.
+    let (mut page, calls) = reviewed(root.path());
+    let task = page.update_with_key_availability(Event::Import, true);
+    page.cancel(false);
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::Review, "{:?}", page.error);
+    assert!(page.error.is_some());
+    assert!(!page.paths.environment_config("imported").exists());
+    assert!(!page.fetching);
+    assert_eq!(call_count(&calls), 0);
+}
+
+#[test]
+fn ctrl_enter_does_nothing_behind_the_discard_prompt() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, _) = reviewed(root.path());
+    page.step = Step::Details;
+    page.review = None;
+    let _ = page.update_with_key_availability(Event::Name("imported".to_owned()), true);
+    let _ = page.back();
+    assert!(page.discard_prompt);
+    let mut app = app_with_key(page, true);
+    let _ = app.update(crate::Message::Key(
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+        iced::keyboard::Modifiers::CTRL,
+        iced::event::Status::Ignored,
+    ));
+    let page = prefix_page(&app);
+    assert!(page.discard_prompt);
+    assert_eq!(
+        page.step,
+        Step::Details,
+        "the review didn't start behind it"
+    );
 }
 
 /// The Finished page's own column, under the page title, as the probe lays

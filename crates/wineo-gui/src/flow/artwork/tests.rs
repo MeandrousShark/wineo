@@ -705,3 +705,29 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
     draft.apply(&paths, "replaced").unwrap();
     assert_eq!(grid("replaced"), art::Source::Manual("mine.png".into()));
 }
+
+#[test]
+fn the_fetch_and_the_entry_are_told_apart() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let notes = vec!["No logo artwork found".to_owned()];
+    let answer = notes.clone();
+    let fetcher: Fetcher = Arc::new(move |_, _, _, _| Ok(answer.clone()));
+    // Nothing to refresh for an environment that isn't there.
+    assert_eq!(
+        fetch_art_parts(&paths, "game", "Game", &Token::new(), &fetcher),
+        (Ok(notes), Ok(()))
+    );
+    let failing: Fetcher = Arc::new(|_, _, _, _| Err("offline".to_owned()));
+    assert_eq!(
+        fetch_art_parts(&paths, "game", "Game", &Token::new(), &failing),
+        (Err("offline".to_owned()), Ok(()))
+    );
+    // A skipped fetch leaves the entry alone and reports it as fine.
+    let token = Token::new();
+    token.cancel();
+    assert_eq!(
+        fetch_art_parts(&paths, "game", "Game", &token, &failing),
+        (Err("offline".to_owned()), Ok(()))
+    );
+}

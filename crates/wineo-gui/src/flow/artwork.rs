@@ -1063,8 +1063,31 @@ impl ArtOffer {
     }
 }
 
+/// What the fetch and the desktop entry reapply after it each came to, apart
+/// so a caller can tell which half failed.
+pub(crate) type FetchParts = (Result<Vec<String>, String>, Result<(), String>);
+
 /// The fetch after an environment registers, then the desktop entry again,
 /// since its icon comes from the art.
+pub(crate) fn fetch_art_parts(
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    token: &Token,
+    fetcher: &Fetcher,
+) -> FetchParts {
+    let fetched = fetcher(paths, name, title, token);
+    // Skipped, so nothing more is written; a later launch refreshes the entry.
+    if fetched.is_err() && token.is_canceled() {
+        return (fetched, Ok(()));
+    }
+    let entry = desktop::apply(paths, name, false)
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+    (fetched, entry)
+}
+
+/// `fetch_art_parts` as one result, for a page that shows a single error.
 pub(crate) fn fetch_art(
     paths: &Paths,
     name: &str,
@@ -1072,15 +1095,9 @@ pub(crate) fn fetch_art(
     token: &Token,
     fetcher: &Fetcher,
 ) -> Result<Vec<String>, String> {
-    let fetched = fetcher(paths, name, title, token);
-    // Skipped, so nothing more is written; a later launch refreshes the entry.
-    if fetched.is_err() && token.is_canceled() {
-        return fetched;
-    }
-    let desktop = desktop::apply(paths, name, false).map_err(|error| error.to_string());
-    match (fetched, desktop) {
-        (Ok(notes), Ok(_)) => Ok(notes),
-        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+    match fetch_art_parts(paths, name, title, token, fetcher) {
+        (Ok(notes), Ok(())) => Ok(notes),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(art_error), Err(desktop_error)) => {
             Err(format!("{art_error}; desktop entry: {desktop_error}"))
         }
