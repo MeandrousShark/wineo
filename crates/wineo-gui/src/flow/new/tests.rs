@@ -23,9 +23,9 @@ fn page() -> Page {
     page
 }
 
-/// Goes back to the choice page with Change and picks another row.
+/// Goes back to the choice page and picks another row.
 fn switch(page: &mut Page, kind: Kind, source: Source) {
-    let _ = page.update(Event::Change);
+    let _ = page.back();
     assert_eq!(page.stage, Stage::Choose);
     let _ = page.update(Event::Start(kind, source));
     assert_eq!(page.stage, Stage::Details);
@@ -2100,8 +2100,8 @@ fn the_choice_page_lists_windows_then_native_rows_that_open_details() {
         let published: Vec<_> = published.iter().map(|e| format!("{e:?}")).collect();
         assert_eq!(published, [format!("Start({kind:?}, {source:?})")]);
     }
-    // Inside a group only a separator parts the rows; the Native Linux
-    // label parts the groups.
+    // Inside a section only a separator parts the rows; the Native Linux
+    // heading and its own surface part the sections.
     let gap = |above: usize| bounds[above + 1].y - (bounds[above].y + bounds[above].height);
     assert!(gap(2) > gap(1) + 10.0, "{bounds:?}");
     assert!((gap(0) - gap(1)).abs() < 0.01 && (gap(3) - gap(0)).abs() < 0.01);
@@ -2129,14 +2129,12 @@ fn the_choice_page_lists_windows_then_native_rows_that_open_details() {
 #[test]
 fn coming_back_to_the_choice_page_lands_on_the_row_details_came_from() {
     for (kind, source) in ROWS {
-        for back in [Event::Back, Event::Change] {
-            let mut page = choosing();
-            let _ = page.update(Event::Start(kind, source));
-            let _ = page.update(back.clone());
-            assert_eq!(page.stage, Stage::Choose);
-            let id = start_of(kind, source).unwrap().id;
-            assert_eq!(page.rows().unwrap().focus.as_deref(), Some(id), "{back:?}");
-        }
+        let mut page = choosing();
+        let _ = page.update(Event::Start(kind, source));
+        let _ = page.update(Event::Back);
+        assert_eq!(page.stage, Stage::Choose);
+        let id = start_of(kind, source).unwrap().id;
+        assert_eq!(page.rows().unwrap().focus.as_deref(), Some(id));
     }
 }
 
@@ -2150,7 +2148,7 @@ fn back_from_untouched_details_or_choose_asks_nothing() {
         let _ = page.update(Event::Options(read_options(&paths)));
         // Picking rows, going back and forth, isn't an edit.
         let _ = page.update(Event::Start(Kind::Native, Source::Executable));
-        let _ = page.update(Event::Change);
+        let _ = page.back();
         let _ = page.update(Event::Start(kind, source));
         // Neither is the fetch checkbox, nor its default.
         assert!(page.fetch_checked(true));
@@ -2432,68 +2430,67 @@ fn a_held_esc_on_the_discard_prompt_keeps_it_open() {
 
 #[test]
 fn leaving_details_drops_its_running_check_and_picker() {
-    for leave in [Event::Back, Event::Change] {
-        let root = tempfile::tempdir().unwrap();
-        let paths =
-            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
-        let mut page = offer_page(&paths);
-        // An edit whose wait is still pending.
-        let _ = page.update(Event::Name("Hades".to_owned()));
-        let waiting = page.check_sequence;
-        let _ = page.update(leave.clone());
-        assert!(
-            is_none(page.update(Event::Settled(waiting))),
-            "{leave:?}: no check starts off Details"
-        );
-        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
-        let opened = page.check_sequence;
-        assert!(is_none(page.update(Event::Settled(waiting))), "{leave:?}");
-        assert_eq!(page.check_sequence, opened, "{leave:?}");
+    let leave = Event::Back;
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    // An edit whose wait is still pending.
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    let waiting = page.check_sequence;
+    let _ = page.update(leave.clone());
+    assert!(
+        is_none(page.update(Event::Settled(waiting))),
+        "{leave:?}: no check starts off Details"
+    );
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    let opened = page.check_sequence;
+    assert!(is_none(page.update(Event::Settled(waiting))), "{leave:?}");
+    assert_eq!(page.check_sequence, opened, "{leave:?}");
 
-        // A check still running.
-        let _ = page.update(Event::Name("Hades 2".to_owned()));
-        let _ = page.update(Event::Settled(page.check_sequence));
-        let checking = page.check_sequence;
-        assert!(page.checking);
-        let _ = page.update(Event::Browse);
-        let browsing = page.picker_sequence;
-        let _ = page.update(leave.clone());
-        let shown = |page: &Page| page.summary.as_ref().map(|s| s.draft.title.clone());
-        let before = shown(&page);
-        let _ = page.update(Event::Checked(
-            checking,
-            Box::new(page.draft.clone()),
-            prepare(&paths, &page.draft).map(Box::new),
-        ));
-        assert_eq!(shown(&page), before, "{leave:?}: nothing lands off Details");
-        let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
-        let _ = page.update(Event::Checked(
-            checking,
-            Box::new(page.draft.clone()),
-            prepare(&paths, &page.draft).map(Box::new),
-        ));
-        assert!(
-            page.checking,
-            "{leave:?}: only the check Details opened with lands"
-        );
-        let _ = page.update(Event::Picked(
-            browsing,
-            Ok(Some(PathBuf::from("/games/hades.exe"))),
-        ));
-        assert_eq!(page.draft.path, "", "{leave:?}");
-    }
+    // A check still running.
+    let _ = page.update(Event::Name("Hades 2".to_owned()));
+    let _ = page.update(Event::Settled(page.check_sequence));
+    let checking = page.check_sequence;
+    assert!(page.checking);
+    let _ = page.update(Event::Browse);
+    let browsing = page.picker_sequence;
+    let _ = page.update(leave.clone());
+    let shown = |page: &Page| page.summary.as_ref().map(|s| s.draft.title.clone());
+    let before = shown(&page);
+    let _ = page.update(Event::Checked(
+        checking,
+        Box::new(page.draft.clone()),
+        prepare(&paths, &page.draft).map(Box::new),
+    ));
+    assert_eq!(shown(&page), before, "{leave:?}: nothing lands off Details");
+    let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
+    let _ = page.update(Event::Checked(
+        checking,
+        Box::new(page.draft.clone()),
+        prepare(&paths, &page.draft).map(Box::new),
+    ));
+    assert!(
+        page.checking,
+        "{leave:?}: only the check Details opened with lands"
+    );
+    let _ = page.update(Event::Picked(
+        browsing,
+        Ok(Some(PathBuf::from("/games/hades.exe"))),
+    ));
+    assert_eq!(page.draft.path, "", "{leave:?}");
 }
 
 #[test]
-fn details_title_has_change_and_the_choice_page_shows_no_details_error() {
+fn details_title_has_no_change_link_and_the_choice_page_shows_no_details_error() {
     let size = iced::Size::new(900.0, 720.0);
     let mut page = page();
-    assert_eq!(click_label(&page, size, "Change"), ["Change"]);
+    assert!(labeled(&texts(&page, size), "Change").is_empty());
 
     let error = "Could not open the file picker";
     page.error = Some(error.to_owned());
     assert_eq!(labeled(&texts(&page, size), error).len(), 1);
-    let _ = page.update(Event::Change);
+    let _ = page.back();
     assert!(labeled(&texts(&page, size), error).is_empty());
 }
 
@@ -3426,7 +3423,7 @@ fn a_discard_from_the_choice_page_still_goes_to_the_add_choices() {
     let _ = page.update(Event::OpenExisting);
     let _ = page.update(Event::KeepEditing);
     // Back from the choice page asks too, and its Discard isn't Settings.
-    let _ = page.update(Event::Change);
+    let _ = page.update(Event::Back);
     let _ = page.update(Event::Back);
     assert!(page.leave_prompt);
     let _ = page.update(Event::Discard);
@@ -4043,4 +4040,74 @@ fn back_and_esc_on_target_after_clean_up_never_fetch_again() {
         assert_eq!(page.stage, Stage::Finished, "{esc_key}");
         assert_eq!(call_count(&calls), 1, "{esc_key}");
     }
+}
+
+/// The pixel at (`x`, `y`) of `render`'s RGBA output, as `[r, g, b, a]`.
+fn pixel_at(pixels: &[u8], width: u32, x: f32, y: f32) -> [u8; 4] {
+    let at = (y as usize * width as usize + x as usize) * 4;
+    pixels[at..at + 4].try_into().unwrap()
+}
+
+fn rgba8(color: iced::Color) -> [u8; 4] {
+    color.into_rgba8()
+}
+
+#[test]
+fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
+    use crate::layout_probe::{lay_out, render};
+    let page = choosing();
+    let size = iced::Size::new(900.0, 720.0);
+    let mut laid = lay_out(page.view_with_key_availability(Palette::DARK, true), size);
+    let rows = start_rows(&mut laid);
+    let texts = texts(&page, size);
+    let windows = labeled(&texts, "Windows");
+    let native = labeled(&texts, "Native Linux");
+    assert_eq!((windows.len(), native.len()), (1, 1), "{texts:?}");
+    let (windows, native) = (windows[0], native[0]);
+
+    // Each heading sits above its first row, level with the other, and the
+    // Native Linux heading comes after the last Windows row.
+    assert!(
+        windows.y + windows.height < rows[0].y,
+        "{windows:?} {rows:?}"
+    );
+    assert!(rows[2].y + rows[2].height < native.y, "{native:?} {rows:?}");
+    assert!(native.y + native.height < rows[3].y, "{native:?} {rows:?}");
+    assert!((windows.x - native.x).abs() < 0.01);
+
+    // Two surfaces: the page's own backdrop shows between the last Windows
+    // row and the Native Linux heading, while right under that row (inside
+    // its surface) and beside the separators the surface color does.
+    let palette = Palette::DARK;
+    let mut view = page.view_with_key_availability(palette, true);
+    let pixels = render(&mut view, size);
+    let width = size.width as u32;
+    let x = rows[2].x + rows[2].width - 12.0;
+    let below_windows = rows[2].y + rows[2].height + 2.0;
+    let between = (rows[2].y + rows[2].height + native.y) / 2.0;
+    let above_native_rows = rows[3].y - 2.0;
+    assert_eq!(
+        pixel_at(&pixels, width, x, below_windows),
+        rgba8(palette.surface),
+        "the Windows surface runs on a little below its last row"
+    );
+    assert_ne!(
+        pixel_at(&pixels, width, x, between),
+        rgba8(palette.surface),
+        "the gap between the sections is not surface"
+    );
+    assert_eq!(
+        pixel_at(&pixels, width, x, above_native_rows),
+        rgba8(palette.surface),
+        "the Native Linux rows have a surface of their own"
+    );
+    // The CPU renderer doesn't snap a separator to a pixel row, so it may
+    // spread over two.
+    let divider = rows[0].y + rows[0].height;
+    assert!(
+        (0..2).any(
+            |step| pixel_at(&pixels, width, x, divider + step as f32) != rgba8(palette.surface)
+        ),
+        "a separator parts rows inside a section"
+    );
 }

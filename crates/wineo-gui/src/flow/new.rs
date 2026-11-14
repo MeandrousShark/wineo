@@ -127,14 +127,18 @@ pub(crate) enum Kind {
 
 impl Kind {
     const ALL: [Self; 2] = [Self::Windows, Self::Native];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Windows => "Windows",
+            Self::Native => "Native Linux",
+        }
+    }
 }
 
 impl std::fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Windows => "Windows",
-            Self::Native => "Native Linux",
-        })
+        f.write_str(self.label())
     }
 }
 
@@ -325,8 +329,6 @@ pub(crate) enum Event {
     KeepEditing,
     /// A row on the choice page.
     Start(Kind, Source),
-    /// Details' Change, back to the choice page.
-    Change,
     Name(String),
     EditEnvironment,
     EnvironmentName(String),
@@ -1198,7 +1200,6 @@ impl Page {
             {
                 return self.pick(kind, source);
             }
-            Event::Change if self.stage == Stage::Details => self.change(),
             Event::Name(value) if self.stage == Stage::Details => {
                 self.draft.title = value;
                 self.name_touched = true;
@@ -1955,20 +1956,7 @@ impl Page {
             },
             palette,
         );
-        let heading: Element<'_, Event> = if self.stage == Stage::Details {
-            crate::ends::ends(
-                title.width(Fill),
-                button("Change")
-                    .padding(0)
-                    .style(move |_, status| crate::chips::link(palette, status))
-                    .on_press(Event::Change),
-                12.0,
-                crate::ends::MIN_LEFT,
-            )
-        } else {
-            title.into()
-        };
-        let mut body = column![heading].spacing(10).width(Fill);
+        let mut body = column![title].spacing(10).width(Fill);
         match self.stage {
             Stage::Choose => body = body.push(start_list(palette)),
             Stage::Details => {
@@ -2176,7 +2164,7 @@ fn open_focused_start() -> Task<Event> {
     })
 }
 
-/// The choice page's rows, under their kinds, in one surface.
+/// The choice page's rows, a section for each kind.
 fn start_list(palette: Palette) -> Element<'static, Event> {
     let rows = |kind: Kind| -> Vec<ui::ListRow<'static, Event>> {
         STARTS
@@ -2199,9 +2187,9 @@ fn start_list(palette: Palette) -> Element<'static, Event> {
             })
             .collect()
     };
-    ui::labeled_list_group(
+    ui::sectioned_list_group(
         START_LIST,
-        Kind::ALL.map(|kind| (kind.to_string(), rows(kind))),
+        Kind::ALL.map(|kind| (kind.label(), rows(kind))),
         palette,
     )
 }
