@@ -241,11 +241,16 @@ fn page_down_stops_at_the_last_row_and_a_short_row_takes_the_nearest_card() {
 }
 
 #[test]
-fn coverflow_moves_as_the_grid_for_now() {
-    let (_root, mut app, columns) = grid_on_game_one(80, ViewLayout::Coverflow);
-    fit_rows(&mut app, 3);
+fn coverflow_pages_by_the_covers_on_screen() {
+    let (_root, mut app) = app_with(80, ViewLayout::Coverflow);
+    let _ = app.update(Message::Strip(crate::coverflow::Event::Measured(
+        iced::Size::new(1600.0, 900.0),
+    )));
+    select(&mut app, "game-001");
+    let covers = app.covers_per_screen();
+    assert!(covers > 1);
     press(&mut app, Named::PageDown);
-    assert_eq!(selected(&app), game(1 + 3 * columns));
+    assert_eq!(selected(&app), game(1 + covers));
     press(&mut app, Named::End);
     assert_eq!(selected(&app), game(79));
     press(&mut app, Named::Home);

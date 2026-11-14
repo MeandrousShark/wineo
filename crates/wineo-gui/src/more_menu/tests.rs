@@ -129,6 +129,11 @@ impl Window {
         found
     }
 
+    /// A window holding widget state taken from another.
+    pub(crate) fn with_tree(tree: Tree) -> Self {
+        Self(Some(tree))
+    }
+
     pub(crate) fn new(app: &mut App) -> Self {
         let mut window = Self(None);
         window.frame(app);
@@ -199,6 +204,15 @@ impl Window {
         let found = bounds(&mut laid, id);
         self.0 = Some(laid.into_tree());
         found
+    }
+
+    /// Hands `event` to the widgets with the cursor at `point`, keeping
+    /// their state, then what they publish to the app.
+    pub(crate) fn event_at(&mut self, app: &mut App, event: iced::Event, point: iced::Point) {
+        let mut laid = self.lay_out(app);
+        let messages = laid.event_at(&event, iced::mouse::Cursor::Available(point));
+        self.0 = Some(laid.into_tree());
+        self.send(app, messages);
     }
 
     /// A left click at `point`, pressed and released.
@@ -861,7 +875,7 @@ fn an_unfold_reply_after_folding_again_leaves_the_menu_open() {
 }
 
 #[test]
-fn coverflow_keeps_the_menus_zoom_rows_as_the_grid_does() {
+fn coverflow_drops_the_menus_zoom_rows_as_the_list_does() {
     let (_root, mut grid) = library(200);
     let mut window = Window::new(&mut grid);
     open(&mut grid, &mut window);
@@ -872,12 +886,26 @@ fn coverflow_keeps_the_menus_zoom_rows_as_the_grid_does() {
     let _ = app.set_layout(crate::grid_motion::ViewLayout::Coverflow);
     let mut window = Window::new(&mut app);
     open(&mut app, &mut window);
-    assert_eq!(app.more_ids(), grid_ids);
-    // And the zoom row still sends its zoom, which the list's wouldn't.
-    let slider = window.bounds(&app, ZOOM_ID).expect("the menu's slider");
-    let x = zoom_control::x_of(slider, 150.0);
-    window.click(&mut app, iced::Point::new(x, slider.center_y()));
-    assert_eq!(app.zoom, 150);
+    let without: Vec<_> = grid_ids
+        .into_iter()
+        .filter(|id| *id != ZOOM_ID && *id != TITLES_ID)
+        .collect();
+    assert_eq!(app.more_ids(), without);
+    assert_eq!(window.bounds(&app, ZOOM_ID), None);
+
+    // Switched from the open menu, its rows drop the zoom at once.
+    let (_root, mut app) = library(200);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    assert!(app.more_ids().contains(&ZOOM_ID));
+    window.send(
+        &mut app,
+        vec![Message::Layout(crate::layout_switch::Event::Set(
+            crate::grid_motion::ViewLayout::Coverflow,
+        ))],
+    );
+    assert!(app.more_menu, "still open");
+    assert_eq!(app.more_ids(), without);
 }
 
 #[test]

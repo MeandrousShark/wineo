@@ -696,25 +696,30 @@ fn a_saved_coverflow_boots_with_the_thumb_on_the_third_side() {
 }
 
 #[test]
-fn coverflow_draws_as_the_grid_until_its_widget_lands() {
+fn coverflow_lays_the_same_games_out_in_its_own_strip() {
     let (_root, mut app) = library(40);
     app.viewport_width = 1000.0;
     app.snap_grid();
     let grid_places = app.grid_places();
-    let grid_columns = app.columns();
-    let grid_width = app.slot_width();
     let _ = set(&mut app, ViewLayout::Coverflow);
     assert_eq!(app.layout, ViewLayout::Coverflow);
     let places = app.grid_places();
+    // The same games in the same order, one stop each along one row.
     assert_eq!(places.ids, grid_places.ids);
-    assert_eq!(places.slots, grid_places.slots);
-    assert_eq!(app.columns(), grid_columns);
-    assert_eq!(app.slot_width(), grid_width);
+    assert_eq!(places.strip.len(), places.ids.len());
+    assert!(
+        places
+            .slots
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| slot.x == index as f32 && slot.y == 0.0)
+    );
     assert_eq!(app.header_room(), 0.0);
-    // The posters' zoom stays available, since the posters show.
-    assert!(app.zoom_allowed());
+    // The covers size to the window, so the zoom is off.
+    assert!(!app.zoom_allowed());
+    let zoom = app.zoom;
     let _ = app.update(Message::Zoom(ZoomEvent::Key(ZoomKey::In)));
-    assert_eq!(app.zoom, 110);
+    assert_eq!(app.zoom, zoom);
     // The marks, sort, and selection hold through it like any switch.
     let _ = app.update(Message::Select("game-010".into()));
     let _ = set(&mut app, ViewLayout::List);
@@ -742,35 +747,36 @@ fn the_thumb_is_drawn_over_the_chosen_side() {
 }
 
 #[test]
-fn coverflow_keeps_the_zoom_controls_as_the_grid_does() {
+fn coverflow_hides_the_zoom_controls_as_the_list_does() {
     let (_root, mut app) = library(4);
-    for layout in [ViewLayout::Grid, ViewLayout::Coverflow] {
+    let _ = set(&mut app, ViewLayout::Grid);
+    assert!(focusable(&app, crate::zoom_control::SLIDER_ID));
+    assert!(focusable(&app, crate::zoom_control::POSTER_ONLY_ID));
+    for layout in [ViewLayout::List, ViewLayout::Coverflow] {
         let _ = set(&mut app, layout);
         assert!(
-            focusable(&app, crate::zoom_control::SLIDER_ID),
+            !focusable(&app, crate::zoom_control::SLIDER_ID),
             "{layout:?}"
         );
         assert!(
-            focusable(&app, crate::zoom_control::POSTER_ONLY_ID),
+            !focusable(&app, crate::zoom_control::POSTER_ONLY_ID),
             "{layout:?}"
         );
     }
-    let _ = set(&mut app, ViewLayout::List);
-    assert!(!focusable(&app, crate::zoom_control::SLIDER_ID));
-    // The slots are the grid's width and gap, not the list's.
+    // The helpers have the strip's own answers, not the grid's.
     let layout = crate::grid_motion::GridLayout::new(100);
-    for mode in [ViewLayout::Grid, ViewLayout::Coverflow] {
-        assert_eq!(
-            crate::grid_motion::row_gap(mode),
-            crate::grid_motion::row_gap(ViewLayout::Grid)
-        );
-        assert_eq!(
-            crate::grid_motion::width_for_viewport(1000.0, false, layout, mode),
-            layout.card_width()
-        );
-    }
-    assert_ne!(
-        crate::grid_motion::row_gap(ViewLayout::Coverflow),
-        crate::grid_motion::row_gap(ViewLayout::List)
+    let mode = ViewLayout::Coverflow;
+    assert_eq!(crate::grid_motion::row_gap(mode), 0.0);
+    assert_eq!(
+        crate::grid_motion::width_for_viewport(1000.0, false, layout, mode),
+        1.0
+    );
+    assert_eq!(
+        crate::grid_motion::columns_for_viewport(1000.0, false, layout, mode),
+        1
+    );
+    assert_eq!(
+        crate::grid_motion::shift_for_viewport(1000.0, false, layout, mode),
+        0.0
     );
 }

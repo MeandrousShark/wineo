@@ -297,7 +297,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.selected.as_deref() != Some(&name) {
                 app.close_checkup();
             }
-            app.selected = Some(name.clone());
+            app.select_game(name.clone());
             app.panel_open = true;
             app.target = app
                 .cards

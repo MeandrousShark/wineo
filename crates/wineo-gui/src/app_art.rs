@@ -15,7 +15,7 @@ impl App {
         let mut wanted = (false, false);
         for card in &self.cards {
             let uses = match kind {
-                artwork::Kind::Grid => card.art.as_ref() == Some(art),
+                artwork::Kind::Grid | artwork::Kind::Cover(_) => card.art.as_ref() == Some(art),
                 artwork::Kind::Hero => card
                     .panel_art
                     .values()
@@ -38,6 +38,11 @@ impl App {
     /// Stores decoded art. Once a card's current variant arrives the other
     /// one goes, so a dimmed card holds only its grayscale copy.
     pub(crate) fn art_loaded(&mut self, key: ArtKey, dimmed: bool, handle: image::Handle) {
+        // A large cover that left the middle while it decoded isn't kept,
+        // so moving along the strip never fills the cache with them.
+        if matches!(key.1, artwork::Kind::Cover(_)) && !self.visible_art.contains(&key) {
+            return;
+        }
         let (color, gray) = self.art_wanted(&key);
         let (wanted, other_wanted) = if dimmed { (gray, color) } else { (color, gray) };
         if wanted {
@@ -63,8 +68,23 @@ impl App {
             .evict(|key| visible.contains(key) || panel.contains(key));
     }
 
+    /// The art in view, decoded if it isn't yet. In coverflow it waits for
+    /// `sync_strip` at the end of the update, since the strip's middle may
+    /// still move, and art asked for now would be for where it was.
     pub(crate) fn load_visible_art(&mut self) -> Task<Message> {
-        let keys = self.grid_art();
+        if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+            self.strip_art_due = true;
+            return Task::none();
+        }
+        self.load_art_now()
+    }
+
+    pub(crate) fn load_art_now(&mut self) -> Task<Message> {
+        let keys = if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+            self.strip_art()
+        } else {
+            self.grid_art()
+        };
         for (key, _) in &keys {
             self.images.touch(key);
         }
@@ -186,7 +206,10 @@ pub(crate) fn decode_art(
     dimmed: bool,
     cache: &std::path::Path,
 ) -> Result<image::Handle, String> {
-    let handle = artwork::decode(&key.0.path, key.1, Some(cache)).map_err(|e| e.to_string())?;
+    // Only three covers decode at a time, and most sources are smaller than
+    // the largest, so their copies would rarely save a decode.
+    let cache = (!matches!(key.1, artwork::Kind::Cover(_))).then_some(cache);
+    let handle = artwork::decode(&key.0.path, key.1, cache).map_err(|e| e.to_string())?;
     Ok(if dimmed {
         artwork::grayscale(&handle).unwrap_or(handle)
     } else {

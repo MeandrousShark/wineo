@@ -1203,11 +1203,6 @@ fn tab_and_shift_tab_leave_the_segment_for_the_right_neighbors_after_a_flip() {
 fn ctrl_l_from_a_focused_zoom_control_leaves_the_toolbar_without_stale_focus() {
     for gone in [SLIDER_ID, POSTER_ONLY_ID] {
         let (_root, mut app) = library(4);
-        // Ctrl+L goes from the grid to coverflow, which keeps the zoom
-        // controls, so start where it leaves for the list.
-        let _ = app.update(Message::Layout(crate::layout_switch::Event::Set(
-            crate::grid_motion::ViewLayout::Coverflow,
-        )));
         let mut laid = lay_out(app.view(), app.window_size);
         focus(&mut laid, gone);
         assert_eq!(laid.focused(), [iced::widget::Id::new(gone)]);
@@ -1218,7 +1213,9 @@ fn ctrl_l_from_a_focused_zoom_control_leaves_the_toolbar_without_stale_focus() {
             iced::event::Status::Ignored,
             false,
         ));
-        assert_eq!(app.layout, crate::grid_motion::ViewLayout::List);
+        // Ctrl+L goes from the grid to coverflow, which has no zoom
+        // controls.
+        assert_eq!(app.layout, crate::grid_motion::ViewLayout::Coverflow);
         let mut laid = crate::layout_probe::relay_out(app.view(), tree, app.window_size);
         // The control is gone, and nothing else took its focus.
         assert_eq!(laid.focused(), Vec::<iced::widget::Id>::new(), "{gone}");

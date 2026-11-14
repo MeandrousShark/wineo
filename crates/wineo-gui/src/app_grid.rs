@@ -180,6 +180,8 @@ impl App {
         let mut cards: Vec<usize> = Vec::new();
         let mut ids: Vec<SlotId> = Vec::new();
         let mut headers = Vec::new();
+        // Each header's first game, which a collapsed section's card shows.
+        let mut firsts = Vec::new();
         for section in sections.iter() {
             if grouped {
                 headers.push(grid_motion::Header {
@@ -188,6 +190,13 @@ impl App {
                     collapsed: section.collapsed,
                     at: ids.len(),
                 });
+                firsts.push(
+                    section
+                        .cards
+                        .first()
+                        .copied()
+                        .filter(|&index| index < self.cards.len()),
+                );
             }
             if section.collapsed {
                 continue;
@@ -199,28 +208,45 @@ impl App {
                 }
             }
         }
-        let heights: Vec<f32> = match self.layout {
-            // Coverflow takes the grid's places until its own strip lands.
-            grid_motion::ViewLayout::Grid | grid_motion::ViewLayout::Coverflow => cards
-                .iter()
-                .map(|&index| grid::card_height(&self.cards[index], layout))
-                .collect(),
-            grid_motion::ViewLayout::List => vec![crate::list_view::ROW_HEIGHT; cards.len()],
+        let mut places = match self.layout {
+            grid_motion::ViewLayout::Grid => {
+                let heights: Vec<f32> = cards
+                    .iter()
+                    .map(|&index| grid::card_height(&self.cards[index], layout))
+                    .collect();
+                self.sectioned_places(ids, &heights, headers, layout)
+            }
+            grid_motion::ViewLayout::List => {
+                let heights = vec![crate::list_view::ROW_HEIGHT; cards.len()];
+                self.sectioned_places(ids, &heights, headers, layout)
+            }
+            grid_motion::ViewLayout::Coverflow => {
+                grid_motion::Places::strip(ids, headers, &firsts, layout)
+            }
         };
-        let mut places = grid_motion::Places::sectioned(
+        places.cards = cards;
+        let places = Rc::new(places);
+        *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
+        places
+    }
+
+    fn sectioned_places(
+        &self,
+        ids: Vec<SlotId>,
+        heights: &[f32],
+        headers: Vec<grid_motion::Header>,
+        layout: grid_motion::GridLayout,
+    ) -> grid_motion::Places {
+        grid_motion::Places::sectioned(
             ids,
-            &heights,
+            heights,
             headers,
             self.slot_width(),
             self.columns(),
             self.grid_shift(),
             layout,
             self.layout,
-        );
-        places.cards = cards;
-        let places = Rc::new(places);
-        *self.places.borrow_mut() = key.map(|key| (key, places.clone()));
-        places
+        )
     }
 
     /// Each slot's card in `places`, which must be this app's
@@ -320,6 +346,9 @@ impl App {
     /// zoom like any selection scroll, without asking where the card is
     /// drawn now.
     pub(crate) fn scroll_to_landing(&mut self) -> Task<Message> {
+        if self.layout == grid_motion::ViewLayout::Coverflow {
+            return self.scroll_selection();
+        }
         if self.zooming.moving() {
             self.grid_scroll_after_settle = self.selected.clone();
             return Task::none();

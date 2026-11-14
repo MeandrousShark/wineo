@@ -26,12 +26,12 @@ pub(crate) const EYE_OFF: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" v
 /// The poster marks' size and their backdrop, which keeps them readable on
 /// light and dark art alike.
 pub(crate) const MARK_SIZE: f32 = 24.0;
-const MARK_ICON: f32 = 14.0;
-const MARK_BACKDROP: f32 = 0.55;
+pub(crate) const MARK_ICON: f32 = 14.0;
+pub(crate) const MARK_BACKDROP: f32 = 0.55;
 /// The poster star's backdrop with the pointer on it.
 const GLOW_BACKDROP: f32 = 0.8;
 /// The marks' distance from the art's edges.
-const MARK_MARGIN: f32 = 8.0;
+pub(crate) const MARK_MARGIN: f32 = 8.0;
 /// The poster star's click target, centered on its chip.
 pub(crate) const STAR_TARGET: f32 = 28.0;
 const MARK_INSET: f32 = (STAR_TARGET - MARK_SIZE) / 2.0;
