@@ -580,6 +580,11 @@ pub(super) fn global_view<'a>(
             palette
         ),
         section(
+            "Coverflow",
+            coverflow_rows(draft.coverflow_fullscreen, locked, palette),
+            palette
+        ),
+        section(
             "Controller",
             controller_rows(draft.input.controller, &page.pads, locked, palette),
             palette
@@ -782,6 +787,26 @@ pub(super) const NO_CONTROLLER: &str = "No controller found.";
 
 pub(super) fn version_line() -> String {
     format!("wineo {}", wineo_core::version::VERSION)
+}
+
+/// The coverflow full screen switch. F11 works in any layout either way.
+fn coverflow_rows<'a>(on: bool, locked: bool, palette: Palette) -> Element<'a, Message> {
+    column![
+        switch_row(
+            "Open coverflow in full screen",
+            on,
+            None,
+            |on| send(Event::GlobalCoverflowFullscreen(on)),
+            None,
+            locked,
+            palette,
+        ),
+        text("Leaving coverflow leaves full screen too. F11 toggles it in any layout.")
+            .size(13)
+            .color(palette.muted),
+    ]
+    .spacing(12)
+    .into()
 }
 
 /// The auto-import switch. It stays in place with a reason when it can't do

@@ -236,7 +236,11 @@ impl App {
         match self.main_window {
             Some(id) => window::gain_focus(id),
             None => {
-                let (id, open) = crate::open_main_window(self.window_size, self.interface_size);
+                let (id, open) = crate::open_main_window(
+                    self.windowed_size,
+                    self.interface_size,
+                    self.fullscreen.is_set(),
+                );
                 self.main_window = Some(id);
                 // The new window's scrollable starts at the top.
                 let scroll = iced::widget::operation::scroll_to(
