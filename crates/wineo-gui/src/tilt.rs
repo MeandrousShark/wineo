@@ -14,10 +14,44 @@ pub(crate) const WIDTH: f32 = 0.6;
 /// share of the height.
 pub(crate) const INSET: f32 = 0.1;
 
-/// The trapezoids a tilted cover fills, for the quads that sit behind and
-/// over it, stretched to its bounds.
-pub(crate) const LEFT_SHAPE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path d="M0 10L100 0L100 100L0 90Z" fill="#000"/></svg>"##;
-pub(crate) const RIGHT_SHAPE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path d="M0 0L100 10L100 90L0 100Z" fill="#000"/></svg>"##;
+/// The height of `shape`'s drawing, in its own units.
+const SHAPE_HEIGHT: u32 = 1000;
+
+/// The trapezoid a cover `size` large fills turned `tilt`'s way, as an SVG
+/// for the fills behind it. Both renderers scale an SVG evenly to fit its
+/// bounds and ignore `preserveAspectRatio`, so each one is drawn at its
+/// cover's own shape, to a thousandth of its height, rather than
+/// stretched.
+pub(crate) fn shape(tilt: Tilt, size: iced::Size) -> iced::advanced::svg::Handle {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static SHAPES: RefCell<HashMap<(Tilt, u32), iced::advanced::svg::Handle>> =
+            RefCell::new(HashMap::new());
+    }
+    let height = SHAPE_HEIGHT;
+    let width = if size.height > 0.0 {
+        ((size.width / size.height * height as f32).round() as u32).clamp(1, height)
+    } else {
+        1
+    };
+    SHAPES.with_borrow_mut(|shapes| {
+        shapes
+            .entry((tilt, width))
+            .or_insert_with(|| {
+                let inset = (INSET * height as f32).round() as u32;
+                let (w, h, i) = (width, height, inset);
+                let path = match tilt {
+                    Tilt::Left => format!("M0 {i}L{w} 0L{w} {h}L0 {}Z", h - i),
+                    _ => format!("M0 0L{w} {i}L{w} {}L0 {h}Z", h - i),
+                };
+                iced::advanced::svg::Handle::from_memory(format!(
+                    r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><path d="{path}" fill="#000"/></svg>"##
+                ).into_bytes())
+            })
+            .clone()
+    })
+}
 
 /// The top edge's distance below a tilted cover's top at `across`, from 0
 /// at its left to 1 at its right, as a share of its height.

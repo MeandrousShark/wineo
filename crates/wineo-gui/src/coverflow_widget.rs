@@ -1,6 +1,7 @@
 //! Draws coverflow's strip from `coverflow::geometry` and turns presses
 //! and the wheel on it into messages. The covers beside the middle one
-//! draw as warps tilted toward it, flat until their warp is ready.
+//! draw as warps tilted toward it, flat until their warp is ready, which
+//! then fades in.
 
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
@@ -18,7 +19,7 @@ use iced::{
 use std::time::{Duration, Instant};
 
 use crate::Message;
-use crate::coverflow::{self, Event as StripEvent, StopId};
+use crate::coverflow::{self, Cover, Event as StripEvent, StopId};
 use crate::theme::Palette;
 
 /// The strip's container id, which a test finds it on screen by.
@@ -28,7 +29,7 @@ pub(crate) const ID: &str = "library-strip";
 const PIXELS_PER_NOTCH: f32 = 60.0;
 /// How far each blank card behind a collapsed section's poster sits, as a
 /// share of the poster's width.
-const STACK_OFFSET: f32 = 0.06;
+pub(crate) const STACK_OFFSET: f32 = 0.06;
 const TITLE_SIZE: f32 = 16.0;
 const STATUS_SIZE: f32 = 13.0;
 const LABEL_SIZE: f32 = 13.0;
@@ -42,6 +43,9 @@ pub(crate) struct Face {
     pub(crate) art: Option<image::Handle>,
     /// Its art warped toward the middle, for the side it's on, once warped.
     pub(crate) tilted: Option<image::Handle>,
+    /// How far that warp has faded in: 1 unless it arrived a moment ago
+    /// while the cover was on screen.
+    pub(crate) warp_shown: f32,
     /// The title the name card shows when there's no art.
     pub(crate) title: String,
     /// Hidden or not installed, which the grid fades too.
@@ -214,12 +218,16 @@ fn line(
     color: Color,
     clip: Rectangle,
 ) {
+    let line_height = text::LineHeight::default();
     renderer.fill_text(
         text::Text {
             content,
-            bounds: Size::new(width, f32::INFINITY),
+            // A finite height: iced scales the bounds by the layer's
+            // transform, and 0 times infinity makes the width NaN, which
+            // breaks the line after every glyph.
+            bounds: Size::new(width, f32::from(line_height.to_absolute(Pixels(size)))),
             size: Pixels(size),
-            line_height: text::LineHeight::default(),
+            line_height,
             font,
             align_x: text::Alignment::Center,
             align_y: alignment::Vertical::Top,
@@ -241,97 +249,129 @@ pub(crate) fn games(count: usize) -> String {
     }
 }
 
-impl Strip {
-    /// A cover's outline filled in `color`: the tilt's trapezoid once it's
-    /// more turned than not, a rectangle before that.
-    fn fill_shape(&self, renderer: &mut Renderer, bounds: Rectangle, tilt: f32, color: Color) {
-        if tilt.abs() < 0.5 {
-            quad(renderer, bounds, color, Border::default());
-            return;
-        }
-        let shape = if tilt < 0.0 {
-            crate::tilt::LEFT_SHAPE
+/// How much of a face draws in its tilted outline, the trapezoid, rather
+/// than flat: art turns only once its warp is here, and as that fades in;
+/// a name card turns with the strip.
+pub(crate) fn tilted_share(face: &Face, tilt: f32) -> f32 {
+    let turned = tilt.abs().min(1.0);
+    match (&face.art, &face.tilted) {
+        (Some(_), Some(_)) => turned * face.warp_shown.clamp(0.0, 1.0),
+        (Some(_), None) => 0.0,
+        (None, _) => turned,
+    }
+}
+
+/// A cover's outline filled in `color`: the rectangle while it's flat, the
+/// tilt's trapezoid once turned, and between the two the trapezoid with
+/// the rectangle's corners fading out by `share`.
+fn fill_outline(renderer: &mut Renderer, bounds: Rectangle, tilt: f32, share: f32, color: Color) {
+    if share < 1.0 {
+        quad(
+            renderer,
+            bounds,
+            color.scale_alpha(1.0 - share),
+            Border::default(),
+        );
+    }
+    if share > 0.0 {
+        let side = if tilt < 0.0 {
+            crate::art_cache::Tilt::Left
         } else {
-            crate::tilt::RIGHT_SHAPE
+            crate::art_cache::Tilt::Right
         };
         // The renderer's tint ignores its alpha, so the shape fades by
         // opacity.
         renderer.draw_svg(
-            iced::advanced::svg::Svg::new(iced::advanced::svg::Handle::from_memory(shape))
+            iced::advanced::svg::Svg::new(crate::tilt::shape(side, bounds.size()))
                 .color(Color { a: 1.0, ..color })
                 .opacity(color.a),
             bounds,
             bounds,
         );
     }
+}
 
+impl Strip {
+    /// `color` as a cover `opacity` bright shows it: mixed toward the
+    /// background, which is what the cover fades into.
+    fn shaded(&self, color: Color, opacity: f32) -> Color {
+        crate::ui::blend(color, self.palette.background, 1.0 - opacity)
+    }
+
+    /// The two blank cards behind a collapsed section's poster, in the
+    /// same outline as the poster.
+    fn draw_stack(&self, renderer: &mut Renderer, bounds: Rectangle, cover: &Cover, share: f32) {
+        let edge = self.shaded(self.palette.border, cover.opacity);
+        let surface = self.shaded(self.palette.surface, cover.opacity);
+        for step in [2.0, 1.0] {
+            let offset = bounds.width * STACK_OFFSET * step;
+            let card = bounds + Vector::new(offset, -offset);
+            fill_outline(renderer, card, cover.tilt, share, edge);
+            fill_outline(renderer, card.shrink(1.0), cover.tilt, share, surface);
+        }
+    }
+
+    /// A face's background, art or name card, and its fade toward the
+    /// background, all in the one outline `share` picks.
     fn draw_face(
         &self,
         renderer: &mut Renderer,
         face: &Face,
         bounds: Rectangle,
-        tilt: f32,
+        cover: &Cover,
+        share: f32,
         clip: Rectangle,
     ) {
         let palette = self.palette;
-        let edge = Border::default().width(1).color(palette.border);
-        if face.section.is_some() {
-            // Two blank cards behind the first game's poster.
-            for step in [2.0, 1.0] {
-                let offset = bounds.width * STACK_OFFSET * step;
-                quad(
-                    renderer,
-                    bounds + Vector::new(offset, -offset),
-                    palette.surface,
-                    edge,
-                );
-            }
-        }
+        let (tilt, opacity) = (cover.tilt, cover.opacity);
         // A faded poster shows the background through it, as in the grid,
         // and never the covers behind it.
-        self.fill_shape(renderer, bounds, tilt, palette.background);
+        fill_outline(renderer, bounds, tilt, share, palette.background);
         let dim = if face.faded {
             crate::panel::DIMMED_OPACITY
         } else {
             1.0
         };
-        // Turning, the flat art fades into its warp, which fills the bounds
-        // exactly: it's the 2:3 crop the flat art shows.
-        let turned = tilt.abs().min(1.0);
-        let warp = face.tilted.as_ref().filter(|_| turned > 0.0);
         match &face.art {
             Some(handle) => {
-                if let Some(frame) = bounds.intersection(&clip) {
-                    let flat = if warp.is_some() { 1.0 - turned } else { 1.0 };
-                    if flat > 0.0 {
-                        renderer.draw_image(
-                            iced::advanced::image::Image::new(handle.clone()).opacity(dim * flat),
-                            cover_fit(handle, bounds),
-                            frame,
-                        );
-                    }
-                    if let Some(warp) = warp {
-                        renderer.draw_image(
-                            iced::advanced::image::Image::new(warp.clone()).opacity(dim * turned),
-                            bounds,
-                            frame,
-                        );
-                    }
+                // Turning, the flat art fades into its warp, which fills
+                // the bounds exactly: it's the 2:3 crop the flat art shows.
+                let flat = 1.0 - share;
+                if flat > 0.0 {
+                    renderer.draw_image(
+                        iced::advanced::image::Image::new(handle.clone())
+                            .opacity(dim * opacity * flat),
+                        cover_fit(handle, bounds),
+                        clip,
+                    );
+                }
+                if let Some(warp) = face.tilted.as_ref().filter(|_| share > 0.0) {
+                    renderer.draw_image(
+                        iced::advanced::image::Image::new(warp.clone())
+                            .opacity(dim * opacity * share),
+                        bounds,
+                        clip,
+                    );
                 }
             }
             None => {
-                quad(
-                    renderer,
-                    bounds,
-                    palette.surface.scale_alpha(dim),
-                    Border::default(),
-                );
+                let surface = crate::ui::blend(palette.surface, palette.background, 1.0 - dim);
+                fill_outline(renderer, bounds, tilt, share, self.shaded(surface, opacity));
+                // The name stays clear of the slanted top and bottom.
                 let size = (bounds.height / 240.0 * 14.0).clamp(12.0, 28.0);
                 let pad = bounds.width * 0.08;
+                let slant = bounds.height * crate::tilt::INSET * share;
+                let room = Rectangle::new(
+                    Point::new(bounds.x + pad, bounds.y + slant + pad),
+                    Size::new(
+                        (bounds.width - 2.0 * pad).max(0.0),
+                        (bounds.height - 2.0 * (slant + pad)).max(0.0),
+                    ),
+                );
                 renderer.fill_text(
                     text::Text {
                         content: face.title.clone(),
-                        bounds: Size::new((bounds.width - 2.0 * pad).max(0.0), bounds.height),
+                        bounds: room.size(),
                         size: Pixels(size),
                         line_height: text::LineHeight::default(),
                         font: renderer.default_font(),
@@ -340,9 +380,9 @@ impl Strip {
                         shaping: text::Shaping::Advanced,
                         wrapping: text::Wrapping::Word,
                     },
-                    bounds.center(),
-                    palette.muted,
-                    bounds.intersection(&clip).unwrap_or(bounds),
+                    room.center(),
+                    self.shaded(palette.muted, opacity),
+                    room.intersection(&clip).unwrap_or(room),
                 );
             }
         }
@@ -356,10 +396,18 @@ impl Strip {
     /// The badges over a cover's art, as a grid poster draws them and
     /// scaled with the cover: the mark's check top left, the favorite's
     /// star top right. Nothing else shows on a cover.
-    fn draw_badges(&self, renderer: &mut Renderer, face: &Face, bounds: Rectangle, tilt: f32) {
+    fn draw_badges(
+        &self,
+        renderer: &mut Renderer,
+        face: &Face,
+        bounds: Rectangle,
+        cover: &Cover,
+        share: f32,
+    ) {
         use crate::library_actions::{MARK_BACKDROP, MARK_ICON, MARK_MARGIN, MARK_SIZE, STAR};
         let scale = bounds.height / crate::grid_motion::GridLayout::default().poster_height();
         let (size, icon, margin) = (MARK_SIZE * scale, MARK_ICON * scale, MARK_MARGIN * scale);
+        let (tilt, opacity) = (cover.tilt, cover.opacity);
         let side = if tilt < 0.0 {
             crate::art_cache::Tilt::Left
         } else {
@@ -374,7 +422,7 @@ impl Strip {
             // A tilted cover's top slopes down to its far edge; the badge
             // keeps its margin below it.
             let across = (x + size / 2.0 - bounds.x) / bounds.width;
-            let drop = crate::tilt::top_inset(side, across) * tilt.abs().min(1.0) * bounds.height;
+            let drop = crate::tilt::top_inset(side, across) * share * bounds.height;
             Rectangle::new(
                 Point::new(x, bounds.y + drop + margin),
                 Size::new(size, size),
@@ -396,12 +444,12 @@ impl Strip {
         if face.marked {
             let fill = self.palette.primary;
             let chip = chip(true);
-            quad(renderer, chip, fill, round);
+            quad(renderer, chip, self.shaded(fill, opacity), round);
             glyph(
                 renderer,
                 chip,
                 crate::library_menu::CHECK,
-                crate::ui::accent_ink(fill),
+                self.shaded(crate::ui::accent_ink(fill), opacity),
             );
         }
         if face.favorite {
@@ -409,10 +457,11 @@ impl Strip {
             quad(
                 renderer,
                 chip,
-                Color::BLACK.scale_alpha(MARK_BACKDROP),
+                self.shaded(Color::BLACK, opacity)
+                    .scale_alpha(MARK_BACKDROP),
                 round,
             );
-            glyph(renderer, chip, STAR, Color::WHITE);
+            glyph(renderer, chip, STAR, self.shaded(Color::WHITE, opacity));
         }
     }
 
@@ -655,32 +704,33 @@ impl Widget<Message, Theme, Renderer> for Strip {
             return;
         };
         let origin = Vector::new(area.x, area.y);
-        let shade = self.palette.background;
         for cover in &geometry.covers {
             let Some(face) = self.face(cover.stop) else {
                 continue;
             };
             let bounds = cover.bounds + origin;
-            // Each cover is a layer of its own, since a layer draws its
+            // Everything about a cover follows one outline per frame, and
+            // fades by mixing toward the background rather than by a shade
+            // drawn over it, which would need an outline of its own.
+            let share = tilted_share(face, cover.tilt);
+            // Each part is a layer of its own, since a layer draws its
             // quads before its images, whatever order they came in.
-            renderer.with_layer(clip, |renderer| {
-                self.draw_face(renderer, face, bounds, cover.tilt, clip);
-            });
-            // The badges' icons draw after their layer's quads, so the
-            // shade over them is a layer of its own.
-            if Self::badged(face) {
+            if face.section.is_some() {
                 renderer.with_layer(clip, |renderer| {
-                    self.draw_badges(renderer, face, bounds, cover.tilt);
+                    self.draw_stack(renderer, bounds, cover, share);
                 });
             }
-            if cover.opacity < 1.0 {
-                renderer.with_layer(clip, |renderer| {
-                    self.fill_shape(
-                        renderer,
-                        bounds,
-                        cover.tilt,
-                        shade.scale_alpha(1.0 - cover.opacity),
-                    );
+            // tiny-skia clips an image only to its layer, so the flat art's
+            // crop needs a layer the cover's size.
+            let Some(frame) = bounds.intersection(&clip) else {
+                continue;
+            };
+            renderer.with_layer(frame, |renderer| {
+                self.draw_face(renderer, face, bounds, cover, share, frame);
+            });
+            if Self::badged(face) {
+                renderer.with_layer(frame, |renderer| {
+                    self.draw_badges(renderer, face, bounds, cover, share);
                 });
             }
         }

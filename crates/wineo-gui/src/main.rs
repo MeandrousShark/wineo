@@ -325,6 +325,9 @@ pub(crate) struct App {
     visible_tilts: HashSet<(ArtKey, art_cache::Tilt)>,
     /// Tilts being warped off the UI thread.
     warping: HashSet<(ArtKey, bool, art_cache::Tilt)>,
+    /// When a cover on screen got its first warp each way, so it fades in
+    /// over the flat art rather than popping.
+    warp_arrived: HashMap<(ArtFile, art_cache::Tilt), Instant>,
     /// Caps concurrent art decodes, since a huge source costs far more memory
     /// than its thumbnail.
     decodes: Arc<tokio::sync::Semaphore>,
@@ -803,6 +806,7 @@ impl App {
             visible_art: HashSet::new(),
             visible_tilts: HashSet::new(),
             warping: HashSet::new(),
+            warp_arrived: HashMap::new(),
             decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
             failed_images: HashSet::new(),
