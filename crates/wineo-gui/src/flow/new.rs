@@ -249,7 +249,7 @@ impl Report {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Draft {
+pub(crate) struct Draft {
     /// The free-text game title. The environment name derives from it.
     title: String,
     /// The user's own environment name. None follows the title, and clearing
@@ -329,7 +329,8 @@ pub(crate) enum Event {
     Picked(u64, Result<Option<PathBuf>, String>),
     /// The draft stayed put after the edit with this check number.
     Settled(u64),
-    Checked(u64, Result<Box<Review>, String>),
+    /// A check's result, with the draft it checked.
+    Checked(u64, Box<Draft>, Result<Box<Review>, String>),
     Create,
     Download(Provider),
     Downloaded(u64, Result<String, String>),
@@ -733,9 +734,10 @@ impl Page {
         self.checking = true;
         let paths = self.paths.clone();
         let draft = self.draft.clone();
+        let checked = Box::new(self.draft.clone());
         task::blocking(
             move || prepare(&paths, &draft),
-            move |result| Event::Checked(sequence, result.map(Box::new)),
+            move |result| Event::Checked(sequence, checked, result.map(Box::new)),
         )
     }
 
@@ -771,11 +773,19 @@ impl Page {
         self.validate().err().map(Problem::Error)
     }
 
-    /// The last check's review when no edit came after it and nothing is
-    /// missing, or why Create is off.
+    /// Whether the Summary may not match what Create would do yet: a check
+    /// is pending or running, or an answer to the offer, which changes which
+    /// runners resolve, is still being saved.
+    fn rechecking(&self) -> bool {
+        self.checking || self.answering
+    }
+
+    /// The last check's review when it's of the draft as it is now and
+    /// nothing is missing, or why Create is off.
     fn checked(&self) -> Result<&Review, Hold> {
+        // The draft comparison holds even for an edit that skipped `edited`.
         let summary = match &self.summary {
-            Some(summary) if !self.checking => summary,
+            Some(summary) if !self.rechecking() && summary.draft == self.draft => summary,
             _ => return Err(Hold::Checking),
         };
         let review = summary
@@ -915,6 +925,8 @@ impl Page {
         if !valid {
             return Task::none();
         }
+        // An earlier download's failure is out of date once this one starts.
+        self.error = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
@@ -1100,8 +1112,9 @@ impl Page {
         event: Event,
         key_available: bool,
     ) -> Task<Event> {
-        // A finished check still lands, so the Summary matches what Create
-        // would do once the prompt is answered.
+        // A finished check, or the offer's answer that Create waits on,
+        // still lands, so the Summary matches what Create would do once the
+        // prompt is answered.
         if self.leave_prompt
             && !matches!(
                 event,
@@ -1110,6 +1123,7 @@ impl Page {
                     | Event::Discard
                     | Event::Settled(_)
                     | Event::Checked(..)
+                    | Event::Offered(..)
             )
         {
             return Task::none();
@@ -1237,12 +1251,12 @@ impl Page {
             {
                 return self.run_check();
             }
-            Event::Checked(sequence, result)
+            Event::Checked(sequence, draft, result)
                 if sequence == self.check_sequence && self.stage == Stage::Details =>
             {
                 self.checking = false;
                 self.summary = Some(Summary {
-                    draft: self.draft.clone(),
+                    draft: *draft,
                     found: result.map(|review| *review).map_err(Problem::Error),
                 });
             }
@@ -1489,15 +1503,14 @@ impl Page {
             Event::Offered(sequence, result) if sequence == self.offer_sequence => {
                 self.answering = false;
                 match result {
-                    Ok(options) => {
-                        self.options = Some(options);
-                        // The answer changes which runners resolve, and the
-                        // Summary has to match what Create does.
-                        if self.stage == Stage::Details {
-                            return self.check_now();
-                        }
-                    }
+                    Ok(options) => self.options = Some(options),
                     Err(error) => self.error = Some(error),
+                }
+                // The answer changes which runners resolve, and a failure may
+                // come after it was saved, so the Summary checks again either
+                // way to match what Create does.
+                if self.stage == Stage::Details {
+                    return self.check_now();
                 }
             }
             _ => {}
@@ -1723,14 +1736,14 @@ impl Page {
         let mut heading = row![ui::section_heading("Summary", palette)]
             .spacing(12)
             .align_y(Center);
-        if self.checking {
+        if self.rechecking() {
             heading = heading.push(text("Checking...").size(12).color(palette.muted));
         }
         let mut summary = column![heading].spacing(10).width(Fill);
         let Some(last) = &self.summary else {
             return summary.into();
         };
-        let palette = if self.checking {
+        let palette = if self.rechecking() {
             dimmed(palette)
         } else {
             palette
@@ -1777,7 +1790,7 @@ impl Page {
     ) -> Element<'_, Event> {
         let download = |label: &'static str, provider: Provider| {
             ui::secondary_button(label, palette)
-                .on_press_maybe((!self.checking).then_some(Event::Download(provider)))
+                .on_press_maybe((!self.rechecking()).then_some(Event::Download(provider)))
         };
         let mut note = column![].spacing(8).width(Fill);
         match prerequisite {

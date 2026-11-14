@@ -47,7 +47,11 @@ fn ready_review() -> Review {
 
 /// Lands `review` as the check of the draft as it is now.
 fn land(page: &mut Page, review: Review) {
-    let _ = page.update(Event::Checked(page.check_sequence, Ok(Box::new(review))));
+    let _ = page.update(Event::Checked(
+        page.check_sequence,
+        Box::new(page.draft.clone()),
+        Ok(Box::new(review)),
+    ));
     assert!(!page.checking);
 }
 
@@ -989,7 +993,7 @@ fn a_late_answer_to_the_offer_always_rechecks_the_summary() {
         answer_offer(&paths, true),
     ));
     assert_ne!(page.check_sequence, stale);
-    let _ = page.update(Event::Checked(stale, old));
+    let _ = page.update(Event::Checked(stale, Box::new(page.draft.clone()), old));
     assert!(page.checking, "the old setting's check didn't land");
     // A reply from an earlier answer is ignored.
     let _ = page.update(Event::Offered(
@@ -2458,12 +2462,14 @@ fn leaving_details_drops_its_running_check_and_picker() {
         let before = shown(&page);
         let _ = page.update(Event::Checked(
             checking,
+            Box::new(page.draft.clone()),
             prepare(&paths, &page.draft).map(Box::new),
         ));
         assert_eq!(shown(&page), before, "{leave:?}: nothing lands off Details");
         let _ = page.update(Event::Start(Kind::Windows, Source::Empty));
         let _ = page.update(Event::Checked(
             checking,
+            Box::new(page.draft.clone()),
             prepare(&paths, &page.draft).map(Box::new),
         ));
         assert!(
@@ -2506,6 +2512,7 @@ fn a_held_ctrl_enter_submits_once() {
     let mut page = offer_page(&paths);
     let _ = page.update(Event::Name("Hollow Knight".to_owned()));
     let checking = page.check_sequence;
+    let draft = Box::new(page.draft.clone());
     let mut app = app_with_key(page);
     // Pressed while the Summary checks: nothing, and nothing kept for later.
     let _ = app.update(ctrl_enter(false));
@@ -2515,6 +2522,7 @@ fn a_held_ctrl_enter_submits_once() {
         app.flow_generation,
         crate::flow::Event::Create(Box::new(Event::Checked(
             checking,
+            draft,
             Ok(Box::new(ready_review())),
         ))),
     ));
@@ -2560,7 +2568,7 @@ fn edits_inside_the_wait_run_one_check_and_a_later_edit_runs_another() {
     }
     let checks = outputs(page.update(Event::Settled(settled[2])));
     assert!(
-        matches!(&checks[..], [Event::Checked(sequence, Ok(_))] if *sequence == settled[2]),
+        matches!(&checks[..], [Event::Checked(sequence, _, Ok(_))] if *sequence == settled[2]),
         "{checks:?}"
     );
     for event in checks {
@@ -2594,11 +2602,12 @@ fn a_stale_check_drops_by_its_own_number_not_by_the_generation() {
     let _ = page.update(Event::Name("Hades".to_owned()));
     let _ = page.update(Event::Settled(page.check_sequence));
     let started = page.check_sequence;
+    let checked = Box::new(page.draft.clone());
     let result = prepare(&paths, &page.draft).map(Box::new);
     // Work that shares the generation, like reloading the options, leaves
     // the check alone.
     let _ = page.load_options();
-    let _ = page.update(Event::Checked(started, result.clone()));
+    let _ = page.update(Event::Checked(started, checked.clone(), result.clone()));
     assert!(!page.checking);
     assert!(page.checked().is_ok(), "{:?}", page.summary);
 
@@ -2606,7 +2615,7 @@ fn a_stale_check_drops_by_its_own_number_not_by_the_generation() {
     let _ = page.update(Event::Name("Hades 2".to_owned()));
     let _ = page.update(Event::Settled(page.check_sequence));
     let generation = page.generation;
-    let _ = page.update(Event::Checked(started, result));
+    let _ = page.update(Event::Checked(started, checked, result));
     assert!(page.checking);
     assert_eq!(page.summary.as_ref().unwrap().draft.title, "Hades");
     assert_eq!(page.generation, generation);
@@ -2677,6 +2686,7 @@ fn ctrl_enter_while_checking_does_nothing_and_never_fires_later() {
     assert_eq!(page.stage, Stage::Details);
     let _ = page.update(Event::Checked(
         page.check_sequence,
+        Box::new(page.draft.clone()),
         Ok(Box::new(ready_review())),
     ));
     assert!(page.checked().is_ok());
@@ -2872,7 +2882,11 @@ fn a_check_lands_while_the_discard_prompt_shows() {
     // Its wait still starts the check, and the check still lands.
     let task = page.update(Event::Settled(waiting));
     assert!(!is_none(task));
-    let _ = page.update(Event::Checked(waiting, Ok(Box::new(adopting()))));
+    let _ = page.update(Event::Checked(
+        waiting,
+        Box::new(page.draft.clone()),
+        Ok(Box::new(adopting())),
+    ));
     assert!(page.leave_prompt);
     assert!(!page.checking);
     assert!(
@@ -2970,4 +2984,146 @@ fn back_to_details_from_finished_keeps_the_draft_and_checks_it_again() {
     assert!(labeled(&texts(&page, size), "Back to details").is_empty());
     let _ = page.update(Event::BackToDetails);
     assert_eq!(page.stage, Stage::Finished);
+}
+
+/// Details for a game with the gaming template and the offer showing, its
+/// check landed with nothing missing.
+fn offering(paths: &Paths) -> Page {
+    let mut page = offer_page(paths);
+    let _ = page.update(Event::Template("gaming".to_owned()));
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    assert!(page.offer_shown());
+    land(&mut page, ready_review());
+    assert!(page.checked().is_ok());
+    page
+}
+
+#[test]
+fn create_waits_for_an_answer_to_the_offer_and_its_recheck() {
+    let size = iced::Size::new(900.0, 4000.0);
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offering(&paths);
+    let _ = page.update(Event::Offer(true));
+    assert!(page.answering);
+    // The review was made before the answer, so Create holds and says so,
+    // and the Summary shows it's out of date.
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    assert_eq!(labeled(&texts(&page, size), "Checking...").len(), 2);
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+    // Even a check landing meanwhile read the old setting.
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+
+    let before = page.check_sequence;
+    let _ = page.update(Event::Offered(
+        page.offer_sequence,
+        answer_offer(&paths, true),
+    ));
+    assert!(!page.answering);
+    assert_ne!(page.check_sequence, before, "the answer checks again");
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn a_failed_answer_to_the_offer_checks_again_and_lets_create_go() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offering(&paths);
+    let _ = page.update(Event::Offer(true));
+    let before = page.check_sequence;
+    let _ = page.update(Event::Offered(
+        page.offer_sequence,
+        Err("disk full".to_owned()),
+    ));
+    assert_eq!(page.error.as_deref(), Some("disk full"));
+    assert!(!page.answering);
+    // It may have been saved before the failure, so the Summary checks.
+    assert_ne!(page.check_sequence, before);
+    assert!(page.checking);
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn an_answer_to_the_offer_lands_while_the_discard_prompt_shows() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offering(&paths);
+    let _ = page.update(Event::Offer(true));
+    // The prompt opens on Details once Open existing asks (plan 0064 step 6).
+    page.leave_prompt = true;
+    let before = page.check_sequence;
+    let _ = page.update(Event::Offered(
+        page.offer_sequence,
+        answer_offer(&paths, true),
+    ));
+    assert!(!page.answering, "Create isn't left waiting for good");
+    assert!(page.options.as_ref().is_some_and(|options| !options.offer));
+    assert_ne!(page.check_sequence, before);
+    let _ = page.update(Event::KeepEditing);
+    land(&mut page, ready_review());
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Working);
+}
+
+#[test]
+fn a_retried_download_clears_the_last_failure() {
+    let size = iced::Size::new(900.0, 4000.0);
+    let mut page = summarized(missing_runner());
+    let _ = page.update(Event::Download(Provider::GeProton));
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Err("offline".to_owned()),
+    ));
+    assert_eq!(page.error.as_deref(), Some("offline"));
+    land(&mut page, missing_runner());
+    assert_eq!(labeled(&texts(&page, size), "offline").len(), 1);
+
+    let _ = page.update(Event::Download(Provider::GeProton));
+    assert_eq!(page.stage, Stage::Working);
+    assert!(page.error.is_none(), "the retry is under way");
+    let _ = page.update(Event::Downloaded(
+        page.generation,
+        Ok("GE-Proton11-4".to_owned()),
+    ));
+    land(&mut page, ready_review());
+    assert!(page.error.is_none());
+    assert!(labeled(&texts(&page, size), "offline").is_empty());
+    assert!(page.checked().is_ok());
+}
+
+#[test]
+fn create_holds_unless_the_check_was_of_the_draft_as_it_is() {
+    // A change that skipped `edited`, as a future edit path might.
+    let mut page = summarized(ready_review());
+    page.draft.title = "Changed behind its back".to_owned();
+    assert!(!page.checking);
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
+
+    // A check lands with the draft it checked, not the one the page has.
+    let mut page = summarized(ready_review());
+    let checked = Box::new(page.draft.clone());
+    let _ = page.update(Event::Name("Test game 2".to_owned()));
+    let _ = page.update(Event::Checked(
+        page.check_sequence,
+        checked,
+        Ok(Box::new(ready_review())),
+    ));
+    assert!(!page.checking);
+    assert_eq!(page.summary.as_ref().unwrap().draft.title, "Test game");
+    assert_eq!(page.checked().map(|_| ()), Err(Hold::Checking));
+    let _ = page.update(Event::Create);
+    assert_eq!(page.stage, Stage::Details);
 }
