@@ -1,6 +1,6 @@
-//! The toolbar's layout segment: a list side and a grid side under one
-//! thumb that slides to the chosen one, Ctrl+L to switch, and saving the
-//! choice to `library.toml`.
+//! The toolbar's layout segment: a grid, a list, and a coverflow side under
+//! one thumb that slides to the chosen one, Ctrl+L to cycle through them,
+//! and saving the choice to `library.toml`.
 
 use std::time::Instant;
 
@@ -14,17 +14,19 @@ use crate::sort_control::Field;
 use crate::{App, Message, SCROLL_ID, focus_button, ui, zoom_control};
 
 pub(crate) const ID: &str = "library-layout";
-pub(crate) const WIDTH: f32 = 64.0;
-const SIDE: f32 = WIDTH / 2.0;
+pub(crate) const WIDTH: f32 = 96.0;
+const SIDE: f32 = WIDTH / 3.0;
 
 const LIST: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M6.5 3.5h7.5M6.5 8h7.5M6.5 12.5h7.5" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"/><circle cx="2.75" cy="3.5" r="1.1" fill="#000"/><circle cx="2.75" cy="8" r="1.1" fill="#000"/><circle cx="2.75" cy="12.5" r="1.1" fill="#000"/></svg>"##;
+const COVERFLOW: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="5" y="2.5" width="6" height="11" rx="1.2" fill="none" stroke="#000" stroke-width="1.6"/><path d="M2.25 5v6M13.75 5v6" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"/></svg>"##;
 const GRID: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1.2" fill="none" stroke="#000" stroke-width="1.6"/><rect x="9" y="2" width="5" height="5" rx="1.2" fill="none" stroke="#000" stroke-width="1.6"/><rect x="2" y="9" width="5" height="5" rx="1.2" fill="none" stroke="#000" stroke-width="1.6"/><rect x="9" y="9" width="5" height="5" rx="1.2" fill="none" stroke="#000" stroke-width="1.6"/></svg>"##;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
     /// A click on one side.
     Set(ViewLayout),
-    /// Ctrl+L, or Enter, Space, Left, or Right on the focused segment.
+    /// Ctrl+L, or Enter, Space, Left, or Right on the focused segment: the
+    /// next layout, and the first again after the last.
     Toggle,
     /// A frame of the thumb's slide.
     Tick(u64, Instant),
@@ -42,12 +44,27 @@ pub(crate) fn label(layout: ViewLayout) -> &'static str {
     match layout {
         ViewLayout::List => "Show as list",
         ViewLayout::Grid => "Show as grid",
+        ViewLayout::Coverflow => "Show as coverflow",
     }
 }
 
-/// Where the thumb rests for `layout`: 0 on the list side, 1 on the grid's.
-fn rests_at_grid(layout: ViewLayout) -> bool {
-    layout == ViewLayout::Grid
+/// Where the thumb rests for `layout`, in sides from the left: the sides
+/// run grid, list, coverflow.
+pub(crate) fn stop(layout: ViewLayout) -> f32 {
+    match layout {
+        ViewLayout::Grid => 0.0,
+        ViewLayout::List => 1.0,
+        ViewLayout::Coverflow => 2.0,
+    }
+}
+
+/// The layout after `layout`, Ctrl+L's way round.
+pub(crate) fn next(layout: ViewLayout) -> ViewLayout {
+    match layout {
+        ViewLayout::Grid => ViewLayout::List,
+        ViewLayout::List => ViewLayout::Coverflow,
+        ViewLayout::Coverflow => ViewLayout::Grid,
+    }
 }
 
 pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
@@ -57,10 +74,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
     }
     match event {
         Event::Set(layout) => app.set_layout(layout),
-        Event::Toggle => app.set_layout(match app.layout {
-            ViewLayout::Grid => ViewLayout::List,
-            ViewLayout::List => ViewLayout::Grid,
-        }),
+        Event::Toggle => app.set_layout(next(app.layout)),
         Event::Tick(generation, now) => {
             app.layout_thumb.tick(generation, now);
             Task::none()
@@ -116,11 +130,9 @@ impl App {
         self.layout = layout;
         self.viewport_height = (self.viewport_height + header - self.header_room()).max(0.0);
         if self.motion.reduced() {
-            self.layout_thumb.snap(rests_at_grid(layout));
-        } else if rests_at_grid(layout) {
-            self.layout_thumb.open(Instant::now());
+            self.layout_thumb.snap_to(stop(layout));
         } else {
-            self.layout_thumb.close(Instant::now(), None);
+            self.layout_thumb.slide_to(stop(layout), Instant::now());
         }
         // Posters and rows don't morph into each other, so the new layout
         // shows at once, and the pointer's hover is found again.
@@ -198,7 +210,7 @@ pub(crate) fn segment<'a>(app: &'a App, id: &'static str) -> Element<'a, Message
             }),
     )
     .padding(Padding {
-        left: app.layout_thumb.progress().clamp(0.0, 1.0) * SIDE,
+        left: app.layout_thumb.progress().clamp(0.0, 2.0) * SIDE,
         ..Padding::ZERO
     })
     .width(WIDTH)
@@ -223,13 +235,17 @@ pub(crate) fn segment<'a>(app: &'a App, id: &'static str) -> Element<'a, Message
             });
         zoom_control::with_tooltip(side.into(), label(layout), palette)
     };
-    // One Tab stop and one ring for both sides, since the keys flip the
+    // One Tab stop and one ring for all the sides, since the keys cycle the
     // layout whichever side is chosen.
     focus_button::segment(
         stack![
             track,
             thumb,
-            row![side(ViewLayout::List, LIST), side(ViewLayout::Grid, GRID)],
+            row![
+                side(ViewLayout::Grid, GRID),
+                side(ViewLayout::List, LIST),
+                side(ViewLayout::Coverflow, COVERFLOW),
+            ],
         ]
         .width(WIDTH)
         .height(ui::BUTTON_HEIGHT)

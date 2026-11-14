@@ -98,7 +98,7 @@ impl App {
     pub(crate) fn more_menu_zoom(&self, event: &crate::zoom::Event) -> bool {
         use crate::zoom::Event as Zoom;
         self.more_menu_input()
-            && self.layout == ViewLayout::Grid
+            && matches!(self.layout, ViewLayout::Grid | ViewLayout::Coverflow)
             && matches!(
                 event,
                 Zoom::Step(_)
@@ -139,7 +139,8 @@ impl App {
             self.toolbar_folds
         };
         rows.iter().filter(|control| {
-            self.layout == ViewLayout::Grid || !matches!(control, Control::Zoom | Control::Titles)
+            matches!(self.layout, ViewLayout::Grid | ViewLayout::Coverflow)
+                || !matches!(control, Control::Zoom | Control::Titles)
         })
     }
 

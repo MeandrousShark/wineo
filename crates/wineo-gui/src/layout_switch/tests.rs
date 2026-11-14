@@ -604,3 +604,170 @@ fn a_focused_segment_keeps_the_arrows_from_the_librarys_selection() {
     ));
     assert!(app.selected.is_some());
 }
+
+#[test]
+fn the_switch_has_three_sides_in_order_and_each_sets_its_layout() {
+    let (_root, app) = library(4);
+    assert_eq!(WIDTH, 96.0);
+    let size = Size::new(200.0, 100.0);
+    for (side, expected) in [
+        (0, "Layout(Set(Grid))"),
+        (1, "Layout(Set(List))"),
+        (2, "Layout(Set(Coverflow))"),
+    ] {
+        assert_eq!(click_at(toolbar(&app), size, &[2, side]), [expected]);
+    }
+    assert_eq!(label(ViewLayout::Coverflow), "Show as coverflow");
+    let stops = tab_stops(toolbar(&app));
+    assert_eq!(stops.len(), 1, "still one stop");
+    assert_eq!(stops[0].1.size(), Size::new(WIDTH, ui::BUTTON_HEIGHT));
+}
+
+#[test]
+fn ctrl_l_cycles_grid_list_coverflow_and_back_saving_each() {
+    let (_root, mut app) = library(4);
+    for (expected, text) in [
+        (ViewLayout::List, "list"),
+        (ViewLayout::Coverflow, "coverflow"),
+        (ViewLayout::Grid, "grid"),
+        (ViewLayout::List, "list"),
+    ] {
+        ctrl_l(&mut app, false, false);
+        assert_eq!(app.layout, expected);
+        finish_write(&mut app);
+        assert_eq!(saved(&app), expected);
+        let file = std::fs::read_to_string(app.paths.library_file()).unwrap();
+        assert!(file.contains(&format!("layout = \"{text}\"")), "{file}");
+    }
+    // Search has no use for it, and a control that took it keeps it.
+    ctrl_l(&mut app, true, true);
+    assert_eq!(app.layout, ViewLayout::Coverflow);
+    ctrl_l(&mut app, false, true);
+    assert_eq!(app.layout, ViewLayout::Coverflow);
+}
+
+#[test]
+fn the_thumb_rests_at_three_stops_and_slides_between_them() {
+    assert_eq!(stop(ViewLayout::Grid), 0.0);
+    assert_eq!(stop(ViewLayout::List), 1.0);
+    assert_eq!(stop(ViewLayout::Coverflow), 2.0);
+
+    let (_root, mut app) = library(4);
+    assert_eq!(app.layout_thumb.progress(), 0.0);
+    let _ = set(&mut app, ViewLayout::Coverflow);
+    assert!(app.layout_thumb.active());
+    assert_eq!(
+        app.layout_thumb.progress(),
+        0.0,
+        "it sets out from the grid"
+    );
+    let generation = app.layout_thumb.generation();
+    let _ = app.update(Message::Layout(Event::Tick(
+        generation,
+        Instant::now() + Duration::from_millis(80),
+    )));
+    let midway = app.layout_thumb.progress();
+    assert!(midway > 0.0 && midway < 2.0, "{midway}");
+    settle_thumb(&mut app);
+    assert!(!app.layout_thumb.active());
+    assert_eq!(app.layout_thumb.progress(), 2.0);
+    // Back one stop, not through the one it passed.
+    let _ = set(&mut app, ViewLayout::List);
+    settle_thumb(&mut app);
+    assert_eq!(app.layout_thumb.progress(), 1.0);
+
+    app.motion.system_reduced = true;
+    let _ = set(&mut app, ViewLayout::Coverflow);
+    assert!(!app.layout_thumb.active());
+    assert_eq!(app.layout_thumb.progress(), 2.0);
+    let _ = set(&mut app, ViewLayout::Grid);
+    assert_eq!(app.layout_thumb.progress(), 0.0);
+}
+
+#[test]
+fn a_saved_coverflow_boots_with_the_thumb_on_the_third_side() {
+    let (_root, app) = boot_with(Some("schema_version = 1\n[view]\nlayout = \"coverflow\"\n"));
+    assert_eq!(app.layout, ViewLayout::Coverflow);
+    assert_eq!(app.layout_thumb.progress(), 2.0);
+    assert!(!app.layout_thumb.active());
+}
+
+#[test]
+fn coverflow_draws_as_the_grid_until_its_widget_lands() {
+    let (_root, mut app) = library(40);
+    app.viewport_width = 1000.0;
+    app.snap_grid();
+    let grid_places = app.grid_places();
+    let grid_columns = app.columns();
+    let grid_width = app.slot_width();
+    let _ = set(&mut app, ViewLayout::Coverflow);
+    assert_eq!(app.layout, ViewLayout::Coverflow);
+    let places = app.grid_places();
+    assert_eq!(places.ids, grid_places.ids);
+    assert_eq!(places.slots, grid_places.slots);
+    assert_eq!(app.columns(), grid_columns);
+    assert_eq!(app.slot_width(), grid_width);
+    assert_eq!(app.header_room(), 0.0);
+    // The posters' zoom stays available, since the posters show.
+    assert!(app.zoom_allowed());
+    let _ = app.update(Message::Zoom(ZoomEvent::Key(ZoomKey::In)));
+    assert_eq!(app.zoom, 110);
+    // The marks, sort, and selection hold through it like any switch.
+    let _ = app.update(Message::Select("game-010".into()));
+    let _ = set(&mut app, ViewLayout::List);
+    let _ = set(&mut app, ViewLayout::Coverflow);
+    assert_eq!(app.selected.as_deref(), Some("game-010"));
+}
+
+#[test]
+fn the_thumb_is_drawn_over_the_chosen_side() {
+    let (_root, mut app) = library(4);
+    app.motion.system_reduced = true;
+    let size = Size::new(200.0, 100.0);
+    for (layout, side) in [
+        (ViewLayout::List, 1.0),
+        (ViewLayout::Coverflow, 2.0),
+        (ViewLayout::Grid, 0.0),
+    ] {
+        let _ = set(&mut app, layout);
+        let node = crate::layout_probe::layout(&mut toolbar(&app), size);
+        let track = crate::layout_probe::bounds_at(&node, &[0]);
+        let thumb = crate::layout_probe::bounds_at(&node, &[1, 0]);
+        assert_eq!(thumb.width, WIDTH / 3.0, "{layout:?}");
+        assert_eq!(thumb.x - track.x, side * WIDTH / 3.0, "{layout:?}");
+    }
+}
+
+#[test]
+fn coverflow_keeps_the_zoom_controls_as_the_grid_does() {
+    let (_root, mut app) = library(4);
+    for layout in [ViewLayout::Grid, ViewLayout::Coverflow] {
+        let _ = set(&mut app, layout);
+        assert!(
+            focusable(&app, crate::zoom_control::SLIDER_ID),
+            "{layout:?}"
+        );
+        assert!(
+            focusable(&app, crate::zoom_control::POSTER_ONLY_ID),
+            "{layout:?}"
+        );
+    }
+    let _ = set(&mut app, ViewLayout::List);
+    assert!(!focusable(&app, crate::zoom_control::SLIDER_ID));
+    // The slots are the grid's width and gap, not the list's.
+    let layout = crate::grid_motion::GridLayout::new(100);
+    for mode in [ViewLayout::Grid, ViewLayout::Coverflow] {
+        assert_eq!(
+            crate::grid_motion::row_gap(mode),
+            crate::grid_motion::row_gap(ViewLayout::Grid)
+        );
+        assert_eq!(
+            crate::grid_motion::width_for_viewport(1000.0, false, layout, mode),
+            layout.card_width()
+        );
+    }
+    assert_ne!(
+        crate::grid_motion::row_gap(ViewLayout::Coverflow),
+        crate::grid_motion::row_gap(ViewLayout::List)
+    );
+}

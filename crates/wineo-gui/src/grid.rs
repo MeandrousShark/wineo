@@ -1420,7 +1420,10 @@ impl App {
                 .padding([0, 6])
         ];
         use crate::toolbar_squeeze::{Control, child};
-        let grid = self.layout == crate::grid_motion::ViewLayout::Grid;
+        let grid = matches!(
+            self.layout,
+            crate::grid_motion::ViewLayout::Grid | crate::grid_motion::ViewLayout::Coverflow
+        );
         // Every child stays in the tree, folded or absent, so the controls
         // before it keep their places, and their focus.
         let zoom_slot = |element: fn(&App) -> Element<'_, Message>| {

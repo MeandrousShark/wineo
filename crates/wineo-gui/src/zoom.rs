@@ -222,7 +222,12 @@ impl App {
     /// menu, popup, flow, or dialog.
     pub(crate) fn zoom_allowed(&self) -> bool {
         // A list has no posters to size; the zoom waits for the grid.
-        self.library_menu_may_open() && self.layout == crate::grid_motion::ViewLayout::Grid
+        // Coverflow draws as the grid until its own widget lands.
+        self.library_menu_may_open()
+            && matches!(
+                self.layout,
+                crate::grid_motion::ViewLayout::Grid | crate::grid_motion::ViewLayout::Coverflow
+            )
     }
 
     /// The card that keeps the place: the selected one when any of it is on

@@ -859,3 +859,23 @@ fn an_unfold_reply_after_folding_again_leaves_the_menu_open() {
     window.send(&mut app, vec![Message::More(Event::Unfolded(None))]);
     assert!(app.more_menu, "still folded, so More is there");
 }
+
+#[test]
+fn coverflow_keeps_the_menus_zoom_rows_as_the_grid_does() {
+    let (_root, mut grid) = library(200);
+    let mut window = Window::new(&mut grid);
+    open(&mut grid, &mut window);
+    let grid_ids = grid.more_ids();
+    assert!(grid_ids.contains(&ZOOM_ID), "{grid_ids:?}");
+
+    let (_root, mut app) = library(200);
+    let _ = app.set_layout(crate::grid_motion::ViewLayout::Coverflow);
+    let mut window = Window::new(&mut app);
+    open(&mut app, &mut window);
+    assert_eq!(app.more_ids(), grid_ids);
+    // And the zoom row still sends its zoom, which the list's wouldn't.
+    let slider = window.bounds(&app, ZOOM_ID).expect("the menu's slider");
+    let x = zoom_control::x_of(slider, 150.0);
+    window.click(&mut app, iced::Point::new(x, slider.center_y()));
+    assert_eq!(app.zoom, 150);
+}

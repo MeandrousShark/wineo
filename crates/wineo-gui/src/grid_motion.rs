@@ -988,7 +988,7 @@ pub(crate) fn width_for_viewport(
     mode: ViewLayout,
 ) -> f32 {
     match mode {
-        ViewLayout::Grid => layout.card_width,
+        ViewLayout::Grid | ViewLayout::Coverflow => layout.card_width,
         ViewLayout::List => (available(width, open) - 2.0 * PADDING).max(0.0),
     }
 }
@@ -996,7 +996,7 @@ pub(crate) fn width_for_viewport(
 /// The gap between rows of slots.
 pub(crate) fn row_gap(mode: ViewLayout) -> f32 {
     match mode {
-        ViewLayout::Grid => GAP,
+        ViewLayout::Grid | ViewLayout::Coverflow => GAP,
         ViewLayout::List => ROW_GAP,
     }
 }
