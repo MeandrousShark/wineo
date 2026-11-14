@@ -6,6 +6,7 @@ mod app_hide;
 mod app_keys;
 mod app_library;
 mod app_operation;
+mod app_pad;
 mod app_selection;
 mod app_tray;
 mod app_window;
@@ -62,6 +63,7 @@ mod more_menu;
 mod motion;
 mod multi_select;
 mod order;
+mod pad;
 mod panel;
 mod panel_motion;
 mod picker;
@@ -154,6 +156,27 @@ pub(crate) struct App {
     /// The saved `[desktop]`, replaced like `appearance` whenever the global
     /// Settings page reads `library.toml`.
     desktop: wineo_core::library::Desktop,
+    /// The saved `[input]`, replaced like `desktop`.
+    input: wineo_core::library::Input,
+    /// The controllers the reader reports, and what's held on them.
+    pads: pad::Pads,
+    /// The reader thread runs. It starts the first time the Controller
+    /// switch is on and stays for the process, since it can't be woken to
+    /// stop.
+    pad_reading: bool,
+    /// Whether pad presses count; see `app_pad::Gate`. Separate from
+    /// `focused`, which stays true on compositors that never say.
+    pad_gate: app_pad::Gate,
+    /// What `pad_now` reads instead of the clock, so tests set the time.
+    #[cfg(test)]
+    pad_clock: Option<Instant>,
+    /// The hint bar shows, in the labels of the last pad pressed.
+    pad_hint: Option<pad::Style>,
+    /// A held direction's next repeat.
+    pad_wake: wake::Wake,
+    /// A press's text field check is in flight, so a repeat waits for it
+    /// rather than queueing another.
+    pad_checking: bool,
     pub(crate) tray: tray::Tray,
     /// The session bus name this app owns for its root, which other
     /// launches call `Show` on. None in tests and without a bus.
@@ -648,6 +671,15 @@ pub(crate) enum Message {
     TrayPlayed(String, Option<jiff::Timestamp>),
     /// Another launch for this root asked for the window.
     Show,
+    /// What the controller reader saw.
+    Pad(pad::PadEvent),
+    /// A held direction's repeat is due, tagged with its wakeup.
+    PadRepeat(u64),
+    /// The key a pad press stands for, and whether a text field had focus
+    /// when it was pressed.
+    PadKey(keyboard::Key, keyboard::Modifiers, bool),
+    /// The pointer moved, which hides the controller hints.
+    PointerMoved,
 }
 
 impl App {
@@ -657,6 +689,15 @@ impl App {
             palette: Palette::DARK,
             appearance: Appearance::default(),
             desktop: wineo_core::library::Desktop::default(),
+            input: wineo_core::library::Input::default(),
+            pads: pad::Pads::default(),
+            pad_reading: false,
+            pad_gate: app_pad::Gate::default(),
+            #[cfg(test)]
+            pad_clock: None,
+            pad_hint: None,
+            pad_wake: wake::Wake::default(),
+            pad_checking: false,
             tray: tray::Tray::default(),
             instance: None,
             left: false,
@@ -836,6 +877,8 @@ impl App {
         // Midnight did before themes.
         app.appearance = saved.appearance;
         app.desktop = saved.desktop;
+        app.input = saved.input.clone();
+        app.sync_input();
         app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
         app.sync_motion();
@@ -1146,6 +1189,23 @@ impl App {
             zoom,
             collapse,
             layout_thumb,
+            if self.pad_reading {
+                pad::reader::subscription()
+            } else {
+                Subscription::none()
+            },
+            // Only the hints have a pointer move to hear.
+            if self.pad_hint.is_some() {
+                iced::event::listen_with(|event, _, _| {
+                    matches!(
+                        event,
+                        iced::Event::Mouse(iced::mouse::Event::CursorMoved { .. })
+                    )
+                    .then_some(Message::PointerMoved)
+                })
+            } else {
+                Subscription::none()
+            },
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
                 iced::event::listen_with(|event, _, _| focus_input(event))
@@ -1165,6 +1225,8 @@ impl App {
         let rescaled = self.sync_interface_size();
         self.sync_font();
         self.sync_desktop();
+        self.sync_input();
+        self.sync_tool_starts();
         let fullscreen = self.sync_coverflow_fullscreen();
         if self.tray.service && self.desktop.tray {
             self.sync_tray_menu();
@@ -1228,6 +1290,8 @@ impl App {
             self.toast_wake
                 .arm(self.next_toast_deadline(), Message::ToastTick),
             self.close_wake.arm(self.close_by, Message::CloseWaitOver),
+            self.pad_wake
+                .arm(self.pads.repeat_due(), Message::PadRepeat),
         ]);
         let rescaled = if rescaled {
             self.refresh_window_size()
@@ -1500,6 +1564,12 @@ impl App {
             // A closed window's last presses still arrive.
             Message::Pressed if self.main_window.is_none() => Task::none(),
             Message::Pressed | Message::Window(_, window::Event::Focused) => {
+                if matches!(message, Message::Pressed) {
+                    self.pad_gate.press(self.pad_now());
+                    self.pad_hint = None;
+                } else {
+                    self.pad_gate.focus();
+                }
                 if self.focused {
                     Task::none()
                 } else {
@@ -1630,6 +1700,7 @@ impl App {
             }
             Message::Window(_, window::Event::Unfocused) => {
                 self.focused = false;
+                self.close_pad_gate();
                 // Keys released elsewhere never report here, so Ctrl
                 // can't be trusted to still be down.
                 self.modifiers = keyboard::Modifiers::empty();
@@ -1724,6 +1795,15 @@ impl App {
                 self.flow_key(key, modifiers, status)?
             }
             Message::Key(key, modifiers, status) => self.page_key(key, modifiers, status)?,
+            Message::Pad(event) => self.pad_event(event),
+            Message::PadRepeat(generation) => self.pad_repeat(generation),
+            Message::PadKey(key, modifiers, text_focused) => {
+                self.pad_key(key, modifiers, text_focused)
+            }
+            Message::PointerMoved => {
+                self.pad_hint = None;
+                Task::none()
+            }
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
                 key,
                 modifiers,

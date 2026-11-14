@@ -19,7 +19,7 @@ The primary session reads `docs/workflow.md` at the start of each session.
 
 ## Build and verification
 
-- Build on Linux with stable Rust supporting edition 2024 and `pkg-config`.
+- Build on Linux with stable Rust supporting edition 2024, `pkg-config`, and the udev headers (`libudev-dev`, `systemd-devel`, or Arch's `systemd-libs`), which gilrs links for controllers.
 - Build: `cargo build --release -p wineo-cli`. For a quicker optimized local build, use `--profile release-fast` (output in `target/release-fast`). Run locally: `cargo run -p wineo-cli -- <args>`.
 - Checks: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo clippy --release --workspace -- -D warnings`, `cargo test`. Both crates inherit `unsafe_code = "forbid"`.
 - Focused tests: `cargo test -p wineo-core <filter>` or `cargo test -p wineo-cli --test lifecycle <test_name> -- --exact`.

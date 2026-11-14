@@ -270,6 +270,7 @@ impl App {
             return drag;
         };
         self.focused = false;
+        self.close_pad_gate();
         self.modifiers = keyboard::Modifiers::empty();
         self.zooming.modifiers_changed(self.modifiers);
         self.hovered = None;

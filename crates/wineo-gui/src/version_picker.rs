@@ -121,6 +121,10 @@ fn reveal(generation: u64) -> Message {
 }
 
 impl Picker {
+    #[cfg(test)]
+    pub(crate) fn for_test(name: String) -> Self {
+        Self::new(name)
+    }
     fn new(name: String) -> Self {
         Self {
             name,

@@ -43,6 +43,7 @@ gentoo_atom() {
         libwayland-client0 | libwayland-egl1) echo dev-libs/wayland ;;
         libegl1) echo media-libs/libglvnd ;;
         libvulkan1) echo 'media-libs/vulkan-loader[X,wayland]' ;;
+        libudev1) echo virtual/libudev ;;
         ca-certificates) echo app-misc/ca-certificates ;;
         *) return 1 ;;
     esac
@@ -111,6 +112,16 @@ for ebuild in "$package_dir/wineo-9999.ebuild" "$tmp/release/wineo-$version.ebui
             pass
         else
             fail "$name does not depend on $atom"
+        fi
+    done
+
+    # gilrs links libudev, so its headers are needed to build.
+    depend=$(variable "$ebuild" DEPEND)
+    for atom in app-arch/xz-utils virtual/libudev; do
+        if has "$depend" "$atom"; then
+            pass
+        else
+            fail "$name does not build-depend on $atom"
         fi
     done
 

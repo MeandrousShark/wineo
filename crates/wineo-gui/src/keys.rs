@@ -118,13 +118,7 @@ impl App {
         search_focused: bool,
         captured: bool,
     ) -> Task<Message> {
-        if self.close_prompt
-            || self.flow.is_some()
-            || self.removal.is_some()
-            || self.trash_confirm_open()
-            || self.downloads_confirm_open()
-            || self.hook_stop_confirm.is_some()
-        {
+        if self.dialog_open() {
             return Task::none();
         }
         if self.settings.is_some() {
@@ -347,9 +341,7 @@ impl App {
             // else has the keys.
             Action::ToggleFavorite => {
                 if captured
-                    || self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
+                    || self.panel_takes_keys()
                     || !self.selected_shown()
                     || self.panel_hidden_by_card()
                 {
@@ -363,11 +355,7 @@ impl App {
             // Same scope as favoriting: nothing else has the keys. A card
             // doesn't need to be selected.
             Action::PickRandom => {
-                if captured
-                    || self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
-                {
+                if captured || self.panel_takes_keys() {
                     return Task::none();
                 }
                 self.update(Message::Random(crate::random_pick::Event::Pick))
@@ -413,11 +401,7 @@ impl App {
                 {
                     return self.open_collapsed(key);
                 }
-                if self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
-                    || !self.selected_shown()
-                {
+                if self.panel_takes_keys() || !self.selected_shown() {
                     Task::none()
                 } else if self.panel_open {
                     self.start_selected()

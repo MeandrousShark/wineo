@@ -25,17 +25,22 @@ LICENSE+=" 0BSD OFL-1.1"
 SLOT="0"
 
 # wineo-gui loads X11, xkbcommon, wayland, EGL, and Vulkan with dlopen, so no
-# tool can find them. libX11 includes libX11-xcb, dev-libs/wayland includes
+# tool can find them; it links libudev, for controllers, through gilrs.
+# libX11 includes libX11-xcb, dev-libs/wayland includes
 # libwayland-egl, and libxkbcommon[X] is libxkbcommon-x11. vulkan-loader's USE
 # flags turn on its X11 and Wayland surfaces, without which it can't draw.
 # ca-certificates is the system certificate store that HTTPS requests read.
-DEPEND="app-arch/xz-utils"
+DEPEND="
+	app-arch/xz-utils
+	virtual/libudev
+"
 RDEPEND="
 	app-arch/xz-utils
 	app-misc/ca-certificates
 	dev-libs/wayland
 	media-libs/libglvnd
 	media-libs/vulkan-loader[X,wayland]
+	virtual/libudev
 	x11-libs/libX11
 	x11-libs/libXcursor
 	x11-libs/libXi
