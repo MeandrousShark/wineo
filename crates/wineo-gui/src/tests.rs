@@ -114,10 +114,30 @@ pub(crate) fn settle_grid(app: &mut App) -> Task<Message> {
     ))
 }
 
+thread_local! {
+    /// The home `app()` boots from. One per test thread, removed when the
+    /// thread ends: a shared directory kept what one test wrote (a layout
+    /// saved by Ctrl+L) for every test that booted after it.
+    static HOME: tempfile::TempDir = tempfile::tempdir().unwrap();
+}
+
 pub(crate) fn app() -> App {
-    let paths =
-        Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into())).unwrap();
+    let home = HOME.with(|home| home.path().to_owned());
+    let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+        .unwrap();
     App::boot(paths).0
+}
+
+#[test]
+fn each_test_thread_boots_from_its_own_home() {
+    let here = app().paths.library_file();
+    let there = std::thread::spawn(|| app().paths.library_file())
+        .join()
+        .unwrap();
+    assert_ne!(
+        here, there,
+        "a shared home leaks one test's saves to the next"
+    );
 }
 
 fn tool_app() -> App {
