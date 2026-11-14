@@ -76,6 +76,8 @@ pub(crate) enum Event {
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
     GlobalAutoImport(bool),
+    /// Coverflow's Open coverflow in full screen.
+    GlobalCoverflowFullscreen(bool),
     /// Desktop's Show a tray icon.
     GlobalTray(bool),
     /// Desktop's Closing the window.
@@ -271,6 +273,7 @@ impl Event {
                 | Event::GlobalArtKind(_, _)
                 | Event::GlobalExternalRunners(_)
                 | Event::GlobalAutoImport(_)
+                | Event::GlobalCoverflowFullscreen(_)
                 | Event::GlobalTray(_)
                 | Event::GlobalClose(_)
                 | Event::GlobalOnStart(_)
@@ -633,6 +636,13 @@ impl Page {
     pub(crate) fn appearance(&self) -> Option<&appearance::Form> {
         match &self.view {
             View::Global(editor) => Some(&editor.appearance),
+            _ => None,
+        }
+    }
+    /// `[view] coverflow_fullscreen` as the global page last read it.
+    pub(crate) fn coverflow_fullscreen(&self) -> Option<bool> {
+        match &self.view {
+            View::Global(editor) => Some(editor.form.loaded.coverflow_fullscreen),
             _ => None,
         }
     }

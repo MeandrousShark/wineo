@@ -285,6 +285,7 @@ impl Form {
         edits.pairs.len()
             + edits.unset.len()
             + usize::from(self.auto_import_edit().is_some())
+            + usize::from(self.coverflow_fullscreen_edit().is_some())
             + usize::from(self.draft.desktop.tray != self.loaded.desktop.tray)
             + usize::from(self.draft.desktop.close != self.loaded.desktop.close)
             + usize::from(self.draft.desktop.on_start != self.loaded.desktop.on_start)
@@ -295,7 +296,13 @@ impl Form {
         super::load::LibraryEdits {
             auto_import: self.auto_import_edit(),
             desktop: (self.draft.desktop != self.loaded.desktop).then_some(self.draft.desktop),
+            coverflow_fullscreen: self.coverflow_fullscreen_edit(),
         }
+    }
+    /// What to save for `coverflow_fullscreen`, if it changed.
+    pub(crate) fn coverflow_fullscreen_edit(&self) -> Option<bool> {
+        (self.draft.coverflow_fullscreen != self.loaded.coverflow_fullscreen)
+            .then_some(self.draft.coverflow_fullscreen)
     }
     /// What to save for `auto_import`, if it changed.
     pub(crate) fn auto_import_edit(&self) -> Option<bool> {
