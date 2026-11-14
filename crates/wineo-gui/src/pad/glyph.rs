@@ -103,7 +103,11 @@ pub(crate) fn hints(
         .collect()
 }
 
-fn glyph_view<'a, M: 'a>(style: Style, button: PadButton, palette: Palette) -> Element<'a, M> {
+pub(crate) fn glyph_view<'a, M: 'a>(
+    style: Style,
+    button: PadButton,
+    palette: Palette,
+) -> Element<'a, M> {
     match glyph(style, button) {
         Glyph::Face(mark) => crate::library_menu::icon(mark, palette.foreground, GLYPH).into(),
         Glyph::Label(label) => container(

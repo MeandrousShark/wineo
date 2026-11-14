@@ -273,6 +273,16 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::ResetButtons => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.reset_buttons();
+                }
+                Step::none()
+            }
+            // The app starts a capture, since it holds the clock; a click on
+            // the page has already ended one in `update`.
+            Event::CaptureButton(_) | Event::PageClicked => Step::none(),
             Event::GlobalController(on) => {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {
@@ -464,6 +474,7 @@ impl Page {
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
                     | Event::GlobalController(_)
+                    | Event::ResetButtons
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -492,6 +503,8 @@ impl Page {
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
                     | Event::GlobalController(_)
+                    | Event::ResetButtons
+                    | Event::CaptureButton(_)
                     | Event::Appearance(_)
             )
         {

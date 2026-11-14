@@ -175,9 +175,16 @@ impl App {
             event,
             pad::PadEvent::Connected(..) | pad::PadEvent::Disconnected(_)
         );
+        let disconnect = matches!(event, pad::PadEvent::Disconnected(_));
         let input = self.pads.event(event, self.pad_now());
-        if connection && let Some(page) = &mut self.settings {
-            page.pads = self.pads.names();
+        if let Some(page) = &mut self.settings {
+            if connection {
+                page.pads = self.pads.names();
+            }
+            if disconnect {
+                page.capture = None;
+            }
+            page.pad_style = self.pads.recent_style();
         }
         if !self.input.controller {
             self.pads.release_all();
@@ -204,6 +211,14 @@ impl App {
     fn pad_input(&mut self, input: Input) -> Task<Message> {
         if !self.pad_gate_open() {
             self.pads.release_all();
+            return Task::none();
+        }
+        // A remap row waiting takes the next button before anything else,
+        // whichever action it's bound to now.
+        if let Input::Button(button, _) = input
+            && let Some(page) = self.settings.as_mut()
+            && page.take_capture(button)
+        {
             return Task::none();
         }
         let (Input::Button(_, style) | Input::Move(_, style)) = input;
@@ -240,6 +255,36 @@ impl App {
             return Task::none();
         }
         self.update(Message::Key(key, modifiers, iced::event::Status::Ignored))
+    }
+
+    /// A remap row's click or Enter: waits for the next pad button, for at
+    /// most `CAPTURE_FOR` on the pad clock.
+    pub(crate) fn toggle_capture(&mut self, action: PadAction) -> Task<Message> {
+        let until = self.pad_now() + crate::settings::CAPTURE_FOR;
+        if let Some(page) = &mut self.settings {
+            page.toggle_capture(action, until);
+        }
+        Task::none()
+    }
+
+    /// The capture's wakeup: it gives up once its time is up.
+    pub(crate) fn capture_timeout(&mut self, generation: u64) -> Task<Message> {
+        let now = self.pad_now();
+        if self.capture_wake.fired(generation)
+            && let Some(page) = &mut self.settings
+            && page.capture.is_some_and(|capture| now >= capture.until)
+        {
+            page.capture = None;
+        }
+        Task::none()
+    }
+
+    /// When the waiting remap row gives up.
+    pub(crate) fn capture_until(&self) -> Option<Instant> {
+        self.settings
+            .as_ref()
+            .and_then(|page| page.capture)
+            .map(|capture| capture.until)
     }
 
     /// The hint bar's room under the grid's last row while it shows.

@@ -178,6 +178,8 @@ pub(crate) struct Pads {
     /// The one direction that repeats. A new press of any direction takes
     /// over, so the D-pad and stick share one clock.
     held: Option<Held>,
+    /// The labels of the pad pressed last.
+    last_style: Option<Style>,
 }
 
 impl Pads {
@@ -199,6 +201,18 @@ impl Pads {
             return true;
         };
         !info.steam_virtual() || self.connected.values().all(PadInfo::steam_virtual)
+    }
+
+    /// Whose labels to show away from a press: the pad pressed last, else
+    /// the first one read.
+    pub(crate) fn recent_style(&self) -> Style {
+        self.last_style.unwrap_or_else(|| {
+            self.connected
+                .iter()
+                .find(|(id, _)| self.read(**id))
+                .map(|(_, info)| info.style())
+                .unwrap_or_default()
+        })
     }
 
     fn style(&self, id: PadId) -> Style {
@@ -230,6 +244,7 @@ impl Pads {
             _ if !self.read(event.pad()) => None,
             PadEvent::Pressed(id, raw) => {
                 let style = self.style(id);
+                self.last_style = Some(style);
                 match raw.direction() {
                     Some(direction) => Some(self.hold(direction, Source::DPad(id), style, now)),
                     None => label(style, raw).map(|button| Input::Button(button, style)),

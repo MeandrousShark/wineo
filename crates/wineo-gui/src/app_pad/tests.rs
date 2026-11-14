@@ -933,3 +933,40 @@ fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
     assert_eq!(glyph(Style::Nintendo, PadButton::Lt), Glyph::Label("ZL"));
     assert_eq!(glyph(Style::PlayStation, PadButton::Rb), Glyph::Label("R1"));
 }
+
+#[test]
+fn a_remap_changes_what_a_press_does_and_what_the_hints_say() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = ready();
+    // Confirm on X: X opens the card, and A, now Mark's, marks it.
+    app.input.buttons.insert(PadAction::Confirm, PadButton::X);
+    app.input.buttons.insert(PadAction::Mark, PadButton::A);
+    tap(&mut app, Raw::South);
+    assert!(app.marked.contains("alpha"));
+    assert!(!app.panel_open);
+    tap(&mut app, Raw::West);
+    assert!(app.panel_open);
+    let hints = crate::pad::glyph::hints(&app.input.bindings(), true, false);
+    assert_eq!(hints[0], (PadButton::X, "Play"));
+    assert!(hints.contains(&(PadButton::A, "Mark")));
+}
+
+#[test]
+fn a_remap_names_the_printed_button_on_a_nintendo_pad_too() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = ready();
+    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    // Confirm on `b` and Back on `a`: the button printed B, which sits at
+    // the bottom of a Nintendo pad, now confirms.
+    app.input.buttons.insert(PadAction::Confirm, PadButton::B);
+    app.input.buttons.insert(PadAction::Back, PadButton::A);
+    tap_on(&mut app, 1, Raw::East);
+    assert!(!app.panel_open);
+    tap_on(&mut app, 1, Raw::South);
+    assert!(app.panel_open);
+    // And on an Xbox pad, B is to the right.
+    tap(&mut app, Raw::South);
+    assert!(!app.panel_open);
+    tap(&mut app, Raw::East);
+    assert!(app.panel_open);
+}

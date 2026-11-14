@@ -29,6 +29,16 @@ pub(crate) use load::desktop_line;
 use load::{ProgramChoice, Report, RunnerChoice, Scan, Snapshot, Texts};
 use tabs::Tab;
 
+/// A remap row waiting for a pad button, until the time it gives up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Capture {
+    pub(crate) action: wineo_core::library::PadAction,
+    pub(crate) until: std::time::Instant,
+}
+
+/// How long a capture waits for a press.
+pub(crate) const CAPTURE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
     Back,
@@ -88,6 +98,13 @@ pub(crate) enum Event {
     GlobalOnStop(wineo_core::library::OnStop),
     /// Controller's switch.
     GlobalController(bool),
+    /// A remap row: waits for the next pad button for that action, or
+    /// stops waiting when it already is.
+    CaptureButton(wineo_core::library::PadAction),
+    /// Every controller action back on its default button.
+    ResetButtons,
+    /// A click on the page itself, not on a control, which ends a capture.
+    PageClicked,
     /// An edit on the Appearance tab, which the app previews at once.
     Appearance(appearance::Edit),
     /// Opens a folder picker for the Games folder.
@@ -181,6 +198,31 @@ pub(crate) enum TargetEdit {
 }
 
 impl Event {
+    /// Results and background answers, which leave a capture waiting.
+    /// Everything the user does ends it.
+    pub(crate) fn keeps_capture(&self) -> bool {
+        matches!(
+            self,
+            Event::Scrolled(..)
+                | Event::PickedGamesRoot(..)
+                | Event::SteamGridDbKeyStatusLoaded(..)
+                | Event::SteamGridDbKeySaved(..)
+                | Event::SteamGridDbKeyRemoved(..)
+                | Event::SteamKeyStatusLoaded(..)
+                | Event::SteamKeySaved(..)
+                | Event::SteamKeyRemoved(..)
+                | Event::SteamKeyLocated(..)
+                | Event::Gog(_)
+                | Event::Scanned(..)
+                | Event::PickedPath(..)
+                | Event::Resolved(..)
+                | Event::Opened(_)
+                | Event::Loaded(..)
+                | Event::Checked(..)
+                | Event::CheckFailed(..)
+                | Event::Saved(..)
+        )
+    }
     fn steamgriddb_token(&self) -> Option<(u64, u64)> {
         match self {
             Event::SteamGridDbKeyStatusLoaded(generation, sequence, _)
@@ -281,6 +323,7 @@ impl Event {
                 | Event::GlobalOnStart(_)
                 | Event::GlobalOnStop(_)
                 | Event::GlobalController(_)
+                | Event::ResetButtons
                 | Event::Appearance(_)
                 | Event::Target(..)
                 | Event::ProgramPicked(_)
@@ -427,6 +470,11 @@ pub(crate) struct Page {
     pub(crate) reveal_steam_key: bool,
     /// The controllers connected, by name, which the app keeps current.
     pub(crate) pads: Vec<String>,
+    /// Whose labels the remap rows show: the last pad pressed, else the
+    /// first connected.
+    pub(crate) pad_style: crate::pad::Style,
+    /// The remap row waiting for a pad button.
+    pub(crate) capture: Option<Capture>,
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
     pub(crate) open_add_after_load: bool,
@@ -532,6 +580,8 @@ impl Page {
             gog: gog::Settings::default(),
             reveal_steam_key: false,
             pads: Vec::new(),
+            pad_style: crate::pad::Style::default(),
+            capture: None,
             resolving: None,
             open_add_after_load: false,
         }
@@ -658,6 +708,38 @@ impl Page {
             View::Global(editor) => Some(editor.form.loaded.desktop),
             _ => None,
         }
+    }
+    /// The action whose row waits for a pad button.
+    pub(crate) fn capturing(&self) -> Option<wineo_core::library::PadAction> {
+        self.capture.map(|capture| capture.action)
+    }
+    /// Starts waiting on `action`'s row until `until`, or stops when that
+    /// row already waits. Only the global page's General tab has the rows.
+    pub(crate) fn toggle_capture(
+        &mut self,
+        action: wineo_core::library::PadAction,
+        until: std::time::Instant,
+    ) {
+        if self.capturing() == Some(action)
+            || self.locked()
+            || !matches!(self.view, View::Global(_))
+            || self.tab != Tab::General
+        {
+            self.capture = None;
+        } else {
+            self.capture = Some(Capture { action, until });
+        }
+    }
+    /// Puts the pad's `button` on the waiting row's action, if one waits.
+    pub(crate) fn take_capture(&mut self, button: wineo_core::library::PadButton) -> bool {
+        let Some(capture) = self.capture.take() else {
+            return false;
+        };
+        if let View::Global(editor) = &mut self.view {
+            editor.form.assign(capture.action, button);
+            self.edited();
+        }
+        true
     }
     pub(crate) fn input(&self) -> Option<wineo_core::library::Input> {
         match &self.view {
@@ -796,6 +878,11 @@ impl Page {
         )
     }
     fn update(&mut self, paths: &Paths, event: Event) -> Step {
+        // Anything the user does on the page ends a capture: a click
+        // elsewhere, a tab, Save, Revert, or Reload.
+        if !event.keeps_capture() {
+            self.capture = None;
+        }
         let step = self.handle(paths, event);
         if !self.is_dirty() {
             self.leave_prompt = false;
@@ -892,6 +979,9 @@ impl App {
         task
     }
     pub(crate) fn settings_update(&mut self, event: Event) -> Task<Message> {
+        if let Event::CaptureButton(action) = event {
+            return self.toggle_capture(action);
+        }
         self.update_settings_work_refusal();
         if matches!(event, Event::SteamKeySet | Event::SteamKeyRemove)
             && self.steam_key_work.pending.is_some()
@@ -1099,6 +1189,12 @@ impl App {
         let font_open = page
             .appearance()
             .is_some_and(|form| form.font_picker.is_some());
+        if page.capture.is_some() && *key == Key::Named(Named::Escape) {
+            if let Some(page) = &mut self.settings {
+                page.capture = None;
+            }
+            return Task::none();
+        }
         match key.as_ref() {
             Key::Character(character)
                 if modifiers.control() && character.eq_ignore_ascii_case("s") =>
