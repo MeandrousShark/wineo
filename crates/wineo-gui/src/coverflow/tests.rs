@@ -2197,3 +2197,28 @@ fn the_marks_bar_lifts_the_strip_in_a_short_window() {
     let seen = pixel_at(&drawn(&app), below_lifted);
     assert!(seen[0] < 100, "lifted off it: {seen:?}");
 }
+
+#[test]
+fn a_log_left_open_on_the_cards_game_is_hidden_with_the_panel() {
+    let (_root, mut app) = sectioned();
+    select(&mut app, "b-0");
+    app.log_view = true;
+    assert!(app.panel_log_visible());
+    collapse(&mut app, "b");
+    assert_eq!(middle(&app), "[b]");
+    assert_eq!(selected(&app), "b-0", "the same game, so the log stayed");
+    assert!(app.log_view);
+    assert!(!app.panel_log_visible());
+    assert!(!app.library_overlay_open(), "the pad isn't held up by it");
+    // Nor by the panel's other views, left open on that game.
+    app.version = Some(crate::version_picker::Picker::for_test("b-0".into()));
+    app.show_checkup_results("b-0");
+    assert!(!app.version_visible());
+    assert!(!app.checkup_visible());
+    assert!(!app.library_overlay_open());
+    app.version = None;
+    // Esc falls through it, as it does past the hidden panel.
+    let _ = app.update(Message::SearchChanged("-".into()));
+    press(&mut app, Named::Escape);
+    assert!(app.search.is_empty());
+}

@@ -325,6 +325,7 @@ impl App {
 
     pub(crate) fn version_visible(&self) -> bool {
         self.panel_open
+            && !self.panel_hidden_by_card()
             && self
                 .version
                 .as_ref()
