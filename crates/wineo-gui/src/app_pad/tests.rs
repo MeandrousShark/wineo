@@ -1063,3 +1063,32 @@ fn a_remap_moves_the_coverflow_strip_and_opens_cards() {
     tap(&mut app, Raw::West);
     assert!(app.panel_open);
 }
+
+#[test]
+fn a_remapped_page_button_moves_the_strip_a_screenful() {
+    use wineo_core::library::{PadAction, PadButton};
+    // What PageDown does from the first cover.
+    let (_home, mut keyboard) = coverflow_ready();
+    let _ = keyboard.update(Message::KeyWithFocus(
+        Key::Named(Named::PageDown),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    let screenful = keyboard.strip.target();
+    assert!(screenful > 1, "a screenful is more than one cover");
+
+    // Next screenful on A, with confirm taking A's place on RB.
+    let (_home, mut app) = coverflow_ready();
+    app.input.buttons.insert(PadAction::PageRight, PadButton::A);
+    app.input.buttons.insert(PadAction::Confirm, PadButton::Rb);
+    tap(&mut app, Raw::South);
+    assert_eq!(app.strip.target(), screenful);
+    assert_eq!(app.selected, keyboard.selected);
+    assert!(!app.panel_open);
+    // RB, the old page button, now opens the game in the middle.
+    assert!(app.header_cursor().is_none(), "a game is in the middle");
+    tap(&mut app, Raw::RightBumper);
+    assert!(app.panel_open);
+    assert_eq!(app.strip.target(), screenful);
+}
