@@ -108,6 +108,48 @@ pub(crate) fn fetch_kind_for(
     )
 }
 
+/// Records `game` as the environment's SteamGridDB game, then fills each of
+/// `kinds` without art from it. `cancel` is checked before the record and
+/// before each kind, and both writes recheck it and `expected_identity` under
+/// the art lock, so nothing is written once it's canceled. A kind's failure
+/// is returned beside it so later kinds are still tried.
+#[allow(clippy::too_many_arguments)]
+pub fn fetch_game(
+    paths: &Paths,
+    env: &str,
+    api: &Api,
+    game: u64,
+    kinds: &[Kind],
+    language: &str,
+    expected_identity: Option<EnvironmentIdentity>,
+    cancel: &Token,
+) -> Result<Vec<(Kind, Result<Fetched>)>> {
+    if cancel.is_canceled() {
+        return Err(Error::Canceled("SteamGridDB game").into());
+    }
+    art::save_game_for(paths, env, game, expected_identity, Some(cancel))?;
+    let mut fetched = Vec::new();
+    for &kind in kinds {
+        if cancel.is_canceled() {
+            return Err(Error::Canceled("download").into());
+        }
+        let result = fetch_kind_for(
+            paths,
+            env,
+            None,
+            kind,
+            api,
+            game,
+            language,
+            Mode::Fill,
+            expected_identity,
+            cancel,
+        );
+        fetched.push((kind, result));
+    }
+    Ok(fetched)
+}
+
 /// Fetches SteamGridDB art for missing kinds, using Steam's app ID to find the
 /// corresponding SteamGridDB game. A per-kind failure is returned alongside
 /// that kind so later kinds can still be tried.
