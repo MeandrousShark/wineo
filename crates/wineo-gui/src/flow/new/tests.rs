@@ -1482,17 +1482,37 @@ fn choose_artwork_leaves_for_the_art_page_without_launching() {
 
 #[test]
 fn finished_buttons_wrap_in_small_dialogs() {
-    use crate::layout_probe::probe;
+    use crate::layout_probe::{bounds_at, probe};
     let (mut page, _) = registered(false);
     page.report.as_mut().unwrap().playable = true;
     page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
     let _ = page.finish();
+    // The body's children: the title, the library line, the artwork error,
+    // Retry, Skip, the launch checkbox, then Open settings, Choose
+    // artwork..., and Back to library in a row.
+    let body = [0, 0, 0, 0];
+    let path = |child: &[usize]| [&body[..], child].concat();
     for (width, height) in [(280.0, 240.0), (400.0, 300.0)] {
         let mut view = page.view_with_key_availability(Palette::DARK, true);
         let probe = probe(&mut view, iced::Size::new(width, height));
         let frame = iced::Rectangle::with_size(iced::Size::new(width, height));
         let spilled = probe.outside(frame);
         assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        // Squeezed onto one line, the labels would wrap inside taller buttons.
+        let one_line = bounds_at(&probe.node, &path(&[3])).height;
+        let buttons: Vec<_> = (0..3)
+            .map(|button| bounds_at(&probe.node, &path(&[6, button])))
+            .collect();
+        for bounds in &buttons {
+            assert!(
+                (bounds.height - one_line).abs() < 0.01,
+                "{width}x{height}: {buttons:?}"
+            );
+        }
+        assert!(
+            buttons[2].y > buttons[0].y,
+            "{width}x{height}: the row wraps, {buttons:?}"
+        );
     }
 }
 
