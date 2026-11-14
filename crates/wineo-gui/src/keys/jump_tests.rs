@@ -1,4 +1,4 @@
-//! Home, End, PageUp, PageDown, and F11: the keys a controller's shoulder
+//! Home, End, PageUp, PageDown: the keys a controller's shoulder
 //! and trigger buttons share, which work in every layout.
 
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -97,17 +97,12 @@ fn the_keys_map_to_their_actions_and_wait_for_the_grid() {
         named(Named::PageDown, none, false),
         Action::Page(Direction::Down)
     );
-    assert_eq!(named(Named::F11, none, false), Action::ToggleFullscreen);
+    // F11 is a global key taken in `update`, not an action (see `fullscreen`).
+    assert_eq!(named(Named::F11, none, false), Action::None);
     // Shift is allowed, so Caps Lock and a held Shift don't matter.
     assert_eq!(named(Named::Home, Modifiers::SHIFT, false), Action::First);
     // A focused search field keeps them for its own cursor.
-    for key in [
-        Named::Home,
-        Named::End,
-        Named::PageUp,
-        Named::PageDown,
-        Named::F11,
-    ] {
+    for key in [Named::Home, Named::End, Named::PageUp, Named::PageDown] {
         assert_eq!(named(key, none, true), Action::None, "{key:?}");
     }
     // Ctrl, Alt, and the logo key make other shortcuts.
@@ -294,17 +289,6 @@ fn the_keys_leave_the_panel_open_and_a_hidden_selection_alone() {
         press(&mut app, key);
         assert_eq!(selected(&app), "game-039", "{key:?}");
     }
-}
-
-#[test]
-fn f11_is_taken_and_does_nothing_yet() {
-    let (_root, mut app) = app_with(10, ViewLayout::Grid);
-    select(&mut app, "game-003");
-    let layout = app.layout;
-    press(&mut app, Named::F11);
-    assert_eq!(selected(&app), "game-003");
-    assert_eq!(app.layout, layout);
-    assert!(app.panel_open);
 }
 
 #[test]
