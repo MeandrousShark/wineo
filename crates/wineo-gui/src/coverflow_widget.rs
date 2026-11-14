@@ -31,9 +31,6 @@ const TITLE_SIZE: f32 = 16.0;
 const STATUS_SIZE: f32 = 13.0;
 const LABEL_SIZE: f32 = 13.0;
 const DOT: f32 = 8.0;
-const MARK_SIZE: f32 = 24.0;
-const MARK_ICON: f32 = 14.0;
-const MARK_PADDING: f32 = 8.0;
 
 /// What one stop draws.
 #[derive(Debug, Clone)]
@@ -46,6 +43,7 @@ pub(crate) struct Face {
     /// Hidden or not installed, which the grid fades too.
     pub(crate) faded: bool,
     pub(crate) marked: bool,
+    pub(crate) favorite: bool,
     /// A collapsed section's name and game count.
     pub(crate) section: Option<(String, usize)>,
 }
@@ -261,31 +259,60 @@ impl Strip {
         }
     }
 
-    /// The mark's check in the cover's corner, over its art.
-    fn draw_mark(&self, renderer: &mut Renderer, bounds: Rectangle) {
-        let fill = self.palette.primary;
-        let chip = Rectangle::new(
-            bounds.position() + Vector::new(MARK_PADDING, MARK_PADDING),
-            Size::new(MARK_SIZE, MARK_SIZE),
-        );
-        quad(
-            renderer,
-            chip,
-            fill,
-            Border::default().rounded(MARK_SIZE / 2.0),
-        );
-        let inset = (MARK_SIZE - MARK_ICON) / 2.0;
-        renderer.draw_svg(
-            iced::advanced::svg::Svg::new(iced::advanced::svg::Handle::from_memory(
+    /// Whether `face` draws any badge over its art.
+    fn badged(face: &Face) -> bool {
+        face.marked || face.favorite
+    }
+
+    /// The badges over a cover's art, as a grid poster draws them and
+    /// scaled with the cover: the mark's check top left, the favorite's
+    /// star top right. Nothing else shows on a cover.
+    fn draw_badges(&self, renderer: &mut Renderer, face: &Face, bounds: Rectangle) {
+        use crate::library_actions::{MARK_BACKDROP, MARK_ICON, MARK_MARGIN, MARK_SIZE, STAR};
+        let scale = bounds.height / crate::grid_motion::GridLayout::default().poster_height();
+        let (size, icon, margin) = (MARK_SIZE * scale, MARK_ICON * scale, MARK_MARGIN * scale);
+        let chip = |left: bool| {
+            let x = if left {
+                bounds.x + margin
+            } else {
+                bounds.x + bounds.width - margin - size
+            };
+            Rectangle::new(Point::new(x, bounds.y + margin), Size::new(size, size))
+        };
+        let glyph = |renderer: &mut Renderer, chip: Rectangle, bytes: &'static [u8], color| {
+            let inset = (size - icon) / 2.0;
+            renderer.draw_svg(
+                iced::advanced::svg::Svg::new(iced::advanced::svg::Handle::from_memory(bytes))
+                    .color(color),
+                Rectangle::new(
+                    chip.position() + Vector::new(inset, inset),
+                    Size::new(icon, icon),
+                ),
+                chip,
+            );
+        };
+        let round = Border::default().rounded(size / 2.0);
+        if face.marked {
+            let fill = self.palette.primary;
+            let chip = chip(true);
+            quad(renderer, chip, fill, round);
+            glyph(
+                renderer,
+                chip,
                 crate::library_menu::CHECK,
-            ))
-            .color(crate::ui::accent_ink(fill)),
-            Rectangle::new(
-                chip.position() + Vector::new(inset, inset),
-                Size::new(MARK_ICON, MARK_ICON),
-            ),
-            chip,
-        );
+                crate::ui::accent_ink(fill),
+            );
+        }
+        if face.favorite {
+            let chip = chip(false);
+            quad(
+                renderer,
+                chip,
+                Color::BLACK.scale_alpha(MARK_BACKDROP),
+                round,
+            );
+            glyph(renderer, chip, STAR, Color::WHITE);
+        }
     }
 
     fn draw_caption(&self, renderer: &mut Renderer, caption: Rectangle, clip: Rectangle) {
@@ -533,19 +560,21 @@ impl Widget<Message, Theme, Renderer> for Strip {
             renderer.with_layer(clip, |renderer| {
                 self.draw_face(renderer, face, bounds, clip);
             });
-            if face.marked || cover.opacity < 1.0 {
+            // The badges' icons draw after their layer's quads, so the
+            // shade over them is a layer of its own.
+            if Self::badged(face) {
                 renderer.with_layer(clip, |renderer| {
-                    if face.marked {
-                        self.draw_mark(renderer, bounds);
-                    }
-                    if cover.opacity < 1.0 {
-                        quad(
-                            renderer,
-                            bounds,
-                            shade.scale_alpha(1.0 - cover.opacity),
-                            Border::default(),
-                        );
-                    }
+                    self.draw_badges(renderer, face, bounds);
+                });
+            }
+            if cover.opacity < 1.0 {
+                renderer.with_layer(clip, |renderer| {
+                    quad(
+                        renderer,
+                        bounds,
+                        shade.scale_alpha(1.0 - cover.opacity),
+                        Border::default(),
+                    );
                 });
             }
         }

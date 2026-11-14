@@ -545,11 +545,14 @@ impl App {
         cover_height(height).map(artwork::Kind::Cover)
     }
 
-    /// The art the strip draws, in the order it's needed: each drawn
-    /// cover's grid poster from the middle out, then, once the strip rests,
-    /// the larger `Cover` of the middle and its two neighbors. A held
-    /// `Cover` at least as large is kept rather than decoding another. Each
-    /// key comes once, with whether it's drawn dimmed.
+    /// The art the strip draws, in the order it's needed: the grid
+    /// poster of each cover on screen and of the next one past each end,
+    /// from the middle out, then, once the strip rests, the larger `Cover`
+    /// of the middle and its two neighbors. A held `Cover` at least as
+    /// large is kept rather than decoding another. Each key comes once,
+    /// with whether it's drawn dimmed. This is all eviction protects for
+    /// the strip, so large covers past the middle three age out of the
+    /// cache's budget like any art.
     pub(crate) fn strip_art(&self) -> Vec<(ArtKey, bool)> {
         let places = self.grid_places();
         let position = self.strip.position();
@@ -557,9 +560,24 @@ impl App {
             Stop::Card(index) => places.cards.get(*index).copied(),
             Stop::Collapsed { first, .. } => *first,
         };
-        let mut near: Vec<usize> = (0..places.strip.len())
-            .filter(|&stop| (stop as f32 - position).abs() < NEIGHBORS as f32 + 1.0)
-            .collect();
+        // The covers on screen and the next one past each end, so a step
+        // finds its poster ready, and nothing more is held for the strip.
+        let size = self.strip_size();
+        let shown = geometry(position, places.strip.len(), size)
+            .covers
+            .into_iter()
+            .filter(|cover| {
+                cover.bounds.x < size.width && cover.bounds.x + cover.bounds.width > 0.0
+            })
+            .map(|cover| cover.stop);
+        let (first, last) = shown.fold((usize::MAX, 0), |(first, last), stop| {
+            (first.min(stop), last.max(stop))
+        });
+        let mut near: Vec<usize> = if first > last {
+            Vec::new()
+        } else {
+            (first.saturating_sub(1)..=(last + 1).min(places.strip.len() - 1)).collect()
+        };
         near.sort_by(|a, b| {
             (*a as f32 - position)
                 .abs()
@@ -672,6 +690,7 @@ impl App {
                     faded: card.is_some_and(|card| card.not_installed() || card.hidden),
                     marked: section.is_none()
                         && card.is_some_and(|card| self.marked.contains(&card.name)),
+                    favorite: section.is_none() && card.is_some_and(|card| card.favorite),
                     section,
                 })
             })

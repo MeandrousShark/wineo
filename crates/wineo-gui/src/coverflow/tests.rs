@@ -941,7 +941,8 @@ fn the_strip_wants_the_drawn_posters_and_the_middle_three_large() {
     let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
     let keys = app.strip_art();
-    let posters: Vec<String> = (6..=14).map(|index| format!("game-{index:02}")).collect();
+    // The nine on screen and one past each end.
+    let posters: Vec<String> = (5..=15).map(|index| format!("game-{index:02}")).collect();
     assert_eq!(kinds(&keys, is_grid), posters);
     assert_eq!(kinds(&keys, is_cover), ["game-09", "game-10", "game-11"]);
     // The middle's poster comes first, then its large cover is wanted.
@@ -1040,7 +1041,9 @@ fn the_middle_draws_its_art_and_the_side_covers_draw_darker() {
         app.images.insert(
             key,
             false,
-            image::Handle::from_rgba(2, 3, [200, 0, 0, 255].repeat(6)),
+            // About the size drawn: tiny-skia places a scaled image in
+            // whole source pixels, so a tiny one lands far off.
+            image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495)),
         );
     }
     let mut element = app.strip_view();
@@ -1135,4 +1138,207 @@ fn the_strip_takes_no_input_under_a_dialog() {
     app.close_prompt = false;
     let _ = app.update(Message::Strip(Event::Center(id)));
     assert_eq!(selected(&app), "game-06");
+}
+
+#[test]
+fn a_narrow_strip_holds_only_its_few_covers_and_one_past_each_end() {
+    let (_root, mut app) = with_art(20, Size::new(500.0, 900.0));
+    select(&mut app, "game-10");
+    let shown = on_screen(app.strip_size());
+    assert!(shown < 9, "{shown}");
+    let side = shown / 2 + 1;
+    let posters: Vec<String> = (10 - side..=10 + side)
+        .map(|index| format!("game-{index:02}"))
+        .collect();
+    assert_eq!(kinds(&app.strip_art(), is_grid), posters);
+    // At the start there's nothing before it to hold.
+    select(&mut app, "game-00");
+    assert_eq!(kinds(&app.strip_art(), is_grid)[0], "game-00");
+    assert_eq!(kinds(&app.strip_art(), is_grid).len(), side + 1);
+}
+
+#[test]
+fn large_covers_count_against_the_budget_and_age_out_once_past_the_middle() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    let kind = app.cover_kind().expect("a large cover");
+    let artwork::Kind::Cover(height) = kind else {
+        unreachable!()
+    };
+    let width = u32::from(height) * 2 / 3;
+    let cover = || {
+        image::Handle::from_rgba(
+            width,
+            u32::from(height),
+            vec![0; (width * u32::from(height) * 4) as usize],
+        )
+    };
+    let one = (width * u32::from(height) * 4) as usize;
+    // Room for four large covers.
+    app.images = crate::art_cache::ArtCache::with_budget(4 * one);
+    let mut held = Vec::new();
+    for middle in [5, 15, 25] {
+        select(&mut app, &format!("game-{middle:02}"));
+        for stop in middle - 1..=middle + 1 {
+            let key = (art_of(&app, &format!("game-{stop:02}")), kind);
+            app.art_loaded(key.clone(), false, cover());
+            held.push(key);
+        }
+    }
+    assert!(app.images.bytes() <= 4 * one, "{}", app.images.bytes());
+    // The middle three of the last stop stay; the first ones went.
+    for key in &held[6..] {
+        assert!(app.images.contains(key, false), "{key:?}");
+    }
+    assert!(!app.images.contains(&held[0], false));
+    assert!(!app.images.contains(&held[3], false));
+}
+
+#[test]
+fn a_large_cover_is_two_thirds_as_wide_as_its_step() {
+    let mut png = Vec::new();
+    ::image::DynamicImage::ImageRgba8(::image::RgbaImage::new(1000, 1500))
+        .write_to(
+            &mut std::io::Cursor::new(&mut png),
+            ::image::ImageFormat::Png,
+        )
+        .unwrap();
+    for (step, size) in [(720, (480, 720)), (1200, (800, 1200))] {
+        let handle = artwork::decode_bytes(&png, artwork::Kind::Cover(step)).unwrap();
+        let iced::widget::image::Handle::Rgba { width, height, .. } = handle else {
+            panic!("decoded to pixels");
+        };
+        assert_eq!((width, height), size, "{step}");
+    }
+}
+
+#[test]
+fn the_display_scale_sizes_the_large_cover() {
+    let (_root, mut app) = with_art(20, WIDE);
+    assert_eq!(app.cover_kind(), Some(artwork::Kind::Cover(720)));
+    let _ = app.update(Message::DisplayScale(2.0));
+    assert_eq!(app.cover_kind(), Some(artwork::Kind::Cover(1200)));
+    let _ = app.update(app.window_event(iced::window::Event::Rescaled(1.0)));
+    assert_eq!(app.cover_kind(), Some(artwork::Kind::Cover(720)));
+}
+
+/// Ctrl and `key` as the window delivers it: to the widgets, then the app.
+fn ctrl(window: &mut crate::more_menu::tests::Window, app: &mut App, key: &str) {
+    let key = Key::Character(key.into());
+    let event = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key: key.clone(),
+        modified_key: key.clone(),
+        physical_key: iced::keyboard::key::Physical::Unidentified(
+            iced::keyboard::key::NativeCode::Unidentified,
+        ),
+        location: iced::keyboard::Location::Standard,
+        modifiers: Modifiers::CTRL,
+        text: None,
+        repeat: false,
+    });
+    let mut laid = window.lay_out(app);
+    let (mut messages, status) = laid.event_with_status(&event, iced::mouse::Cursor::Unavailable);
+    drop(laid);
+    messages.push(Message::Key(key, Modifiers::CTRL, status));
+    window.send(app, messages);
+}
+
+#[test]
+fn the_zoom_keys_do_nothing_in_coverflow_as_in_the_list() {
+    let (_root, mut app) = flat(10);
+    for (layout, moves) in [
+        (ViewLayout::Grid, true),
+        (ViewLayout::List, false),
+        (ViewLayout::Coverflow, false),
+    ] {
+        let _ = app.switch_layout(layout);
+        app.zoom = 100;
+        let mut window = crate::more_menu::tests::Window::new(&mut app);
+        ctrl(&mut window, &mut app, "=");
+        assert_eq!(app.zoom != 100, moves, "{layout:?} in");
+        app.zoom = 100;
+        ctrl(&mut window, &mut app, "-");
+        assert_eq!(app.zoom != 100, moves, "{layout:?} out");
+        app.zoom = 150;
+        ctrl(&mut window, &mut app, "0");
+        assert_eq!(app.zoom != 150, moves, "{layout:?} reset");
+    }
+}
+
+/// The strip drawn at `WIDE` with every game's art one solid red, and the
+/// middle cover's bounds.
+fn drawn(app: &mut App) -> (Vec<u8>, Rectangle) {
+    for card in app.cards.clone() {
+        let key = (card.art.clone().unwrap(), artwork::Kind::Grid);
+        app.images.insert(
+            key,
+            false,
+            // About the size drawn: tiny-skia places a scaled image in
+            // whole source pixels, so a tiny one lands far off.
+            image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495)),
+        );
+    }
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    let middle = cover(
+        &geometry(app.strip.position(), app.cards.len(), WIDE),
+        app.strip.target(),
+    );
+    (pixels, middle.bounds)
+}
+
+fn pixel(pixels: &[u8], point: Point) -> [u8; 4] {
+    let index = (point.y as usize * WIDE.width as usize + point.x as usize) * 4;
+    pixels[index..index + 4].try_into().unwrap()
+}
+
+/// Where a badge's chip sits on a cover `bounds` large, left or right.
+fn chip(bounds: Rectangle, left: bool) -> Rectangle {
+    let scale = bounds.height / GridLayout::default().poster_height();
+    let (size, margin) = (
+        crate::library_actions::MARK_SIZE * scale,
+        crate::library_actions::MARK_MARGIN * scale,
+    );
+    let x = if left {
+        bounds.x + margin
+    } else {
+        bounds.x + bounds.width - margin - size
+    };
+    Rectangle::new(Point::new(x, bounds.y + margin), Size::new(size, size))
+}
+
+#[test]
+fn a_favorite_cover_shows_the_star_and_a_marked_one_the_check() {
+    let (_root, mut app) = with_art(9, WIDE);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    let (plain, middle) = drawn(&mut app);
+    let star = chip(middle, false);
+    let check = chip(middle, true);
+    let red = [200, 0, 0, 255];
+    assert_eq!(pixel(&plain, star.center()), red);
+    assert_eq!(pixel(&plain, check.center()), red);
+    for card in &mut app.cards {
+        if card.name == "game-04" {
+            card.favorite = true;
+        }
+    }
+    app.marked.insert("game-04".into());
+    let (badged, _) = drawn(&mut app);
+    // The star's white glyph at its chip's middle.
+    let center = pixel(&badged, star.center());
+    assert!(center[0] > 230 && center[1] > 230, "{center:?}");
+    // The check's chip in the primary color, beside its glyph.
+    let ring = pixel(
+        &badged,
+        Point::new(check.x + check.width * 0.15, check.center_y()),
+    );
+    let primary = app.palette.primary.into_rgba8();
+    for channel in 0..3 {
+        assert!(
+            ring[channel].abs_diff(primary[channel]) < 30,
+            "{ring:?} vs {primary:?}"
+        );
+    }
+    // Scaled with the cover: twice the grid's 24 px at this size.
+    assert!(star.width > 1.9 * crate::library_actions::MARK_SIZE);
 }
