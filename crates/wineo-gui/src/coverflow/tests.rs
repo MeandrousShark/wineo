@@ -1013,7 +1013,7 @@ fn the_strip_wants_the_drawn_posters_and_the_middle_three_large() {
         keys.iter().map(|(key, _)| key.clone()).collect()
     );
     // A small window decodes nothing larger than the grid poster.
-    let _ = app.update(Message::Strip(Event::Measured(Size::new(900.0, 600.0))));
+    resize(&mut app, Size::new(900.0, 600.0));
     assert!(kinds(&app.strip_art(), is_cover).is_empty());
 }
 
@@ -1051,7 +1051,7 @@ fn a_larger_cover_already_held_is_kept_after_a_shrink() {
     let pixel = image::Handle::from_rgba(1, 1, vec![0; 4]);
     let held = (art_of(&app, "game-10"), big);
     app.art_loaded(held.clone(), false, pixel);
-    let _ = app.update(Message::Strip(Event::Measured(Size::new(1800.0, 1100.0))));
+    resize(&mut app, Size::new(1800.0, 1100.0));
     let smaller = app.cover_kind().expect("still large");
     assert_ne!(smaller, big);
     let keys = app.strip_art();
@@ -1458,6 +1458,13 @@ fn entering_full_screen_resizes_the_strip_to_the_new_window() {
     window.click(&mut app, middle.center());
     assert!(app.panel_open);
     assert_eq!(selected(&app), "game-12");
+}
+
+/// The strip resized to `size` and the resize settled.
+fn resize(app: &mut App, size: Size) {
+    let _ = app.update(Message::Strip(Event::Measured(size)));
+    let generation = app.strip.resize_generation();
+    let _ = app.update(Message::Strip(Event::ResizeSettled(generation)));
 }
 
 /// `sectioned`, with `game` also tagged `also`.
@@ -1934,7 +1941,7 @@ fn the_strip_wants_each_side_cover_tilted_its_way_and_the_neighbors_from_their_l
         assert_eq!(*large, stop.abs_diff(10) == 1, "{name}");
     }
     // With no large cover at this size, the neighbors warp from the grid's.
-    let _ = app.update(Message::Strip(Event::Measured(Size::new(900.0, 600.0))));
+    resize(&mut app, Size::new(900.0, 600.0));
     assert!(tilts_named(&app).iter().all(|(_, _, large)| !large));
 }
 
@@ -2102,4 +2109,34 @@ fn eviction_keeps_the_tilts_the_strip_wants_and_lets_others_go() {
     app.evict_art();
     assert!(app.images.contains_tilted(&wanted, false, Tilt::Right));
     assert!(!app.images.contains_tilted(&other, false, Tilt::Right));
+}
+
+#[test]
+fn a_resize_asks_for_a_larger_cover_only_once_it_settles() {
+    let (_root, mut app) = with_art(20, WIDE);
+    select(&mut app, "game-10");
+    let before = app.cover_kind().expect("a large cover");
+    app.loading.clear();
+    let larger = |app: &App| {
+        app.loading
+            .iter()
+            .any(|((_, kind), _)| matches!(kind, artwork::Kind::Cover(_)) && *kind != before)
+    };
+    // A drag through two sizes asks for nothing larger yet.
+    let _ = app.update(Message::Strip(Event::Measured(Size::new(2200.0, 1300.0))));
+    let first = app.strip.resize_generation();
+    let _ = app.update(Message::Strip(Event::Measured(Size::new(2400.0, 1400.0))));
+    assert_eq!(app.cover_kind(), Some(before));
+    assert!(!larger(&app));
+    // The first step's wait ending is stale: the drag went on.
+    let _ = app.update(Message::Strip(Event::ResizeSettled(first)));
+    assert_eq!(app.cover_kind(), Some(before));
+    assert!(!larger(&app));
+    // The last one's settles it.
+    let last = app.strip.resize_generation();
+    let _ = app.update(Message::Strip(Event::ResizeSettled(last)));
+    assert_ne!(app.cover_kind(), Some(before));
+    assert!(larger(&app));
+    // The strip itself took the new size at once all the same.
+    assert_eq!(app.strip.size(), Size::new(2400.0, 1400.0));
 }

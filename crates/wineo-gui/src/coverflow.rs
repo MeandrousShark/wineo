@@ -309,6 +309,9 @@ pub(crate) fn page(
 pub(crate) const TITLE_FADE: Duration = Duration::from_millis(150);
 /// How far past its stop the strip may swing as it lands, in stops.
 const MAX_OVERSHOOT: f32 = 0.15;
+/// How long the strip's size must hold before its large covers decode for
+/// it, so a window being dragged bigger doesn't decode at every step.
+pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(250);
 
 /// The strip's place: the stop it's heading to and where it's drawn on the
 /// way, a spring like the grid's cards, stepped by the time between frames
@@ -327,6 +330,12 @@ pub(crate) struct Strip {
     title: Option<(Caption, f32)>,
     /// The strip widget's size as last laid out, before the panel's room.
     size: Size,
+    /// The size its large covers decode for, which follows `size` once a
+    /// resize settles.
+    cover_size: Size,
+    /// Counts resizes, so only the last one's wait settles it.
+    resize_generation: u64,
+    resize_pending: bool,
 }
 
 impl Default for Strip {
@@ -340,6 +349,9 @@ impl Default for Strip {
             generation: 0,
             title: None,
             size: Size::ZERO,
+            cover_size: Size::ZERO,
+            resize_generation: 0,
+            resize_pending: false,
         }
     }
 }
@@ -453,6 +465,39 @@ impl Strip {
         self.size
     }
 
+    /// Takes the widget's new size. The first one sizes the large covers
+    /// at once; a later one waits for the resize to settle, and gives the
+    /// generation whose wait settles it. `None` when nothing changed.
+    pub(crate) fn measured(&mut self, size: Size) -> Option<Option<u64>> {
+        if size == self.size {
+            return None;
+        }
+        self.size = size;
+        if self.cover_size == Size::ZERO {
+            self.cover_size = size;
+            return Some(None);
+        }
+        self.resize_generation = self.resize_generation.wrapping_add(1);
+        self.resize_pending = true;
+        Some(Some(self.resize_generation))
+    }
+
+    /// The large covers take the size a resize settled on, when the wait
+    /// that ended is the last resize's. Returns whether they did.
+    pub(crate) fn resize_settled(&mut self, generation: u64) -> bool {
+        if !self.resize_pending || generation != self.resize_generation {
+            return false;
+        }
+        self.resize_pending = false;
+        self.cover_size = self.size;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resize_generation(&self) -> u64 {
+        self.resize_generation
+    }
+
     #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
@@ -483,11 +528,16 @@ pub(crate) enum Event {
     Measured(Size),
     /// A frame of the glide or the title's fade.
     Tick(u64, Instant),
+    /// The wait after the resize with this generation ended.
+    ResizeSettled(u64),
 }
 
 impl Event {
     pub(crate) fn is_input(&self) -> bool {
-        !matches!(self, Self::Measured(_) | Self::Tick(..))
+        !matches!(
+            self,
+            Self::Measured(_) | Self::Tick(..) | Self::ResizeSettled(_)
+        )
     }
 }
 
@@ -518,12 +568,31 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
         }
         Event::Measured(size) => {
-            if app.strip.size == size {
+            let Some(resize) = app.strip.measured(size) else {
                 return Task::none();
+            };
+            // More or fewer covers fit now; the large ones wait for the
+            // resize to settle, the last wait replacing any before it.
+            let wait = match resize {
+                Some(generation) => {
+                    let (task, handle) = Task::perform(
+                        async { tokio::time::sleep(RESIZE_SETTLE).await },
+                        move |()| Message::Strip(Event::ResizeSettled(generation)),
+                    )
+                    .abortable();
+                    app.resize_wait = Some(handle.abort_on_drop());
+                    task
+                }
+                None => Task::none(),
+            };
+            Task::batch([app.load_visible_art(), wait])
+        }
+        Event::ResizeSettled(generation) => {
+            if app.strip.resize_settled(generation) {
+                app.load_visible_art()
+            } else {
+                Task::none()
             }
-            app.strip.size = size;
-            // The middle cover's art follows its size.
-            app.load_visible_art()
         }
     }
 }
@@ -738,7 +807,13 @@ impl App {
     /// The `Cover` kind the middle cover decodes at now, if its grid
     /// poster isn't already large enough.
     pub(crate) fn cover_kind(&self) -> Option<artwork::Kind> {
-        let height = middle_size(self.strip_size()).height
+        let size = match self.strip.cover_size {
+            size if size.width > 0.0 && size.height > 0.0 => {
+                area(Rectangle::with_size(size), self.panel_open).size()
+            }
+            _ => self.strip_size(),
+        };
+        let height = middle_size(size).height
             * crate::app_window::factor(self.interface_size)
             * self.display_scale;
         cover_height(height).map(artwork::Kind::Cover)

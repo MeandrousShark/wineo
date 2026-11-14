@@ -343,6 +343,8 @@ pub(crate) struct App {
     scroll_offset: f32,
     scroll_visible_until: Option<Instant>,
     scroll_wake: wake::Wake,
+    /// The wait for coverflow's last resize to settle, aborted by the next.
+    resize_wait: Option<iced::task::Handle>,
     pub(crate) operation: Option<Operation>,
     /// The game an install or uninstall request is being handed to Steam for.
     pub(crate) steam_request: Option<String>,
@@ -802,6 +804,7 @@ impl App {
             scroll_offset: 0.0,
             scroll_visible_until: None,
             scroll_wake: wake::Wake::default(),
+            resize_wait: None,
             operation: None,
             steam_request: None,
             panel_error: None,
