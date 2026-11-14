@@ -2063,6 +2063,22 @@ fn red_posters(app: &mut App) {
     }
 }
 
+/// Gives each named game's red grid poster its warp turned `tilt`'s way,
+/// as if made before its cover came on screen.
+fn red_warps(app: &mut App, names: &[&str], tilt: Tilt) {
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    for name in names {
+        let key = (art_of(app, name), artwork::Kind::Grid);
+        let warp = crate::tilt::warp(&flat, tilt).unwrap();
+        app.images.insert_tilted(key, false, tilt, warp);
+    }
+}
+
+/// Neither red art nor its warp: a blank card or nothing.
+fn not_red(color: [u8; 4]) -> bool {
+    color[0] <= color[2] + 10
+}
+
 fn warping_names(app: &App) -> std::collections::BTreeSet<String> {
     app.warping
         .iter()
@@ -2170,15 +2186,23 @@ fn a_tilted_cover_draws_its_warp_with_the_far_corners_clear() {
     select(&mut app, "game-04");
     let _ = app.update(Message::ClosePanel);
     red_posters(&mut app);
+    // The covers around it are warped; it waits on its own.
+    red_warps(&mut app, &["game-00", "game-01", "game-03"], Tilt::Left);
     let geometry = geometry(4.0, 9, WIDE);
     let left = cover(&geometry, 2).bounds;
     let render = |app: &App| {
         let mut element = app.strip_view();
         crate::layout_probe::render(&mut element, WIDE)
     };
-    // Flat until its warp arrives, so its far top corner is art.
+    // Until its warp arrives it's a blank card in the same trapezoid,
+    // never its flat art: the far top corner is already clear.
     let corner = Point::new(left.x + 2.0, left.y + 2.0);
-    assert!(pixel(&render(&app), corner)[0] > 60);
+    let face = Point::new(left.x + left.width * 0.25, left.center_y());
+    assert!(!cover(&geometry, 3).bounds.contains(face));
+    let pixels = render(&app);
+    assert_eq!(pixel(&pixels, corner), pixel(&pixels, Point::new(5.0, 5.0)));
+    let blank = pixel(&pixels, face);
+    assert!(blank[3] == 255 && not_red(blank), "{blank:?}");
     let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
     let warp = crate::tilt::warp(&flat, Tilt::Left).unwrap();
     app.images.insert_tilted(
@@ -2194,13 +2218,13 @@ fn a_tilted_cover_draws_its_warp_with_the_far_corners_clear() {
         background,
         "the trapezoid leaves it clear"
     );
-    // Where that clear corner crosses the cover behind it, that cover
-    // shows: nothing square is drawn behind or over the warp.
+    // Where that clear corner crosses the bounds of the cover behind it,
+    // turned too, nothing shows: neither draws its square, behind or over
+    // the warp.
     let behind = cover(&geometry, 1).bounds;
     let over = Point::new(left.x + 2.0, behind.y + 3.0);
     assert!(behind.contains(over) && over.y < left.y + left.height * crate::tilt::INSET);
-    let seen = pixel(&pixels, over);
-    assert!(seen[0] > background[0] + 40, "{seen:?}");
+    assert_eq!(pixel(&pixels, over), background);
     // Its near top corner and its middle are art, dimmed.
     let near = pixel(&pixels, Point::new(left.x + left.width - 3.0, left.y + 3.0));
     assert!(near[0] > background[0] + 40, "{near:?}");
@@ -2213,6 +2237,8 @@ fn a_cover_tilted_right_leaves_its_far_corners_clear_too() {
     select(&mut app, "game-04");
     let _ = app.update(Message::ClosePanel);
     red_posters(&mut app);
+    // Its nearer neighbor, drawn over its near edge, is warped too.
+    red_warps(&mut app, &["game-05"], Tilt::Right);
     let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
     app.images.insert_tilted(
         (art_of(&app, "game-06"), artwork::Kind::Grid),
@@ -2236,7 +2262,7 @@ fn a_cover_tilted_right_leaves_its_far_corners_clear_too() {
 }
 
 #[test]
-fn a_far_cover_still_without_its_warp_is_evenly_dim_and_flat_mid_glide() {
+fn a_far_cover_still_without_its_warp_is_an_evenly_dim_blank_card_mid_glide() {
     let (_root, mut app) = with_art(20, WIDE);
     let mut clock = crate::clock::Fake::start();
     select(&mut app, "game-05");
@@ -2263,18 +2289,14 @@ fn a_far_cover_still_without_its_warp_is_evenly_dim_and_flat_mid_glide() {
         } else {
             b.x + b.width - 3.0
         };
-        // Its far corner, which a trapezoid would leave out, is as dim as
-        // the edge below it: no bright wedge of undimmed art.
+        // Turned, it's a blank card in its trapezoid, not its flat art:
+        // the far corner is clear, and no red shows on its far edge.
         let corner = pixel(&pixels, Point::new(x, b.y + 2.0));
         let edge = pixel(&pixels, Point::new(x, b.center_y()));
-        for channel in 0..4 {
-            assert!(
-                corner[channel].abs_diff(edge[channel]) <= 2,
-                "stop {stop}: corner {corner:?}, edge {edge:?}"
-            );
-        }
-        assert!(edge[0] < 120, "dimmed: {edge:?}");
-        // Nor does its flat art reach past its bounds.
+        assert_eq!(corner[3], 0, "stop {stop}: {corner:?}");
+        assert!(edge[3] == 255 && not_red(edge), "stop {stop}: {edge:?}");
+        assert!(edge[0] < 60, "dimmed: {edge:?}");
+        // Nor does it reach past its bounds.
         let outside = if far_left {
             b.x - 3.0
         } else {
@@ -2380,7 +2402,7 @@ fn a_glide_warps_the_covers_it_brings_in_but_nothing_large() {
 }
 
 #[test]
-fn a_warp_that_arrives_for_a_cover_on_screen_fades_in_over_its_flat_art() {
+fn a_warp_that_arrives_for_a_cover_on_screen_fades_in_over_its_blank_card() {
     let (_root, mut app) = with_art(9, WIDE);
     let mut clock = crate::clock::Fake::start();
     select(&mut app, "game-04");
@@ -2389,29 +2411,41 @@ fn a_warp_that_arrives_for_a_cover_on_screen_fades_in_over_its_flat_art() {
     // The title's crossfade done, nothing asks for frames.
     frame(&mut app, &mut clock, 200);
     assert!(!app.strip.active());
-    let left = cover(&geometry(4.0, 9, WIDE), 2).bounds;
+    let geometry = geometry(4.0, 9, WIDE);
+    let left = cover(&geometry, 2).bounds;
     let corner = Point::new(left.x + 2.0, left.y + 2.0);
+    let face = Point::new(left.x + left.width * 0.25, left.center_y());
+    assert!(!cover(&geometry, 3).bounds.contains(face));
     let render = |app: &App| {
         let mut element = app.strip_view();
         crate::layout_probe::render(&mut element, WIDE)
     };
+    let blank = pixel(&render(&app), face);
+    assert!(not_red(blank), "{blank:?}");
     let key = (art_of(&app, "game-02"), artwork::Kind::Grid);
     let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
     let warp = crate::tilt::warp(&flat, Tilt::Left);
     let _ = app.update(Message::ArtWarped(key.clone(), false, Tilt::Left, warp));
     assert!(app.images.contains_tilted(&key, false, Tilt::Left));
     assert!(app.strip.active(), "frames come while it fades");
-    // Just arrived, the flat art still fills the corner the warp leaves.
+    // Just arrived, the blank card still shows, in the trapezoid.
     let art = &art_of(&app, "game-02");
     assert_eq!(app.warp_shown(art, Tilt::Left), 0.0);
-    assert_eq!(pixel(&render(&app), corner)[3], 255);
+    let pixels = render(&app);
+    assert_eq!(pixel(&pixels, face), blank);
+    assert_eq!(pixel(&pixels, corner)[3], 0);
     frame(&mut app, &mut clock, 75);
-    let half = pixel(&render(&app), corner)[3];
-    assert!(half > 0 && half < 255, "fading: {half}");
+    let pixels = render(&app);
+    let half = pixel(&pixels, face);
+    assert!(half[0] > blank[0] + 20, "fading: {half:?}");
+    assert_eq!(pixel(&pixels, corner)[3], 0);
     frame(&mut app, &mut clock, 80);
     assert_eq!(app.warp_shown(art, Tilt::Left), 1.0);
     assert!(!app.strip.active(), "no frames once it's in");
-    assert_eq!(pixel(&render(&app), corner)[3], 0);
+    let pixels = render(&app);
+    let full = pixel(&pixels, face);
+    assert!(full[0] > half[0] + 20, "in: {full:?}");
+    assert_eq!(pixel(&pixels, corner)[3], 0);
     // A sharper warp taking over from one already drawn doesn't fade.
     let neighbor = art_of(&app, "game-05");
     app.images.insert_tilted(
@@ -2541,6 +2575,61 @@ fn a_jump_across_a_huge_library_holds_only_whats_near_each_end() {
             assert!(stops.contains(&stop), "{stop} at {position}");
         }
     }
+}
+
+#[test]
+fn a_cover_turned_mid_glide_without_its_warp_is_a_blank_card_its_warp_fades_over() {
+    let (_root, mut app) = with_art(30, WIDE);
+    let mut clock = crate::clock::Fake::start();
+    select(&mut app, "game-05");
+    let _ = app.update(Message::ClosePanel);
+    app.motion.system_reduced = false;
+    red_posters(&mut app);
+    // The warps the press queues never come back yet.
+    key_down(&mut app, Named::PageDown);
+    frame(&mut app, &mut clock, 16);
+    frame(&mut app, &mut clock, 16);
+    let position = app.strip.position();
+    let geometry = geometry(position, 30, WIDE);
+    let old = cover(&geometry, 5);
+    assert_eq!(old.tilt, -1.0, "the old middle, fully turned: {position}");
+    let b = old.bounds;
+    let face = Point::new(b.x + b.width * 0.25, b.center_y());
+    let corner = Point::new(b.x + 2.0, b.y + 2.0);
+    for nearer in [6, 7] {
+        let nearer = cover(&geometry, nearer).bounds;
+        assert!(!nearer.contains(face) && !nearer.contains(corner));
+    }
+    let render = |app: &App| {
+        let mut element = app.strip_view();
+        crate::layout_probe::render(&mut element, WIDE)
+    };
+    let pixels = render(&app);
+    for point in [face, corner] {
+        let seen = pixel(&pixels, point);
+        assert!(not_red(seen), "flat art at {point:?}: {seen:?}");
+    }
+    assert_eq!(pixel(&pixels, face)[3], 255, "the blank card shows");
+    // Its warp landing now fades in over the card; one for a cover off
+    // screen is simply there when it comes on.
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let landed = |app: &mut App, name: &str, tilt| {
+        let key = (art_of(app, name), artwork::Kind::Grid);
+        let warp = crate::tilt::warp(&flat, tilt);
+        let _ = app.update(Message::ArtWarped(key.clone(), false, tilt, warp));
+        assert!(app.images.contains_tilted(&key, false, tilt), "{name}");
+        key.0
+    };
+    let old = landed(&mut app, "game-05", Tilt::Left);
+    let off = landed(&mut app, "game-20", Tilt::Right);
+    assert!((20.0 - position) > NEIGHBORS as f32 + 1.0);
+    assert_eq!(app.warp_shown(&old, Tilt::Left), 0.0);
+    assert_eq!(app.warp_shown(&off, Tilt::Right), 1.0);
+    let pixels = render(&app);
+    assert!(not_red(pixel(&pixels, face)), "not popped in");
+    frame(&mut app, &mut clock, 75);
+    let shown = app.warp_shown(&old, Tilt::Left);
+    assert!(shown > 0.0 && shown < 1.0, "{shown}");
 }
 
 #[test]

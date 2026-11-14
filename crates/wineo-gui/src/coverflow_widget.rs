@@ -1,7 +1,7 @@
 //! Draws coverflow's strip from `coverflow::geometry` and turns presses
 //! and the wheel on it into messages. The covers beside the middle one
-//! draw as warps tilted toward it, flat until their warp is ready, which
-//! then fades in.
+//! draw as warps tilted toward it, a blank card in the same outline until
+//! their warp is ready, which then fades in.
 
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout;
@@ -249,16 +249,19 @@ pub(crate) fn games(count: usize) -> String {
     }
 }
 
-/// How much of a face draws in its tilted outline, the trapezoid, rather
-/// than flat: art turns only once its warp is here, and as that fades in;
-/// a name card turns with the strip.
-pub(crate) fn tilted_share(face: &Face, tilt: f32) -> f32 {
-    let turned = tilt.abs().min(1.0);
-    match (&face.art, &face.tilted) {
-        (Some(_), Some(_)) => turned * face.warp_shown.clamp(0.0, 1.0),
-        (Some(_), None) => 0.0,
-        (None, _) => turned,
-    }
+/// How much of a cover draws in its tilted outline, the trapezoid, rather
+/// than flat: all of it once turned, whether its warp is here or not, and
+/// between the two only as it crosses the middle.
+pub(crate) fn tilted_share(tilt: f32) -> f32 {
+    tilt.abs().min(1.0)
+}
+
+/// How much of a face's art draws as its warp rather than the blank card
+/// standing in for it: none until the warp is here, then as it fades in.
+pub(crate) fn warp_share(face: &Face) -> f32 {
+    face.tilted
+        .as_ref()
+        .map_or(0.0, |_| face.warp_shown.clamp(0.0, 1.0))
 }
 
 /// A cover's outline filled in `color`: the rectangle while it's flat, the
@@ -332,10 +335,21 @@ impl Strip {
         } else {
             1.0
         };
+        let surface = self.shaded(
+            crate::ui::blend(palette.surface, palette.background, 1.0 - dim),
+            opacity,
+        );
         match &face.art {
             Some(handle) => {
                 // Turning, the flat art fades into its warp, which fills
                 // the bounds exactly: it's the 2:3 crop the flat art shows.
+                // Flat art never shows turned, so a warp that isn't here
+                // yet has a blank card in its place, which it fades over.
+                let warped = warp_share(face);
+                let blank = share * (1.0 - warped);
+                if blank > 0.0 {
+                    fill_outline(renderer, bounds, tilt, 1.0, surface.scale_alpha(blank));
+                }
                 let flat = 1.0 - share;
                 if flat > 0.0 {
                     renderer.draw_image(
@@ -345,18 +359,17 @@ impl Strip {
                         clip,
                     );
                 }
-                if let Some(warp) = face.tilted.as_ref().filter(|_| share > 0.0) {
+                if let Some(warp) = face.tilted.as_ref().filter(|_| share * warped > 0.0) {
                     renderer.draw_image(
                         iced::advanced::image::Image::new(warp.clone())
-                            .opacity(dim * opacity * share),
+                            .opacity(dim * opacity * share * warped),
                         bounds,
                         clip,
                     );
                 }
             }
             None => {
-                let surface = crate::ui::blend(palette.surface, palette.background, 1.0 - dim);
-                fill_outline(renderer, bounds, tilt, share, self.shaded(surface, opacity));
+                fill_outline(renderer, bounds, tilt, share, surface);
                 // The name stays clear of the slanted top and bottom.
                 let size = (bounds.height / 240.0 * 14.0).clamp(12.0, 28.0);
                 let pad = bounds.width * 0.08;
@@ -712,7 +725,7 @@ impl Widget<Message, Theme, Renderer> for Strip {
             // Everything about a cover follows one outline per frame, and
             // fades by mixing toward the background rather than by a shade
             // drawn over it, which would need an outline of its own.
-            let share = tilted_share(face, cover.tilt);
+            let share = tilted_share(cover.tilt);
             // Each part is a layer of its own, since a layer draws its
             // quads before its images, whatever order they came in.
             if face.section.is_some() {
