@@ -784,6 +784,8 @@ fn controller_rows<'a>(
         rows = rows.push(text(name.clone()).size(14).color(palette.foreground));
     }
     let bindings = input.bindings();
+    // The rows wait for a pad, so they need the switch on.
+    let rows_locked = locked || !input.controller;
     for action in PadAction::ALL {
         let content: Element<'a, Message> = if page.capturing() == Some(action) {
             text(CAPTURE_PROMPT).size(13).color(palette.muted).into()
@@ -799,19 +801,18 @@ fn controller_rows<'a>(
                 .width(CONTROL_WIDTH)
                 .height(crate::ui::BUTTON_HEIGHT)
                 .padding([0, 10])
-                .on_press_maybe((!locked).then(|| message.clone()))
+                .on_press_maybe((!rows_locked).then(|| message.clone()))
                 .style(move |_, status| crate::ui::secondary_style(palette, status))
                 .into(),
-            !locked,
+            !rows_locked,
             remap_id(action),
             message,
         );
         rows = rows.push(setting_row(action_label(action), control, None, palette));
     }
-    rows =
-        rows.push(secondary_button(RESET_BUTTONS, palette).on_press_maybe(
-            (!locked && !input.buttons.is_empty()).then(|| send(Event::ResetButtons)),
-        ));
+    rows = rows.push(secondary_button(RESET_BUTTONS, palette).on_press_maybe(
+        (!rows_locked && !input.buttons.is_empty()).then(|| send(Event::ResetButtons)),
+    ));
     rows.into()
 }
 

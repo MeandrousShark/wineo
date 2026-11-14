@@ -186,6 +186,16 @@ impl App {
             }
             page.pad_style = self.pads.recent_style();
         }
+        // A remap row waiting takes the next button before anything else,
+        // whichever action it's bound to now and whatever the saved switch
+        // says, since the page's own switch may be on in its draft.
+        if let Some(Input::Button(button, _)) = input
+            && self.pad_gate_open()
+            && let Some(page) = self.settings.as_mut()
+            && page.take_capture(button)
+        {
+            return Task::none();
+        }
         if !self.input.controller {
             self.pads.release_all();
             return Task::none();
@@ -211,14 +221,6 @@ impl App {
     fn pad_input(&mut self, input: Input) -> Task<Message> {
         if !self.pad_gate_open() {
             self.pads.release_all();
-            return Task::none();
-        }
-        // A remap row waiting takes the next button before anything else,
-        // whichever action it's bound to now.
-        if let Input::Button(button, _) = input
-            && let Some(page) = self.settings.as_mut()
-            && page.take_capture(button)
-        {
             return Task::none();
         }
         let (Input::Button(_, style) | Input::Move(_, style)) = input;
@@ -336,9 +338,17 @@ impl App {
         if let Some(input) = self.settings.as_ref().and_then(|page| page.input()) {
             self.input = input;
         }
-        if self.input.controller {
+        // Turning the switch on in Settings starts the reader before the
+        // save, so the remap rows can hear a pad.
+        let draft_on = self
+            .settings
+            .as_ref()
+            .and_then(|page| page.draft_controller())
+            .unwrap_or(false);
+        if self.input.controller || draft_on {
             self.pad_reading = true;
-        } else {
+        }
+        if !self.input.controller {
             self.pads.release_all();
             self.pad_hint = None;
         }

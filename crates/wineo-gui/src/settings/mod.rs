@@ -709,6 +709,13 @@ impl Page {
             _ => None,
         }
     }
+    /// The Controller switch as the draft has it, on the global page.
+    pub(crate) fn draft_controller(&self) -> Option<bool> {
+        match &self.view {
+            View::Global(editor) => Some(editor.form.draft.input.controller),
+            _ => None,
+        }
+    }
     /// The action whose row waits for a pad button.
     pub(crate) fn capturing(&self) -> Option<wineo_core::library::PadAction> {
         self.capture.map(|capture| capture.action)
@@ -721,6 +728,7 @@ impl Page {
         until: std::time::Instant,
     ) {
         if self.capturing() == Some(action)
+            || self.draft_controller() != Some(true)
             || self.locked()
             || !matches!(self.view, View::Global(_))
             || self.tab != Tab::General

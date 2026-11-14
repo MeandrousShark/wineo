@@ -368,6 +368,49 @@ mod app {
     }
 
     #[test]
+    fn with_the_switch_saved_off_the_drafts_switch_starts_the_reader_and_the_rows() {
+        let (_root, paths) = setup();
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = false\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        assert!(!app.input.controller);
+        assert!(!app.pad_reading, "off at start, the reader waits");
+        // Off in the draft too: the rows don't wait for a pad.
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Favorite)));
+        assert_eq!(page(&app).capturing(), None);
+
+        // On in the draft, before any save.
+        let _ = app.update(Message::Settings(Event::GlobalController(true)));
+        assert!(app.pad_reading);
+        assert!(!app.input.controller, "the saved switch is still off");
+        start_capture(&mut app, PadAction::Favorite);
+        press(&mut app, Raw::West);
+        assert_eq!(page(&app).capturing(), None);
+        assert_eq!(button(page(&app), PadAction::Favorite), Some(PadButton::X));
+
+        // Off in the draft again: the reader stays, the rows stop.
+        let _ = app.update(Message::Settings(Event::GlobalController(false)));
+        assert!(app.pad_reading);
+        let _ = app.update(Message::Settings(Event::CaptureButton(PadAction::Mark)));
+        assert_eq!(page(&app).capturing(), None);
+    }
+
+    #[test]
+    fn a_waiting_row_hears_no_pad_until_the_gate_opens() {
+        let (_root, paths) = setup();
+        let (mut app, _) = app_in(&paths);
+        // As at launch: no real focus or press yet.
+        app.pad_gate = crate::app_pad::Gate::default();
+        assert!(!app.pad_gate_open());
+        start_capture(&mut app, PadAction::Favorite);
+        press(&mut app, Raw::West);
+        assert_eq!(page(&app).capturing(), Some(PadAction::Favorite));
+        assert_eq!(button(page(&app), PadAction::Favorite), Some(PadButton::Y));
+    }
+
+    #[test]
     fn the_wait_gives_up_after_five_seconds_on_the_pad_clock() {
         let (_root, paths) = setup();
         let (mut app, start) = app_in(&paths);
