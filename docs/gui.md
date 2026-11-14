@@ -704,7 +704,8 @@ match.
 
 The header shows the SteamGridDB game the art comes from, looked up by its
 saved ID, and **Change** searches for a different one, like `wineo art fetch
---search`. Without a key, it shows the ID, and **Find...** and **Change**
+--search`. Its search starts from the title the card shows, or the
+environment name when it has none. Without a key, it shows the ID, and **Find...** and **Change**
 are off, with a **Settings** button to add one.
 
 **Showing** switches between the environment and its targets. On a target,
@@ -935,19 +936,30 @@ import; a cancel after the move keeps it and skips what's left of the
 playtime and art. In a portable folder the page says GOG games live in the
 host library.
 
-New and import flows show clickable poster, icon, hero, and logo previews.
-New environment previews the game's page: the hero is a banner across the
-top with the logo in its corner, like the library panel, the poster sits
-beside the form, and the icon sits beside the name. Narrow windows move the
-poster and icon below the form. Click a placeholder or preview to browse
-for a file; use **Remove** to drop it. File paths are an optional fallback.
+New environment has no art step. With a SteamGridDB key and at least one
+kind on under **Art to fetch**, Details shows **Fetch art using the top
+SteamGridDB match**, on until you turn it off; changing it doesn't count as
+an edit. Without a key it says to add one in Settings or choose art after
+Create, and with every kind off it says Art to fetch is off. The fetch runs
+once the environment is registered, after the target step when the installer
+asks for one: **Getting artwork** shows "Fetching artwork..." above the
+creation log, and **Skip**, Back, or Esc stop it before anything more is
+written. A search that's already under way finishes first, which takes at
+most 10 seconds. The desktop entry is refreshed afterward so its icon uses
+the new art. Closing the window during the fetch doesn't ask, and stops it.
+A failed fetch shows on the finished page with **Retry artwork** and **Skip
+artwork**. The finished page's **Choose artwork...** opens the new card's
+Art page, without launching it.
+
+Import prefix and Heroic's single-game import show clickable poster, icon,
+hero, and logo previews. Click a placeholder or preview to browse for a
+file; use **Remove** to drop it. File paths are an optional fallback.
 Manual files work without a SteamGridDB key or network access. Fetching uses
 the global **Art to fetch** switches: after you search and choose a match,
-each enabled kind downloads right away and appears in its tile, and creation
-stores those images without downloading them again. Local files can be mixed
-with fetched art, and the local choice wins for that kind. If artwork fails
-after registration, retry or skip it. General artwork, key, and download
-management remain CLI tasks; GUI managers are planned separately.
+each enabled kind downloads right away and appears in its tile, and the
+import stores those images without downloading them again. Local files can
+be mixed with fetched art, and the local choice wins for that kind. If
+artwork fails after registration, retry or skip it.
 
 Windows creation keeps runner, architecture, and prefix overrides under
 **Additional wine options**. Picking a template tagged `game` shows a card
