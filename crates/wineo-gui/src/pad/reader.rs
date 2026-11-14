@@ -7,7 +7,7 @@
 //! stays once started and the app ignores what it sends while the switch
 //! is off.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::Subscription;
 use iced::futures::{SinkExt, Stream};
@@ -17,24 +17,43 @@ use crate::Message;
 
 /// Where events come from: gilrs in the app, made-up ones in tests.
 pub(crate) trait Source {
-    /// Blocks until the next event. `None` means the read failed this time.
+    /// Blocks until the next event. `None` is often normal: gilrs returns
+    /// it once a batch of events is drained, after a hotplug that isn't a
+    /// pad, and for events its filters drop. Only a run of them right away
+    /// means the read itself is failing.
     fn next(&mut self) -> Option<PadEvent>;
 }
 
-/// After a failed read, so a broken device can't spin a core.
-const RETRY_AFTER: Duration = Duration::from_secs(1);
+/// The wait once reads keep failing, so a broken device can't spin a core.
+pub(crate) const RETRY_AFTER: Duration = Duration::from_secs(1);
+/// A `None` back sooner than this didn't wait for anything.
+const QUICK: Duration = Duration::from_millis(50);
+/// Quick `None`s in a row, with no event between, before the reader backs
+/// off. A drained batch gives one per pad at most.
+const QUICK_NONES: u32 = 8;
 
-/// Sends what `source` reads until the receiving side is gone, waiting
-/// `retry` after a failed read.
+/// Sends what `source` reads until the receiving side is gone. A `None`
+/// reads again at once, and only a run of quick ones waits `retry` before
+/// each further read.
 pub(crate) fn pump(mut source: impl Source, retry: Duration, send: impl Fn(PadEvent) -> bool) {
+    let mut quick_nones = 0;
     loop {
+        let asked = Instant::now();
         match source.next() {
             Some(event) => {
+                quick_nones = 0;
                 if !send(event) {
                     return;
                 }
             }
-            None => std::thread::sleep(retry),
+            // It waited in the read first, so the read works.
+            None if asked.elapsed() >= QUICK => quick_nones = 0,
+            None => {
+                quick_nones += 1;
+                if quick_nones > QUICK_NONES {
+                    std::thread::sleep(retry);
+                }
+            }
         }
     }
 }

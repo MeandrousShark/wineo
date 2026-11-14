@@ -308,38 +308,92 @@ fn a_disconnect_or_release_all_stops_the_repeat() {
     );
 }
 
-#[test]
-fn the_pump_forwards_until_the_app_is_gone_and_waits_out_failed_reads() {
-    struct Fake(Vec<Option<PadEvent>>);
-    impl reader::Source for Fake {
-        fn next(&mut self) -> Option<PadEvent> {
-            self.0.remove(0)
-        }
+/// A made-up source: each read takes its next entry, and the reads are
+/// counted.
+struct Fake {
+    reads: std::rc::Rc<std::cell::Cell<usize>>,
+    next: Box<dyn FnMut(usize) -> Option<PadEvent>>,
+}
+
+impl reader::Source for Fake {
+    fn next(&mut self) -> Option<PadEvent> {
+        let read = self.reads.get();
+        self.reads.set(read + 1);
+        (self.next)(read)
     }
+}
+
+fn fake(next: impl FnMut(usize) -> Option<PadEvent> + 'static) -> Fake {
+    Fake {
+        reads: std::rc::Rc::default(),
+        next: Box::new(next),
+    }
+}
+
+#[test]
+fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
+    // Quick Nones between events never add up to a back-off, as long as
+    // an event comes between: ten here, but never more than five in a row.
+    let mut events = vec![Some(PadEvent::Pressed(0, Raw::DPadRight))];
+    events.extend([None, None, None, None, None]);
+    events.push(Some(PadEvent::Released(0, Raw::DPadRight)));
+    events.extend([None, None, None, None, None]);
+    events.push(Some(PadEvent::Disconnected(0)));
+    events.push(Some(PadEvent::Connected(1, xbox())));
     let sent = std::cell::RefCell::new(Vec::new());
     let started = Instant::now();
-    let retry = Duration::from_millis(50);
     reader::pump(
-        Fake(vec![
-            Some(PadEvent::Pressed(0, Raw::South)),
-            None,
-            Some(PadEvent::Released(0, Raw::South)),
-            Some(PadEvent::Disconnected(0)),
-        ]),
-        retry,
+        fake(move |read| events[read].clone()),
+        reader::RETRY_AFTER,
         |event| {
-            sent.borrow_mut().push(event);
-            sent.borrow().len() < 2
+            sent.borrow_mut().push((event, Instant::now()));
+            sent.borrow().len() < 3
         },
     );
-    // A failed read waits instead of spinning, and the pump stops once the
-    // receiver says it's gone, leaving the rest unread.
-    assert!(started.elapsed() >= retry);
+    let sent = sent.into_inner();
+    // The tap's release comes well before the repeat would fire, as gilrs
+    // returns None after every drained batch.
+    assert!(started.elapsed() < REPEAT_AFTER, "{:?}", started.elapsed());
+    assert!(sent[1].1 - sent[0].1 < REPEAT_AFTER);
+    // It stops once the app is gone, leaving the rest unread.
     assert_eq!(
-        sent.into_inner(),
+        sent.into_iter().map(|(event, _)| event).collect::<Vec<_>>(),
         [
-            PadEvent::Pressed(0, Raw::South),
-            PadEvent::Released(0, Raw::South)
+            PadEvent::Pressed(0, Raw::DPadRight),
+            PadEvent::Released(0, Raw::DPadRight),
+            PadEvent::Disconnected(0),
         ]
     );
+}
+
+#[test]
+fn reads_that_keep_failing_back_off() {
+    let retry = Duration::from_millis(20);
+    let window = Duration::from_millis(300);
+    let started = Instant::now();
+    let source = fake(move |_| (started.elapsed() >= window).then_some(PadEvent::Disconnected(0)));
+    let reads = source.reads.clone();
+    reader::pump(source, retry, |_| false);
+    // A spinning read would make many thousands in that time; backing off
+    // allows the quick ones and then about one per retry.
+    let bound = 8 + (window.as_millis() / retry.as_millis()) as usize + 2;
+    assert!(reads.get() <= bound, "{} reads", reads.get());
+    assert!(reads.get() > 8, "{} reads", reads.get());
+}
+
+#[test]
+fn a_slow_none_is_a_read_that_waited_and_never_backs_off() {
+    // Each None comes after a wait, as after a hotplug that isn't a pad:
+    // none of them count toward backing off.
+    let started = Instant::now();
+    let source = fake(move |read| {
+        if read < 12 {
+            std::thread::sleep(Duration::from_millis(60));
+            None
+        } else {
+            Some(PadEvent::Disconnected(0))
+        }
+    });
+    reader::pump(source, Duration::from_secs(5), |_| false);
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
