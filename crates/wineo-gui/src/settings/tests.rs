@@ -3886,4 +3886,6 @@ mod desktop;
 
 mod input;
 
+mod fullscreen_switch;
+
 mod narrow_rows;

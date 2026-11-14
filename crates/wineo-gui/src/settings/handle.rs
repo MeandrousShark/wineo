@@ -225,6 +225,13 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::GlobalCoverflowFullscreen(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.coverflow_fullscreen = on;
+                }
+                Step::none()
+            }
             Event::GlobalTray(on) => {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {
@@ -444,6 +451,7 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalCoverflowFullscreen(_)
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
@@ -470,6 +478,7 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalCoverflowFullscreen(_)
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
