@@ -836,9 +836,16 @@ choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
 
-New environments can be Windows or Native Linux. Windows supports an empty
-environment, an existing executable, or an installer; Native Linux supports
-an empty registration or executable. Installer setup sets up DXVK and
+New environment opens on a choice page with five rows, under **Windows**
+(Run an installer, Existing install, Empty) and **Native Linux** (Existing
+install, Empty). Pick one with a click, the arrows and Enter, its number
+key, or Ctrl+Enter on the focused row. Details is titled with the pick, like
+"New environment - Windows installer", and **Change** returns to the choice
+page, as Back does, with the draft kept and that row focused. Picking
+another row keeps the Name and environment name, but clears the path, since
+an installer and a program are different files. Back from the choice page
+asks before discarding a draft only if you typed or changed something on
+Details; the row you picked and the art checkbox don't count. Installer setup sets up DXVK and
 vkd3d-proton in the prefix before the installer runs, then scans installed
 programs once it's done, even if it exited with an error, so you can choose
 the game's target rather than registering the installer. A canceled
@@ -1234,8 +1241,8 @@ Tags list, which take every key while open:
 | Shift+F10, Menu, right-click (on a preset) | Show Rename and Delete under it |
 | Esc | Close a preset's name field or question first, then the menu, going back to its button |
 
-In the choice lists on **Add**, New's program list, the Heroic and GOG
-lists, and the version picker:
+In the choice lists on **Add**, New's choice page and program list, the
+Heroic and GOG lists, and the version picker:
 
 | Key | Does |
 |---|---|
@@ -1244,8 +1251,12 @@ lists, and the version picker:
 | Tab, Shift+Tab | Walk through the rows with the dialog's other controls |
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
-The first row has focus when a list appears, and **Add**'s 1 to 5 keys still
-work with a row focused. The version picker has nothing to submit, so Ctrl+Enter
+The first row has focus when a list appears, and **Add**'s and New's 1 to 5
+keys still work with a row focused. On New's choice page, Ctrl+Enter opens
+the focused row, since the page has nothing else to submit, and coming back
+from Details lands on the row you picked. Holding a number key, Esc, or
+Ctrl+Enter in Add or an import flow acts once, so it can't run on through
+the following pages. The version picker has nothing to submit, so Ctrl+Enter
 does nothing there. A runner offer's **No** and **Yes** work like rows: Enter or
 Space answers, and Ctrl+Enter submits without answering.
 
