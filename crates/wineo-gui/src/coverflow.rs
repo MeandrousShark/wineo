@@ -515,9 +515,13 @@ impl Strip {
     }
 
     /// Gliding into a stop it hasn't asked for art at yet, slower than
-    /// `FLY_BY`.
-    pub(crate) fn crossed_stop(&self) -> bool {
-        !self.settled()
+    /// `FLY_BY`, on a frame of the glide now under way, so a frame left
+    /// over from an earlier one can't ask on its speed. A landing that
+    /// swings over its stop asks once more just before it rests, which
+    /// queues nothing already held or on its way.
+    pub(crate) fn crossed_stop(&self, generation: u64) -> bool {
+        generation == self.generation
+            && !self.settled()
             && self.speed <= FLY_BY
             && self.art_stop != Some(self.position().floor() as i32)
     }
@@ -641,7 +645,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.strip.tick(generation, now) {
                 // Settled: the large covers and tilts can start.
                 app.load_visible_art()
-            } else if app.strip.crossed_stop() {
+            } else if app.strip.crossed_stop(generation) {
                 // The covers it holds follow where it's drawn.
                 app.load_visible_art()
             } else {
@@ -944,13 +948,14 @@ impl App {
 
     /// The tilts the strip wants warped, each from the flat art it's made
     /// of, gray or not, and which way: each stop `strip_near` holds, turned
-    /// the way it sits from where the strip heads, and while it glides,
-    /// also the way it sits from where the strip is drawn, so a cover the
-    /// middle passes on the way has both. At rest the middle's two
-    /// neighbors warp from their large `Cover`, and from their grid poster
-    /// too until that warp is here, so a blank card waits only on the
-    /// cheap warp; otherwise every warp is from the grid's poster, cheap
-    /// enough to make mid-glide.
+    /// each way the strip carries it more than `MAX_OVERSHOOT` past the
+    /// middle, between where it's drawn and where it heads. A cover the
+    /// middle passes on the way has both, and the one it lands on neither
+    /// for its swing past its stop, which it draws flat. At rest the
+    /// middle's two neighbors warp from their large `Cover`, and from their
+    /// grid poster too until that warp is here, so a blank card waits only
+    /// on the cheap warp; otherwise every warp is from the grid's poster,
+    /// cheap enough to make mid-glide.
     pub(crate) fn strip_tilts(&self) -> Vec<(ArtKey, bool, Tilt)> {
         let places = self.grid_places();
         let target = self.strip.target() as f32;

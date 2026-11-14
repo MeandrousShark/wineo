@@ -194,6 +194,17 @@ fn cover_fit(handle: &image::Handle, frame: Rectangle) -> Rectangle {
     )
 }
 
+/// `bounds` a pixel in on every side, and never less than nothing.
+pub(crate) fn inset(bounds: Rectangle) -> Rectangle {
+    Rectangle::new(
+        Point::new(bounds.x + 1.0, bounds.y + 1.0),
+        Size::new(
+            (bounds.width - 2.0).max(0.0),
+            (bounds.height - 2.0).max(0.0),
+        ),
+    )
+}
+
 fn quad(renderer: &mut Renderer, bounds: Rectangle, color: Color, border: Border) {
     renderer.fill_quad(
         Quad {
@@ -338,7 +349,7 @@ impl Strip {
             let offset = bounds.width * STACK_OFFSET * step;
             let card = bounds + Vector::new(offset, -offset);
             fill_outline(renderer, card, cover.tilt, share, edge);
-            fill_outline(renderer, card.shrink(1.0), cover.tilt, share, surface);
+            fill_outline(renderer, inset(card), cover.tilt, share, surface);
         }
     }
 
@@ -439,7 +450,7 @@ impl Strip {
                     // edge keeping it apart from a section's stack behind.
                     let edge = self.shaded(palette.border, opacity);
                     fill_outline(renderer, bounds, tilt, 1.0, edge.scale_alpha(share));
-                    let card = bounds.shrink(1.0);
+                    let card = inset(bounds);
                     fill_outline(renderer, card, tilt, 1.0, surface.scale_alpha(share));
                     let name = self.shaded(palette.muted, opacity);
                     let shown = share * (1.0 - warped);
@@ -462,7 +473,7 @@ impl Strip {
             None => {
                 let edge = self.shaded(palette.border, opacity);
                 fill_outline(renderer, bounds, tilt, share, edge);
-                fill_outline(renderer, bounds.shrink(1.0), tilt, share, surface);
+                fill_outline(renderer, inset(bounds), tilt, share, surface);
                 let name = self.shaded(palette.muted, opacity);
                 self.draw_name(renderer, face, bounds, share, name, clip);
             }

@@ -2837,6 +2837,44 @@ fn a_jump_too_fast_to_see_queues_nothing_on_the_way_and_its_landing_at_rest() {
 }
 
 #[test]
+fn a_frame_left_over_from_an_earlier_glide_asks_for_no_art() {
+    let (_root, mut app) = library_at(30, 5);
+    let mut clock = crate::clock::Fake::start();
+    key_down(&mut app, Named::PageDown);
+    let stale = app.strip.generation();
+    // Snapped, then gliding again: the first glide's frames may still come.
+    app.strip.snap();
+    key_down(&mut app, Named::PageDown);
+    frame(&mut app, &mut clock, 16);
+    frame(&mut app, &mut clock, 16);
+    assert!(!app.strip.settled() && app.strip.generation() != stale);
+    // Due to ask, as if it had just crossed a stop.
+    app.strip.art_stop = None;
+    let marker = art_marker();
+    app.visible_art.insert(marker.clone());
+    let _ = app.update(Message::Strip(Event::Tick(stale, clock.now())));
+    assert!(app.visible_art.contains(&marker), "a stale frame asked");
+    let current = app.strip.generation();
+    let _ = app.update(Message::Strip(Event::Tick(current, clock.now())));
+    assert!(
+        !app.visible_art.contains(&marker),
+        "a frame of this glide asks"
+    );
+}
+
+#[test]
+fn a_hairline_inset_never_goes_negative() {
+    let inset = crate::coverflow_widget::inset;
+    let tiny = inset(Rectangle::new(Point::new(5.0, 5.0), Size::new(1.0, 0.5)));
+    assert_eq!(tiny.size(), Size::ZERO);
+    let card = inset(Rectangle::new(Point::new(5.0, 5.0), Size::new(10.0, 20.0)));
+    assert_eq!(
+        card,
+        Rectangle::new(Point::new(6.0, 6.0), Size::new(8.0, 18.0))
+    );
+}
+
+#[test]
 fn a_jump_back_across_a_huge_library_holds_the_same_mirrored() {
     let sorted = |mut stops: Vec<usize>| {
         stops.sort_unstable();
