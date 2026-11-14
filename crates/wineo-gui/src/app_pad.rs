@@ -142,8 +142,10 @@ impl App {
         if !self.pad_wake.fired(generation) {
             return Task::none();
         }
+        // The clock moves on either way, so a slow check skips a repeat
+        // instead of piling them up.
         match self.pads.repeat(Instant::now()) {
-            Some(input) if self.input.controller => self.pad_input(input),
+            Some(input) if self.input.controller && !self.pad_checking => self.pad_input(input),
             _ => Task::none(),
         }
     }
@@ -167,19 +169,22 @@ impl App {
         if !self.pad_drives_library() {
             return Task::none();
         }
+        self.pad_checking = true;
         iced::advanced::widget::operate(TextFocus::default())
             .map(move |focused| Message::PadKey(key.clone(), modifiers, focused))
     }
 
     /// The key a pad press stands for, once whether a text field has focus
     /// is known. A focused field would take the key, but a pad key arrives
-    /// ignored and would reach the library behind it.
+    /// ignored and would reach the library behind it. The gate and overlays
+    /// are asked again, since either can change while the check runs.
     pub(crate) fn pad_key(
         &mut self,
         key: Key,
         modifiers: Modifiers,
         text_focused: bool,
     ) -> Task<Message> {
+        self.pad_checking = false;
         if text_focused || !self.pad_drives_library() {
             return Task::none();
         }
@@ -203,7 +208,11 @@ impl App {
 
     pub(crate) fn pad_hint_view(&self) -> Option<iced::Element<'_, Message>> {
         let style = self.pad_hint.filter(|_| self.pad_hint_shown())?;
-        let hints = pad::glyph::hints(&self.input.bindings(), self.panel_open);
+        let hints = pad::glyph::hints(
+            &self.input.bindings(),
+            self.panel_open,
+            self.header_cursor().is_some(),
+        );
         Some(pad::glyph::bar(hints, style, self.palette))
     }
 

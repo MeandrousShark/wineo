@@ -169,6 +169,9 @@ pub(crate) struct App {
     pad_hint: Option<pad::Style>,
     /// A held direction's next repeat.
     pad_wake: wake::Wake,
+    /// A press's text field check is in flight, so a repeat waits for it
+    /// rather than queueing another.
+    pad_checking: bool,
     pub(crate) tray: tray::Tray,
     /// The session bus name this app owns for its root, which other
     /// launches call `Show` on. None in tests and without a bus.
@@ -666,6 +669,7 @@ impl App {
             pad_gate: false,
             pad_hint: None,
             pad_wake: wake::Wake::default(),
+            pad_checking: false,
             tray: tray::Tray::default(),
             instance: None,
             left: false,

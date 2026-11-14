@@ -79,10 +79,16 @@ const HINTED: [PadAction; 5] = [
     PadAction::Random,
 ];
 
-/// What the bar says for each bound action: the button and its word.
-pub(crate) fn hints(bindings: &Bindings, panel_open: bool) -> Vec<(PadButton, &'static str)> {
+/// What the bar says for each bound action: the button and its word. On a
+/// section's header or card there's no game to favorite or mark.
+pub(crate) fn hints(
+    bindings: &Bindings,
+    panel_open: bool,
+    on_header: bool,
+) -> Vec<(PadButton, &'static str)> {
     HINTED
         .into_iter()
+        .filter(|action| !(on_header && matches!(action, PadAction::Favorite | PadAction::Mark)))
         .filter_map(|action| {
             let word = match action {
                 PadAction::Confirm if panel_open => "Play",

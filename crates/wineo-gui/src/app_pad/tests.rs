@@ -27,10 +27,22 @@ fn switch_pro() -> PadInfo {
     }
 }
 
+/// An app on its own HOME, since presses write `library.toml` (a favorite,
+/// the layout) and the shared test HOME would carry that to other tests.
+fn booted() -> (tempfile::TempDir, App) {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().to_owned();
+    let paths = wineo_core::paths::Paths::from_lookup(move |key| {
+        (key == "HOME").then(|| path.as_os_str().to_owned())
+    })
+    .unwrap();
+    (home, App::boot(paths).0)
+}
+
 /// A library of three games with an Xbox pad connected and the gate shut,
 /// as at launch.
-fn closed_app() -> App {
-    let mut app = crate::tests::app();
+fn closed_app() -> (tempfile::TempDir, App) {
+    let (home, mut app) = booted();
     let cards = ["alpha", "beta", "gamma"]
         .into_iter()
         .map(|name| card(name, State::Inactive, 60))
@@ -39,16 +51,16 @@ fn closed_app() -> App {
     app.viewport_width = 1000.0;
     app.snap_grid();
     let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
-    app
+    (home, app)
 }
 
 /// `closed_app` after the window's first real focus, with the cursor on
 /// the first game and its panel shut.
-fn ready() -> App {
-    let mut app = closed_app();
+fn ready() -> (tempfile::TempDir, App) {
+    let (home, mut app) = closed_app();
     focus(&mut app);
     move_to(&mut app, "alpha");
-    app
+    (home, app)
 }
 
 fn focus(app: &mut App) {
@@ -131,7 +143,7 @@ fn favorite(app: &App, name: &str) -> bool {
 
 #[test]
 fn the_gate_starts_closed_and_opens_on_a_real_focus_or_press() {
-    let mut app = closed_app();
+    let (_home, mut app) = closed_app();
     // `focused` starts true on purpose; the gate doesn't.
     assert!(app.focused);
     assert!(!app.pad_gate_open());
@@ -145,7 +157,7 @@ fn the_gate_starts_closed_and_opens_on_a_real_focus_or_press() {
     assert!(app.panel_open);
 
     // A press in the window counts as focus too.
-    let mut app = closed_app();
+    let (_home, mut app) = closed_app();
     let _ = app.update(Message::Pressed);
     move_to(&mut app, "beta");
     tap(&mut app, Raw::South);
@@ -154,7 +166,7 @@ fn the_gate_starts_closed_and_opens_on_a_real_focus_or_press() {
 
 #[test]
 fn losing_focus_hiding_and_closing_shut_the_gate() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let id = app.main_window.unwrap();
     let _ = app.update(Message::Window(id, window::Event::Unfocused));
     assert!(!app.pad_gate_open());
@@ -163,7 +175,7 @@ fn losing_focus_hiding_and_closing_shut_the_gate() {
 
     // The tray's reopen says focused without a Focused event, which a
     // compositor that refused the raise never sends.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let _ = app.hide_window();
     assert!(!app.pad_gate);
     let _ = app.open_window();
@@ -173,7 +185,7 @@ fn losing_focus_hiding_and_closing_shut_the_gate() {
     tap(&mut app, Raw::South);
     assert!(!app.panel_open);
 
-    let mut app = ready();
+    let (_home, mut app) = ready();
     app.closing = true;
     assert!(!app.pad_gate_open());
     tap(&mut app, Raw::South);
@@ -183,7 +195,7 @@ fn losing_focus_hiding_and_closing_shut_the_gate() {
 #[test]
 fn a_launch_or_a_steam_request_shuts_the_gate() {
     use wineo_core::steam::AppState;
-    let mut app = ready();
+    let (_home, mut app) = ready();
     app.merge(vec![crate::tests::steam_card("game", AppState::Installed)]);
     let _ = app.update(Message::Select("game".into()));
     let _ = app.update(Message::Play);
@@ -193,7 +205,7 @@ fn a_launch_or_a_steam_request_shuts_the_gate() {
     focus(&mut app);
     assert!(app.pad_gate_open());
 
-    let mut app = ready();
+    let (_home, mut app) = ready();
     app.merge(vec![crate::tests::steam_card(
         "owned",
         AppState::NotInstalled,
@@ -206,7 +218,7 @@ fn a_launch_or_a_steam_request_shuts_the_gate() {
 
 #[test]
 fn library_presses_become_their_keyboard_twins() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     tap(&mut app, Raw::DPadRight);
     assert_eq!(app.selected.as_deref(), Some("beta"));
     tap(&mut app, Raw::DPadLeft);
@@ -231,7 +243,7 @@ fn library_presses_become_their_keyboard_twins() {
 
 #[test]
 fn the_stick_moves_like_the_dpad() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let task = app.update(Message::Pad(PadEvent::Stick(0, Axis::X, 0.9)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
@@ -242,7 +254,7 @@ fn the_stick_moves_like_the_dpad() {
 
 #[test]
 fn a_held_direction_repeats_through_its_wakeup() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
@@ -260,6 +272,85 @@ fn a_held_direction_repeats_through_its_wakeup() {
     assert_eq!(app.pad_wake.due(), None);
 }
 
+#[test]
+fn a_held_repeat_waits_for_the_last_presss_field_check() {
+    let (_home, mut app) = ready();
+    let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
+    assert!(app.pad_checking);
+    // The repeat comes due before the check answers: nothing new is asked.
+    std::thread::sleep(crate::pad::REPEAT_AFTER);
+    let generation = app.pad_wake.generation();
+    let repeat = app.update(Message::PadRepeat(generation));
+    assert!(
+        !outputs(&app, repeat)
+            .iter()
+            .any(|message| matches!(message, Message::PadKey(..)))
+    );
+    // The first press still lands, and the next repeat asks again.
+    settle(&mut app, press);
+    assert!(!app.pad_checking);
+    assert_eq!(app.selected.as_deref(), Some("beta"));
+    std::thread::sleep(crate::pad::REPEAT_EVERY);
+    let generation = app.pad_wake.generation();
+    settle_update(&mut app, Message::PadRepeat(generation));
+    assert_eq!(app.selected.as_deref(), Some("gamma"));
+}
+
+#[test]
+fn a_field_check_answer_meets_the_gate_and_overlays_again() {
+    let (_home, mut app) = ready();
+    let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let answers = outputs(&app, press);
+    assert!(matches!(answers.as_slice(), [Message::PadKey(_, _, false)]));
+    // Focus left while the check ran.
+    let id = app.main_window.unwrap();
+    let _ = app.update(Message::Window(id, window::Event::Unfocused));
+    for message in answers.clone() {
+        let task = app.update(message);
+        settle(&mut app, task);
+    }
+    assert!(!app.panel_open);
+
+    // Or a menu opened.
+    focus(&mut app);
+    app.sort_menu = true;
+    for message in answers {
+        let task = app.update(message);
+        settle(&mut app, task);
+    }
+    assert!(!app.panel_open);
+    assert!(app.sort_menu);
+}
+
+#[test]
+fn back_and_start_skip_the_field_check() {
+    let (_home, mut app) = ready();
+    let _ = app.update(Message::OpenCard("alpha".into()));
+    assert!(app.panel_open);
+    // B goes straight to Esc, as mouse Back does even with a field
+    // focused: no pad check is asked, only the page's own Esc path.
+    let back = app.update(Message::Pad(PadEvent::Pressed(0, Raw::East)));
+    assert!(!app.pad_checking);
+    let answers = outputs(&app, back);
+    assert!(
+        !answers
+            .iter()
+            .any(|message| matches!(message, Message::PadKey(..)))
+    );
+    for message in answers {
+        let task = app.update(message);
+        settle(&mut app, task);
+    }
+    assert!(!app.panel_open);
+    let start = app.update(Message::Pad(PadEvent::Pressed(0, Raw::Start)));
+    assert!(!app.pad_checking);
+    assert!(
+        !outputs(&app, start)
+            .iter()
+            .any(|message| matches!(message, Message::PadKey(..)))
+    );
+}
+
 fn settle_update(app: &mut App, message: Message) {
     let task = app.update(message);
     settle(app, task);
@@ -267,7 +358,7 @@ fn settle_update(app: &mut App, message: Message) {
 
 #[test]
 fn a_nintendo_pad_confirms_with_its_printed_a() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
     // The bottom button is B there, which backs out instead.
     tap_on(&mut app, 1, Raw::South);
@@ -300,14 +391,14 @@ fn back_is_the_mouse_back_button() {
     );
 
     // It closes the panel in the Library.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     tap(&mut app, Raw::South);
     assert!(app.panel_open);
     tap(&mut app, Raw::East);
     assert!(!app.panel_open);
 
     // And goes back out of a flow, which nothing else on the pad reaches.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let _ = app.update(Message::Add);
     assert!(app.flow.is_some());
     tap(&mut app, Raw::South);
@@ -316,7 +407,7 @@ fn back_is_the_mouse_back_button() {
     assert!(app.flow.is_none());
 
     // And out of settings, through the page's own Back.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let _ = app.update(Message::OpenSettings);
     assert!(app.settings.is_some());
     tap(&mut app, Raw::East);
@@ -330,7 +421,7 @@ fn start_sends_full_screens_key_but_not_in_the_close_prompt() {
         Message::Key(Key::Named(Named::F11), modifiers, iced::event::Status::Ignored)
             if modifiers.is_empty()
     ));
-    let mut app = ready();
+    let (_home, mut app) = ready();
     app.close_prompt = true;
     tap(&mut app, Raw::Start);
     assert!(app.close_prompt);
@@ -339,57 +430,78 @@ fn start_sends_full_screens_key_but_not_in_the_close_prompt() {
     assert!(!app.close_prompt);
 }
 
-/// Each overlay, set one at a time. A non-B press must do nothing with any
-/// of them open, so an overlay added later fails here until it's named in
-/// `library_overlay_open`.
+/// Each overlay, set one at a time, and which of the shared parts it
+/// belongs to. A non-B press must do nothing with any of them open, so an
+/// overlay added later fails here until it's named in
+/// `library_overlay_open`. The parts are `handle_key`'s own guards, so a
+/// row in the wrong one would change the keyboard too.
 type Open = fn(&mut App);
 
-fn overlays() -> Vec<(&'static str, Open)> {
+/// `dialog_open` takes every key; `panel_takes_keys` takes the library's
+/// letters and Enter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Dialog,
+    Panel,
+    Other,
+}
+
+fn overlays() -> Vec<(&'static str, Part, Open)> {
     vec![
-        ("flow", |app| {
+        ("flow", Part::Dialog, |app| {
             let _ = app.update(Message::Add);
         }),
-        ("settings", |app| {
+        ("settings", Part::Other, |app| {
             let _ = app.update(Message::OpenSettings);
         }),
-        ("art page", |app| app.art_page = Some("alpha".into())),
-        ("tool page", |app| {
+        ("art page", Part::Other, |app| {
+            app.art_page = Some("alpha".into())
+        }),
+        ("tool page", Part::Other, |app| {
             app.tool_page = Some(("alpha".into(), crate::tools_page::Kind::Exec));
         }),
-        ("portable page", |app| {
+        ("portable page", Part::Other, |app| {
             app.portable_page = Some("alpha".into())
         }),
-        ("sort menu", |app| app.sort_menu = true),
-        ("filter menu", |app| app.filter_menu = true),
-        ("random menu", |app| app.random_menu = true),
-        ("more menu", |app| app.more_menu = true),
-        ("search drop-down", |app| {
+        ("sort menu", Part::Other, |app| app.sort_menu = true),
+        ("filter menu", Part::Other, |app| app.filter_menu = true),
+        ("random menu", Part::Other, |app| app.random_menu = true),
+        ("more menu", Part::Other, |app| app.more_menu = true),
+        ("search drop-down", Part::Other, |app| {
             app.search_icon = true;
             app.search_open = true;
         }),
-        ("tag menu", |app| {
+        ("tag menu", Part::Other, |app| {
             app.marked.insert("alpha".into());
             app.tag_menu = true;
         }),
-        ("context menu", |app| app.action_menu = Some("alpha".into())),
-        ("version picker", |app| {
+        ("context menu", Part::Panel, |app| {
+            app.action_menu = Some("alpha".into())
+        }),
+        ("version picker", Part::Panel, |app| {
             app.panel_open = true;
             app.version = Some(crate::version_picker::Picker::for_test("alpha".into()));
         }),
-        ("panel log", |app| {
+        ("panel log", Part::Other, |app| {
             app.panel_open = true;
             app.log_view = true;
         }),
-        ("checkup results", |app| {
+        ("checkup results", Part::Panel, |app| {
             let _ = app.update(Message::Checkup(crate::checkup::Event::Open(
                 crate::checkup::Scope::Environment("alpha".into()),
             )));
         }),
-        ("close prompt", |app| app.close_prompt = true),
-        ("remove dialog", |app| {
+        ("checkup under the log", Part::Other, |app| {
+            let _ = app.update(Message::Checkup(crate::checkup::Event::Open(
+                crate::checkup::Scope::Environment("alpha".into()),
+            )));
+            app.log_view = true;
+        }),
+        ("close prompt", Part::Dialog, |app| app.close_prompt = true),
+        ("remove dialog", Part::Dialog, |app| {
             let _ = app.update(Message::Remove("alpha".into()));
         }),
-        ("hook stop confirm", |app| {
+        ("hook stop confirm", Part::Dialog, |app| {
             app.hook_stop_confirm = Some("alpha".into());
         }),
     ]
@@ -398,16 +510,18 @@ fn overlays() -> Vec<(&'static str, Open)> {
 #[test]
 fn every_overlay_drops_a_non_back_press() {
     // Nothing open: the same presses act, so the table isn't vacuous.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     assert!(!app.library_overlay_open());
     assert!(app.pad_drives_library());
     tap(&mut app, Raw::DPadRight);
     assert_eq!(app.selected.as_deref(), Some("beta"));
 
-    for (name, open) in overlays() {
-        let mut app = ready();
+    for (name, part, open) in overlays() {
+        let (_home, mut app) = ready();
         open(&mut app);
         assert!(app.library_overlay_open(), "{name} isn't open");
+        assert_eq!(app.dialog_open(), part == Part::Dialog, "{name}");
+        assert_eq!(app.panel_takes_keys(), part == Part::Panel, "{name}");
         assert!(!app.pad_drives_library(), "{name}");
         let selected = app.selected.clone();
         let panel = app.panel_open;
@@ -433,12 +547,12 @@ fn every_overlay_drops_a_non_back_press() {
 fn a_is_dropped_on_pages_and_flows_that_take_enter() {
     // A tool page runs its tool on Enter, and the Add flow's Choose page
     // takes Enter too; A must reach neither.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     app.tool_page = Some(("alpha".into(), crate::tools_page::Kind::Exec));
     let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
     assert!(outputs(&app, task).is_empty());
 
-    let mut app = ready();
+    let (_home, mut app) = ready();
     let _ = app.update(Message::Add);
     let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
     assert!(outputs(&app, task).is_empty());
@@ -448,7 +562,7 @@ fn a_is_dropped_on_pages_and_flows_that_take_enter() {
 fn a_focused_text_field_takes_no_pad_press() {
     // The field check finds the focused search, and a press with it
     // focused does nothing, even once the key path runs on.
-    let mut app = ready();
+    let (_home, mut app) = ready();
     assert_eq!(text_focus_after(&app, crate::SEARCH_ID), Some(true));
     let task = app.update(Message::PadKey(
         Key::Named(Named::Enter),
@@ -467,7 +581,7 @@ fn a_focused_text_field_takes_no_pad_press() {
     assert!(app.panel_open);
 
     // A focused button isn't a text field.
-    let app = ready();
+    let (_home, app) = ready();
     assert_eq!(
         text_focus_after(&app, crate::filter_control::FILTER_BUTTON_ID),
         Some(false)
@@ -522,7 +636,7 @@ fn drive_in(
 
 #[test]
 fn turning_the_controller_off_ignores_presses() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     app.input.controller = false;
     tap(&mut app, Raw::South);
     assert!(!app.panel_open);
@@ -534,14 +648,14 @@ fn turning_the_controller_off_ignores_presses() {
 
 #[test]
 fn the_reader_starts_with_the_switch_and_then_stays() {
-    let mut app = crate::tests::app();
+    let (_home, mut app) = booted();
     assert!(app.input.controller);
     assert!(app.pad_reading);
     app.input.controller = false;
     app.sync_input();
     assert!(app.pad_reading);
 
-    let mut app = crate::tests::app();
+    let (_home, mut app) = booted();
     app.pad_reading = false;
     app.input.controller = false;
     app.sync_input();
@@ -553,7 +667,7 @@ fn the_reader_starts_with_the_switch_and_then_stays() {
 
 #[test]
 fn the_hint_bar_follows_the_last_pad_and_hides_on_mouse_or_keys() {
-    let mut app = ready();
+    let (_home, mut app) = ready();
     assert!(app.pad_hint_view().is_none());
     tap(&mut app, Raw::DPadDown);
     assert_eq!(app.pad_hint, Some(crate::pad::Style::Xbox));
@@ -580,13 +694,19 @@ fn the_hint_bar_follows_the_last_pad_and_hides_on_mouse_or_keys() {
 #[test]
 fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
     let input = wineo_core::library::Input::default();
-    let hints = crate::pad::glyph::hints(&input.bindings(), false);
+    let hints = crate::pad::glyph::hints(&input.bindings(), false, false);
     let words: Vec<_> = hints.iter().map(|(_, word)| *word).collect();
     assert_eq!(words, ["Open", "Back", "Favorite", "Mark", "Random"]);
     assert_eq!(
-        crate::pad::glyph::hints(&input.bindings(), true)[0].1,
+        crate::pad::glyph::hints(&input.bindings(), true, false)[0].1,
         "Play"
     );
+    // A section's header or collapsed card has nothing to favorite or mark.
+    let words: Vec<_> = crate::pad::glyph::hints(&input.bindings(), false, true)
+        .iter()
+        .map(|(_, word)| *word)
+        .collect();
+    assert_eq!(words, ["Open", "Back", "Random"]);
     use crate::pad::Style;
     use crate::pad::glyph::{Glyph, glyph};
     use wineo_core::library::PadButton;
