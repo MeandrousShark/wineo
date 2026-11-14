@@ -851,7 +851,11 @@ and apostrophes and trademark symbols dropped, so "Assassin's Creed:
 Origins" becomes `assassins-creed-origins`. The derived name shows under
 the field; **Edit**
 lets you choose a different one, up to 64 characters. The installer log can
-be selected and copied like the panel's log. Prefix imports can copy a Wine prefix or Proton
+be selected and copied like the panel's log. When the chosen runner isn't
+installed, the review offers **Download GE-Proton** or **Download
+Proton-CachyOS**. It already shows what that Proton build will use, 64-bit,
+the prefix it adopts, and the template components Proton leaves out, so
+only the runner row changes after the download. Prefix imports can copy a Wine prefix or Proton
 compatdata, or register it in place. **Set up targets** opens Settings' Add
 target editor after import. Target setup can be skipped and done later.
 
