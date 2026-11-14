@@ -1287,8 +1287,8 @@ fn back_is_at_the_top_and_create_is_pinned_at_the_bottom_with_its_reason() {
             "ready with notes",
             summarized(adopting()),
             vec![
-                "This will register the existing prefix in place.",
-                "The template's DXVK and vkd3d picks will be omitted.",
+                "This will register the existing prefix in place. \
+                 Proton's own DXVK and vkd3d-proton replace the template's.",
             ],
             Some("Create"),
         ),
@@ -2750,37 +2750,49 @@ fn page_with_name_override() -> Page {
 fn the_notes_that_change_create_show_beside_it_once_it_is_ready() {
     use crate::layout_probe::probe;
     let size = iced::Size::new(400.0, 300.0);
-    let pinned = [
-        "This will register the existing prefix in place.",
-        "The template's DXVK and vkd3d picks will be omitted.",
+    let adopted = "This will register the existing prefix in place.";
+    let replaced = "Proton's own DXVK and vkd3d-proton replace the template's.";
+    let both = format!("{adopted} {replaced}");
+    let cases = [
+        (true, false, adopted.to_owned()),
+        (false, true, replaced.to_owned()),
+        (true, true, both.clone()),
     ];
-    let mut page = summarized(adopting());
-    let viewport = |page: &Page| {
+    for (adopts, omits, pinned) in cases {
+        let review = Review {
+            adopted: adopts,
+            omitted_components: omits,
+            ..ready_review()
+        };
+        let page = summarized(review.clone());
         let mut view = page.view_with_key_availability(Palette::DARK, true);
-        probe(&mut view, size).scrollables[0].0
-    };
-    let bottom = viewport(&page).y + viewport(&page).height;
-    let texts = texts(&page, size);
-    for note in pinned {
-        let bounds = labeled(&texts, note);
-        assert_eq!(bounds.len(), 1, "{note}");
-        assert!(bounds[0].y >= bottom, "{note} is pinned");
+        let (viewport, content) = probe(&mut view, size).scrollables[0];
+        let texts = texts(&page, size);
+        let bounds = labeled(&texts, &pinned);
+        assert_eq!(bounds.len(), 1, "{pinned}");
+        assert!(
+            bounds[0].y >= viewport.y + viewport.height,
+            "{pinned} is pinned"
+        );
+        // The Summary says them in full, in the scrolling body.
+        for note in consequences(&review) {
+            let bounds = labeled(&texts, note);
+            assert_eq!(bounds.len(), 1, "{note}");
+            assert!(
+                crate::layout_probe::within(bounds[0], content),
+                "{note} scrolls"
+            );
+        }
     }
-    // The Summary says them in full, in the scrolling body.
-    for note in consequences(&adopting()) {
-        assert_eq!(labeled(&texts, note).len(), 1, "{note}");
-    }
+    let shows = |page: &Page, text: &str| !labeled(&texts(page, size), text).is_empty();
     // While a newer check runs, the strip says so instead.
+    let mut page = summarized(adopting());
     let _ = page.update(Event::Name("Test game 2".to_owned()));
-    let texts = self::texts(&page, size);
-    for note in pinned {
-        assert!(labeled(&texts, note).is_empty(), "{note}");
-    }
+    assert!(!shows(&page, &both));
     // And a check that finds neither says nothing beside Create.
     land(&mut page, ready_review());
-    let texts = self::texts(&page, size);
-    for note in pinned {
-        assert!(labeled(&texts, note).is_empty(), "{note}");
+    for text in [adopted, replaced, both.as_str()] {
+        assert!(!shows(&page, text), "{text}");
     }
 }
 

@@ -1817,9 +1817,12 @@ impl Page {
         // shortest in a narrow dialog.
         let mut beside = column![].spacing(4).width(Fill);
         match checked {
+            // One paragraph, so the second note starts on the first one's
+            // last line, which keeps the strip short in a narrow dialog.
             Ok(review) => {
-                for note in pinned_consequences(review) {
-                    beside = beside.push(wrapped(note).size(12).color(palette.warning));
+                let notes = pinned_consequences(review).join(" ");
+                if !notes.is_empty() {
+                    beside = beside.push(wrapped(notes).size(12).color(palette.warning));
                 }
             }
             Err(hold) => {
@@ -2187,7 +2190,7 @@ fn pinned_consequences(review: &Review) -> Vec<&'static str> {
         notes.push("This will register the existing prefix in place.");
     }
     if review.omitted_components {
-        notes.push("The template's DXVK and vkd3d picks will be omitted.");
+        notes.push("Proton's own DXVK and vkd3d-proton replace the template's.");
     }
     notes
 }
