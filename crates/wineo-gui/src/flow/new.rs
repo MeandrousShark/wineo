@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
@@ -12,7 +11,7 @@ use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
-use wineo_core::download::{Client, Lazy, Provider};
+use wineo_core::download::{Client, Provider};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
@@ -28,7 +27,8 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
-use super::{Action, artwork, frame};
+use super::artwork::{ArtOffer, Fetcher, default_fetcher, fetch_art};
+use super::{Action, frame};
 use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
 use crate::picker;
@@ -47,30 +47,6 @@ fn program_id(exe: &str) -> String {
 }
 const LOG_CAP: usize = 128 * 1024;
 const LOG_KEEP: usize = 64 * 1024;
-
-/// Fetches art for an environment, from its name, the title to search for,
-/// and the token that stops it. Tests swap in their own, so nothing they run
-/// reaches SteamGridDB.
-pub(crate) type Fetcher =
-    Arc<dyn Fn(&Paths, &str, &str, &Token) -> Result<Vec<String>, String> + Send + Sync>;
-
-fn default_fetcher() -> Fetcher {
-    Arc::new(|paths, name, title, token| {
-        artwork::fetch_default(paths, name, title, &Lazy::new(), token)
-    })
-}
-
-/// What Details offers for fetching art.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArtOffer {
-    /// The settings haven't been read yet.
-    Unknown,
-    /// Art to fetch has no kind on.
-    Off,
-    NoKey,
-    /// The checkbox, and whether it's on.
-    Fetch(bool),
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -416,12 +392,11 @@ impl Page {
     }
 
     fn art_offer(&self, key_available: bool) -> ArtOffer {
-        match &self.options {
-            None => ArtOffer::Unknown,
-            Some(options) if !options.fetch_kinds => ArtOffer::Off,
-            Some(_) if !key_available => ArtOffer::NoKey,
-            Some(_) => ArtOffer::Fetch(self.fetch_choice.unwrap_or(true)),
-        }
+        ArtOffer::new(
+            self.options.as_ref().map(|options| options.fetch_kinds),
+            key_available,
+            self.fetch_choice,
+        )
     }
 
     /// A page on Finished for `name`, which registered.
@@ -1254,22 +1229,8 @@ impl Page {
 
     /// The fetch checkbox, or a note on why there's none.
     fn art_offer_view(&self, palette: Palette, key_available: bool) -> Option<Element<'_, Event>> {
-        let note = match self.art_offer(key_available) {
-            ArtOffer::Unknown => return None,
-            ArtOffer::Fetch(on) => {
-                return Some(
-                    checkbox(on)
-                        .label("Fetch art using the top SteamGridDB match")
-                        .on_toggle(Event::FetchArt)
-                        .into(),
-                );
-            }
-            ArtOffer::Off => "Art to fetch is off in Settings.",
-            ArtOffer::NoKey => {
-                "Add a SteamGridDB key in Settings to fetch art, or choose it after Create."
-            }
-        };
-        Some(text(note).size(12).color(palette.muted).into())
+        self.art_offer(key_available)
+            .view(palette, "Create", Event::FetchArt)
     }
 
     fn details_form(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
@@ -2415,30 +2376,6 @@ fn pump_log(path: &std::path::Path, offset: &mut usize, output: &mut impl FnMut(
         if bytes.len() > *offset {
             output(String::from_utf8_lossy(&bytes[*offset..]).into_owned());
             *offset = bytes.len();
-        }
-    }
-}
-
-/// The fetch after creation, then the desktop entry again, since its icon
-/// comes from the art.
-fn fetch_art(
-    paths: &Paths,
-    name: &str,
-    title: &str,
-    token: &Token,
-    fetcher: &Fetcher,
-) -> Result<Vec<String>, String> {
-    let fetched = fetcher(paths, name, title, token);
-    // Skipped, so nothing more is written; a later launch refreshes the entry.
-    if fetched.is_err() && token.is_canceled() {
-        return fetched;
-    }
-    let desktop = desktop::apply(paths, name, false).map_err(|error| error.to_string());
-    match (fetched, desktop) {
-        (Ok(notes), Ok(_)) => Ok(notes),
-        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
-        (Err(art_error), Err(desktop_error)) => {
-            Err(format!("{art_error}; desktop entry: {desktop_error}"))
         }
     }
 }

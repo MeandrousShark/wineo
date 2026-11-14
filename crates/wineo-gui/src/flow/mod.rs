@@ -419,15 +419,17 @@ impl Page {
 
     /// Stops an art fetch that doesn't count as busy, as the window closes.
     pub(crate) fn cancel_fetch(&self) {
-        if let Self::New(page) = self {
-            page.cancel_fetch();
+        match self {
+            Self::New(page) => page.cancel_fetch(),
+            Self::Prefix(page) => page.cancel_fetch(),
+            _ => {}
         }
     }
 
     pub(crate) fn submit(&mut self, key_available: bool) -> Task<Event> {
         match self {
             Self::New(page) => page.submit(key_available).map(Event::from),
-            Self::Prefix(page) => page.submit().map(Event::from),
+            Self::Prefix(page) => page.submit(key_available).map(Event::from),
             Self::Clone(page) => page.submit().map(Event::from),
             Self::Heroic(page) => page.submit().map(Event::from),
             Self::Steam(page) => page.submit().map(Event::from),

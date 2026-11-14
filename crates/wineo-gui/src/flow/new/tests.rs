@@ -1,5 +1,6 @@
 use crate::test_script::write_script;
 use std::ffi::OsString;
+use std::sync::Arc;
 
 use super::*;
 use wineo_core::config::TITLE_MAX_CHARS;
