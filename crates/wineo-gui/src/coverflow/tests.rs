@@ -1081,8 +1081,8 @@ fn the_strip_wants_the_drawn_posters_and_the_middle_three_large() {
     let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
     let keys = app.strip_art();
-    // The nine on screen and one past each end.
-    let posters: Vec<String> = (5..=15).map(|index| format!("game-{index:02}")).collect();
+    // Six each way: the nine on screen and two more past each end.
+    let posters: Vec<String> = (4..=16).map(|index| format!("game-{index:02}")).collect();
     assert_eq!(kinds(&keys, is_grid), posters);
     assert_eq!(kinds(&keys, is_cover), ["game-09", "game-10", "game-11"]);
     // The middle's poster comes first, then its large cover is wanted.
@@ -1283,20 +1283,17 @@ fn the_strip_takes_no_input_under_a_dialog() {
 }
 
 #[test]
-fn a_narrow_strip_holds_only_its_few_covers_and_one_past_each_end() {
+fn a_narrow_strip_holds_six_each_way_and_no_more() {
     let (_root, mut app) = with_art(20, Size::new(500.0, 900.0));
     select(&mut app, "game-10");
     let shown = on_screen(app.strip_size());
     assert!(shown < 9, "{shown}");
-    let side = shown / 2 + 1;
-    let posters: Vec<String> = (10 - side..=10 + side)
-        .map(|index| format!("game-{index:02}"))
-        .collect();
+    let posters: Vec<String> = (4..=16).map(|index| format!("game-{index:02}")).collect();
     assert_eq!(kinds(&app.strip_art(), is_grid), posters);
     // At the start there's nothing before it to hold.
     select(&mut app, "game-00");
     assert_eq!(kinds(&app.strip_art(), is_grid)[0], "game-00");
-    assert_eq!(kinds(&app.strip_art(), is_grid).len(), side + 1);
+    assert_eq!(kinds(&app.strip_art(), is_grid).len(), 7);
 }
 
 #[test]
@@ -2041,8 +2038,8 @@ fn the_strip_wants_each_side_cover_tilted_its_way_and_the_neighbors_from_their_l
     let (_root, mut app) = with_art(20, Size::new(2400.0, 1400.0));
     select(&mut app, "game-10");
     let tilts = tilts_named(&app);
-    // The nine on screen and one past each end, but the middle.
-    assert_eq!(tilts.len(), 10, "{tilts:?}");
+    // Six each way, but the middle.
+    assert_eq!(tilts.len(), 12, "{tilts:?}");
     assert!(tilts.iter().all(|(name, _, _)| name != "game-10"));
     for (name, tilt, large) in &tilts {
         let stop: usize = name["game-".len()..].parse().unwrap();
@@ -2139,7 +2136,7 @@ fn a_warp_for_a_cover_no_longer_near_the_middle_is_dropped() {
 }
 
 #[test]
-fn nothing_large_or_tilted_is_queued_while_the_strip_glides() {
+fn nothing_large_is_queued_while_the_strip_glides_but_grid_warps_are() {
     let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
     red_posters(&mut app);
     let mut clock = crate::clock::Fake::start();
@@ -2150,12 +2147,20 @@ fn nothing_large_or_tilted_is_queued_while_the_strip_glides() {
     press(&mut app, Named::PageDown);
     assert!(!app.strip.settled());
     frame(&mut app, &mut clock, 16);
-    assert!(app.warping.is_empty(), "{:?}", warping_names(&app));
+    // The grid warps six past where it's heading, done or under way.
+    let far = format!("game-{:02}", app.strip.target() + 6);
+    let far = (art_of(&app, &far), artwork::Kind::Grid);
+    assert!(
+        app.images.contains_tilted(&far, false, Tilt::Right)
+            || app.warping.contains(&(far, false, Tilt::Right)),
+        "{:?}",
+        warping_names(&app)
+    );
     let kind = app.cover_kind().unwrap();
     assert!(app.loading.iter().all(|((_, held), _)| *held != kind));
+    assert!(app.warping.iter().all(|((_, held), _, _)| *held != kind));
     frame(&mut app, &mut clock, 300);
     assert!(app.strip.settled());
-    assert!(!app.warping.is_empty());
     assert!(app.loading.iter().any(|((_, held), _)| *held == kind));
 }
 
