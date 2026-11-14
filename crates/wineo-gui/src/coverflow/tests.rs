@@ -1428,6 +1428,35 @@ fn drawn(app: &mut App) -> (Vec<u8>, Rectangle) {
     (pixels, middle.bounds)
 }
 
+#[test]
+fn the_caption_draws_its_title_and_status_one_line_each() {
+    let (_root, mut app) = flat(9);
+    select(&mut app, "game-04");
+    let _ = app.update(Message::ClosePanel);
+    let mut element = app.strip_view();
+    let pixels = crate::layout_probe::render(&mut element, WIDE);
+    let caption = geometry(app.strip.position(), 9, WIDE).caption;
+    // Nothing else draws below the covers, so any ink there is caption.
+    let ink: Vec<(f32, f32)> = (caption.y as usize..WIDE.height as usize)
+        .flat_map(|y| (0..WIDE.width as usize).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixels[(y * WIDE.width as usize + x) * 4 + 3] > 0)
+        .map(|(x, y)| (x as f32, y as f32))
+        .collect();
+    let lowest = ink.iter().map(|&(_, y)| y).fold(0.0, f32::max);
+    assert!(
+        lowest < caption.y + caption.height,
+        "ink {} px below the caption's top",
+        lowest - caption.y
+    );
+    // The title runs across, not down: "game-04" is far wider than a glyph.
+    let title = ink
+        .iter()
+        .filter(|&&(_, y)| y < caption.y + 20.0)
+        .map(|&(x, _)| x);
+    let (left, right) = title.fold((f32::MAX, 0.0f32), |(l, r), x| (l.min(x), r.max(x)));
+    assert!(right - left > 40.0, "title {} px wide", right - left);
+}
+
 fn pixel(pixels: &[u8], point: Point) -> [u8; 4] {
     let index = (point.y as usize * WIDE.width as usize + point.x as usize) * 4;
     pixels[index..index + 4].try_into().unwrap()

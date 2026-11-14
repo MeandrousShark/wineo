@@ -214,12 +214,16 @@ fn line(
     color: Color,
     clip: Rectangle,
 ) {
+    let line_height = text::LineHeight::default();
     renderer.fill_text(
         text::Text {
             content,
-            bounds: Size::new(width, f32::INFINITY),
+            // A finite height: iced scales the bounds by the layer's
+            // transform, and 0 times infinity makes the width NaN, which
+            // breaks the line after every glyph.
+            bounds: Size::new(width, f32::from(line_height.to_absolute(Pixels(size)))),
             size: Pixels(size),
-            line_height: text::LineHeight::default(),
+            line_height,
             font,
             align_x: text::Alignment::Center,
             align_y: alignment::Vertical::Top,
