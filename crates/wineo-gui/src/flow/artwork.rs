@@ -4,13 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::widget::{
-    Column, button, checkbox, column, container, image, pick_list, row, stack, text, text_input,
+    Column, button, checkbox, column, container, image, pick_list, row, text, text_input,
 };
-use iced::{Color, ContentFit, Element, Fill, Padding, Radians, Task, border, gradient};
+use iced::{Color, ContentFit, Element, Fill, Task, border};
 use wineo_core::art::{self, Kind};
 use wineo_core::art_fetch::{self, Mode};
+use wineo_core::cancel::Token;
 use wineo_core::config::{ArtFetch, GlobalConfig};
 use wineo_core::download::{Https, Lazy};
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
@@ -21,8 +23,6 @@ use crate::ui::{PickListStyle, secondary_button};
 
 /// Width of the stacked tile block.
 const WIDTH: u32 = 356;
-/// Matches the hero banner in the library side panel.
-const BANNER_HEIGHT: u32 = 220;
 const LOGO_HEIGHT: u32 = 80;
 const LOGO_MAX_WIDTH: u32 = 280;
 /// Tall enough to line up with the collapsed creation form beside it.
@@ -122,21 +122,11 @@ impl Draft {
         Self::default()
     }
 
-    #[cfg(test)]
-    pub(super) fn search_text(&self) -> &str {
-        &self.search
-    }
-
     pub(crate) fn is_dirty(&self) -> bool {
         self.fetch
             || self.search_edited
             || self.selected.is_some()
             || self.local.values().any(|local| !local.path.is_empty())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_fetching(&self) -> bool {
-        self.fetch
     }
 
     pub(crate) fn set_title(&mut self, title: &str) -> Task<Event> {
@@ -531,7 +521,7 @@ impl Draft {
                         }
                     }
                     if !missing.is_empty() {
-                        match fetch(paths, name, &game.0, missing.into_iter(), &Lazy::new()) {
+                        match fetch(paths, name, &game.0, &missing, &Lazy::new(), &Token::new()) {
                             Ok(fetched) => notes.extend(fetched),
                             Err(error) => failures.push(format!("Art fetching failed: {error}")),
                         }
@@ -577,171 +567,6 @@ impl Draft {
                 .vertical_spacing(10),
             ]
             .spacing(10),
-            self.control_rows(palette, key_available),
-        ]
-        .spacing(10)
-        .into()
-    }
-
-    /// Full-width hero with the logo overlaid, like the library side panel.
-    pub(crate) fn banner(&self, palette: Palette) -> Element<'_, Event> {
-        let hero = self
-            .art_preview(Kind::Hero)
-            .map(|(handle, _)| handle.clone());
-        let has_hero = hero.is_some();
-        let hero_selected = self.is_selected(Kind::Hero);
-        let content: Element<'_, Event> = match hero {
-            Some(handle) => image(handle)
-                .width(Fill)
-                .height(Fill)
-                .content_fit(ContentFit::Cover)
-                .border_radius(6)
-                .into(),
-            None => container(placeholder("Hero", "Wide background", 16, palette))
-                .center(Fill)
-                .into(),
-        };
-        let hero_button = button(container(content).width(Fill).height(Fill).clip(true))
-            .width(Fill)
-            .height(BANNER_HEIGHT)
-            .padding(2)
-            .on_press(Event::Browse(Kind::Hero))
-            .style(move |_, status| button::Style {
-                background: Some(palette.surface.into()),
-                text_color: palette.foreground,
-                border: border::rounded(8)
-                    .width(2)
-                    .color(outline(status, hero_selected, palette)),
-                ..button::Style::default()
-            });
-
-        let logo = self
-            .art_preview(Kind::Logo)
-            .map(|(handle, _)| handle.clone());
-        let logo_selected = self.is_selected(Kind::Logo);
-        let logo_button = match logo {
-            Some(handle) => button(
-                container(
-                    image(handle)
-                        .height(LOGO_HEIGHT)
-                        .content_fit(ContentFit::Contain),
-                )
-                .max_width(LOGO_MAX_WIDTH),
-            )
-            .padding(4)
-            .style(move |_, status| button::Style {
-                background: None,
-                text_color: palette.foreground,
-                border: border::rounded(6).width(2).color(
-                    if matches!(status, button::Status::Hovered) {
-                        palette.primary
-                    } else if logo_selected {
-                        palette.success
-                    } else {
-                        Color::TRANSPARENT
-                    },
-                ),
-                ..button::Style::default()
-            }),
-            None => button(container(text("Logo").size(14)).center(Fill))
-                .width(140)
-                .height(56)
-                .style(move |_, status| button::Style {
-                    background: Some(palette.surface.scale_alpha(0.9).into()),
-                    text_color: palette.foreground,
-                    border: border::rounded(6).width(1).color(outline(
-                        status,
-                        logo_selected,
-                        palette,
-                    )),
-                    ..button::Style::default()
-                }),
-        }
-        .on_press(Event::Browse(Kind::Logo));
-        // The scrim keeps a light logo readable over a bright hero.
-        let overlay = container(logo_button)
-            .width(Fill)
-            .height(112)
-            .padding(Padding {
-                top: 24.0,
-                right: 16.0,
-                bottom: 12.0,
-                left: 16.0,
-            })
-            .align_left(Fill)
-            .align_bottom(Fill)
-            .style(move |_| {
-                if has_hero {
-                    let gradient = gradient::Linear::new(Radians(std::f32::consts::PI))
-                        .add_stop(0.0, Color::BLACK.scale_alpha(0.0))
-                        .add_stop(1.0, Color::BLACK.scale_alpha(0.78));
-                    container::Style::default()
-                        .background(gradient)
-                        .border(border::rounded(border::bottom(6)))
-                } else {
-                    container::Style::default()
-                }
-            });
-        // A pressed logo button captures the event and the stack stops there,
-        // so the hero underneath never sees the click.
-        stack![
-            hero_button,
-            container(overlay)
-                .width(Fill)
-                .height(BANNER_HEIGHT)
-                .padding(2)
-                .align_bottom(Fill),
-        ]
-        .into()
-    }
-
-    /// Hero, logo, and icon statuses for the banner, or `None` when there is nothing to say.
-    pub(crate) fn status_line(&self, palette: Palette) -> Option<Element<'_, Event>> {
-        let parts = self.banner_statuses();
-        if parts.is_empty() {
-            return None;
-        }
-        let mut line = row![].spacing(16);
-        for (kind, notes, selected) in parts {
-            let label = match kind {
-                Kind::Hero => "Hero:",
-                Kind::Logo => "Logo:",
-                _ => "Icon:",
-            };
-            let mut part = row![text(label).size(11)].spacing(6).align_y(iced::Center);
-            for note in notes {
-                part = part.push(note_view(note, palette));
-            }
-            if selected {
-                part = part.push(remove(kind, palette));
-            }
-            line = line.push(part);
-        }
-        Some(line.wrap().vertical_spacing(4).into())
-    }
-
-    pub(crate) fn poster(&self, palette: Palette) -> Element<'_, Event> {
-        self.tile(
-            Kind::Grid,
-            "Poster",
-            "Cover art",
-            POSTER_WIDTH,
-            POSTER_HEIGHT,
-            false,
-            palette,
-        )
-    }
-
-    pub(crate) fn icon(&self, palette: Palette) -> Element<'_, Event> {
-        self.chooser(Kind::Icon, "Icon", "", ICON_SIZE, ICON_SIZE, palette)
-    }
-
-    /// File path entry and SteamGridDB controls, for layouts that place tiles themselves.
-    pub(crate) fn controls(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
-        column![
-            text("Click the banner, logo, poster, or icon to choose an image. All are optional.")
-                .size(12)
-                .color(palette.muted),
             self.control_rows(palette, key_available),
         ]
         .spacing(10)
@@ -851,17 +676,6 @@ impl Draft {
             }
         }
         notes
-    }
-
-    /// Hero, logo, and icon entries worth showing under the banner, with
-    /// whether each can be removed. The icon's status lives here so the Name
-    /// row it sits in stays one line tall.
-    fn banner_statuses(&self) -> Vec<(Kind, Vec<Note<'_>>, bool)> {
-        [Kind::Hero, Kind::Logo, Kind::Icon]
-            .into_iter()
-            .map(|kind| (kind, self.notes(kind), self.is_selected(kind)))
-            .filter(|(_, notes, selected)| !notes.is_empty() || *selected)
-            .collect()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1134,8 +948,9 @@ fn fetch(
     paths: &Paths,
     name: &str,
     game: &Game,
-    kinds: impl Iterator<Item = Kind>,
+    kinds: &[Kind],
     https: &Lazy<Https>,
+    token: &Token,
 ) -> Result<Vec<String>, String> {
     let key = steamgriddb::require_key(
         paths,
@@ -1146,20 +961,15 @@ fn fetch(
     let https = https.https().map_err(|e| e.to_string())?;
     let api = Api::new(https, &key.value);
     let language = steamgriddb::language(|key| std::env::var_os(key));
+    let identity = EnvironmentIdentity::read(paths, name);
+    let fetched = art_fetch::fetch_game(
+        paths, name, &api, game.id, kinds, &language, identity, token,
+    )
+    .map_err(|e| e.to_string())?;
     let mut notes = Vec::new();
     let mut failures = Vec::new();
-    art::save_game(paths, name, game.id).map_err(|e| e.to_string())?;
-    for kind in kinds {
-        match art_fetch::fetch_kind(
-            paths,
-            name,
-            None,
-            kind,
-            &api,
-            game.id,
-            &language,
-            Mode::Fill,
-        ) {
+    for (kind, result) in fetched {
+        match result {
             Ok(art_fetch::Fetched::NoneFound) => {
                 notes.push(format!("No {kind} artwork found for {}", game.name))
             }
@@ -1174,13 +984,15 @@ fn fetch(
     }
 }
 
-/// Looks `title` up and fetches the configured kinds for `name`. A batch
-/// passes the same `https` for every game, so they share one client.
+/// Looks `title` up and fetches the configured kinds for `name`, writing
+/// nothing once `token` is canceled. A batch passes the same `https` for
+/// every game, so they share one client.
 pub(crate) fn fetch_default(
     paths: &Paths,
     name: &str,
     title: &str,
     https: &Lazy<Https>,
+    token: &Token,
 ) -> Result<Vec<String>, String> {
     let loaded = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
     // Reported through the same notes as every other outcome here.
@@ -1193,8 +1005,11 @@ pub(crate) fn fetch_default(
     if kinds.is_empty() {
         return Ok(notes);
     }
+    if token.is_canceled() {
+        return Err(wineo_core::error::Error::Canceled("artwork").to_string());
+    }
     match search_with(paths, title, https)?.into_iter().next() {
-        Some(game) => notes.extend(fetch(paths, name, &game, kinds.into_iter(), https)?),
+        Some(game) => notes.extend(fetch(paths, name, &game, &kinds, https, token)?),
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)

@@ -1080,10 +1080,10 @@ impl Page {
                                 ));
                                 if fetch_batch_art {
                                     notes.extend(
-                                        artwork::fetch_default(&paths, &name, &title, &https)
-                                            .unwrap_or_else(|error| {
-                                                vec![format!("Artwork: {error}")]
-                                            }),
+                                        artwork::fetch_default(
+                                            &paths, &name, &title, &https, &token,
+                                        )
+                                        .unwrap_or_else(|error| vec![format!("Artwork: {error}")]),
                                     );
                                 }
                                 let _ = sender

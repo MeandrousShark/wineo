@@ -133,6 +133,10 @@ impl App {
         // Messages run until the loop stops, so late results must drop.
         self.exiting = true;
         self.steam_auto.cancel();
+        // A New page fetching art isn't busy, so nothing asked to wait on it.
+        if let Some(flow) = &self.flow {
+            flow.cancel_fetch();
+        }
         let work = self.abandoned_work();
         self.watchdog.start(&work);
         self.close_then_exit()

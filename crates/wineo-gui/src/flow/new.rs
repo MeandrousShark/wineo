@@ -2,18 +2,17 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use iced::futures::channel::mpsc::unbounded;
-use iced::widget::{
-    button, checkbox, column, container, pick_list, radio, responsive, row, text, text_input,
-};
-use iced::{Center, Element, Fill, Shrink, Task};
+use iced::widget::{button, checkbox, column, container, pick_list, radio, row, text, text_input};
+use iced::{Center, Element, Fill, Task};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
-use wineo_core::download::{Client, Provider};
+use wineo_core::download::{Client, Lazy, Provider};
 use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
@@ -49,9 +48,29 @@ fn program_id(exe: &str) -> String {
 const LOG_CAP: usize = 128 * 1024;
 const LOG_KEEP: usize = 64 * 1024;
 
-/// Poster plus a form wide enough for the Name, Icon, and Type row. Below
-/// this the poster and icon move under the form.
-const SIDE_POSTER: f32 = artwork::POSTER_WIDTH as f32 + 16.0 + 400.0;
+/// Fetches art for an environment, from its name, the title to search for,
+/// and the token that stops it. Tests swap in their own, so nothing they run
+/// reaches SteamGridDB.
+pub(crate) type Fetcher =
+    Arc<dyn Fn(&Paths, &str, &str, &Token) -> Result<Vec<String>, String> + Send + Sync>;
+
+fn default_fetcher() -> Fetcher {
+    Arc::new(|paths, name, title, token| {
+        artwork::fetch_default(paths, name, title, &Lazy::new(), token)
+    })
+}
+
+/// What Details offers for fetching art.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtOffer {
+    /// The settings haven't been read yet.
+    Unknown,
+    /// Art to fetch has no kind on.
+    Off,
+    NoKey,
+    /// The checkbox, and whether it's on.
+    Fetch(bool),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -107,6 +126,8 @@ pub(crate) struct Options {
     offer: bool,
     arch: Arch,
     prefix_root: PathBuf,
+    /// Whether Art to fetch has any kind on.
+    fetch_kinds: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -254,7 +275,10 @@ pub(crate) enum Event {
     RetryArt,
     RetryCreation,
     SkipArt,
-    ArtApplied(u64, Result<Vec<String>, String>),
+    FetchArt(bool),
+    SkipFetch,
+    ChooseArt,
+    ArtFetched(u64, Result<Vec<String>, String>),
     TargetAdded(u64, Result<Vec<String>, String>),
     Options(Result<Options, String>),
     /// The answer to using other launchers' builds.
@@ -268,13 +292,22 @@ pub(crate) enum Event {
     LogFollow,
     CopyLog,
     Done(u64, Report),
-    Art(artwork::Event),
 }
 
 pub(crate) struct Page {
     paths: Paths,
     draft: Draft,
-    art: artwork::Draft,
+    /// The fetch checkbox: None until it's clicked, then what it was set to.
+    /// Whether it shows depends on the key, which can come and go.
+    fetch_choice: Option<bool>,
+    /// The checkbox as it was at Create.
+    fetch_art: bool,
+    /// Set once the fetch after creation starts, so it never runs again.
+    art_started: bool,
+    /// Set while Working fetches art rather than doing work Cancel stops.
+    fetching: bool,
+    fetch_token: Option<Token>,
+    fetcher: Fetcher,
     stage: Stage,
     options: Option<Options>,
     template_preview: Option<Template>,
@@ -307,7 +340,12 @@ impl Page {
         let mut page = Self {
             paths,
             draft: Draft::default(),
-            art: artwork::Draft::new(),
+            fetch_choice: None,
+            fetch_art: false,
+            art_started: false,
+            fetching: false,
+            fetch_token: None,
+            fetcher: default_fetcher(),
             stage: Stage::Details,
             options: None,
             template_preview: None,
@@ -332,12 +370,7 @@ impl Page {
             answering: false,
             offer_sequence: 0,
         };
-        let task = Task::batch([
-            page.load_options(),
-            page.art
-                .configure(page.paths.clone(), String::new())
-                .map(Event::Art),
-        ]);
+        let task = page.load_options();
         (page, task)
     }
 
@@ -375,13 +408,51 @@ impl Page {
         self.log_view.push(&text, &dropped, || log.clone())
     }
 
+    /// Fetching art isn't busy: closing or Settings may go ahead, since the
+    /// fetch stops at its token and writes only to an environment that's
+    /// still there.
     pub(crate) fn busy(&self) -> bool {
-        self.stage == Stage::Working
+        self.stage == Stage::Working && !self.fetching
     }
 
+    fn art_offer(&self, key_available: bool) -> ArtOffer {
+        match &self.options {
+            None => ArtOffer::Unknown,
+            Some(options) if !options.fetch_kinds => ArtOffer::Off,
+            Some(_) if !key_available => ArtOffer::NoKey,
+            Some(_) => ArtOffer::Fetch(self.fetch_choice.unwrap_or(true)),
+        }
+    }
+
+    /// A page on Finished for `name`, which registered.
     #[cfg(test)]
-    pub(crate) fn art_fetching(&self) -> bool {
-        self.art.is_fetching()
+    pub(crate) fn finished_for_tests(paths: Paths, name: &str) -> Self {
+        let mut page = Self::new(paths).0;
+        page.draft.environment = Some(name.to_owned());
+        let mut report = Report::new();
+        report.registered = true;
+        page.report = Some(report);
+        page.show_finished();
+        page
+    }
+
+    /// The options as the page loads them, read at once.
+    #[cfg(test)]
+    pub(crate) fn options_loaded(paths: &Paths) -> Event {
+        Event::Options(read_options(paths))
+    }
+
+    /// Whether Details shows the fetch checkbox, and it's on.
+    #[cfg(test)]
+    pub(crate) fn fetch_checked(&self, key_available: bool) -> bool {
+        self.art_offer(key_available) == ArtOffer::Fetch(true)
+    }
+
+    /// Stops the art fetch, if one runs, when the window closes.
+    pub(crate) fn cancel_fetch(&self) {
+        if let Some(token) = &self.fetch_token {
+            token.cancel();
+        }
     }
 
     #[cfg(test)]
@@ -426,15 +497,16 @@ impl Page {
         self.picker_sequence = self.picker_sequence.wrapping_add(1);
         match self.stage {
             Stage::Details => {
-                if self.draft == Draft::default() && !self.art.is_dirty() {
+                if self.draft == Draft::default() {
                     self.action = Some(Action::Choose);
                 } else {
                     self.leave_prompt = true;
                 }
             }
             Stage::Review => self.stage = Stage::Details,
+            Stage::Working if self.fetching => self.skip_fetch(),
             Stage::Working => self.cancel(false),
-            Stage::Target => self.finish(),
+            Stage::Target => return self.finish(),
             Stage::Finished => self.leave(false),
         }
         Task::none()
@@ -493,7 +565,7 @@ impl Page {
         if self.draft.kind == Kind::Native && self.draft.source == Source::Installer {
             return Err("Native environments cannot run a Windows installer".to_owned());
         }
-        self.art.validate()
+        Ok(())
     }
 
     fn review_task(&mut self) -> Task<Event> {
@@ -513,7 +585,7 @@ impl Page {
         )
     }
 
-    fn start(&mut self) -> Task<Event> {
+    fn start(&mut self, key_available: bool) -> Task<Event> {
         if let Err(error) = self.validate() {
             self.error = Some(error);
             return Task::none();
@@ -531,7 +603,8 @@ impl Page {
         let generation = self.generation;
         let paths = self.paths.clone();
         let draft = self.draft.clone();
-        let art = self.art.clone();
+        // The fetch may wait until after Target, by when the key may be gone.
+        self.fetch_art = self.art_offer(key_available) == ArtOffer::Fetch(true);
         let token = Token::new();
         self.token = Some(token.clone());
         self.stage = Stage::Working;
@@ -547,7 +620,6 @@ impl Page {
                         &paths,
                         draft,
                         review,
-                        art,
                         token,
                         |line| {
                             let _ = sender.unbounded_send(Event::Progress(generation, line));
@@ -635,9 +707,54 @@ impl Page {
         Task::batch([Task::run(receiver, |event| event), work])
     }
 
-    fn finish(&mut self) {
+    /// Moves on to Finished, fetching art first the first time once the
+    /// environment registered and the checkbox was on at Create. Everything
+    /// on its way to Finished goes through here.
+    fn finish(&mut self) -> Task<Event> {
+        let registered = self.report.as_ref().is_some_and(|report| report.registered);
+        if registered && self.fetch_art && !self.art_started {
+            return self.start_fetch();
+        }
+        self.show_finished();
+        Task::none()
+    }
+
+    fn show_finished(&mut self) {
         self.stage = Stage::Finished;
         self.token = None;
+    }
+
+    /// Fetches art on Working, with Skip, then reapplies the desktop entry.
+    /// Retry artwork comes here too.
+    fn start_fetch(&mut self) -> Task<Event> {
+        self.art_started = true;
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let token = Token::new();
+        self.fetch_token = Some(token.clone());
+        self.token = None;
+        self.fetching = true;
+        self.stage = Stage::Working;
+        self.status = "Fetching artwork...".to_owned();
+        let paths = self.paths.clone();
+        let name = self.draft.environment_name();
+        let title = self.draft.target_title().unwrap_or_else(|| name.clone());
+        let fetcher = self.fetcher.clone();
+        task::blocking(
+            move || fetch_art(&paths, &name, &title, &token, &fetcher),
+            move |result| Event::ArtFetched(generation, result),
+        )
+    }
+
+    /// The fetch's result lands, and Working leaves, once the worker sees
+    /// the token.
+    fn skip_fetch(&mut self) {
+        if let Some(token) = &self.fetch_token
+            && !token.is_canceled()
+        {
+            token.cancel();
+            self.status = "Skipping artwork...".to_owned();
+        }
     }
 
     fn leave(&mut self, settings: bool) {
@@ -767,7 +884,6 @@ impl Page {
             Event::Name(value) if self.stage == Stage::Details => {
                 self.draft.title = value;
                 self.edited();
-                return self.art.set_title(&self.draft.title).map(Event::Art);
             }
             Event::EditEnvironment if self.stage == Stage::Details => {
                 self.editing_environment = true;
@@ -878,15 +994,11 @@ impl Page {
                         self.error = None;
                         self.review = Some(*review);
                         self.stage = Stage::Review;
-                        return self
-                            .art
-                            .configure(self.paths.clone(), self.draft.title.clone())
-                            .map(Event::Art);
                     }
                     Err(error) => self.error = Some(error),
                 }
             }
-            Event::Create if self.stage == Stage::Review => return self.start(),
+            Event::Create if self.stage == Stage::Review => return self.start(key_available),
             Event::Download(provider) if self.stage == Stage::Review => {
                 return self.download(provider);
             }
@@ -965,7 +1077,7 @@ impl Page {
                 if can_select {
                     self.stage = Stage::Target;
                 } else {
-                    self.finish();
+                    return self.finish();
                 }
             }
             Event::Cancel if self.busy() => self.cancel(false),
@@ -979,7 +1091,7 @@ impl Page {
             }
             Event::Program(exe) if self.stage == Stage::Target => self.target_path = exe,
             Event::AddTarget if self.stage == Stage::Target => return self.add_target(),
-            Event::SkipTarget if self.stage == Stage::Target => self.finish(),
+            Event::SkipTarget if self.stage == Stage::Target => return self.finish(),
             Event::TargetAdded(generation, result)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
@@ -989,7 +1101,7 @@ impl Page {
                             report.playable = true;
                             report.notes.extend(notes);
                         }
-                        self.finish();
+                        return self.finish();
                     }
                     Err(error) => {
                         self.error = Some(error);
@@ -997,24 +1109,30 @@ impl Page {
                     }
                 }
             }
-            Event::ArtApplied(generation, result)
-                if generation == self.generation && self.stage == Stage::Working =>
+            Event::ArtFetched(generation, result)
+                if generation == self.generation && self.fetching =>
             {
-                match result {
-                    Ok(notes) => {
-                        if let Some(report) = &mut self.report {
+                self.fetching = false;
+                let skipped = self
+                    .fetch_token
+                    .take()
+                    .is_some_and(|token| token.is_canceled());
+                if let Some(report) = &mut self.report {
+                    match result {
+                        Ok(notes) => {
                             report.notes.extend(notes);
                             report.art_error = None;
                         }
-                    }
-                    Err(error) => {
-                        if let Some(report) = &mut self.report {
-                            report.art_error = Some(error);
+                        Err(_) if skipped => {
+                            report.art_error = None;
+                            report.notes.push("Artwork skipped".to_owned());
                         }
+                        Err(error) => report.art_error = Some(error),
                     }
                 }
-                self.finish();
+                self.show_finished();
             }
+            Event::SkipFetch if self.fetching => self.skip_fetch(),
             Event::CleanUp
                 if self.stage == Stage::Finished
                     && self.report.as_ref().is_some_and(|r| !r.cleanup_resolved) =>
@@ -1055,16 +1173,16 @@ impl Page {
                         if self.draft.source == Source::Installer {
                             self.stage = Stage::Target;
                         } else {
-                            self.finish();
+                            return self.finish();
                         }
                     }
                     Ok(false) => {
                         self.error = Some("Installer cleanup is still unresolved".to_owned());
-                        self.finish();
+                        return self.finish();
                     }
                     Err(error) => {
                         self.error = Some(error);
-                        self.finish();
+                        return self.finish();
                     }
                 }
             }
@@ -1079,38 +1197,22 @@ impl Page {
                 if self.stage == Stage::Finished
                     && self.report.as_ref().is_some_and(|r| r.art_error.is_some()) =>
             {
-                self.generation = self.generation.wrapping_add(1);
-                let generation = self.generation;
-                let paths = self.paths.clone();
-                let name = self.draft.environment_name();
-                let art = self.art.clone();
-                self.stage = Stage::Working;
-                self.status = "Applying artwork...".to_owned();
-                return task::blocking(
-                    move || {
-                        let result = art.apply(&paths, &name);
-                        let desktop =
-                            desktop::apply(&paths, &name, false).map_err(|error| error.to_string());
-                        match (result, desktop) {
-                            (Ok(notes), Ok(_)) => Ok(notes),
-                            (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
-                            (Err(art_error), Err(desktop_error)) => {
-                                Err(format!("{art_error}; desktop entry: {desktop_error}"))
-                            }
-                        }
-                    },
-                    move |result| Event::ArtApplied(generation, result),
-                );
+                return self.start_fetch();
             }
             Event::Launch(value) if self.stage == Stage::Finished => self.launch = value,
             Event::OpenSettings if self.stage == Stage::Finished => self.leave(true),
             Event::ToLibrary if self.stage == Stage::Finished => self.leave(false),
-            Event::Art(event) if matches!(self.stage, Stage::Details | Stage::Review) => {
-                return self
-                    .art
-                    .update_with_key_availability(event, key_available)
-                    .map(Event::Art);
+            // Never launches: hide on launch would hide the Art page.
+            Event::ChooseArt
+                if self.stage == Stage::Finished
+                    && self.report.as_ref().is_some_and(|r| r.registered) =>
+            {
+                self.action = Some(Action::Art {
+                    name: self.draft.environment_name(),
+                });
             }
+            // Not an edit, so it never makes Back ask about discarding.
+            Event::FetchArt(on) if self.stage == Stage::Details => self.fetch_choice = Some(on),
             Event::Options(result) => match result {
                 Ok(options) => {
                     self.options = Some(options);
@@ -1147,11 +1249,27 @@ impl Page {
         Task::none()
     }
 
-    fn details_form<'a>(
-        &'a self,
-        icon: Option<Element<'a, Event>>,
-        palette: Palette,
-    ) -> Element<'a, Event> {
+    /// The fetch checkbox, or a note on why there's none.
+    fn art_offer_view(&self, palette: Palette, key_available: bool) -> Option<Element<'_, Event>> {
+        let note = match self.art_offer(key_available) {
+            ArtOffer::Unknown => return None,
+            ArtOffer::Fetch(on) => {
+                return Some(
+                    checkbox(on)
+                        .label("Fetch art using the top SteamGridDB match")
+                        .on_toggle(Event::FetchArt)
+                        .into(),
+                );
+            }
+            ArtOffer::Off => "Art to fetch is off in Settings.",
+            ArtOffer::NoKey => {
+                "Add a SteamGridDB key in Settings to fetch art, or choose it after Create."
+            }
+        };
+        Some(text(note).size(12).color(palette.muted).into())
+    }
+
+    fn details_form(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
         let mut form = column![].spacing(10).width(Fill);
         let environment = self.draft.environment_name();
         let mut name_field = column![
@@ -1203,18 +1321,16 @@ impl Page {
             );
         }
         form = form.push(
-            row![name_field]
-                .push(icon)
-                .push(
-                    column![
-                        text("Type"),
-                        pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind)
-                            .wineo_style(palette)
-                    ]
-                    .spacing(4)
-                    .width(180),
-                )
-                .spacing(12),
+            row![
+                name_field,
+                column![
+                    text("Type"),
+                    pick_list(Kind::ALL, Some(self.draft.kind), Event::Kind).wineo_style(palette)
+                ]
+                .spacing(4)
+                .width(180),
+            ]
+            .spacing(12),
         );
         if !environment.is_empty() && self.paths.environment_config(&environment).exists() {
             form = form.push(
@@ -1303,6 +1419,7 @@ impl Page {
                 }
                 form = form.push(summary);
             }
+            form = form.push(self.art_offer_view(palette, key_available));
             form = form.push(
                 ui::secondary_button(
                     if self.additional_wine_options_visible() {
@@ -1377,6 +1494,8 @@ impl Page {
                 }
                 form = form.push(container(options_body).padding(10));
             }
+        } else {
+            form = form.push(self.art_offer_view(palette, key_available));
         }
         form.into()
     }
@@ -1392,6 +1511,7 @@ impl Page {
                 Stage::Details => "New environment",
                 Stage::Review => "Review new environment",
                 Stage::Working if self.downloading.is_some() => "Downloading prerequisite",
+                Stage::Working if self.fetching => "Getting artwork",
                 Stage::Working => "Creating environment",
                 Stage::Target => "Choose game target",
                 Stage::Finished => "Environment created",
@@ -1401,37 +1521,7 @@ impl Page {
         let mut body = column![heading].spacing(10).width(Fill);
         match self.stage {
             Stage::Details => {
-                body = body.push(self.art.banner(palette).map(Event::Art));
-                if let Some(status) = self.art.status_line(palette) {
-                    body = body.push(status.map(Event::Art));
-                }
-                body = body.push(
-                    responsive(move |size| {
-                        let poster = self.art.poster(palette).map(Event::Art);
-                        let icon = self.art.icon(palette).map(Event::Art);
-                        let controls = self.art.controls(palette, key_available).map(Event::Art);
-                        if size.width >= SIDE_POSTER {
-                            // Keeps everything below the fields aligned with them.
-                            row![
-                                poster,
-                                column![self.details_form(Some(icon), palette), controls]
-                                    .spacing(10)
-                            ]
-                            .spacing(16)
-                            .width(Fill)
-                            .into()
-                        } else {
-                            column![
-                                self.details_form(None, palette),
-                                row![poster, icon].spacing(12),
-                                controls
-                            ]
-                            .spacing(16)
-                            .into()
-                        }
-                    })
-                    .height(Shrink),
-                );
+                body = body.push(self.details_form(palette, key_available));
                 footer = Some(
                     ui::accent_base("Next", palette.primary)
                         .on_press(Event::Next)
@@ -1546,8 +1636,12 @@ impl Page {
             }
             Stage::Working => {
                 body = body.push(text(&self.status));
+                body = body.push(if self.fetching {
+                    let skipping = self.fetch_token.as_ref().is_some_and(Token::is_canceled);
+                    ui::secondary_button("Skip", palette)
+                        .on_press_maybe((!skipping).then_some(Event::SkipFetch))
                 // Force stop only makes sense after a cancel, like the other flows.
-                body = body.push(if self.token.as_ref().is_some_and(Token::is_canceled) {
+                } else if self.token.as_ref().is_some_and(Token::is_canceled) {
                     ui::secondary_button("Force stop", palette).on_press(Event::Force)
                 } else {
                     ui::secondary_button("Cancel", palette).on_press(Event::Cancel)
@@ -1661,10 +1755,14 @@ impl Page {
                             row![
                                 ui::secondary_button("Open settings", palette)
                                     .on_press(Event::OpenSettings),
+                                ui::secondary_button("Choose artwork...", palette)
+                                    .on_press(Event::ChooseArt),
                                 ui::secondary_button("Back to library", palette)
                                     .on_press(Event::ToLibrary)
                             ]
-                            .spacing(8),
+                            .spacing(8)
+                            .wrap()
+                            .vertical_spacing(8),
                         );
                     } else {
                         body = body.push(
@@ -1796,6 +1894,7 @@ fn read_options(paths: &Paths) -> Result<Options, String> {
         .map(|entry| entry.name)
         .collect();
     Ok(Options {
+        fetch_kinds: !global.art.fetch.kinds().is_empty(),
         prefix_root: global.prefix_root(paths).map_err(|e| e.to_string())?,
         offer: runner_label::offer(paths, &global),
         runner: global.defaults.runner,
@@ -2106,7 +2205,6 @@ fn perform(
     paths: &Paths,
     draft: Draft,
     review: Review,
-    art: artwork::Draft,
     token: Token,
     mut progress: impl FnMut(String),
     mut log_output: impl FnMut(String),
@@ -2136,7 +2234,6 @@ fn perform(
                 report.registered = true;
                 report.playable = exe.is_some();
                 progress("Native environment registered".to_owned());
-                apply_art(paths, name, &art, &mut report);
                 if let Err(error) = desktop::reconcile_native(paths, &global, &environment) {
                     report.notes.push(error.to_string());
                 }
@@ -2158,8 +2255,6 @@ fn perform(
     });
     let mut hooks = Hooks {
         paths,
-        name,
-        art: &art,
         report: &mut report,
         progress: &mut progress,
         log_output: &mut log_output,
@@ -2236,8 +2331,6 @@ fn perform(
 /// installer.
 struct Hooks<'a, P, L> {
     paths: &'a Paths,
-    name: &'a str,
-    art: &'a artwork::Draft,
     report: &'a mut Report,
     progress: &'a mut P,
     log_output: &'a mut L,
@@ -2279,7 +2372,6 @@ impl<P: FnMut(String), L: FnMut(String)> create::Hooks for Hooks<'_, P, L> {
                 .notes
                 .push("The executable was not found. Add a target in Settings.".to_owned());
         }
-        apply_art(self.paths, self.name, self.art, report);
         if let Err(error) = desktop::reconcile(
             self.paths,
             &created.global,
@@ -2326,10 +2418,27 @@ fn pump_log(path: &std::path::Path, offset: &mut usize, output: &mut impl FnMut(
     }
 }
 
-fn apply_art(paths: &Paths, name: &str, art: &artwork::Draft, report: &mut Report) {
-    match art.apply(paths, name) {
-        Ok(notes) => report.notes.extend(notes),
-        Err(error) => report.art_error = Some(error),
+/// The fetch after creation, then the desktop entry again, since its icon
+/// comes from the art.
+fn fetch_art(
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    token: &Token,
+    fetcher: &Fetcher,
+) -> Result<Vec<String>, String> {
+    let fetched = fetcher(paths, name, title, token);
+    // Skipped, so nothing more is written; a later launch refreshes the entry.
+    if fetched.is_err() && token.is_canceled() {
+        return fetched;
+    }
+    let desktop = desktop::apply(paths, name, false).map_err(|error| error.to_string());
+    match (fetched, desktop) {
+        (Ok(notes), Ok(_)) => Ok(notes),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+        (Err(art_error), Err(desktop_error)) => {
+            Err(format!("{art_error}; desktop entry: {desktop_error}"))
+        }
     }
 }
 
