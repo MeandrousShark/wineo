@@ -3807,8 +3807,13 @@ fn target_has_back_alone_at_the_top_and_its_actions_pinned_at_the_bottom_left() 
         }
         let size = iced::Size::new(900.0, 720.0);
         assert_eq!(click_label(&page, size, "Back"), ["Back"]);
-        assert_eq!(click_label(&page, size, "Confirm"), ["AddTarget"]);
         assert_eq!(click_label(&page, size, "Skip for now"), ["SkipTarget"]);
+        // Confirm is off until there's a program, and then it publishes.
+        assert!(click_label(&page, size, "Confirm").is_empty());
+        let mut page = page;
+        page.target_path = "C:\\Games\\Game\\program-0.exe".to_owned();
+        assert_target_shape(&page, size, "with a path");
+        assert_eq!(click_label(&page, size, "Confirm"), ["AddTarget"]);
     }
 }
 
@@ -3861,5 +3866,181 @@ fn the_fetch_and_finished_pages_fit_small_dialogs() {
                 "{label} at {width}x{height}: {spilled:?}"
             );
         }
+    }
+}
+
+/// `page` on Target after an add that failed with `error`.
+fn failed_add(error: &str) -> Page {
+    let (mut page, _) = on_target(false, 3);
+    page.target_path = "C:\\Games\\Game\\program-0.exe".to_owned();
+    let _ = page.update(Event::AddTarget);
+    assert_eq!(page.stage, Stage::Working);
+    let _ = page.update(Event::TargetAdded(page.generation, Err(error.to_owned())));
+    assert_eq!(page.stage, Stage::Target);
+    page
+}
+
+#[test]
+fn target_confirm_waits_for_a_path_and_its_reasons_stay_in_the_pinned_strip() {
+    use crate::layout_probe::{probe, within};
+    let long = format!("Cannot run {}", "/a-long-folder-name".repeat(8));
+    let (empty, _) = on_target(false, 40);
+    let failed = failed_add(&long);
+    let cut_error = cut(long.clone());
+    assert!(cut_error.ends_with("..."));
+    for (label, page, reason, danger) in [
+        ("empty", &empty, "Choose a program", false),
+        ("failed", &failed, cut_error.as_str(), true),
+    ] {
+        for (width, height) in [(280.0, 240.0), (400.0, 300.0), (900.0, 720.0)] {
+            let case = format!("{label} at {width}x{height}");
+            let size = iced::Size::new(width, height);
+            let inset = iced::Rectangle::new(
+                iced::Point::new(24.0, 24.0),
+                iced::Size::new(width - 48.0, height - 48.0),
+            );
+            let mut view = page.view_with_key_availability(Palette::DARK, true);
+            let probe = probe(&mut view, size);
+            let (viewport, _) = probe.scrollables[0];
+            assert!(viewport.height > 0.0, "{case}: {viewport:?}");
+            let shown = texts(page, size);
+            // Once, and in the strip under the scrolling content.
+            assert_eq!(labeled(&shown, reason).len(), 1, "{case}: {shown:?}");
+            let bounds = last_labeled(&shown, reason);
+            assert!(within(bounds, inset), "{case}: {bounds:?}");
+            assert!(
+                bounds.y >= viewport.y + viewport.height,
+                "{case}: {reason} is pinned, {bounds:?}"
+            );
+            let confirm = last_labeled(&shown, "Confirm");
+            assert!(within(confirm, inset), "{case}: {confirm:?}");
+            let skip = last_labeled(&shown, "Skip for now");
+            assert!(within(skip, inset), "{case}: {skip:?}");
+        }
+        let size = iced::Size::new(900.0, 720.0);
+        // Off with no path; a failed add left the path, so Confirm retries.
+        assert_eq!(
+            click_label(page, size, "Confirm").is_empty(),
+            !danger,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_adds_error_goes_when_target_is_left_or_retried() {
+    let size = iced::Size::new(900.0, 720.0);
+    let error = "Cannot run it";
+    for leave in ["Skip", "Back", "Esc", "Retry"] {
+        let mut page = failed_add(error);
+        assert_eq!(labeled(&texts(&page, size), error).len(), 1, "{leave}");
+        match leave {
+            "Skip" => drop(page.update(Event::SkipTarget)),
+            "Back" => drop(page.update(Event::Back)),
+            "Esc" => {
+                let mut app = app_on(page);
+                let _ = app.update(pressed(esc(), false));
+                let Some(crate::flow::Page::New(boxed)) = app.flow.take() else {
+                    panic!("Esc left the New page");
+                };
+                page = *boxed;
+            }
+            _ => drop(page.update(Event::AddTarget)),
+        }
+        assert!(page.error.is_none(), "{leave}");
+        assert!(labeled(&texts(&page, size), error).is_empty(), "{leave}");
+        if leave != "Retry" {
+            assert_eq!(page.stage, Stage::Finished, "{leave}");
+        }
+    }
+}
+
+#[test]
+fn target_actions_wrap_when_they_run_out_of_room() {
+    use crate::layout_probe::probe;
+    let (mut page, _) = on_target(false, 1);
+    page.target_path = "C:\\Games\\Game\\program-0.exe".to_owned();
+    // Narrower than any dialog, so the row has to wrap to stay inside.
+    let size = iced::Size::new(200.0, 400.0);
+    let mut view = page.view_with_key_availability(Palette::DARK, true);
+    let spilled = probe(&mut view, size).outside(iced::Rectangle::with_size(size));
+    assert!(spilled.is_empty(), "{spilled:?}");
+    let shown = texts(&page, size);
+    let confirm = last_labeled(&shown, "Confirm");
+    let skip = last_labeled(&shown, "Skip for now");
+    assert!(skip.y >= confirm.y + confirm.height, "{confirm:?} {skip:?}");
+}
+
+#[test]
+fn the_architecture_default_follows_a_template_that_sets_one() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    fake_runner(&paths);
+    fs::create_dir_all(paths.templates_dir()).unwrap();
+    fs::write(paths.templates_dir().join("old.toml"), "arch = \"win32\"\n").unwrap();
+    let mut page = offer_page(&paths);
+    let _ = page.update(Event::Options(read_options(&paths)));
+    let _ = page.update(Event::Name("Hollow Knight".to_owned()));
+    let _ = page.update(Event::Runner("fake".to_owned()));
+    let _ = page.update(Event::Template("old".to_owned()));
+    let _ = page.update(Event::Arch(Arch::Win64));
+    settle(&mut page);
+    let arch = |page: &Page| page.checked().map(|review| review.arch);
+    assert_eq!(arch(&page), Ok(Arch::Win64), "{:?}", page.summary);
+    let _ = page.update(Event::ArchDefault);
+    settle(&mut page);
+    assert_eq!(
+        arch(&page),
+        Ok(Arch::Win32),
+        "the template's, not the global"
+    );
+}
+
+#[test]
+fn a_desktop_entry_choice_is_an_edit_open_existing_asks_about() {
+    let mut page = page_with_existing_environment("wine-favorite-only");
+    switch(&mut page, Kind::Windows, Source::Executable);
+    let _ = page.update(Event::Name("wine favorite only".to_owned()));
+    let _ = page.update(Event::OpenExisting);
+    assert!(!page.leave_prompt, "the name alone leaves");
+    let _ = page.take_action();
+    let _ = page.update(Event::Desktop(true));
+    let _ = page.update(Event::OpenExisting);
+    assert!(page.leave_prompt);
+    assert!(page.take_action().is_none());
+}
+
+#[test]
+fn back_and_esc_on_target_after_clean_up_never_fetch_again() {
+    for esc_key in [false, true] {
+        let (mut page, calls) = registered(true);
+        page.draft.source = Source::Installer;
+        page.report.as_mut().unwrap().cleanup_resolved = false;
+        page.stage = Stage::Working;
+        let report = page.report.clone().unwrap();
+        let task = page.update(Event::Done(page.generation, report));
+        let _ = page.update(Event::SkipFetch);
+        drive(&mut page, task, true);
+        assert_eq!(page.stage, Stage::Finished);
+        assert_eq!(call_count(&calls), 1);
+
+        let _ = page.update(Event::CleanUp);
+        let _ = page.update(Event::Cleaned(page.generation, Ok(true)));
+        assert_eq!(page.stage, Stage::Target);
+        if esc_key {
+            let mut app = app_on(page);
+            let _ = app.update(pressed(esc(), false));
+            let Some(crate::flow::Page::New(boxed)) = app.flow.take() else {
+                panic!("Esc left the New page");
+            };
+            page = *boxed;
+        } else {
+            let task = page.update(Event::Back);
+            drive(&mut page, task, true);
+        }
+        assert!(!page.fetching, "{esc_key}");
+        assert_eq!(page.stage, Stage::Finished, "{esc_key}");
+        assert_eq!(call_count(&calls), 1, "{esc_key}");
     }
 }

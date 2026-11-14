@@ -705,7 +705,7 @@ impl Page {
             Stage::Details => self.change(),
             Stage::Working if self.fetching => self.skip_fetch(),
             Stage::Working => self.cancel(false),
-            Stage::Target => return self.finish(),
+            Stage::Target => return self.leave_target(),
             Stage::Finished => self.leave(false),
         }
         Task::none()
@@ -1013,6 +1013,13 @@ impl Page {
         Task::none()
     }
 
+    /// Skips the target. A failed add's message belongs to Target, so it
+    /// doesn't follow the page onto Working or Finished.
+    fn leave_target(&mut self) -> Task<Event> {
+        self.error = None;
+        self.finish()
+    }
+
     fn show_finished(&mut self) {
         self.stage = Stage::Finished;
         self.token = None;
@@ -1071,10 +1078,12 @@ impl Page {
 
     fn add_target(&mut self) -> Task<Event> {
         let exe = self.target_path.trim().to_owned();
+        // Confirm is off while the path is empty, so a Ctrl+Enter press
+        // there has nothing to say that the strip doesn't already.
         if exe.is_empty() {
-            self.error = Some("Choose a program".to_owned());
             return Task::none();
         }
+        self.error = None;
         let paths = self.paths.clone();
         let name = self.draft.environment_name();
         let title = self.draft.target_title();
@@ -1408,7 +1417,7 @@ impl Page {
             }
             Event::Program(exe) if self.stage == Stage::Target => self.target_path = exe,
             Event::AddTarget if self.stage == Stage::Target => return self.add_target(),
-            Event::SkipTarget if self.stage == Stage::Target => return self.finish(),
+            Event::SkipTarget if self.stage == Stage::Target => return self.leave_target(),
             Event::TargetAdded(generation, result)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
@@ -1899,6 +1908,34 @@ impl Page {
         row![create, beside].spacing(12).align_y(Center).into()
     }
 
+    /// Confirm and Skip for now, with why Confirm is off or why the last add
+    /// failed under them, so it's seen without scrolling.
+    fn target_strip(&self, palette: Palette) -> Element<'_, Event> {
+        let empty = self.target_path.trim().is_empty();
+        let actions = row![
+            ui::accent_button("Confirm", palette.primary, !empty, Event::AddTarget),
+            button("Skip for now")
+                .style(move |_, status| crate::chips::link(palette, status))
+                .on_press(Event::SkipTarget),
+        ]
+        .spacing(16)
+        .align_y(Center)
+        .wrap()
+        .vertical_spacing(8);
+        let mut strip = column![actions].spacing(8).width(Fill);
+        let reason = if empty {
+            Some(("Choose a program".to_owned(), palette.muted))
+        } else {
+            self.error
+                .as_ref()
+                .map(|error| (cut(error.clone()), palette.danger))
+        };
+        if let Some((reason, color)) = reason {
+            strip = strip.push(wrapped(reason).size(12).color(color));
+        }
+        strip.into()
+    }
+
     pub(crate) fn view_with_key_availability(
         &self,
         palette: Palette,
@@ -2011,17 +2048,7 @@ impl Page {
                         .label("Create desktop entry")
                         .on_toggle(Event::TargetDesktop),
                 );
-                footer = Some(
-                    row![
-                        ui::accent_base("Confirm", palette.primary).on_press(Event::AddTarget),
-                        button("Skip for now")
-                            .style(move |_, status| crate::chips::link(palette, status))
-                            .on_press(Event::SkipTarget),
-                    ]
-                    .spacing(16)
-                    .align_y(Center)
-                    .into(),
-                );
+                footer = Some(self.target_strip(palette));
             }
             Stage::Finished => {
                 if let Some(report) = &self.report {
@@ -2090,8 +2117,9 @@ impl Page {
                 }
             }
         }
+        // Target's errors show in its pinned strip, where they stay in view.
         if let Some(error) = &self.error
-            && self.stage != Stage::Choose
+            && !matches!(self.stage, Stage::Choose | Stage::Target)
         {
             body = body.push(wrapped(error).color(palette.danger));
         }
