@@ -2237,9 +2237,10 @@ fn a_far_cover_still_without_its_warp_is_evenly_dim_and_flat_mid_glide() {
     select(&mut app, "game-05");
     let _ = app.update(Message::ClosePanel);
     app.motion.system_reduced = false;
-    // Flat art only, as for covers that just came on screen.
+    // Flat art only, as for covers whose warps haven't come back yet: the
+    // strip moves without running the warps a key press would queue.
     red_posters(&mut app);
-    press(&mut app, Named::ArrowLeft);
+    app.strip.go(4, false, None, clock.now());
     frame(&mut app, &mut clock, 16);
     let position = app.strip.position();
     assert!(position > 4.0 && position < 5.0, "{position}");
@@ -2327,6 +2328,50 @@ fn a_name_card_and_a_sections_stack_tilt_like_a_cover() {
     }
     let top = Point::new(back.x + back.width * 0.5, back.y + back.height * 0.06);
     assert_eq!(pixel(&pixels, top)[3], 255, "the stack shows above it");
+}
+
+#[test]
+fn a_glide_warps_the_covers_it_brings_in_but_nothing_large() {
+    let (_root, mut app) = with_art(30, Size::new(2400.0, 1400.0));
+    select(&mut app, "game-05");
+    let _ = app.update(Message::ClosePanel);
+    app.motion.system_reduced = false;
+    red_posters(&mut app);
+    // What resting there queued never ran; only the glide's work counts.
+    app.loading.clear();
+    app.warping.clear();
+    let _ = app.update(Message::KeyWithFocus(
+        Key::Named(Named::ArrowRight),
+        Modifiers::empty(),
+        iced::event::Status::Ignored,
+        false,
+    ));
+    assert!(!app.strip.settled());
+    let grid = |name: &str| (art_of(&app, name), artwork::Kind::Grid);
+    let queued = |name: &str, tilt| app.warping.contains(&(grid(name), false, tilt));
+    // Six past the new middle each way, before they're on screen.
+    assert!(queued("game-12", Tilt::Right));
+    assert!(queued("game-00", Tilt::Left));
+    assert!(!queued("game-13", Tilt::Right), "seven out isn't");
+    // The middle to be, still right of where the strip is drawn.
+    assert!(queued("game-06", Tilt::Right));
+    // Its neighbors warp from their grid posters while it glides, and
+    // nothing large decodes or warps until it rests.
+    assert!(queued("game-05", Tilt::Left) && queued("game-07", Tilt::Right));
+    let kind = app.cover_kind().expect("a large cover");
+    assert!(app.loading.iter().all(|((_, held), _)| *held != kind));
+    assert!(app.warping.iter().all(|((_, held), _, _)| *held != kind));
+    // Its result is kept, and here before the cover shows, it won't fade.
+    let far = grid("game-12");
+    let flat = image::Handle::from_rgba(330, 495, [200, 0, 0, 255].repeat(330 * 495));
+    let _ = app.update(Message::ArtWarped(
+        far.clone(),
+        false,
+        Tilt::Right,
+        crate::tilt::warp(&flat, Tilt::Right),
+    ));
+    assert!(app.images.contains_tilted(&far, false, Tilt::Right));
+    assert_eq!(app.warp_shown(&far.0, Tilt::Right), 1.0);
 }
 
 #[test]
