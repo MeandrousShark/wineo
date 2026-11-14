@@ -5,9 +5,9 @@
 # Usage: scripts/publish-packages.sh VERSION [--only DEST] [--skip DEST]...
 #                                    [--dest-dir DIR]
 #
-# DEST is ppa, overlay, aur, copr, or obs, published in that order. --only and
-# --skip can't be combined. A release with no AUR account runs --skip aur, and
-# the recipes go up later with --only aur.
+# DEST is ppa, overlay, aur, copr, or obs. --only and --skip can't be
+# combined. A release with no AUR account runs --skip aur, and the recipes go
+# up later with --only aur.
 #
 # It waits for the mirror to carry the tag to GitHub, for the tag's release
 # run, and for the Release. Then, before anything is published, it checks that
@@ -29,9 +29,54 @@
 # line in wineo-9999.ebuild. An identity that is already published and built
 # is skipped. PPA, COPR, and OBS count only once the remote build succeeds on
 # every target. A rerun after a timeout goes back to waiting and uploads
-# nothing, and a failed build stays failed until the revision is bumped. A
-# failed destination doesn't stop the later ones; the exit status is non-zero
-# if any failed.
+# nothing, and a failed build stays failed until the revision is bumped.
+#
+# How it runs: the PPA's uploads go first, in the foreground, so its
+# passphrase prompt has the terminal to itself. Then the other destinations,
+# and the PPA's wait for its builds, all run at once in the background, each in
+# a process group of its own. A failed destination doesn't stop the others,
+# and the exit status is 1 if any failed, was interrupted, or was held by
+# another run. --only runs its one destination in the foreground, start to
+# end.
+#
+# Output: the PPA's foreground stage and --only show everything. A background
+# destination shows only its progress lines, prefixed with its name, and its
+# result. Each destination's full output, containers included, goes to its own
+# log, in $XDG_STATE_HOME/wineo-publish/VERSION/logs/STAMP-PID/DEST.log
+# (default ~/.local/state; --dest-dir uses DIR/state), and the logs are kept.
+# The summary prints a log: line under every destination that didn't publish
+# cleanly, and logs: with the run's directory.
+#
+# Walking away: once every upload is out and only remote builds are left, it
+# says so. Stopping then loses nothing, since the builds go on and a rerun goes
+# straight back to waiting. When only the PPA's wait is left, it prints the
+# summary so far.
+#
+# Ctrl+C, a hangup, or TERM stops every destination's process group and this
+# run's containers, records how far each unfinished destination got (before it
+# uploaded, during its upload, or waiting), prints the summary, and exits 1.
+#
+# Two runs of one version: each destination holds a lock,
+# $XDG_STATE_HOME/wineo-publish/VERSION/lock-DEST, for the whole of its run.
+# The PPA's passes from its foreground stage to its wait. A destination that
+# another live run holds is "not run (another run is publishing it)", and the
+# rest go on. A killed run's locks are stale, and the next run takes them over.
+# A lock is a PID and its start time; flock (util-linux) guards only the moment
+# of taking one, for at most 10 seconds.
+#
+# Background destinations can't prompt. Their stdin is /dev/null, git won't
+# ask for credentials, and ssh runs with BatchMode=yes, which replaces any
+# core.sshCommand in git's config. So the overlay's HTTPS push needs a git
+# credential helper (gh auth setup-git), and the AUR's ssh key has to be in an
+# agent or have no passphrase; otherwise they fail at once with a reason.
+# --only runs in the foreground and can still ask. `stty tostop` has to be
+# off, as it is by default, or a background destination stops the first time
+# it prints.
+#
+# Containers are named wineo-publish-PID-DEST-STEP and the tool images
+# wineo-publish-PID-tools-KIND, after main's PID, so one run's leftovers can be
+# found with `podman ps -a --filter name=wineo-publish-PID-`. Every container
+# runs with --init. Needs bash 5.1 or newer.
 #
 # --dest-dir DIR replaces every upload and remote status with a local fake in
 # DIR, and nothing needs credentials. Everything else runs for real, so with
