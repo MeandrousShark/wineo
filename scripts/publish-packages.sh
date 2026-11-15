@@ -35,7 +35,8 @@
 #
 # --dest-dir DIR replaces every upload and remote status with a local fake in
 # DIR, and nothing needs credentials. Everything else runs for real, so with
-# real podman it proves the container steps. Controls, read from DIR/control:
+# real podman it proves the container steps, and on a host with the overlay's
+# or the AUR's own tools it proves those. Controls, read from DIR/control:
 #   fail-upload-DEST       the next upload fails; holding "always", every one
 #   build-DEST             a remote build's state: built, building, failed,
 #                          hidden (uploaded but not visible yet), or unknown.
@@ -60,9 +61,9 @@
 #                                 6D463D92CDF5CDEABD40D6301C369B098EE69509)
 #   CARGO_DENY                    a cargo-deny to use instead of fetching the
 #                                 pinned one
-#   WINEO_PUBLISH_CONTAINERS      if set, the overlay and the AUR use their
-#                                 containers even on a host that has their
-#                                 tools (see host_has below)
+#   WINEO_PUBLISH_CONTAINERS      if not empty, the overlay and the AUR use
+#                                 their containers even on a host that has
+#                                 their tools (see host_has below)
 #   With --dest-dir only, for proving the real steps:
 #   WINEO_PUBLISH_TAG_TARBALL     a stand-in for GitHub's tag tarball
 #   WINEO_PUBLISH_PPA_SIMULATE    if set, sign and run `dput --simulate`
@@ -670,11 +671,26 @@ overlay_status() {
     fi
 }
 
-overlay_local() { host_has pkgdev pkgcheck portageq; }
+# The host's gentoo repository, or nothing if it has none.
+host_gentoo_repo() {
+    local gentoo
+    gentoo=$(portageq get_repo_path / gentoo 2>/dev/null) || return 0
+    if [[ -f $gentoo/profiles/profiles.desc ]]; then echo "$gentoo"; fi
+}
+
+# Everything the stage3 container would bring: the tools, a gentoo repository
+# for them to read, and what gentoo-ebuild.sh fetches with. The ebuild's crate
+# list then comes from the host's pycargoebuild, where the container's is the
+# version gentoo-ebuild.sh pins.
+overlay_local() {
+    host_has pkgdev pkgcheck portageq curl || return 1
+    command -v wget >/dev/null || command -v aria2c >/dev/null || return 1
+    [[ -n $(host_gentoo_repo) ]]
+}
 
 overlay_ready() {
     overlay_local ||
-        need_tool podman "install podman; without pkgdev and pkgcheck here, the manifest runs in a gentoo/stage3 container"
+        need_tool podman "install podman; without Gentoo's tools and repository here, the manifest runs in a gentoo/stage3 container"
 }
 
 # The host's pkgdev and pkgcheck, with a configuration of their own. pkgcore
@@ -686,9 +702,7 @@ overlay_ready() {
 overlay_manifest_local() {
     local identity=$1 clone=$work/overlay/repo tree=$work/overlay/tag distfiles=$work/overlay/distfiles
     local conf=$work/overlay/portage out=$work/overlay/ebuild gentoo profile
-    gentoo=$(portageq get_repo_path / gentoo) || gentoo=
-    [[ -n $gentoo && -f $gentoo/profiles/profiles.desc ]] ||
-        dest_fail "portageq names no gentoo repository on this host"
+    gentoo=$(host_gentoo_repo)
     profile=$(awk '$1 == "amd64" && $3 == "stable" { print $2; exit }' "$gentoo/profiles/profiles.desc")
     [[ -n $profile && -d $gentoo/profiles/$profile ]] ||
         dest_fail "no stable amd64 profile in $gentoo/profiles/profiles.desc"
@@ -738,7 +752,7 @@ overlay_prepare() {
 
 overlay_manifest_container() {
     local identity=$1 clone=$work/overlay/repo tree=$work/overlay/tag distfiles=$work/overlay/distfiles
-    # gentoo-ebuild.sh runs in there too, since pycargoebuild needs wget or
+    # gentoo-ebuild.sh runs in the container too, since pycargoebuild needs wget or
     # aria2, which stage3 has. It doesn't write straight into the overlay,
     # because under a new revision that would overwrite the published ebuild.
     # assume-digests keeps the DIST lines of older ebuilds, whose distfiles

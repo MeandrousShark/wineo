@@ -3,8 +3,8 @@
 # PATH for gh, curl, podman, makepkg, pycargoebuild, gpg, and sleep, and
 # --dest-dir fakes for the destinations, so nothing touches a service and
 # nothing sleeps. WINEO_PUBLISH_CONTAINERS is set unless a scenario clears it,
-# so the overlay and the AUR take their containers whatever this machine has,
-# and the scenarios that clear it get stubs of pkgdev, pkgcheck, and portageq. git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh
+# so the overlay and the AUR take their containers whatever this machine has.
+# The scenarios that clear it run stubs of pkgdev, pkgcheck, and portageq. git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh
 # are the real ones. Each failure case checks the reason as well as the exit
 # status, and that nothing was uploaded past the point where it should stop.
 #
@@ -372,6 +372,8 @@ cat >"$stubs/portageq" <<'EOF'
 [[ "$*" == "get_repo_path / gentoo" && -d $STUB/gentoo ]] || exit 1
 echo "$STUB/gentoo"
 EOF
+# Only has to be there: the pycargoebuild that would call it is a stub.
+printf '#!/bin/bash\n' >"$stubs/wget"
 cat >"$stubs/pkgdev" <<'EOF'
 #!/bin/bash
 echo pkgdev >>"$STUB/tools.log"
@@ -1060,12 +1062,23 @@ check "the host's pkgcheck fails: the reason is missing" said "pkgdev manifest, 
 check "the host's pkgcheck fails: the error is not shown" said 'pkgcheck: an error'
 check "the host's pkgcheck fails: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
 
-# portageq with no gentoo repository to name.
+# The tools with no gentoo repository to read are no use, so the container runs.
 new_scenario
 CONTAINERS='' publish --only overlay
-check "no gentoo repository: exit $rc, not 1" test "$rc" -eq 1
-check "no gentoo repository: the reason is missing" said "portageq names no gentoo repository"
-check "no gentoo repository: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
+check "no gentoo repository: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "no gentoo repository: the container did not run" test "$(containers_run)" -eq 1
+check "no gentoo repository: the host's pkgdev ran" test "$(grep -cx pkgdev "$STUB/tools.log" || true)" -eq 0
+check "no gentoo repository: the overlay lacks the ebuild" \
+    show "$dest/remote/overlay.git" "games-util/wineo/wineo-$version.ebuild"
+
+new_scenario
+host_gentoo
+printf 'amd64 default/linux/amd64/23.0 exp\narm64 default/linux/arm64/23.0 stable\n' \
+    >"$STUB/gentoo/profiles/profiles.desc"
+CONTAINERS='' publish --only overlay
+check "no stable profile: exit $rc, not 1" test "$rc" -eq 1
+check "no stable profile: the reason is missing" said "no stable amd64 profile"
+check "no stable profile: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
 
 new_scenario
 CONTAINERS='' publish --only aur
