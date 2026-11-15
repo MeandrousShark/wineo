@@ -18,6 +18,7 @@ use crate::paths::Paths;
 
 mod cache;
 mod check;
+mod input;
 mod preset;
 mod record;
 mod repair;
@@ -25,6 +26,7 @@ mod sort;
 
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
+pub use input::{Bindings, Conflict, Input, PadAction, PadButton, set_input};
 pub use preset::{
     PRESET_NAME_MAX_CHARS, Preset, create_preset, normalize_preset_name, preset_name_problem,
     preset_name_taken, remove_preset, rename_preset, set_preset,
@@ -117,16 +119,19 @@ pub enum ViewLayout {
     Grid,
     /// One row per game, with columns.
     List,
+    /// One strip of covers, the selected game big in the middle.
+    Coverflow,
 }
 
 impl ViewLayout {
-    pub const ALL: [Self; 2] = [Self::Grid, Self::List];
+    pub const ALL: [Self; 3] = [Self::Grid, Self::List, Self::Coverflow];
 
     /// The value `library.toml` holds.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Grid => "grid",
             Self::List => "list",
+            Self::Coverflow => "coverflow",
         }
     }
 
@@ -134,6 +139,7 @@ impl ViewLayout {
         match value {
             "grid" => Some(Self::Grid),
             "list" => Some(Self::List),
+            "coverflow" => Some(Self::Coverflow),
             _ => None,
         }
     }
@@ -205,6 +211,8 @@ pub struct View {
     pub random: RandomPool,
     pub layout: ViewLayout,
     pub group: GroupBy,
+    /// Whether entering coverflow also fills the screen.
+    pub coverflow_fullscreen: bool,
 }
 
 impl Default for View {
@@ -218,6 +226,7 @@ impl Default for View {
             random: RandomPool::default(),
             layout: ViewLayout::default(),
             group: GroupBy::default(),
+            coverflow_fullscreen: false,
         }
     }
 }
@@ -449,6 +458,7 @@ pub struct Library {
     pub view: View,
     pub appearance: Appearance,
     pub desktop: Desktop,
+    pub input: Input,
     pub environments: BTreeMap<String, Entry>,
     /// Saved views by name, A to Z ignoring case.
     pub presets: Vec<(String, Preset)>,
@@ -689,6 +699,12 @@ pub fn set_layout(paths: &Paths, layout: ViewLayout) -> Result<bool> {
             layout.as_str(),
             ViewLayout::parse,
         )
+    })
+}
+
+pub fn set_coverflow_fullscreen(paths: &Paths, on: bool) -> Result<bool> {
+    edit(paths, |document| {
+        set_view_bool(document, "coverflow_fullscreen", on)
     })
 }
 
@@ -941,6 +957,10 @@ fn read_library(document: &DocumentMut) -> Library {
                 .and_then(Item::as_str)
                 .and_then(GroupBy::parse)
                 .unwrap_or_default(),
+            coverflow_fullscreen: table
+                .get("coverflow_fullscreen")
+                .and_then(Item::as_bool)
+                .unwrap_or_default(),
         })
         .unwrap_or_default();
     let environments = document
@@ -957,6 +977,7 @@ fn read_library(document: &DocumentMut) -> Library {
         view,
         appearance: read_appearance(document),
         desktop: read_desktop(document),
+        input: input::read_input(document),
         environments,
         presets: preset::read_presets(document),
         other_presets: preset::read_other_presets(document),

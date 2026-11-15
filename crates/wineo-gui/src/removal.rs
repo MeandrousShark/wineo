@@ -213,6 +213,8 @@ pub(crate) fn delete_key(app: &mut App, search: bool, captured: bool) -> Task<Me
         && !app.checkup_visible()
         && app.action_menu.is_none()
         && !app.library_menu_open()
+        // A collapsed section's card stands for its section, not a game.
+        && !app.panel_hidden_by_card()
     {
         app.selected
             .clone()

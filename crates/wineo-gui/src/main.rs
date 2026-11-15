@@ -6,6 +6,7 @@ mod app_hide;
 mod app_keys;
 mod app_library;
 mod app_operation;
+mod app_pad;
 mod app_selection;
 mod app_tray;
 mod app_window;
@@ -18,7 +19,10 @@ mod bulk_tags;
 mod checkup;
 mod checkup_work;
 mod chips;
+mod clock;
 mod collapse;
+mod coverflow;
+mod coverflow_widget;
 mod details_fade;
 mod download_progress;
 mod downloads_page;
@@ -33,6 +37,7 @@ mod flow;
 mod focus_button;
 mod fold_row;
 mod fonts;
+mod fullscreen;
 #[cfg(test)]
 mod galaxy_fake;
 #[cfg(test)]
@@ -59,6 +64,7 @@ mod more_menu;
 mod motion;
 mod multi_select;
 mod order;
+mod pad;
 mod panel;
 mod panel_motion;
 mod picker;
@@ -94,6 +100,7 @@ mod test_runners;
 mod test_script;
 mod theme;
 mod tile_title;
+mod tilt;
 mod toolbar_squeeze;
 mod tools_navigation;
 mod tools_page;
@@ -151,6 +158,32 @@ pub(crate) struct App {
     /// The saved `[desktop]`, replaced like `appearance` whenever the global
     /// Settings page reads `library.toml`.
     desktop: wineo_core::library::Desktop,
+    /// The saved `[input]`, replaced like `desktop`.
+    input: wineo_core::library::Input,
+    /// The controllers the reader reports, and what's held on them.
+    pads: pad::Pads,
+    /// The reader thread runs. It starts the first time the Controller
+    /// switch is on and stays for the process, since it can't be woken to
+    /// stop.
+    pad_reading: bool,
+    /// Whether pad presses count; see `app_pad::Gate`. Separate from
+    /// `focused`, which stays true on compositors that never say.
+    pad_gate: app_pad::Gate,
+    /// What `pad_now` reads instead of the clock, so tests set the time.
+    #[cfg(test)]
+    pad_clock: Option<Instant>,
+    /// The hint bar shows, in the labels of the last pad pressed.
+    pad_hint: Option<pad::Style>,
+    /// A held direction's next repeat.
+    pad_wake: wake::Wake,
+    /// When a remap row waiting for a pad button gives up.
+    capture_wake: wake::Wake,
+    /// The waiting row a press just ended, and when, so the same click's
+    /// release on that row stops the wait instead of starting it again.
+    capture_pressed_off: Option<(wineo_core::library::PadAction, Instant)>,
+    /// A press's text field check is in flight, so a repeat waits for it
+    /// rather than queueing another.
+    pad_checking: bool,
     pub(crate) tray: tray::Tray,
     /// The session bus name this app owns for its root, which other
     /// launches call `Show` on. None in tests and without a bus.
@@ -182,8 +215,16 @@ pub(crate) struct App {
     zooming: zoom::Zoom,
     /// Titles hide until a poster is pointed at or selected.
     poster_only: bool,
-    /// Posters in a grid, or one row per game.
+    /// Posters in a grid, one row per game, or coverflow's strip.
     layout: grid_motion::ViewLayout,
+    /// Coverflow's place along its strip.
+    strip: coverflow::Strip,
+    /// Coverflow's art was asked for during this update, and is requested
+    /// once the strip's middle has settled after it.
+    strip_art_due: bool,
+    /// The display's own scale factor, under the interface size, which
+    /// coverflow's large covers decode for.
+    display_scale: f32,
     /// The layout segment's thumb: 0 on the list side, 1 on the grid's.
     layout_thumb: panel_motion::PanelMotion,
     /// Store, platform, and tag filters and Show hidden, which reset each launch.
@@ -279,6 +320,14 @@ pub(crate) struct App {
     /// The grid art `load_visible_art` last found around the viewport, which
     /// eviction leaves alone.
     visible_art: HashSet<ArtKey>,
+    /// The tilts coverflow's strip wants, by the flat art each warps from,
+    /// which eviction keeps and a finished warp must still be among.
+    visible_tilts: HashSet<(ArtKey, art_cache::Tilt)>,
+    /// Tilts being warped off the UI thread.
+    warping: HashSet<(ArtKey, bool, art_cache::Tilt)>,
+    /// When a cover on screen got its first warp each way, so it fades in
+    /// over the flat art rather than popping.
+    warp_arrived: HashMap<(ArtFile, art_cache::Tilt), Instant>,
     /// Caps concurrent art decodes, since a huge source costs far more memory
     /// than its thumbnail.
     decodes: Arc<tokio::sync::Semaphore>,
@@ -302,6 +351,8 @@ pub(crate) struct App {
     scroll_offset: f32,
     scroll_visible_until: Option<Instant>,
     scroll_wake: wake::Wake,
+    /// The wait for coverflow's last resize to settle, aborted by the next.
+    resize_wait: Option<iced::task::Handle>,
     pub(crate) operation: Option<Operation>,
     /// The game an install or uninstall request is being handed to Steam for.
     pub(crate) steam_request: Option<String>,
@@ -358,7 +409,15 @@ pub(crate) struct App {
     /// The cursor at the last input that could open the action menu.
     menu_anchor: iced::Point,
     action_menu_position: iced::Point,
+    /// The size on screen now, which menus and pages lay out against. Full
+    /// screen's size lands here too.
     window_size: iced::Size,
+    /// The last size the window had while windowed, for the tray's reopen.
+    windowed_size: iced::Size,
+    /// Who made the window full screen; see `fullscreen`.
+    fullscreen: fullscreen::Owner,
+    /// `[view] coverflow_fullscreen`, as saved.
+    coverflow_fullscreen: bool,
     close_prompt: bool,
     /// A number key or Esc whose press reached an open flow, so its repeats
     /// are dropped even after the flow closes.
@@ -507,11 +566,15 @@ pub(crate) enum Message {
     SystemMotion(bool),
     TrashBadgeLoaded(sidebar::TrashBadge),
     ArtLoaded(ArtKey, bool, Result<image::Handle, String>),
+    /// A tilt of the art, gray or not, warped off the UI thread.
+    ArtWarped(ArtKey, bool, art_cache::Tilt, Option<image::Handle>),
     Scrolled(scrollable::Viewport),
     GridCardLocated(slot::SlotId, u64, grid_motion::CardBounds),
     /// The scrollbar fade deadline, tagged with the wakeup that scheduled it.
     ScrollIdle(u64),
     Window(window::Id, window::Event),
+    /// The window's mode as read after a resize, and that resize's size.
+    WindowMode(window::Id, window::Mode, iced::Size),
     ThemeChanged(iced::theme::Mode),
     PanelTick(u64, Instant),
     GridTick(u64, Instant),
@@ -611,6 +674,9 @@ pub(crate) enum Message {
     Zoom(zoom::Event),
     Random(random_pick::Event),
     Layout(layout_switch::Event),
+    Strip(coverflow::Event),
+    /// The display's scale factor, asked for when the window opens.
+    DisplayScale(f32),
     /// The toolbar's More button and menu.
     More(more_menu::Event),
     /// Search's icon and drop-down, once it collapses.
@@ -629,6 +695,18 @@ pub(crate) enum Message {
     TrayPlayed(String, Option<jiff::Timestamp>),
     /// Another launch for this root asked for the window.
     Show,
+    /// What the controller reader saw.
+    Pad(pad::PadEvent),
+    /// A held direction's repeat is due, tagged with its wakeup.
+    PadRepeat(u64),
+    /// The key a pad press stands for, and whether a text field had focus
+    /// when it was pressed.
+    PadKey(keyboard::Key, keyboard::Modifiers, bool),
+    /// The pointer moved, which hides the controller hints.
+    PointerMoved,
+    /// A remap row's wait for a pad button may be over, tagged with its
+    /// wakeup.
+    CaptureTimeout(u64),
 }
 
 impl App {
@@ -638,6 +716,17 @@ impl App {
             palette: Palette::DARK,
             appearance: Appearance::default(),
             desktop: wineo_core::library::Desktop::default(),
+            input: wineo_core::library::Input::default(),
+            pads: pad::Pads::default(),
+            pad_reading: false,
+            pad_gate: app_pad::Gate::default(),
+            #[cfg(test)]
+            pad_clock: None,
+            pad_hint: None,
+            pad_wake: wake::Wake::default(),
+            capture_wake: wake::Wake::default(),
+            capture_pressed_off: None,
+            pad_checking: false,
             tray: tray::Tray::default(),
             instance: None,
             left: false,
@@ -654,6 +743,9 @@ impl App {
             zooming: zoom::Zoom::default(),
             poster_only: false,
             layout: grid_motion::ViewLayout::Grid,
+            strip: coverflow::Strip::default(),
+            strip_art_due: false,
+            display_scale: 1.0,
             layout_thumb: panel_motion::PanelMotion::default(),
             filters: order::Filters::default(),
             modifiers: keyboard::Modifiers::empty(),
@@ -712,6 +804,9 @@ impl App {
             images: art_cache::ArtCache::default(),
             loading: HashSet::new(),
             visible_art: HashSet::new(),
+            visible_tilts: HashSet::new(),
+            warping: HashSet::new(),
+            warp_arrived: HashMap::new(),
             decodes: Arc::new(tokio::sync::Semaphore::new(MAX_DECODES)),
             thumbnails: Arc::new(Mutex::new(art_picker::ThumbnailCache::default())),
             failed_images: HashSet::new(),
@@ -728,6 +823,7 @@ impl App {
             scroll_offset: 0.0,
             scroll_visible_until: None,
             scroll_wake: wake::Wake::default(),
+            resize_wait: None,
             operation: None,
             steam_request: None,
             panel_error: None,
@@ -778,6 +874,9 @@ impl App {
             menu_anchor: iced::Point::ORIGIN,
             action_menu_position: iced::Point::ORIGIN,
             window_size: iced::Size::new(1200.0, 800.0),
+            windowed_size: iced::Size::new(1200.0, 800.0),
+            fullscreen: fullscreen::Owner::Nobody,
+            coverflow_fullscreen: false,
             close_prompt: false,
             flow_held_key: None,
             close_quietly: false,
@@ -812,6 +911,8 @@ impl App {
         // Midnight did before themes.
         app.appearance = saved.appearance;
         app.desktop = saved.desktop;
+        app.input = saved.input.clone();
+        app.sync_input();
         app.themes = theme::customs(&wineo_core::themes::list(&app.paths));
         app.sync_palette();
         app.sync_motion();
@@ -821,15 +922,17 @@ impl App {
         // and these hold until its first size arrives.
         let launch = app_window::launch_size(app.interface_size);
         app.window_size = launch;
+        app.windowed_size = launch;
         app.viewport_width = launch.width - sidebar::WIDTH;
         app.viewport_height = launch.height - 50.0;
         app.zoom = saved.view.zoom;
         app.poster_only = saved.view.poster_only;
         app.random_pool = saved.view.random;
         app.layout = saved.view.layout;
+        app.coverflow_fullscreen = saved.view.coverflow_fullscreen;
+        app.fullscreen = app.fullscreen_at_start();
         app.group = saved.view.group;
-        app.layout_thumb
-            .snap(app.layout == grid_motion::ViewLayout::Grid);
+        app.layout_thumb.snap_to(layout_switch::stop(app.layout));
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
         app.problem_read(saved.problem);
@@ -844,7 +947,8 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
-        let (main_window, open) = open_main_window(launch, app.interface_size);
+        let (main_window, open) =
+            open_main_window(launch, app.interface_size, app.fullscreen.is_set());
         app.main_window = Some(main_window);
         (
             app,
@@ -1042,6 +1146,12 @@ impl App {
         } else {
             self.zooming.subscription()
         };
+        // Frames only while the strip shows and moves or fades.
+        let strip = if self.layout == grid_motion::ViewLayout::Coverflow && !self.panel_hidden() {
+            self.strip.subscription()
+        } else {
+            Subscription::none()
+        };
         let collapse = if !self.panel_hidden() && self.collapse.animating() {
             window::frames()
                 .with(self.collapse.generation())
@@ -1118,7 +1228,25 @@ impl App {
             self.details_fade.subscription(),
             zoom,
             collapse,
+            strip,
             layout_thumb,
+            if self.pad_reading {
+                pad::reader::subscription()
+            } else {
+                Subscription::none()
+            },
+            // Only the hints have a pointer move to hear.
+            if self.pad_hint.is_some() {
+                iced::event::listen_with(|event, _, _| {
+                    matches!(
+                        event,
+                        iced::Event::Mouse(iced::mouse::Event::CursorMoved { .. })
+                    )
+                    .then_some(Message::PointerMoved)
+                })
+            } else {
+                Subscription::none()
+            },
             // Only a toast has focus to recheck.
             if self.toast.is_some() {
                 iced::event::listen_with(|event, _, _| focus_input(event))
@@ -1138,11 +1266,15 @@ impl App {
         let rescaled = self.sync_interface_size();
         self.sync_font();
         self.sync_desktop();
+        self.sync_input();
+        self.sync_tool_starts();
+        let fullscreen = self.sync_coverflow_fullscreen();
         if self.tray.service && self.desktop.tray {
             self.sync_tray_menu();
         }
         // One place for every path that changes the selection.
         self.sync_cursor();
+        let strip = self.sync_strip();
         // One place for every path that changes the hover or selection.
         self.sync_hover_fades();
         self.sync_star_pops();
@@ -1199,13 +1331,17 @@ impl App {
             self.toast_wake
                 .arm(self.next_toast_deadline(), Message::ToastTick),
             self.close_wake.arm(self.close_by, Message::CloseWaitOver),
+            self.pad_wake
+                .arm(self.pads.repeat_due(), Message::PadRepeat),
+            self.capture_wake
+                .arm(self.capture_until(), Message::CaptureTimeout),
         ]);
         let rescaled = if rescaled {
             self.refresh_window_size()
         } else {
             Task::none()
         };
-        Task::batch([task, focus, wakes, rescaled])
+        Task::batch([task, strip, focus, wakes, rescaled, fullscreen])
     }
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
@@ -1281,6 +1417,7 @@ impl App {
                 || matches!(message, Message::Mark(event) if event.is_input())
                 || matches!(message, Message::Random(event) if event.is_input())
                 || matches!(message, Message::Layout(event) if event.is_input())
+                || matches!(message, Message::Strip(event) if event.is_input())
                 || matches!(message, Message::More(event) if event.is_input())
                 || matches!(message, Message::Search(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
@@ -1349,6 +1486,11 @@ impl App {
             Message::Zoom(event) => zoom::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
             Message::Layout(event) => layout_switch::update(self, event),
+            Message::Strip(event) => coverflow::update(self, event),
+            Message::DisplayScale(scale) => {
+                self.display_scale = scale;
+                self.load_visible_art()
+            }
             Message::More(event) => more_menu::update(self, event),
             Message::Search(event) => search_drop::update(self, event),
             Message::Tags(event) => action_bar::update(self, event),
@@ -1377,6 +1519,8 @@ impl App {
             }
             Message::ImportToast => self.import_toast_clicked(),
             Message::DoubleClick(name) => self.double_click_card(name),
+            // A card hiding the panel leaves it open for the next game.
+            Message::ClosePanel if self.panel_hidden_by_card() => Task::none(),
             Message::ClosePanel => {
                 self.close_panel();
                 Task::none()
@@ -1466,6 +1610,13 @@ impl App {
             // A closed window's last presses still arrive.
             Message::Pressed if self.main_window.is_none() => Task::none(),
             Message::Pressed | Message::Window(_, window::Event::Focused) => {
+                if matches!(message, Message::Pressed) {
+                    self.pad_gate.press(self.pad_now());
+                    self.pad_hint = None;
+                    self.press_ends_capture();
+                } else {
+                    self.pad_gate.focus();
+                }
                 if self.focused {
                     Task::none()
                 } else {
@@ -1552,6 +1703,9 @@ impl App {
                 Task::none()
             }
             Message::ArtLoaded(key, dimmed, result) => self.art_result(key, dimmed, result)?,
+            Message::ArtWarped(key, dimmed, tilt, warped) => {
+                self.art_warped(key, dimmed, tilt, warped)
+            }
             Message::Scrolled(viewport) => self.grid_scrolled(viewport),
             Message::GridCardLocated(slot, generation, bounds) => {
                 self.grid_card_located(slot, generation, bounds)?
@@ -1568,10 +1722,24 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Window(
-                _,
-                window::Event::Resized(size) | window::Event::Opened { size, .. },
-            ) => self.window_resized(size),
+            Message::Window(id, window::Event::Resized(size)) => {
+                let resized = self.window_resized(size);
+                Task::batch([resized, self.read_window_mode(id, size)])
+            }
+            // The mode isn't read here: a window opening full screen may not
+            // have been configured yet, and would read as windowed.
+            Message::Window(id, window::Event::Opened { size, .. }) => Task::batch([
+                self.window_resized(size),
+                window::scale_factor(id).map(Message::DisplayScale),
+            ]),
+            Message::WindowMode(id, mode, size) => {
+                self.window_mode_read(id, mode, size);
+                Task::none()
+            }
+            Message::Window(_, window::Event::Rescaled(scale)) => {
+                self.display_scale = scale;
+                self.load_visible_art()
+            }
             Message::Window(_, window::Event::CloseRequested) => self.close_requested(),
             Message::CloseWaitOver(generation) => {
                 if self.close_wake.fired(generation) && self.close_by.is_some() {
@@ -1582,6 +1750,10 @@ impl App {
             }
             Message::Window(_, window::Event::Unfocused) => {
                 self.focused = false;
+                self.close_pad_gate();
+                if let Some(page) = &mut self.settings {
+                    page.capture = None;
+                }
                 // Keys released elsewhere never report here, so Ctrl
                 // can't be trusted to still be down.
                 self.modifiers = keyboard::Modifiers::empty();
@@ -1630,6 +1802,13 @@ impl App {
                 }
                 Task::none()
             }
+            // A global key: no page or menu sees it, and the close prompt
+            // above has already taken the input.
+            Message::Key(keyboard::Key::Named(keyboard::key::Named::F11), modifiers, _)
+                if !(modifiers.control() || modifiers.alt() || modifiers.logo()) =>
+            {
+                self.toggle_fullscreen()
+            }
             Message::Key(key, modifiers, _) if self.hook_stop_confirm.is_some() => {
                 self.hook_stop_key(&key, modifiers)
             }
@@ -1669,6 +1848,16 @@ impl App {
                 self.flow_key(key, modifiers, status)?
             }
             Message::Key(key, modifiers, status) => self.page_key(key, modifiers, status)?,
+            Message::Pad(event) => self.pad_event(event),
+            Message::PadRepeat(generation) => self.pad_repeat(generation),
+            Message::PadKey(key, modifiers, text_focused) => {
+                self.pad_key(key, modifiers, text_focused)
+            }
+            Message::CaptureTimeout(generation) => self.capture_timeout(generation),
+            Message::PointerMoved => {
+                self.pad_hint = None;
+                Task::none()
+            }
             // `update_message` turns every repeat into a `Key` or drops it.
             Message::KeyRepeat(..) => Task::none(),
             Message::KeyWithFocus(key, modifiers, status, focused) => self.handle_key(
@@ -1741,7 +1930,7 @@ impl App {
                 if self.selected.as_deref() != Some(&name) {
                     self.close_checkup();
                 }
-                self.selected = Some(name);
+                self.select_game(name);
                 self.open_settings()
             }
             Message::Flow(generation, event) => self.flow_update(generation, event),
@@ -1894,9 +2083,9 @@ impl App {
     /// Drops the visible cards, or fades them with reduced motion. The panel
     /// closes without animating so the cards fall from their closed slots.
     fn start_collapse(&mut self, now: Instant) {
-        // The posters fall; a list has none.
+        // The grid's posters fall; the list and the strip have no grid.
         if !self.collapse.idle()
-            || self.layout == grid_motion::ViewLayout::List
+            || self.layout != grid_motion::ViewLayout::Grid
             || self.section != sidebar::Section::Library
             || self.panel_hidden()
             || self.filtered().is_empty()
@@ -2171,8 +2360,12 @@ fn icon_rgba(size: Option<u32>) -> Option<(Vec<u8>, u32, u32)> {
 pub(crate) fn open_main_window(
     size: iced::Size,
     interface_size: u16,
+    fullscreen: bool,
 ) -> (window::Id, Task<Message>) {
-    let (id, open) = window::open(window_settings(size, interface_size));
+    let (id, open) = window::open(window::Settings {
+        fullscreen,
+        ..window_settings(size, interface_size)
+    });
     (id, open.discard())
 }
 

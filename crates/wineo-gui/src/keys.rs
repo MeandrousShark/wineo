@@ -26,6 +26,12 @@ pub(crate) enum Action {
     MarkAll,
     MarkSelected,
     ToggleLayout,
+    /// Home: the first game.
+    First,
+    /// End: the last game.
+    Last,
+    /// PageUp and PageDown: a screenful of rows up or down.
+    Page(Direction),
 }
 
 pub(crate) fn action(
@@ -85,8 +91,23 @@ pub(crate) fn action(
         Key::Named(Named::ArrowUp) if !search_focused => Action::Move(Direction::Up),
         Key::Named(Named::ArrowDown) if !search_focused => Action::Move(Direction::Down),
         Key::Named(Named::Enter) if !search_focused => Action::OpenOrPlay,
+        // A focused text field takes Home and End for its own cursor, so
+        // these wait for the grid like the arrows do.
+        Key::Named(Named::Home) if !search_focused && !jump_modified(modifiers) => Action::First,
+        Key::Named(Named::End) if !search_focused && !jump_modified(modifiers) => Action::Last,
+        Key::Named(Named::PageUp) if !search_focused && !jump_modified(modifiers) => {
+            Action::Page(Direction::Up)
+        }
+        Key::Named(Named::PageDown) if !search_focused && !jump_modified(modifiers) => {
+            Action::Page(Direction::Down)
+        }
         _ => Action::None,
     }
+}
+
+/// Shift is allowed, as for the letter keys, so Caps Lock doesn't matter.
+fn jump_modified(modifiers: Modifiers) -> bool {
+    modifiers.control() || modifiers.alt() || modifiers.logo()
 }
 
 impl App {
@@ -97,13 +118,7 @@ impl App {
         search_focused: bool,
         captured: bool,
     ) -> Task<Message> {
-        if self.close_prompt
-            || self.flow.is_some()
-            || self.removal.is_some()
-            || self.trash_confirm_open()
-            || self.downloads_confirm_open()
-            || self.hook_stop_confirm.is_some()
-        {
+        if self.dialog_open() {
             return Task::none();
         }
         if self.settings.is_some() {
@@ -170,7 +185,7 @@ impl App {
                 .chain(walk);
             }
             // Down only leaves when there's a card to go to.
-            if key == Key::Named(Named::ArrowDown) && !self.grid_places().ids.is_empty() {
+            if key == Key::Named(Named::ArrowDown) && !self.nowhere_to_go() {
                 self.search_open = false;
             }
         }
@@ -212,6 +227,10 @@ impl App {
                         | Named::ArrowUp
                         | Named::ArrowDown
                         | Named::Enter
+                        | Named::Home
+                        | Named::End
+                        | Named::PageUp
+                        | Named::PageDown
                 )
             )
         {
@@ -234,12 +253,14 @@ impl App {
             self.clear_marks();
             return Task::none();
         }
+        let coverflow = self.layout == crate::grid_motion::ViewLayout::Coverflow;
         match action(
             &key,
             modifiers,
             search_focused,
             self.panel_log_visible() || self.version_visible(),
-            self.panel_open,
+            // A panel a card hides stays open for the next game.
+            self.panel_open && !self.panel_hidden_by_card(),
             self.search.is_empty(),
         ) {
             Action::None => Task::none(),
@@ -263,21 +284,27 @@ impl App {
                 self.interrupt_zoom();
                 // With nothing in view there's nowhere to go, so the kept
                 // selection and the search's focus both stay.
-                if self.grid_places().ids.is_empty() {
+                if self.nowhere_to_go() {
                     return Task::none();
                 }
-                let old = self.selected.clone();
-                if let Some(first) = self.grid_places().ids.first() {
-                    self.set_cursor(first.clone());
-                }
-                if self.selected != old {
-                    self.selection_changed();
-                }
+                let landed = if coverflow {
+                    self.step_strip(|_, _| Some(0))
+                } else {
+                    let old = self.selected.clone();
+                    if let Some(first) = self.grid_places().ids.first() {
+                        self.set_cursor(first.clone());
+                    }
+                    if self.selected != old {
+                        self.selection_changed();
+                    }
+                    Task::none()
+                };
                 iced::advanced::widget::operate(
                     iced::advanced::widget::operation::focusable::unfocus::<()>(),
                 )
                 .discard()
                 .chain(Task::batch([
+                    landed,
                     self.scroll_selection(),
                     self.load_visible_art(),
                     self.load_panel_art(),
@@ -287,47 +314,36 @@ impl App {
                         .map(Message::SearchFocusChanged),
                 )
             }
+            Action::Move(direction) if coverflow => self
+                .step_strip(|places, current| crate::coverflow::walk(places, current, direction)),
             Action::Move(direction) => {
-                self.interrupt_zoom();
-                let old = self.selected.clone();
-                let places = self.grid_places();
-                // A selection the filters hide stays put when there's
-                // nothing to move to.
-                if places.ids.is_empty() {
-                    return Task::none();
-                }
-                // The arrows walk slots, so stepping onto another copy of
-                // the selected game moves the cursor and leaves the panel.
-                // A cursor on a header starts from there.
-                let current = match self.header_cursor().and_then(|key| {
-                    places
-                        .headers
-                        .iter()
-                        .position(|place| &place.header.key == key)
-                }) {
-                    Some(header) => Some(Spot::Header(header)),
-                    None => self.selected_index(&places).map(Spot::Card),
-                };
-                if let Some(next) = walk(&places, current, direction) {
-                    self.set_cursor(places.ids[next].clone());
-                }
-                if self.selected != old {
-                    self.selection_changed();
-                }
-                Task::batch([
-                    self.scroll_selection(),
-                    self.load_visible_art(),
-                    self.load_panel_art(),
-                ])
+                self.step_cursor(|places, current| walk(places, current, direction))
+            }
+            Action::First if coverflow => {
+                self.step_strip(|places, _| (!places.strip.is_empty()).then_some(0))
+            }
+            Action::First => self.step_cursor(|places, _| (!places.ids.is_empty()).then_some(0)),
+            Action::Last if coverflow => {
+                self.step_strip(|places, _| places.strip.len().checked_sub(1))
+            }
+            Action::Last => self.step_cursor(|places, _| places.ids.len().checked_sub(1)),
+            Action::Page(direction) if coverflow => {
+                let covers = self.covers_per_screen();
+                self.step_strip(|places, current| {
+                    crate::coverflow::page(places, current, direction, covers)
+                })
+            }
+            Action::Page(direction) => {
+                let rows = self.rows_per_screen();
+                self.step_cursor(|places, current| page(places, current, direction, rows))
             }
             // Same rule as Enter: only a shown card, and only when nothing
             // else has the keys.
             Action::ToggleFavorite => {
                 if captured
-                    || self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
+                    || self.panel_takes_keys()
                     || !self.selected_shown()
+                    || self.panel_hidden_by_card()
                 {
                     return Task::none();
                 }
@@ -339,11 +355,7 @@ impl App {
             // Same scope as favoriting: nothing else has the keys. A card
             // doesn't need to be selected.
             Action::PickRandom => {
-                if captured
-                    || self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
-                {
+                if captured || self.panel_takes_keys() {
                     return Task::none();
                 }
                 self.update(Message::Random(crate::random_pick::Event::Pick))
@@ -368,7 +380,11 @@ impl App {
             // whether anything has focus is asked rather than read from the
             // capture.
             Action::MarkSelected => {
-                if captured || !self.marking_keys_free() || !self.selected_shown() {
+                if captured
+                    || !self.marking_keys_free()
+                    || !self.selected_shown()
+                    || self.panel_hidden_by_card()
+                {
                     return Task::none();
                 }
                 iced::advanced::widget::operate(
@@ -377,11 +393,15 @@ impl App {
                 .map(|count| Message::SpaceFocus(count.focused.is_some()))
             }
             Action::OpenOrPlay => {
-                if self.action_menu.is_some()
-                    || self.version_visible()
-                    || (self.checkup_visible() && !self.panel_log_visible())
-                    || !self.selected_shown()
+                // A collapsed section's card opens it. Its games aren't
+                // shown, so this comes before the shown selection's check.
+                if self.panel_hidden_by_card()
+                    && self.action_menu.is_none()
+                    && let Some(key) = self.header_cursor().cloned()
                 {
+                    return self.open_collapsed(key);
+                }
+                if self.panel_takes_keys() || !self.selected_shown() {
                     Task::none()
                 } else if self.panel_open {
                     self.start_selected()
@@ -392,6 +412,70 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Moves the cursor to the slot `pick` chooses from where it is now, a
+    /// card or a section's header, and brings it into view.
+    fn step_cursor(
+        &mut self,
+        pick: impl FnOnce(&crate::grid_motion::Places, Option<Spot>) -> Option<usize>,
+    ) -> Task<Message> {
+        self.interrupt_zoom();
+        let old = self.selected.clone();
+        let places = self.grid_places();
+        // A selection the filters hide stays put when there's nothing to
+        // move to.
+        if places.ids.is_empty() {
+            return Task::none();
+        }
+        // The arrows walk slots, so stepping onto another copy of the
+        // selected game moves the cursor and leaves the panel. A cursor on
+        // a header starts from there.
+        let current = match self.header_cursor().and_then(|key| {
+            places
+                .headers
+                .iter()
+                .position(|place| &place.header.key == key)
+        }) {
+            Some(header) => Some(Spot::Header(header)),
+            None => self.selected_index(&places).map(Spot::Card),
+        };
+        if let Some(next) = pick(&places, current) {
+            self.set_cursor(places.ids[next].clone());
+        }
+        if self.selected != old {
+            self.selection_changed();
+        }
+        Task::batch([
+            self.scroll_selection(),
+            self.load_visible_art(),
+            self.load_panel_art(),
+        ])
+    }
+
+    /// How many rows PageUp and PageDown move: the rows that fit in the
+    /// view at once, at least one.
+    fn rows_per_screen(&self) -> usize {
+        let gap = crate::grid_motion::row_gap(self.layout);
+        let tallest = self
+            .grid_places()
+            .slots
+            .iter()
+            .map(|slot| slot.height)
+            .fold(0.0, f32::max);
+        if tallest <= 0.0 {
+            return 1;
+        }
+        ((self.viewport_height + gap) / (tallest + gap))
+            .floor()
+            .max(1.0) as usize
+    }
+
+    /// Nothing is in view to move to: no card, and in coverflow no
+    /// collapsed section's card either.
+    fn nowhere_to_go(&self) -> bool {
+        let places = self.grid_places();
+        places.ids.is_empty() && places.strip.is_empty()
     }
 
     /// The selected game has a copy in view: shown, and not only in
@@ -417,6 +501,11 @@ impl App {
     /// Brings the card the cursor is on into view, now or, while the grid
     /// moves, once it settles.
     pub(crate) fn scroll_selection(&mut self) -> Task<Message> {
+        // The strip has no scroll: the cursor's stop goes to the middle.
+        if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+            self.center_strip();
+            return Task::none();
+        }
         let Some(name) = self.selected.clone() else {
             return Task::none();
         };
@@ -504,6 +593,28 @@ pub(crate) fn walk(
                 .total_cmp(&(b.center_x() - middle).abs())
         })
         .map(|(index, _)| index)
+}
+
+/// The slot PageUp or PageDown moves the cursor to: `rows` steps of the
+/// arrow, stopping at the first or last row rather than wrapping.
+pub(crate) fn page(
+    places: &crate::grid_motion::Places,
+    current: Option<Spot>,
+    direction: Direction,
+    rows: usize,
+) -> Option<usize> {
+    let mut at = walk(places, current, direction)?;
+    // With nothing under the cursor the first press lands on the first
+    // card, like an arrow, instead of going on from there.
+    if current.is_none() {
+        return Some(at);
+    }
+    // The arrow stays on the card at the first or last row, so more steps
+    // than rows left end there.
+    for _ in 1..rows {
+        at = walk(places, Some(Spot::Card(at)), direction).unwrap_or(at);
+    }
+    Some(at)
 }
 
 /// The arrows on one uniform grid, as the art picker's are. `walk` moves
@@ -594,3 +705,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod jump_tests;

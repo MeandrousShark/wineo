@@ -1288,7 +1288,7 @@ fn walk_places(rows: &[(&str, &[&str])], columns: usize, mode: ViewLayout) -> Pl
     }
     let count = ids.len();
     let (height, width) = match mode {
-        ViewLayout::Grid => (layout.poster_height(), layout.card_width()),
+        ViewLayout::Grid | ViewLayout::Coverflow => (layout.poster_height(), layout.card_width()),
         ViewLayout::List => (crate::list_view::ROW_HEIGHT, 700.0),
     };
     Places::sectioned(

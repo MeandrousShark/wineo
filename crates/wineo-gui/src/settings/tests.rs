@@ -3884,4 +3884,12 @@ mod key_rows;
 
 mod desktop;
 
+mod input;
+
+mod fullscreen_switch;
+
+mod controller;
+
+mod remap;
+
 mod narrow_rows;

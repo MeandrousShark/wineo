@@ -101,10 +101,13 @@ pub(crate) struct Texts {
     /// table counts, since favorites and the library's view write the file
     /// too.
     pub(crate) appearance: Option<Appearance>,
-    /// `[steam] auto_import` and `[desktop]` as read, on the global page,
-    /// which are the only other parts of that file the page shows.
+    /// `[steam] auto_import`, `[desktop]`, `[view] coverflow_fullscreen`, and
+    /// `[input]` with its buttons, as read, on the global page, which are the
+    /// only other parts of that file the page shows.
     pub(crate) auto_import: Option<bool>,
     pub(crate) desktop: Option<library::Desktop>,
+    pub(crate) coverflow_fullscreen: Option<bool>,
+    pub(crate) input: Option<library::Input>,
     /// The custom theme files as read, on the global page.
     pub(crate) themes: Option<Themes>,
 }
@@ -117,6 +120,8 @@ impl Texts {
             appearance: None,
             auto_import: None,
             desktop: None,
+            coverflow_fullscreen: None,
+            input: None,
             themes: None,
         }
     }
@@ -128,6 +133,8 @@ impl Texts {
             appearance: Some(library.appearance),
             auto_import: Some(library.steam.auto_import),
             desktop: Some(library.desktop),
+            coverflow_fullscreen: Some(library.view.coverflow_fullscreen),
+            input: Some(library.input),
             themes: Some(themes::list(paths)),
         }
     }
@@ -165,6 +172,8 @@ pub(crate) fn snapshot_global(paths: &Paths) -> Snapshot {
             let mut values = global::Values::from_config(&config, texts.global.as_deref());
             values.auto_import = texts.auto_import.unwrap_or_default();
             values.desktop = texts.desktop.unwrap_or_default();
+            values.coverflow_fullscreen = texts.coverflow_fullscreen.unwrap_or_default();
+            values.input = texts.input.clone().unwrap_or_default();
             let (runners, _) = runner_choices(paths, &config, &config.defaults.runner);
             Content::Global(Box::new(GlobalLoaded {
                 values,
@@ -578,9 +587,9 @@ pub(crate) fn save_global(paths: &Paths, edits: &Edits) -> Result<Report, String
 /// One Save on the global page: General's edits to `config.toml`, then the
 /// Appearance tab's theme files (new, edited, renamed), its `[appearance]` in
 /// `library.toml`, and last the theme deletes, so `library.toml` never names
-/// a file that's gone. `auto_import` and `[desktop]` go to `library.toml`
-/// after General's edits. Each part runs only when it has edits, and a failure
-/// stops the rest.
+/// a file that's gone. `auto_import`, `[desktop]`, `coverflow_fullscreen`,
+/// and `[input]` go to `library.toml` after General's edits. Each part runs
+/// only when it has edits, and a failure stops the rest.
 pub(crate) fn save_global_page(
     paths: &Paths,
     edits: &Edits,
@@ -590,6 +599,8 @@ pub(crate) fn save_global_page(
     let LibraryEdits {
         auto_import,
         desktop,
+        coverflow_fullscreen,
+        input,
     } = library_edits.into();
     let mut report = Report {
         lines: Vec::new(),
@@ -611,6 +622,18 @@ pub(crate) fn save_global_page(
     }
     if let Some(desktop) = desktop
         && let Err(error) = library::set_desktop(paths, &desktop)
+    {
+        library_refused(paths, &error, &mut report);
+        return Ok(report);
+    }
+    if let Some(on) = coverflow_fullscreen
+        && let Err(error) = library::set_coverflow_fullscreen(paths, on)
+    {
+        library_refused(paths, &error, &mut report);
+        return Ok(report);
+    }
+    if let Some(input) = input
+        && let Err(error) = library::set_input(paths, &input)
     {
         library_refused(paths, &error, &mut report);
         return Ok(report);
@@ -781,15 +804,20 @@ pub(crate) fn check_task(
 }
 
 /// General's edits that go to `library.toml` rather than the config file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LibraryEdits {
     pub(crate) auto_import: Option<bool>,
     pub(crate) desktop: Option<library::Desktop>,
+    pub(crate) coverflow_fullscreen: Option<bool>,
+    pub(crate) input: Option<library::Input>,
 }
 
 impl LibraryEdits {
     pub(crate) fn is_empty(&self) -> bool {
-        self.auto_import.is_none() && self.desktop.is_none()
+        self.auto_import.is_none()
+            && self.desktop.is_none()
+            && self.coverflow_fullscreen.is_none()
+            && self.input.is_none()
     }
 }
 
@@ -799,6 +827,8 @@ impl From<Option<bool>> for LibraryEdits {
         Self {
             auto_import,
             desktop: None,
+            coverflow_fullscreen: None,
+            input: None,
         }
     }
 }

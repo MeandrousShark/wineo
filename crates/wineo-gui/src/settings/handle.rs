@@ -225,6 +225,13 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::GlobalCoverflowFullscreen(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.coverflow_fullscreen = on;
+                }
+                Step::none()
+            }
             Event::GlobalTray(on) => {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {
@@ -263,6 +270,22 @@ impl Page {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {
                     editor.form.draft.desktop.on_stop = on_stop;
+                }
+                Step::none()
+            }
+            Event::ResetButtons => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.reset_buttons();
+                }
+                Step::none()
+            }
+            // The app starts a capture, since it holds the clock.
+            Event::CaptureButton(_) => Step::none(),
+            Event::GlobalController(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.input.controller = on;
                 }
                 Step::none()
             }
@@ -444,10 +467,13 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalCoverflowFullscreen(_)
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
+                    | Event::GlobalController(_)
+                    | Event::ResetButtons
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
                     | Event::EnvValue(..)
@@ -470,10 +496,14 @@ impl Page {
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
                     | Event::GlobalAutoImport(_)
+                    | Event::GlobalCoverflowFullscreen(_)
                     | Event::GlobalTray(_)
                     | Event::GlobalClose(_)
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
+                    | Event::GlobalController(_)
+                    | Event::ResetButtons
+                    | Event::CaptureButton(_)
                     | Event::Appearance(_)
             )
         {
@@ -517,6 +547,8 @@ impl Page {
                         disk.appearance = snapshot.texts.appearance;
                         disk.auto_import = snapshot.texts.auto_import;
                         disk.desktop = snapshot.texts.desktop;
+                        disk.coverflow_fullscreen = snapshot.texts.coverflow_fullscreen;
+                        disk.input = snapshot.texts.input;
                         disk.themes = snapshot.texts.themes;
                     }
                 } else {

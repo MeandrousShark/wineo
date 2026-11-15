@@ -297,7 +297,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.selected.as_deref() != Some(&name) {
                 app.close_checkup();
             }
-            app.selected = Some(name.clone());
+            app.select_game(name.clone());
             app.panel_open = true;
             app.target = app
                 .cards
@@ -677,7 +677,8 @@ impl App {
     pub(crate) fn checkup_scope(&self) -> Option<Scope> {
         match self.section {
             crate::sidebar::Section::Checkup => Some(Scope::Global),
-            crate::sidebar::Section::Library if self.panel_open => {
+            // A panel a coverflow card hides shows none of its views.
+            crate::sidebar::Section::Library if self.panel_open && !self.panel_hidden_by_card() => {
                 let scope = Scope::Environment(self.selected.clone()?);
                 self.checkups
                     .get(&scope)

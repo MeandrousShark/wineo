@@ -161,7 +161,7 @@ impl App {
         if self.selected.as_deref() != Some(&name) {
             self.close_checkup();
         }
-        self.selected = Some(name.clone());
+        self.select_game(name.clone());
         let was_open = self.panel_open;
         self.panel_open = true;
         if !was_open {

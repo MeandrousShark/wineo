@@ -295,8 +295,12 @@ impl App {
             _ => self.chosen_target(card),
         }
     }
+    /// The panel's log shows: open, and in a panel that isn't hidden by a
+    /// coverflow card.
     pub(crate) fn panel_log_visible(&self) -> bool {
-        self.log_view && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
+        self.log_view
+            && self.checkup_log_scope != Some(crate::checkup::Scope::Global)
+            && !self.panel_hidden_by_card()
     }
     /// Closes the log, and the Version view, which takes the same place in
     /// the panel, so whatever leaves one leaves both.
@@ -376,6 +380,9 @@ impl App {
         .then_some(target)
     }
     fn begin_start(&mut self, name: String, target: String) -> Task<Message> {
+        // The game takes the pad from here; the gate opens on the next real
+        // focus.
+        self.close_pad_gate();
         let token = Token::new();
         let install_done = Token::new();
         self.operation = Some(Operation {
@@ -423,6 +430,8 @@ impl App {
         ])
     }
     fn ask_steam(&mut self, name: String, action: steam_install::Action) -> Task<Message> {
+        // Steam comes forward, like a launch.
+        self.close_pad_gate();
         self.steam_request = Some(name.clone());
         self.panel_error = None;
         self.panel_note = None;

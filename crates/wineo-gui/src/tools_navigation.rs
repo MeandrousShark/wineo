@@ -217,7 +217,7 @@ impl App {
         self.trash_page.cancel_review();
         self.downloads_page.cancel_review();
         if let Some(name) = name {
-            self.selected = Some(name.to_owned());
+            self.select_game(name.to_owned());
         }
     }
 

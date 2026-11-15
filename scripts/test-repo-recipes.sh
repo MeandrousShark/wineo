@@ -56,6 +56,7 @@ suse_name() {
         libwayland-egl) echo libwayland-egl1 ;;
         libglvnd-egl) echo libglvnd ;;
         vulkan-loader) echo libvulkan1 ;;
+        systemd-libs) echo libudev1 ;;
         ca-certificates) echo ca-certificates-mozilla ;;
         *) return 1 ;;
     esac
@@ -234,9 +235,10 @@ check "the control has no cargo floor of $deb_floor" \
     has "$(build_depends)" "cargo@RUST@ (>= $deb_floor)"
 check "the spec has no cargo floor of $deb_floor" \
     has_line "$spec" "BuildRequires:  cargo >= $deb_floor"
-check "the control does not need liblzma-dev and pkg-config" \
-    test "$(build_depends | grep -cxE 'liblzma-dev|pkg-config')" -eq 2
+check "the control does not need liblzma-dev, libudev-dev, and pkg-config" \
+    test "$(build_depends | grep -cxE 'liblzma-dev|libudev-dev|pkg-config')" -eq 3
 check "the spec does not need liblzma" has_line "$spec" 'BuildRequires:  pkgconfig(liblzma)'
+check "the spec does not need libudev" has_line "$spec" 'BuildRequires:  pkgconfig(libudev)'
 
 # Builds are offline, run no tests, and install through stage-install.sh.
 check "debian/rules does not build with --frozen" grep -q -- '--release --frozen' "$rules"

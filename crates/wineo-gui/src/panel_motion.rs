@@ -46,6 +46,21 @@ impl PanelMotion {
         self.move_to(1.0, now);
     }
 
+    /// Slides to `to`, for a thumb that rests at more than two stops. The
+    /// time scales with the distance, so one stop takes a full slide.
+    pub(crate) fn slide_to(&mut self, to: f32, now: Instant) {
+        self.exit_target = None;
+        self.move_to(to, now);
+    }
+
+    /// Rests at `at` at once.
+    pub(crate) fn snap_to(&mut self, at: f32) {
+        self.progress = at;
+        self.transition = None;
+        self.exit_target = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     /// Starts the exit, drawing `exit_target` (card, target) until it ends.
     pub(crate) fn close(&mut self, now: Instant, exit_target: Option<(String, String)>) {
         self.move_to(0.0, now);

@@ -16,6 +16,8 @@ pub enum Kind {
     Grid,
     Hero,
     Logo,
+    /// A poster at coverflow's middle size, this many pixels tall at most.
+    Cover(u16),
 }
 
 /// How art is capped when decoded: a name for the cache, the largest size,
@@ -59,6 +61,10 @@ impl From<Kind> for Spec {
             Kind::Grid => ("grid", (320, 480), false),
             Kind::Hero => ("hero", (840, 440), false),
             Kind::Logo => ("logo", (720, 128), true),
+            Kind::Cover(height) => {
+                let height = u32::from(height);
+                ("cover", (height * 2 / 3, height), false)
+            }
         };
         Self {
             name,

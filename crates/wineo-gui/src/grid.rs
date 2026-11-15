@@ -745,7 +745,18 @@ impl App {
         } else {
             Space::new().into()
         };
-        let toasts = column![import_slot, notice_slot, undo_slot, bar_slot].align_x(Center);
+        // The controller hints sit under everything, the marks bar too.
+        let hint_slot: Element<'_, Message> = match self.pad_hint_view() {
+            Some(hints) => {
+                let above = imported || notice || undo || self.action_bar_shown();
+                container(hints)
+                    .padding(iced::Padding::default().top(if above { GAP } else { 0.0 }))
+                    .into()
+            }
+            None => Space::new().into(),
+        };
+        let toasts =
+            column![import_slot, notice_slot, undo_slot, bar_slot, hint_slot].align_x(Center);
         // Always a layer, so the dialogs above keep their places, and their
         // focus, when a toast comes or goes. Empty slots take no input.
         page = page.push(
@@ -1261,8 +1272,15 @@ impl App {
         }
         let page = page.push(strips);
         let visible = self.scroll_visible_until.is_some();
+        let coverflow = self.layout == crate::grid_motion::ViewLayout::Coverflow;
+        // The strip takes no scroll, so the scroll holds nothing under it.
+        let grid: Element<'_, Message> = if coverflow {
+            Space::new().into()
+        } else {
+            self.grid()
+        };
         // Always there, so the grid keeps its place in the tree.
-        let scroll = scrollable(column![self.grid(), Space::new().height(self.bar_room())])
+        let scroll = scrollable(column![grid, Space::new().height(self.bar_room())])
             .id(iced::widget::Id::new(SCROLL_ID))
             .width(Fill)
             .height(Fill)
@@ -1292,7 +1310,13 @@ impl App {
                 modifiers: self.modifiers,
             },
         );
-        let library = mouse_area(column![header, scroll])
+        // Always a layer, so the scroll under it keeps its place.
+        let strip: Element<'_, Message> = if coverflow {
+            self.strip_view()
+        } else {
+            Space::new().into()
+        };
+        let library = mouse_area(column![header, stack![scroll, strip]])
             .on_exit(Message::Zoom(crate::zoom::Event::PointerLeft));
         let library = if self.panel_open {
             library.on_press(Message::ClosePanel)
@@ -1301,20 +1325,22 @@ impl App {
         } else {
             library
         };
-        let panel_layer: Element<'_, Message> = if self.panel_reserved() {
-            let panel = self
-                .selected
-                .as_ref()
-                .and_then(|name| self.cards.iter().find(|card| &card.name == name))
-                .map(|card| self.panel(card))
-                .unwrap_or_else(|| {
-                    container(Space::new())
-                        .width(crate::grid_motion::PANEL_WIDTH)
-                        .height(Fill)
-                        .into()
-                });
-            container(
-                row![
+        // A card hiding the panel keeps its room, so the strip holds still.
+        let panel_layer: Element<'_, Message> =
+            if self.panel_reserved() && !self.panel_hidden_by_card() {
+                let panel = self
+                    .selected
+                    .as_ref()
+                    .and_then(|name| self.cards.iter().find(|card| &card.name == name))
+                    .map(|card| self.panel(card))
+                    .unwrap_or_else(|| {
+                        container(Space::new())
+                            .width(crate::grid_motion::PANEL_WIDTH)
+                            .height(Fill)
+                            .into()
+                    });
+                container(
+                    row![
                     iced::widget::opaque(
                         container(crate::panel_motion::presentation(
                             panel,
@@ -1329,16 +1355,16 @@ impl App {
                     ),
                     Space::new().width(crate::grid_motion::RAIL_WIDTH),
                 ]
-                .width(crate::grid_motion::DOCK_WIDTH)
-                .height(Fill),
-            )
-            .width(Fill)
-            .height(Fill)
-            .align_right(Fill)
-            .into()
-        } else {
-            container(Space::new()).width(Fill).height(Fill).into()
-        };
+                    .width(crate::grid_motion::DOCK_WIDTH)
+                    .height(Fill),
+                )
+                .width(Fill)
+                .height(Fill)
+                .align_right(Fill)
+                .into()
+            } else {
+                container(Space::new()).width(Fill).height(Fill).into()
+            };
         // Always a layer, so the panel's place in the tree never moves.
         let content = stack![library, self.empty_state_view(), panel_layer];
         container(page.push(content))
@@ -1420,6 +1446,7 @@ impl App {
                 .padding([0, 6])
         ];
         use crate::toolbar_squeeze::{Control, child};
+        // The zoom and titles size the grid's posters only.
         let grid = self.layout == crate::grid_motion::ViewLayout::Grid;
         // Every child stays in the tree, folded or absent, so the controls
         // before it keep their places, and their focus.

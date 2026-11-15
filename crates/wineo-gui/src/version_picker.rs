@@ -121,6 +121,10 @@ fn reveal(generation: u64) -> Message {
 }
 
 impl Picker {
+    #[cfg(test)]
+    pub(crate) fn for_test(name: String) -> Self {
+        Self::new(name)
+    }
     fn new(name: String) -> Self {
         Self {
             name,
@@ -322,6 +326,7 @@ impl App {
 
     pub(crate) fn version_visible(&self) -> bool {
         self.panel_open
+            && !self.panel_hidden_by_card()
             && self
                 .version
                 .as_ref()
@@ -450,7 +455,7 @@ fn handle(app: &mut App, event: Event) -> Task<Message> {
             } else {
                 app.close_checkup();
             }
-            app.selected = Some(name.clone());
+            app.select_game(name.clone());
             if !app.panel_open {
                 app.panel_open = true;
                 app.panel_motion.open(Instant::now());
