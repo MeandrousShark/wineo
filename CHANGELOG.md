@@ -4,6 +4,92 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.6.0 - 2026-11-15
+
+Coverflow with controller navigation, a simpler New environment flow, and
+publishing to the repositories in parallel (plans 0064, 0065, and 0066,
+done).
+
+New in this release:
+
+- **Coverflow** is a third library layout beside the grid and the list: one
+  strip of covers with the selected game in the middle and up to four
+  tilted neighbors on each side. It keeps the same sort, filters, search,
+  presets, and grouping, glides from game to game, and shows a collapsed
+  section as one stacked card. The layout switch has a third segment, and
+  Ctrl+L cycles list, grid, coverflow. A preset saves it as
+  `layout = "coverflow"`.
+- **Full screen**: F11 makes the window full screen in any layout and back.
+  **Open coverflow in full screen** in Global settings, saved as
+  `coverflow_fullscreen`, goes full screen whenever the library switches to
+  coverflow.
+- **Controllers** drive the Library in every layout. Xbox, PlayStation, and
+  Nintendo controllers work, and so does Steam's virtual controller. The
+  D-pad and left stick move, A opens and plays, B goes back, and the other
+  buttons favorite, mark, page, jump to the ends, switch layouts, go full
+  screen, and pick at random. A bar at the bottom of the Library shows the
+  main buttons in the controller's own symbols.
+- Global settings has a **Controller** section: **Use a controller in the
+  Library**, on by default, the connected controllers, and a row per action
+  to move it to another button. They save to a new `[input]` table in
+  `library.toml`.
+- Home and End go to the first and last game in the Library, and PageUp and
+  PageDown move a screenful.
+- **New environment** opens on a choice page with five rows: Run an
+  installer, Existing install, or Empty for Windows, and Existing install
+  or Empty for Native Linux. Details is titled with the pick, and Back
+  returns to the choice page with the draft kept.
+- New environment has no separate review page. A **Summary** at the bottom
+  of Details shows what Create will do and checks itself as you type, and
+  Create says beside it why it's off.
+- When the chosen runner isn't installed, the Summary offers **Download
+  GE-Proton** or **Download Proton-CachyOS**. When the name belongs to an
+  existing environment, **Open existing environment settings** opens it.
+- New environment and Import prefix have one **Fetch art using the top
+  SteamGridDB match** checkbox instead of art tiles. The fetch runs once
+  the environment is registered and can be skipped, and the finished page's
+  **Choose artwork...** opens the new card's Art page.
+- The architecture list in New environment starts with **Use template or
+  global default**, which clears an override.
+
+Behavior changes:
+
+- With a SteamGridDB key and at least one kind on under Art to fetch, the
+  desktop app's New environment fetches art unless you turn the checkbox
+  off. `wineo new --art` and Heroic's batch import stay opt-in.
+- New environment and Import prefix no longer take local art files. Pick
+  them afterward with **Choose artwork...** and the Art page's
+  **Browse...**. Heroic's single-game import keeps its art tiles.
+- The Art page's search starts from the title the card shows, or the
+  environment name when it has none.
+- Holding a number key, Esc, or Ctrl+Enter in Add or an import flow acts
+  once, so it can't run on through the following pages.
+- Building wineo needs the udev headers (`libudev-dev` on Ubuntu,
+  `systemd-devel` on Fedora, part of `systemd-libs` on Arch), and the
+  packages depend on libudev.
+- An older wineo reads a `coverflow` preset as `grid` with a `validate`
+  warning, and writes `grid` into one it updates. Its `validate` warns
+  about `[input]`, and its repair of a broken file drops that table.
+
+For packagers:
+
+- `scripts/publish-packages.sh` signs the PPA upload first, then publishes
+  the overlay, the AUR, COPR, and OBS at the same time, with one prefixed
+  line per step, a log per destination, and a summary at the end. Two runs
+  of the same version skip what the other holds. The overlay and the AUR
+  use the host's tools where it has them and a container otherwise.
+
+Known limits:
+
+- A controller drives only the Library. Pages, flows, settings, and menus
+  stay keyboard and mouse.
+- With Steam running, Steam's desktop layout can turn controller presses
+  into keys, which moves twice for each press. Turn that off in Steam's
+  controller settings.
+- In the software renderer, a held coverflow slide runs at about 40 frames
+  a second on a 2560 by 1440 window. Reduced motion snaps the strip
+  instead.
+
 ## 1.5.2 - 2026-11-13
 
 A fix for Steam games after Steam's 64-bit client update.

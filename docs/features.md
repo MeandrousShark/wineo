@@ -11,16 +11,12 @@ Harder Better Faster Stronger, the order the maintainer picked on
 Faster and Better in 1.1.2, and Harder in 1.2.0. Library views parts 3 and 4,
 with Bulk tagging, shipped in 1.3.0 and 1.4.0 (plan 0062), and GUI
 accessibility settings with Tray icon and hide on launch in 1.5.0 (plan
-0063). The rest get a plan when they come up, and the rows below have the
-details.
+0063). The new environment flow (plan 0064), publishing to the repositories
+in parallel (plan 0065), and Coverflow with controller navigation, library
+views part 5 (plan 0066), shipped in 1.6.0. The rest get a plan when they
+come up, and the rows below have the details.
 
-1. Publish to the repositories in parallel (plan 0065).
-2. The new environment flow: kind and starting point first, Review folded
-   into Details, and art chosen after Create (plan 0064).
-3. Coverflow with controller navigation, library views part 5 (plan
-   0066).
-
-Store imports come after that.
+Nothing is queued. Store imports come next.
 
 ## Backlog
 
@@ -49,7 +45,6 @@ the first 1.x releases from 1.0 on:
 
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
-| GUI library views | UX | **1** | 0036 | Browse the library the way that fits the moment | Split by the maintainer into five plans (2026-10-17): 1) sorting, filters, favorites, and hidden games, plan 0054, released in 0.36.0; 2) grid zoom and the poster-only toggle, plan 0055, released in 0.37.0; 3) list view and 4) saved presets and grouping, plan 0062, released in 1.4.0 with exclude filters and the random pick in 1.3.0; 5) coverflow with controller navigation. 0054's Series section keeps the ideas for each. Parts 1 and 2 land before 1.0; parts 3 to 5 can land in 1.x (maintainer, 2026-10-17). |
 | Edit hooks in GUI Settings | UX | **2** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of plan 0046 by the maintainer (2026-10-06). The GUI already runs hooks. |
 | Not so fuzzy search | UX | **2** | 0054 | Find a game by how people say it: "gta" for Grand Theft Auto IV, "civ 6" for Sid Meier's Civilization VI | From the maintainer during 0061 acceptance (2026-11-02). Today search is a plain substring of the title, environment name, or tags (`order.rs`). Proposed rules, each a yes or no, since search filters and the grid keeps its chosen sort: initials of a run of title words ("gta"), every query word matching the start of some title word in any order ("civ", "auto gr"), and numbers matching Roman numerals ("6" and "VI"). True fuzzy matching is out, since without ranking it floods the grid. Open: whether the CLI shares the matcher through core, how far numerals go, and a minimum length for initials. A tag like `gta` works as a manual alias today. |
 | Embedded GOG login window | UX | **2** | 0049 | Log in to GOG without copying the success address back | From 0049 acceptance (2026-10-12). GOG's login only redirects to `embed.gog.com/on_login_success`, so today you copy that address from the browser and paste it into wineo. Heroic and Minigalaxy open the login page in their own browser window and catch the redirect there. iced can't show web pages, so this needs a WebKitGTK webview (for example `wry`) in a small helper window: a large GTK dependency for a one-time login, and more to bring to a macOS port. Watching the clipboard for the address was turned down for privacy. Needs a plan. |
@@ -74,7 +69,6 @@ the first 1.x releases from 1.0 on:
 | Playtime tracking by folder or process name | Core | **3** | | Keep counting playtime when a launcher hands off to a game process it doesn't wait for | Playnite tracks the launched process, any process running from the install folder, or a process by name. wineo follows the process group, plus its handoff check for native launchers. Matters most for future store launchers like Epic's. From the Playnite comparison (2026-10-14). |
 | Game metadata from the stores | UX | **3** | | Show a description, genres, developer, publisher, release date, and links in the panel | GOG's and Steam's APIs, which wineo already calls, have most of it; IGDB would cover the rest. From the Playnite comparison (2026-10-14). |
 | Publish to the AUR | Distribution | **3** | 0059 | Install on Arch with an AUR helper instead of building from the repo | Left out of 0059: AUR registration has been closed to new accounts since 2026-10-30, with no reopening date. The maintainer checks once a week. The recipes are ready, `wineo` and `wineo-bin` in `packaging/aur` and `wineo-git` as the root `PKGBUILD`, and the publish script already covers them. |
-| Publish to the repositories in parallel | Distribution | **3** | 0059 | Finish a publish in the time of its slowest destination, not all of them added up | From the maintainer (2026-11-01), once a few publishes have gone cleanly. Each destination already has its own subshell, result, and markers. PPA signing stays first for the passphrase, the shared Fedora tools image gets built before splitting, and each destination needs its own log. |
 | Collections | UX | **3** | 0062 | Gather games into named groups beyond tags, built from a multi-select in the Library | Asked for by the maintainer at the 0062 step 8 checkpoint (2026-11-06). Needs its own plan first: what a collection holds that a tag doesn't (an order, its own art, a place in the sidebar), and how it shows in the CLI. |
 | Menu shadows in the software renderer | UX | **4** | wineo-gui | Keep popup menus white when the GUI falls back to software rendering | Found in plan 0054 step 4's review (2026-10-18). iced_tiny_skia 0.14.1 draws a quad's shadow without the clip mask its fill uses, so a partial redraw (a hover or focus change) greys a menu everywhere but the changed row, darker with each redraw. The Sort, Filters, and right-click menus all show it; wgpu doesn't. Fixed upstream in iced 055355982 (2026-02-11), not in any release yet, so recheck when wineo moves to the iced release that carries it, rather than carrying a patched crate. |
 | Lighter coverflow motion in the software renderer | UX | **4** | | Keep the strip smooth where there is no GPU to draw it | From plan 0066's acceptance (2026-11-14): the maintainer found a held slide okay under tiny-skia, and thought fewer animations would suit it better. Measured on a Ryzen 7 5800X: a frame takes a median 13.8 ms at 1920 x 1080 and 24.6 ms at 2560 x 1440, so about 40 fps at 1440p, and the cost follows the pixels drawn. The app can't tell which renderer it runs on yet, so that comes first. Then either treat the software renderer like Reduced motion, which snaps the strip, or keep the slide and draw less during it. Reduced motion already works for anyone it bothers. Priority set by the primary session; the maintainer may move it. |
@@ -86,7 +80,7 @@ the first 1.x releases from 1.0 on:
 | GOG games in portable roots | Portability/Data | **4** | 0049 | Migrate and update GOG games inside a `WINEO_PORTABLE_DIR` folder | Left out of plan 0049 (question 17): GOG game folders and their state live in the host root, and `--portable` refuses migrating and updating. Logging in and listing already work there. Needs folder states that travel with the portable folder. Needs a plan. |
 | Use Heroic's native file list | Compatibility | **4** | 0049 | Know which files a migrated native GOG game shipped before its first update | Left out of plan 0049. heroic-gogdl keeps `.gogdl-linux-manifest` (each file's name, size, CRC32, and whether it's a symlink) in the game folder. Importing it, checked against the folder, would give a migrated game winning files at once, so its first update could tell your changes from GOG's. Until then the first rebuild overwrites and lists files that differ. |
 | Achievements | UX | **4** | 0052, emulated games | Earn and see achievements for GOG and emulated games outside Steam | Parked by the maintainer (2026-10-14): GOG through comet and RetroAchievements. Details in the [sketch](sketches/achievements.md). |
-| Controller fullscreen mode | UX | **4** | GUI library views | A whole controller-first mode for the couch, like Playnite's Fullscreen or Steam's Big Picture | Beyond the library views row's coverflow picker: every page reachable from a gamepad. From the Playnite comparison (2026-10-14). Plan 0066 drives only the Library from a pad. Its acceptance (2026-11-14) found the expected way in: Left from the first column moves into the sidebar, Up and Down pick a page, A opens it, and Right or B comes back, which needs every page to answer B so a pad is never stranded (maintainer: full controller support later, partial for now). |
+| Controller fullscreen mode | UX | **4** | 0066 | A whole controller-first mode for the couch, like Playnite's Fullscreen or Steam's Big Picture | Beyond plan 0066's coverflow picker: every page reachable from a gamepad. From the Playnite comparison (2026-10-14). Plan 0066 drives only the Library from a pad. Its acceptance (2026-11-14) found the expected way in: Left from the first column moves into the sidebar, Up and Down pick a page, A opens it, and Right or B comes back, which needs every page to answer B so a pad is never stranded (maintainer: full controller support later, partial for now). |
 
 ## 1.0
 
