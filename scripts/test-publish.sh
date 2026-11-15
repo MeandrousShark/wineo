@@ -2,7 +2,9 @@
 # Tests publish-packages.sh against a small real git repository, with stubs on
 # PATH for gh, curl, podman, makepkg, pycargoebuild, gpg, and sleep, and
 # --dest-dir fakes for the destinations, so nothing touches a service and
-# nothing sleeps. git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh
+# nothing sleeps. WINEO_PUBLISH_CONTAINERS is set unless a scenario clears it,
+# so the overlay and the AUR take their containers whatever this machine has,
+# and the scenarios that clear it get stubs of pkgdev, pkgcheck, and portageq. git, tar, cargo, gentoo-ebuild.sh, and prepare-debian-tree.sh
 # are the real ones. Each failure case checks the reason as well as the exit
 # status, and that nothing was uploaded past the point where it should stop.
 #
@@ -183,7 +185,7 @@ environment=()
 workdir=/tmp
 while (($# > 0)); do
     case $1 in
-        --rm) shift ;;
+        --rm | --userns=keep-id) shift ;;
         --name | --tmpfs) shift 2 ;;
         -e)
             environment+=("$2")
@@ -363,6 +365,38 @@ for arg in "$@"; do
 done
 EOF
 
+# The host's Gentoo tools, for the runs that skip the container. Each checks
+# the configuration it was pointed at, since the real ones fail without it.
+cat >"$stubs/portageq" <<'EOF'
+#!/bin/bash
+[[ "$*" == "get_repo_path / gentoo" && -d $STUB/gentoo ]] || exit 1
+echo "$STUB/gentoo"
+EOF
+cat >"$stubs/pkgdev" <<'EOF'
+#!/bin/bash
+echo pkgdev >>"$STUB/tools.log"
+[[ $# -eq 5 && $1 == --config && $3 == manifest && $4 == -d ]] || exit 64
+[[ -d $2/make.profile/ ]] || exit 65
+grep -qx 'main-repo = gentoo' "$2/repos.conf" || exit 65
+grep -qx "location = $STUB/gentoo" "$2/repos.conf" || exit 65
+grep -qx "location = ${PWD%/games-util/wineo}" "$2/repos.conf" || exit 65
+dist=$5/wineo-$VERSION_UNDER_TEST.gh.tar.gz
+echo "DIST ${dist##*/} $(stat -c %s "$dist") BLAKE2B stub" >>Manifest
+EOF
+cat >"$stubs/pkgcheck" <<'EOF'
+#!/bin/bash
+echo pkgcheck >>"$STUB/tools.log"
+[[ $# -eq 7 && $1 == --config && "${*:3}" == "scan --repo wineo --exit error" ]] || exit 64
+grep -qx "location = $PWD" "$2/repos.conf" || exit 65
+[[ $(cat profiles/repo_name) == wineo ]] || exit 65
+mkdir -p metadata/md5-cache
+touch metadata/md5-cache/stale
+if [[ -f $STUB/fail-tool-pkgcheck ]]; then
+    cat "$STUB/fail-tool-pkgcheck"
+    exit 1
+fi
+EOF
+
 cat >"$stubs/cargo-deny" <<'EOF'
 #!/bin/bash
 echo "$PWD $*" >>"$STUB/deny.log"
@@ -465,7 +499,7 @@ publish_real() {
     out=$scenario/output
     rc=0
     env PATH="$stubs:$PATH" CARGO_DENY="$stubs/cargo-deny" VERSION_UNDER_TEST="$version" \
-        XDG_STATE_HOME="$scenario/state" \
+        XDG_STATE_HOME="$scenario/state" WINEO_PUBLISH_CONTAINERS="${CONTAINERS-1}" \
         WINEO_PUBLISH_WORK="$scenario/work" WINEO_PUBLISH_INTERVAL=0 WINEO_PUBLISH_BUILD_INTERVAL=0 \
         WINEO_PUBLISH_MIRROR_LIMIT="${MIRROR_LIMIT:-30}" WINEO_PUBLISH_RUN_LIMIT="${RUN_LIMIT:-30}" \
         WINEO_PUBLISH_RELEASE_LIMIT="${RELEASE_LIMIT:-30}" WINEO_PUBLISH_COPR_LIMIT="${BUILD_LIMIT:-30}" \
@@ -629,6 +663,8 @@ check "the tag's tree isn't mounted read-only" \
 check "rpmbuild ran differently" called rpmbuild -bs --define '_topdir /work/rpmbuild' \
     --define 'dist %{nil}' /work/rpmbuild/SPECS/wineo.spec
 check "ebuild manifest ran differently" called ebuild "wineo-$version.ebuild" manifest
+check ".SRCINFO was not written as this user in a container, once for each package" \
+    test "$(grep -c -- '--userns=keep-id -e STEP=aur-srcinfo .*:/work -w /work docker.io/library/archlinux:latest' "$STUB/podman.log")" -eq 3
 check "pkgcheck ran differently" called pkgcheck scan --repo wineo --exit error
 check "gh was asked to change something: $(grep UNEXPECTED "$STUB/gh.log" || true)" \
     test "$(grep -c UNEXPECTED "$STUB/gh.log")" -eq 0
@@ -988,6 +1024,54 @@ check "a pkgcheck error: exit $rc, not 1" test "$rc" -eq 1
 check "a pkgcheck error: the reason is missing" said "ebuild manifest, or pkgcheck failed"
 check "a pkgcheck error: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
 check "a pkgcheck error: the error is not shown" said 'pkgcheck: an error'
+
+# A host with the tools runs them itself, and starts no container.
+
+# host_gentoo: what portageq points at, a gentoo repository with one profile.
+host_gentoo() {
+    mkdir -p "$STUB/gentoo/profiles/default/linux/amd64/23.0"
+    printf 'alpha default/linux/alpha/23.0 stable\namd64 default/linux/amd64/23.0 stable\n' \
+        >"$STUB/gentoo/profiles/profiles.desc"
+}
+containers_run() { grep -c '^run' "$STUB/podman.log" 2>/dev/null || true; }
+
+new_scenario
+host_gentoo
+CONTAINERS='' publish --only overlay
+check "the host's Gentoo tools: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "the host's Gentoo tools: a container ran" test "$(containers_run)" -eq 0
+check "the host's Gentoo tools: pkgdev did not run" tool_ran pkgdev
+check "the host's Gentoo tools: pkgcheck did not run" tool_ran pkgcheck
+check "the host's Gentoo tools: the overlay lacks the ebuild" \
+    show "$dest/remote/overlay.git" "games-util/wineo/wineo-$version.ebuild"
+check "the host's Gentoo tools: the Manifest does not hold the tag tarball" \
+    grep -q "^DIST wineo-$version.gh.tar.gz $(stat -c %s "$STUB/tag.tar.gz") " \
+    <(show "$dest/remote/overlay.git" games-util/wineo/Manifest)
+check "the host's Gentoo tools: pkgcheck's cache went into the overlay" \
+    test "$(git -C "$dest/remote/overlay.git" ls-tree -r --name-only HEAD | grep -c md5-cache || true)" -eq 0
+check "the host's Gentoo tools: the crate list didn't come from the tag" test -f "$STUB/lock-seen"
+
+new_scenario
+host_gentoo
+echo 'pkgcheck: an error' >"$STUB/fail-tool-pkgcheck"
+CONTAINERS='' publish --only overlay
+check "the host's pkgcheck fails: exit $rc, not 1" test "$rc" -eq 1
+check "the host's pkgcheck fails: the reason is missing" said "pkgdev manifest, or pkgcheck failed"
+check "the host's pkgcheck fails: the error is not shown" said 'pkgcheck: an error'
+check "the host's pkgcheck fails: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
+
+# portageq with no gentoo repository to name.
+new_scenario
+CONTAINERS='' publish --only overlay
+check "no gentoo repository: exit $rc, not 1" test "$rc" -eq 1
+check "no gentoo repository: the reason is missing" said "portageq names no gentoo repository"
+check "no gentoo repository: it pushed anyway" test -z "$(git -C "$dest/remote/overlay.git" for-each-ref)"
+
+new_scenario
+CONTAINERS='' publish --only aur
+check "the host's makepkg: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
+check "the host's makepkg: a container ran" test "$(containers_run)" -eq 0
+check "the host's makepkg: it didn't go: $(uploads)" test "$(upload_count ' aur ')" -eq 3
 
 # A manifest of something else isn't the tag's tarball.
 new_scenario
