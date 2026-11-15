@@ -9,13 +9,15 @@ pkgdesc='Launcher for Wine and Proton programs, native games, Steam, and GOG'
 arch=('x86_64')
 url='https://github.com/MeandrousShark/wineo'
 license=('GPL-3.0-or-later')
-# wineo-gui loads everything after xz with dlopen, so no tool can find them.
-# ca-certificates is the system certificate store that HTTPS requests read.
+# wineo-gui loads everything after systemd-libs (libudev) with dlopen, so no
+# tool can find them. ca-certificates is the system certificate store that
+# HTTPS requests read.
 depends=(
   'glibc'
   'libgcc'
   'hicolor-icon-theme'
   'xz'
+  'systemd-libs'
   'libx11'
   'libxcb'
   'libxkbcommon'

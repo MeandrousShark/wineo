@@ -147,6 +147,7 @@ fn listed(list: &'static str, ids: &[&str]) -> ListRows {
     ListRows {
         list,
         ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+        focus: None,
     }
 }
 
@@ -286,6 +287,28 @@ fn a_list_that_opens_focuses_its_first_row_and_one_that_fills_late_waits() {
     assert_eq!(landing(Some(&programs), Some(&fewer)), Landing::Stay);
     assert_eq!(landing(Some(&programs), None), Landing::Stay);
     assert_eq!(landing(None, Some(&empty)), Landing::Stay);
+}
+
+#[test]
+fn a_list_that_names_a_row_lands_on_it() {
+    let named = ListRows {
+        focus: Some("b".into()),
+        ..listed("starts", &["a", "b", "c"])
+    };
+    assert_eq!(landing(None, Some(&named)), Landing::Focus("b".into()));
+    let empty = listed("starts", &[]);
+    assert_eq!(
+        landing(Some(&empty), Some(&named)),
+        Landing::FocusIfIdle("b".into())
+    );
+    // A row it doesn't list is no place to land.
+    let gone = ListRows {
+        focus: Some("z".into()),
+        ..listed("starts", &["a", "b"])
+    };
+    assert_eq!(landing(None, Some(&gone)), Landing::Focus("a".into()));
+    // Already shown, focus stays where it is.
+    assert_eq!(landing(Some(&named), Some(&named)), Landing::Stay);
 }
 
 #[test]
@@ -443,6 +466,7 @@ fn a_list_that_opens_scrolled_away_shows_its_first_row() {
     let rows = ListRows {
         list: LIST,
         ids: ids.clone(),
+        focus: None,
     };
     run_task(&mut laid, land::<String>(None, Some(&rows)).unwrap());
     assert_eq!(laid.focused(), [Id::from(ids[0].clone())]);
@@ -467,10 +491,12 @@ fn a_row_the_list_moved_out_of_view_is_shown_again() {
         Some(&ListRows {
             list: LIST,
             ids: before.clone(),
+            focus: None,
         }),
         Some(&ListRows {
             list: LIST,
             ids: after,
+            focus: None,
         }),
     )
     .expect("a reveal");

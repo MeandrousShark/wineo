@@ -21,6 +21,12 @@ impl App {
         {
             return Task::none();
         }
+        let title = self
+            .cards
+            .iter()
+            .find(|card| card.name == name)
+            .map(|card| card.display_title.clone())
+            .unwrap_or_default();
         let Some(identity) = art_page::EnvironmentIdentity::read(&self.paths, &name) else {
             self.close_missing_art(&name);
             return Task::none();
@@ -50,7 +56,7 @@ impl App {
                 .find(|card| card.name == name)
                 .and_then(|card| card.default_target.clone());
         }
-        self.selected = Some(name.clone());
+        self.select_game(name.clone());
         if !self.art_pages.contains_key(&name) {
             self.art_generation = self.art_generation.wrapping_add(1);
             self.art_pages.insert(
@@ -64,6 +70,8 @@ impl App {
             );
         }
         let page = self.art_pages.get_mut(&name).unwrap();
+        // A cached page may have opened under an older title.
+        page.title = title;
         let generation = page.generation;
         let load = if page.busy() {
             Task::none()

@@ -114,10 +114,30 @@ pub(crate) fn settle_grid(app: &mut App) -> Task<Message> {
     ))
 }
 
+thread_local! {
+    /// The home `app()` boots from. One per test thread, removed when the
+    /// thread ends: a shared directory kept what one test wrote (a layout
+    /// saved by Ctrl+L) for every test that booted after it.
+    static HOME: tempfile::TempDir = tempfile::tempdir().unwrap();
+}
+
 pub(crate) fn app() -> App {
-    let paths =
-        Paths::from_lookup(|key| (key == "HOME").then(|| "/tmp/wineo-gui-tests".into())).unwrap();
+    let home = HOME.with(|home| home.path().to_owned());
+    let paths = Paths::from_lookup(move |key| (key == "HOME").then(|| home.as_os_str().to_owned()))
+        .unwrap();
     App::boot(paths).0
+}
+
+#[test]
+fn each_test_thread_boots_from_its_own_home() {
+    let here = app().paths.library_file();
+    let there = std::thread::spawn(|| app().paths.library_file())
+        .join()
+        .unwrap();
+    assert_ne!(
+        here, there,
+        "a shared home leaks one test's saves to the next"
+    );
 }
 
 fn tool_app() -> App {
@@ -591,11 +611,17 @@ fn late_art_and_add_results_use_current_key_availability() {
         app.flow_generation = 1;
         app.flow = Some(flow::Page::choose(paths.clone()));
         let _ = app.flow_update(1, flow::Event::New);
-        let configured = || {
-            flow::Event::Create(Box::new(flow::new::Event::Art(
-                flow::artwork::Event::Configured(1, Ok(wineo_core::config::ArtFetch::Icon)),
-            )))
-        };
+        // Details, where the checkbox is.
+        let _ = app.flow_update(
+            1,
+            flow::Event::Create(Box::new(flow::new::Event::Start(
+                flow::new::Kind::Windows,
+                flow::new::Source::Empty,
+            ))),
+        );
+        // The fetch checkbox reads the key when it's drawn, whenever the
+        // settings it needs arrive.
+        let configured = || flow::Event::Create(Box::new(flow::new::Page::options_loaded(&paths)));
         let loaded = || {
             Message::ArtPage(
                 "game".to_owned(),
@@ -627,13 +653,28 @@ fn late_art_and_add_results_use_current_key_availability() {
         }
         let _ = app.art_update("game".to_owned(), 7, art_page::Event::Change);
         assert_eq!(app.art_pages["game"].is_changing(), available);
+        // Turned off then on again, so each click is seen to reach Details.
         let _ = app.flow_update(
             1,
-            flow::Event::Create(Box::new(flow::new::Event::Art(
-                flow::artwork::Event::Fetch(true),
-            ))),
+            flow::Event::Create(Box::new(flow::new::Event::FetchArt(false))),
         );
-        assert_eq!(app.flow.as_ref().unwrap().art_fetching(), available);
+        assert!(
+            !app.flow
+                .as_ref()
+                .unwrap()
+                .fetch_checked(app.steamgriddb_available)
+        );
+        let _ = app.flow_update(
+            1,
+            flow::Event::Create(Box::new(flow::new::Event::FetchArt(true))),
+        );
+        assert_eq!(
+            app.flow
+                .as_ref()
+                .unwrap()
+                .fetch_checked(app.steamgriddb_available),
+            available
+        );
 
         let _ = app.update(Message::SteamGridDbKeyChangedAt(1, !available));
         assert_eq!(app.steamgriddb_available, available);
@@ -700,6 +741,13 @@ fn escape_dismisses_the_new_flow_discard_prompt_and_keeps_the_draft() {
     let generation = app.flow_generation;
     let _ = app.flow_update(
         generation,
+        flow::Event::Create(Box::new(flow::new::Event::Start(
+            flow::new::Kind::Windows,
+            flow::new::Source::Empty,
+        ))),
+    );
+    let _ = app.flow_update(
+        generation,
         flow::Event::Create(Box::new(flow::new::Event::Name("draft".into()))),
     );
     let escape = || {
@@ -709,6 +757,9 @@ fn escape_dismisses_the_new_flow_discard_prompt_and_keeps_the_draft() {
             iced::event::Status::Ignored,
         )
     };
+    // Details goes back to the choice page, which asks.
+    let _ = app.update(escape());
+    assert!(!app.flow.as_ref().unwrap().new_leave_prompt_open());
     let _ = app.update(escape());
     assert!(app.flow.as_ref().unwrap().new_leave_prompt_open());
     let _ = app.update(escape());

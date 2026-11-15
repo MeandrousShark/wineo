@@ -383,7 +383,8 @@ an older release only loses those preferences. The one exception is
 
 `~/.config/wineo/library.toml` holds how the desktop app shows each
 environment: favorites, hidden games, when it was added, the saved sort
-and grid view, saved views (presets), the app's theme, and which Steam games it has dealt with.
+and grid view, saved views (presets), the app's theme, the controller's
+buttons, and which Steam games it has dealt with.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -398,8 +399,9 @@ favorites_first = true
 zoom = 125                # grid size in percent, 60 to 200
 poster_only = true
 random = "any"            # launchable (default) or any
-layout = "list"           # grid (default) or list
+layout = "list"           # grid (default), list, or coverflow
 group = "tag"             # none (default), recent, tag, source, or state
+coverflow_fullscreen = true
 
 [appearance]
 follow_system = true
@@ -416,6 +418,13 @@ tray = true               # show a tray icon (default)
 close = "quit"            # quit (default) or tray
 on_start = "keep"         # keep (default) or hide
 on_stop = "restore"       # restore (default) or show
+
+[input]
+controller = false        # read game controllers (default true)
+
+[input.buttons]
+favorite = "rb"           # only the actions moved off their default
+page_right = "y"
 
 [environments.hades]
 favorite = true
@@ -454,8 +463,13 @@ skips shown games that can't start right now unless none can, and `any`
 draws from every shown game. Either way the selected game is skipped while
 there's another choice. An unknown `random` reads as `launchable`, and
 `validate` warns about it. `layout` is how the library shows, `grid`, the
-default, or `list`; an unknown value reads as `grid`, and `validate` warns
-about it. `group` is how the library splits into sections, `none`, the
+default, `list`, or `coverflow` (plan 0066); an unknown value reads as
+`grid`, and `validate` warns about it. An older wineo reads `coverflow` the
+same way, as `grid` with a warning, and one that updates a coverflow preset
+writes `grid` into it. Repair keeps any string `layout`, so a layout from a
+newer wineo survives it. `coverflow_fullscreen` makes the window fill the
+screen whenever the library switches to coverflow, and defaults to
+`false`. `group` is how the library splits into sections, `none`, the
 default, `recent`, `tag`, `source`, or `state`; collapsed sections aren't
 saved. The
 window's filters and Show hidden aren't saved in `[view]`, only in a preset.
@@ -533,6 +547,25 @@ when the app saves, and `validate` reports it; repair keeps any boolean
 types. An older wineo warns about this table in `validate`, and its repair
 drops it.
 
+`[input]` (plan 0066) is how the desktop app reads game controllers.
+`controller` defaults to `true`, and turning it off in Settings writes
+`false`. `[input.buttons]` moves pad actions to other buttons, one key per
+action that isn't on its default, so it's absent until you remap
+something. The actions and their default buttons are `confirm` (`a`),
+`back` (`b`), `favorite` (`y`), `mark` (`x`), `page_left` (`lb`),
+`page_right` (`rb`), `first` (`lt`), `last` (`rt`), `layout` (`view`),
+`fullscreen` (`start`), and `random` (`ls`). The buttons are `a`, `b`,
+`x`, `y`, `lb`, `rb`, `lt`, `rt`, `view`, `start`, `ls`, and `rs`, named
+by their Xbox labels, so `a` is the button printed A on any pad, which a
+Nintendo pad has on the right. The D-pad and left stick always move. An
+unknown action or button counts as unset for that key only. When two
+actions name one button, the earlier one in the list above keeps it, and
+the later one goes back to its default button if that's free or has no
+button otherwise; `validate` reports all three. Repair keeps any boolean
+`controller` and any string under `[input.buttons]` and drops other
+types. An older wineo warns about this table in `validate`, and its repair
+drops it.
+
 `[steam]` is how the desktop app remembers what it has
 [offered](steam.md#new-installs). `auto_import` imports new installs without
 asking and defaults to `false`. `baselined` lists the Steam libraries whose
@@ -557,7 +590,7 @@ repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
 reads correctly on its own, under an entry, `[view]`, `[appearance]`,
-`[desktop]`, `[steam]`, or a preset, and reports what it couldn't keep. A
+`[desktop]`, `[input]`, `[steam]`, or a preset, and reports what it couldn't keep. A
 file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
 longer exist adds `schema_version = 1` if the file had none.

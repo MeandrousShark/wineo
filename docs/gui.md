@@ -328,8 +328,9 @@ like `Couldn't tag 2 of 3 (Hades, Celeste): ...`, `Couldn't untag ...`, or
 
 ### List view
 
-The switch left of the zoom slider shows the library as a grid of posters
-or as a list, and Ctrl+L flips between them. The list has one 56 px row per
+The switch left of the zoom slider shows the library as a grid of posters,
+a list, or [coverflow](#coverflow), and Ctrl+L cycles through them in that
+order: list, grid, coverflow. The list has one 56 px row per
 game: a small poster, the title with the environment name under it when
 they differ, then State, Playtime, Last played, Source, and Tags. A row
 shows what its poster does: the star, the eye, the Steam mark, a GOG pill,
@@ -350,6 +351,63 @@ for the way back. Switching keeps the sort, the marks, and the selection,
 and keeps your place: the selected game if it's in view, otherwise
 whatever was at the same spot. The choice saves to `library.toml`
 (`layout` under `[view]`).
+
+### Coverflow
+
+Coverflow shows the same games in the same order as the grid and list, with
+the same sort, filters, search, presets, and hidden games, as one strip of
+covers. The selected game sits in the middle at about 55% of the Library's
+height, with up to four neighbors on each side, each smaller, overlapping,
+tilted toward the middle, and dimmed. A tall narrow window shrinks the middle
+cover so it's at most 40% of the strip's width. The strip centers in the
+space beside the panel.
+
+Under the middle cover are its title and the state the list shows in its
+State column, like `running` or `not installed`. In a short window they move
+up clear of the marks and controller bars, and the cover shrinks only when
+that isn't enough. A game without art gets its name card at cover size. A
+not installed or hidden game is gray and faded, as in the grid, and a cover
+shows only two badges: the mark check and the favorite star. The rest are in
+the panel and the state line.
+
+Left and Right move one cover and stop at the ends. Grouped, Up and Down
+jump to the first game of the previous or next section, whose name shows
+above the strip; ungrouped, they do nothing. Home and End go to the first
+and last cover, and PageUp and PageDown move by the number of covers on
+screen. The middle cover is always the selection, so Enter, F, Space, R,
+Delete, and search work as in the grid. With nothing selected, the first
+cover becomes the selection.
+
+A collapsed section is one stacked card: its first game's cover with two
+blank cards behind it, and the section's name and game count under it.
+Enter or a click opens it, landing on its first game, and the section name
+above the strip collapses it again (Tab reaches it like the grid's
+headers). F, Space, and Delete do nothing on a card. While a card is in the
+middle, the panel hides, so it never shows a game you can't see, and comes
+back on the next game if it was open. Esc and Back on a card don't close it.
+
+Click a side cover to bring it to the middle. A click on the middle cover
+does what a click on a grid card does, a double click plays it, and a right
+click opens its menu. The wheel, up and down or sideways, moves one cover
+per notch.
+
+The strip glides to each move on the same spring as the grid's cards, and a
+held key or stick glides straight through. With reduced motion (see
+[Appearance](#appearance)) it jumps instead, and the middle title still
+fades. The zoom slider and the titles button leave the toolbar, as in the
+list.
+
+### Full screen
+
+F11, or Start on a controller, makes the window full screen in any layout
+and back. With **Open coverflow in full screen** on in Global settings,
+switching to coverflow goes full screen too, and leaving coverflow leaves
+it, unless you were already full screen when you switched. Full screen
+started by F11 stays until you press F11 again. If the desktop takes the
+window out of full screen, wineo goes along, and the window returns to the
+size it had before. A window hidden to the tray comes back full screen if it
+was. Only the setting is saved: F11's full screen isn't remembered between
+starts, while the setting opens coverflow full screen at startup.
 
 ### Zoom and poster-only
 
@@ -704,7 +762,8 @@ match.
 
 The header shows the SteamGridDB game the art comes from, looked up by its
 saved ID, and **Change** searches for a different one, like `wineo art fetch
---search`. Without a key, it shows the ID, and **Find...** and **Change**
+--search`. Its search starts from the title the card shows, or the
+environment name when it has none. Without a key, it shows the ID, and **Find...** and **Change**
 are off, with a **Settings** button to add one.
 
 **Showing** switches between the environment and its targets. On a target,
@@ -835,12 +894,38 @@ choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
 
-New environments can be Windows or Native Linux. Windows supports an empty
-environment, an existing executable, or an installer; Native Linux supports
-an empty registration or executable. Installer setup sets up DXVK and
+New environment opens on a choice page with five rows in two sections,
+**Windows** (Run an installer, Existing install, Empty) and **Native Linux**
+(Existing install, Empty), each its own grouped surface under its heading. Pick one with a click, the arrows and Enter, its number
+key, or Ctrl+Enter on the focused row. Details is titled with the pick, like
+"New environment - Windows installer", and **Back** returns to the choice
+page with the draft kept and that row focused. Picking
+another row keeps the Name and environment name, but clears the path, since
+an installer and a program are different files. Back from the choice page
+asks before discarding a draft only if you typed or changed something on
+Details; the row you picked and the art checkbox don't count.
+
+Details has no separate review page. A **Summary** at its bottom shows the
+Application, Source, and Runtime rows and any notes, checked on its own
+when Details opens and a moment after you stop typing. While a check runs,
+the last Summary stays in place, dimmed, under "Checking...". **Create** is
+pinned at the bottom left, and stays off with the reason beside it while a
+check runs, while a runner or component is missing, or while a field needs
+fixing; reasons for fields you haven't touched yet ("Enter a name") stay
+quiet. Once it's ready, the notes that change what Create does, like
+registering an existing prefix in place, show beside it. Downloads run on
+their own page and come back to Details, and the finished page's **Back to
+details** returns there with the draft.
+
+Installer setup sets up DXVK and
 vkd3d-proton in the prefix before the installer runs, then scans installed
 programs once it's done, even if it exited with an error, so you can choose
-the game's target rather than registering the installer. A canceled
+the program to run rather than registering the installer. **Choose a
+target** has Back alone at the top, which skips the target like **Skip for
+now**, and keeps **Confirm** and **Skip for now** pinned at the bottom left
+while the program list scrolls. Confirm stays off until a program is
+chosen, and its reason, or a failed add, shows beside it. Adding a target and cleaning up the
+installer can't be canceled, so their progress page shows no Cancel. A canceled
 installer keeps the environment and skips the scan: `Installer canceled. Add
 a target in Settings.` The **Name** is saved as the game's title, so its
 card shows it, and it names the desktop entry. It follows the title rules
@@ -850,8 +935,15 @@ lowercase, with spaces and punctuation turned into dashes, accents folded,
 and apostrophes and trademark symbols dropped, so "Assassin's Creed:
 Origins" becomes `assassins-creed-origins`. The derived name shows under
 the field; **Edit**
-lets you choose a different one, up to 64 characters. The installer log can
-be selected and copied like the panel's log. Prefix imports can copy a Wine prefix or Proton
+lets you choose a different one, up to 64 characters; cleared, it shows
+the derived name as its placeholder. When that name belongs to an existing
+environment, **Open existing environment settings** opens it, asking first
+only if you've changed anything besides the name. The installer log can
+be selected and copied like the panel's log. When the chosen runner isn't
+installed, the Summary offers **Download GE-Proton** or **Download
+Proton-CachyOS**. It already shows what that Proton build will use, 64-bit,
+the prefix it adopts, and the template components Proton leaves out, so
+only the runner row changes after the download. Prefix imports can copy a Wine prefix or Proton
 compatdata, or register it in place. **Set up targets** opens Settings' Add
 target editor after import. Target setup can be skipped and done later.
 
@@ -931,22 +1023,43 @@ import; a cancel after the move keeps it and skips what's left of the
 playtime and art. In a portable folder the page says GOG games live in the
 host library.
 
-New and import flows show clickable poster, icon, hero, and logo previews.
-New environment previews the game's page: the hero is a banner across the
-top with the logo in its corner, like the library panel, the poster sits
-beside the form, and the icon sits beside the name. Narrow windows move the
-poster and icon below the form. Click a placeholder or preview to browse
-for a file; use **Remove** to drop it. File paths are an optional fallback.
+New environment has no art step. With a SteamGridDB key and at least one
+kind on under **Art to fetch**, Details shows **Fetch art using the top
+SteamGridDB match**, on until you turn it off; changing it doesn't count as
+an edit. Without a key it says to add one in Settings or choose art after
+Create, and with every kind off it says Art to fetch is off. The fetch runs
+once the environment is registered, after the target step when the installer
+asks for one: **Getting artwork** shows "Fetching artwork..." above the
+creation log, and **Skip**, Back, or Esc stop it before anything more is
+written. A search that's already under way finishes first, which takes at
+most 10 seconds. The desktop entry is refreshed afterward so its icon uses
+the new art. Closing the window during the fetch doesn't ask, and stops it.
+A failed fetch shows on the finished page with **Retry artwork** and **Skip
+artwork**. The finished page's **Choose artwork...** opens the new card's
+Art page, without launching it.
+
+Import prefix works the same way: the same checkbox and notes on Details,
+and the fetch runs once the import is registered, searching for the Name as
+typed, with **Skip**. The import refreshes the desktop entry either way. If
+the fetch or the entry fails, the page says which, with **Retry artwork**
+and **Skip artwork**; Retry fetches again only if the fetch itself failed.
+The finished page lists what the fetch couldn't find and offers **Choose
+artwork...** beside **Set up targets**; local art files go through the Art
+page's **Browse...**.
+
+Heroic's single-game import shows clickable poster, icon, hero, and logo
+previews. Click a placeholder or preview to browse for a
+file; use **Remove** to drop it. File paths are an optional fallback.
 Manual files work without a SteamGridDB key or network access. Fetching uses
 the global **Art to fetch** switches: after you search and choose a match,
-each enabled kind downloads right away and appears in its tile, and creation
-stores those images without downloading them again. Local files can be mixed
-with fetched art, and the local choice wins for that kind. If artwork fails
-after registration, retry or skip it. General artwork, key, and download
-management remain CLI tasks; GUI managers are planned separately.
+each enabled kind downloads right away and appears in its tile, and the
+import stores those images without downloading them again. Local files can
+be mixed with fetched art, and the local choice wins for that kind. If
+artwork fails after registration, retry or skip it.
 
 Windows creation keeps runner, architecture, and prefix overrides under
-**Additional wine options**. Picking a template tagged `game` shows a card
+**Additional wine options**. The architecture list starts with **Use
+template or global default**, which clears an override. Picking a template tagged `game` shows a card
 under the Template picker, until it's answered once: "Use Proton and Wine
 builds from Steam, Heroic, and Lutris too?" with **No** and **Yes**. The
 answer is saved and the runner choices refresh in place. Heroic import asks
@@ -956,7 +1069,7 @@ where it is instead of copying it. Runners from other launchers read like
 portable folder. Selecting a template shows a compact summary
 of the settings it changes. Native creation hides the Wine-only controls.
 
-The new environment finish page has an unchecked **Launch game when this
+The new environment finish page has an unchecked **Launch it when this
 page closes** option when a playable target is ready. If checked, leaving for
 the library or Settings launches that target once. Closing the application
 does not launch it.
@@ -1099,6 +1212,19 @@ section works in a portable folder too. **Games folder** (with
 and in what language games install; they save with the Save bar, and a
 portable folder leaves them alone.
 
+**Coverflow**: **Open coverflow in full screen**, off by default. See
+[Full screen](#full-screen).
+
+**Controller**: **Use a controller in the Library**, on by default, and the
+names of the connected controllers, or "No controller found." Below them,
+each controller action has a row showing its button. Click a row, or press
+Enter or Space on it, and it says "Press a button..." for 5 seconds; the
+next controller button takes the action. A button another action had swaps
+with it, so every button stays used once. Any key, click, or second click
+on the row stops waiting. **Reset to defaults** puts every button back. The
+rows save with the Save bar to `[input.buttons]` in `library.toml` (see
+[config files](config-files.md)). See [Controller](#controller).
+
 The General tab ends with the version, like `wineo 1.5.0`, the same line
 `wineo --version` prints. A build that isn't a tagged release adds which
 commit it is, like `wineo 1.4.1+12.g7e952c93` (12 commits past v1.4.1),
@@ -1169,7 +1295,10 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Key | Does |
 |---|---|
 | Arrow keys | Move between cards or rows; Up and Down cross section headers to the nearest card above or below |
-| Ctrl+L | Switch between the grid and the list (Library only) |
+| Ctrl+L | Switch to the next layout: list, grid, coverflow (Library only) |
+| Home, End | Go to the first or last game (Library only) |
+| PageUp, PageDown | Move a screenful of rows, or of covers in coverflow (Library only) |
+| F11 | Full screen, or back to a window |
 | Enter | Open the panel, or play when it's open (only for a card that's shown) |
 | F | Add the selected card to favorites, or remove it (only for a card that's shown) |
 | Space | Mark or unmark the selected card, when no button or field has focus (Library only) |
@@ -1187,7 +1316,7 @@ edits, the bar says which, and **Reload** takes what's on disk.
 | Ctrl+, | Global settings |
 | Down (in the search) | Back to the cards |
 | Tab, Shift+Tab | Move focus through the toolbar from Add to the layout switch (then the zoom slider and titles button in the grid), then section headers while grouped, then panel actions |
-| Left, Right, Space, Enter (on the layout switch) | Switch between the grid and the list |
+| Left, Right, Space, Enter (on the layout switch) | Left goes to the layout before, the others to the next |
 | Enter, Space (on a section header) | Collapse the section, or open it |
 | Left, Right (on the zoom slider) | Make the posters smaller or bigger |
 
@@ -1209,8 +1338,8 @@ Tags list, which take every key while open:
 | Shift+F10, Menu, right-click (on a preset) | Show Rename and Delete under it |
 | Esc | Close a preset's name field or question first, then the menu, going back to its button |
 
-In the choice lists on **Add**, New's program list, the Heroic and GOG
-lists, and the version picker:
+In the choice lists on **Add**, New's choice page and program list, the
+Heroic and GOG lists, and the version picker:
 
 | Key | Does |
 |---|---|
@@ -1219,8 +1348,12 @@ lists, and the version picker:
 | Tab, Shift+Tab | Walk through the rows with the dialog's other controls |
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
-The first row has focus when a list appears, and **Add**'s 1 to 5 keys still
-work with a row focused. The version picker has nothing to submit, so Ctrl+Enter
+The first row has focus when a list appears, and **Add**'s and New's 1 to 5
+keys still work with a row focused. On New's choice page, Ctrl+Enter opens
+the focused row, since the page has nothing else to submit, and coming back
+from Details lands on the row you picked. Holding a number key, Esc, or
+Ctrl+Enter in Add or an import flow acts once, so it can't run on through
+the following pages. The version picker has nothing to submit, so Ctrl+Enter
 does nothing there. A runner offer's **No** and **Yes** work like rows: Enter or
 Space answers, and Ctrl+Enter submits without answering.
 
@@ -1252,6 +1385,44 @@ In an Add, import, or clone flow:
 | Tab, Shift+Tab | Move between controls |
 | Esc | Go back, asking before discarding a filled draft |
 
+## Controller
+
+With **Use a controller in the Library** on (the default), a game
+controller drives the Library in every layout, the way the keyboard does,
+and backs out of whatever Esc closes. Pages, flows, settings, and menus stay
+keyboard and mouse. Xbox, PlayStation, and Nintendo controllers work, and
+so does Steam's virtual controller, which wineo ignores while a real one is
+connected. Buttons are named by the Xbox layout in `library.toml` and shown
+by the layout of the controller you used last.
+
+| Button | Does |
+|---|---|
+| D-pad, left stick | Move, like the arrow keys; holding repeats after 250 ms |
+| A | Open the panel, or play when it's open (Enter) |
+| B | Back, like Esc |
+| Y | Favorite (F) |
+| X | Mark (Space) |
+| LB, RB | A screenful back or forward (PageUp, PageDown) |
+| LT, RT | First or last game (Home, End) |
+| View | Next layout (Ctrl+L) |
+| Start (Menu) | Full screen (F11) |
+| Left stick click | Pick at random (R) |
+
+On a Nintendo controller, the button printed A confirms and the one printed
+B goes back, wherever they sit. Every button above can be changed in
+[Global settings](#global-settings); movement can't.
+
+After you press a button, a bar at the bottom of the Library shows what the
+main buttons do, in your controller's own symbols. Moving or clicking the
+mouse hides it.
+
+The controller only works while wineo's window has focus and you've used
+it, so presses meant for a game don't reach the Library. Starting a game,
+running a tool, or hiding the window stops it until the window has focus
+again or you press a key or click. With Steam running, Steam's desktop
+layout can turn controller presses into keys, which moves twice for each
+press; turn that off in Steam's controller settings.
+
 ## Look
 
 The app follows your desktop's light or dark preference and switches when
@@ -1264,4 +1435,5 @@ the palette, spacing, control states, motion, and layout rules for future pages.
 
 ## Not yet
 
-- Gamepad navigation.
+- Using pages, flows, settings, and menus with a controller.
+- A separate button map per controller, and rumble.

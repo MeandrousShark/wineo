@@ -41,6 +41,16 @@ pub(super) use work::{
 
 const SOURCE_LIST: &str = "heroic-sources";
 
+/// A batch game's notes from its art fetch. A cancel stops the fetch with
+/// whichever step it reached, so it reads the same however far it got.
+fn art_notes(fetched: Result<Vec<String>, String>, token: &Token) -> Vec<String> {
+    match fetched {
+        Ok(notes) => notes,
+        Err(_) if token.is_canceled() => vec!["Artwork canceled".to_owned()],
+        Err(error) => vec![format!("Artwork: {error}")],
+    }
+}
+
 /// A source row's id, by its config folder.
 fn source_id(source: &HeroicSource) -> String {
     format!("heroic-source:{}", source.config_dir().display())
@@ -394,6 +404,7 @@ impl Page {
         (self.step == Step::Sources).then(|| ListRows {
             list: SOURCE_LIST,
             ids: self.sources.iter().map(source_id).collect(),
+            focus: None,
         })
     }
 
@@ -1079,12 +1090,12 @@ impl Page {
                                     posters.get(app),
                                 ));
                                 if fetch_batch_art {
-                                    notes.extend(
-                                        artwork::fetch_default(&paths, &name, &title, &https)
-                                            .unwrap_or_else(|error| {
-                                                vec![format!("Artwork: {error}")]
-                                            }),
-                                    );
+                                    notes.extend(art_notes(
+                                        artwork::fetch_default(
+                                            &paths, &name, &title, &https, &token,
+                                        ),
+                                        &token,
+                                    ));
                                 }
                                 let _ = sender
                                     .unbounded_send(status(Some("finalizing desktop entries")));

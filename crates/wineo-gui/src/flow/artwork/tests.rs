@@ -117,39 +117,6 @@ fn fetch_handles_are_pruned_and_dropped_kinds_are_aborted() {
 }
 
 #[test]
-fn typing_title_does_not_discard_pending_art_configuration() {
-    let mut draft = Draft::new();
-    draft.configuration_sequence = 1;
-    let _ = draft.set_title("new title");
-    let _ = draft.update(Event::Configured(1, Ok(ArtFetch::default())));
-    assert!(!draft.kinds.is_empty());
-}
-
-#[test]
-fn edited_search_keeps_selected_match_and_preview_when_title_changes() {
-    let mut draft = Draft::new();
-    draft.search = "Chosen match".to_owned();
-    draft.search_edited = true;
-    draft.selected = Some(Match(Game {
-        id: 7,
-        name: "Chosen match".to_owned(),
-        year: None,
-    }));
-    draft.remote.insert(
-        Kind::Icon,
-        Remote {
-            preview: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
-            ..Remote::default()
-        },
-    );
-    let sequence = draft.fetch_sequence;
-    let _ = draft.set_title("Renamed environment");
-    assert_eq!(draft.selected.as_ref().unwrap().0.id, 7);
-    assert!(draft.remote[&Kind::Icon].preview.is_some());
-    assert_eq!(draft.fetch_sequence, sequence);
-}
-
-#[test]
 fn failed_search_keeps_selected_match_and_preview() {
     let root = tempfile::tempdir().unwrap();
     let mut draft = Draft::new();
@@ -325,12 +292,13 @@ fn stale_previews_and_chooser_results_cannot_replace_an_edit() {
 }
 
 #[test]
-fn title_change_refreshes_unedited_search_without_accepting_stale_results() {
+fn a_search_result_from_an_older_search_is_dropped() {
     let mut draft = Draft::new();
     draft.search = "Old title".to_owned();
     draft.searching = true;
     draft.sequence = 5;
-    let _ = draft.set_title("New title");
+    // Editing the search text starts over, so the answer to the old one is stale.
+    let _ = draft.update_with_key_availability(Event::SearchText("New title".to_owned()), true);
     assert_eq!(draft.search, "New title");
     assert!(!draft.searching);
     let _ = draft.update(Event::Searched(
@@ -342,9 +310,6 @@ fn title_change_refreshes_unedited_search_without_accepting_stale_results() {
         }]),
     ));
     assert!(draft.matches.is_empty());
-    let _ = draft.update_with_key_availability(Event::SearchText("Custom match".to_owned()), true);
-    let _ = draft.set_title("Third title");
-    assert_eq!(draft.search, "Custom match");
 }
 
 #[test]
@@ -563,9 +528,9 @@ fn hero_previews_decode_large_enough_for_the_banner() {
 }
 
 #[test]
-fn banner_statuses_list_hero_logo_and_icon_with_something_to_say() {
+fn notes_list_what_each_kind_has_to_say() {
     let mut draft = Draft::new();
-    assert!(draft.banner_statuses().is_empty());
+    assert!(Kind::ALL.iter().all(|kind| draft.notes(*kind).is_empty()));
     draft.fetch = true;
     draft.kinds = Kind::ALL.to_vec();
     draft.remote.insert(
@@ -589,26 +554,18 @@ fn banner_statuses_list_hero_logo_and_icon_with_something_to_say() {
             ..Local::default()
         },
     );
+    assert_eq!(draft.notes(Kind::Hero), vec![]);
+    assert!(draft.is_selected(Kind::Hero));
     assert_eq!(
-        draft.banner_statuses(),
-        vec![
-            (Kind::Hero, vec![], true),
-            (
-                Kind::Logo,
-                vec![Note::Info("Fetching...".to_owned())],
-                false
-            ),
-            (
-                Kind::Icon,
-                vec![Note::Info("No icon artwork found".to_owned())],
-                false
-            ),
-        ]
+        draft.notes(Kind::Logo),
+        vec![Note::Info("Fetching...".to_owned())]
     );
+    assert!(!draft.is_selected(Kind::Logo));
     assert_eq!(
         draft.notes(Kind::Icon),
         vec![Note::Info("No icon artwork found".to_owned())]
     );
+    assert!(!draft.is_selected(Kind::Icon));
 }
 
 #[test]
@@ -747,4 +704,30 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
     assert_eq!(draft.prefilled(Kind::Grid), None);
     draft.apply(&paths, "replaced").unwrap();
     assert_eq!(grid("replaced"), art::Source::Manual("mine.png".into()));
+}
+
+#[test]
+fn the_fetch_and_the_entry_are_told_apart() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let notes = vec!["No logo artwork found".to_owned()];
+    let answer = notes.clone();
+    let fetcher: Fetcher = Arc::new(move |_, _, _, _| Ok(answer.clone()));
+    // Nothing to refresh for an environment that isn't there.
+    assert_eq!(
+        fetch_art_parts(&paths, "game", "Game", &Token::new(), &fetcher),
+        (Ok(notes), Ok(()))
+    );
+    let failing: Fetcher = Arc::new(|_, _, _, _| Err("offline".to_owned()));
+    assert_eq!(
+        fetch_art_parts(&paths, "game", "Game", &Token::new(), &failing),
+        (Err("offline".to_owned()), Ok(()))
+    );
+    // A skipped fetch leaves the entry alone and reports it as fine.
+    let token = Token::new();
+    token.cancel();
+    assert_eq!(
+        fetch_art_parts(&paths, "game", "Game", &token, &failing),
+        (Err("offline".to_owned()), Ok(()))
+    );
 }

@@ -1862,3 +1862,19 @@ fn a_second_back_dismisses_the_discard_prompt_and_keeps_the_draft() {
     assert_eq!(page.generation, generation);
     assert!(page.take_action().is_none());
 }
+
+#[test]
+fn a_canceled_batch_art_fetch_says_so_plainly() {
+    let token = Token::new();
+    let notes = vec!["No logo artwork found for Hades".to_owned()];
+    assert_eq!(art_notes(Ok(notes.clone()), &token), notes);
+    assert_eq!(
+        art_notes(Err("offline".to_owned()), &token),
+        ["Artwork: offline"]
+    );
+    token.cancel();
+    assert_eq!(
+        art_notes(Err("artwork canceled".to_owned()), &token),
+        ["Artwork canceled"]
+    );
+}

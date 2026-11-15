@@ -8,7 +8,7 @@ use wineo_core::art::Kind;
 use wineo_core::components::Component;
 use wineo_core::config::{self, Arch};
 use wineo_core::key_store::KeySource;
-use wineo_core::library::{CloseWindow, Desktop, OnStart, OnStop};
+use wineo_core::library::{CloseWindow, Desktop, OnStart, OnStop, PadAction};
 
 use super::form::{self, Build, Choice, Field, GamescopeFields, List, Source, Switch};
 use super::global;
@@ -579,6 +579,16 @@ pub(super) fn global_view<'a>(
             desktop_rows(draft.desktop, locked, palette),
             palette
         ),
+        section(
+            "Coverflow",
+            coverflow_rows(draft.coverflow_fullscreen, locked, palette),
+            palette
+        ),
+        section(
+            "Controller",
+            controller_rows(&draft.input, page, locked, palette),
+            palette
+        ),
         section("Art to fetch", art.into(), palette),
         section(
             "SteamGridDB",
@@ -745,8 +755,113 @@ fn desktop_rows<'a>(desktop: Desktop, locked: bool, palette: Palette) -> Element
     rows.into()
 }
 
+/// The controller switch, the pads connected now, and a row per action
+/// with its button. No pad is no problem, so it reads as a plain note.
+fn controller_rows<'a>(
+    input: &wineo_core::library::Input,
+    page: &'a Page,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let mut rows = column![switch_row(
+        CONTROLLER_SWITCH,
+        input.controller,
+        None,
+        |on| send(Event::GlobalController(on)),
+        None,
+        locked,
+        palette,
+    )]
+    .spacing(12);
+    if page.pads.is_empty() {
+        rows = rows.push(text(NO_CONTROLLER).size(13).color(palette.muted));
+    }
+    for name in &page.pads {
+        rows = rows.push(text(name.clone()).size(14).color(palette.foreground));
+    }
+    let bindings = input.bindings();
+    // The rows wait for a pad, so they need the switch on.
+    let rows_locked = locked || !input.controller;
+    for action in PadAction::ALL {
+        let content: Element<'a, Message> = if page.capturing() == Some(action) {
+            text(CAPTURE_PROMPT).size(13).color(palette.muted).into()
+        } else {
+            match bindings.button(action) {
+                Some(button) => crate::pad::glyph::glyph_view(page.pad_style, button, palette),
+                None => text(UNBOUND).size(13).color(palette.warning).into(),
+            }
+        };
+        let message = send(Event::CaptureButton(action));
+        let control = crate::focus_button::control(
+            button(container(content).center_y(Fill))
+                .width(CONTROL_WIDTH)
+                .height(crate::ui::BUTTON_HEIGHT)
+                .padding([0, 10])
+                .on_press_maybe((!rows_locked).then(|| message.clone()))
+                .style(move |_, status| crate::ui::secondary_style(palette, status))
+                .into(),
+            !rows_locked,
+            remap_id(action),
+            message,
+        );
+        rows = rows.push(setting_row(action_label(action), control, None, palette));
+    }
+    rows = rows.push(secondary_button(RESET_BUTTONS, palette).on_press_maybe(
+        (!rows_locked && !input.buttons.is_empty()).then(|| send(Event::ResetButtons)),
+    ));
+    rows.into()
+}
+
+/// The focus id of `action`'s remap row.
+pub(super) fn remap_id(action: PadAction) -> String {
+    format!("settings-remap-{}", action.as_str())
+}
+
+/// What a remap row is called.
+pub(super) fn action_label(action: PadAction) -> &'static str {
+    match action {
+        PadAction::Confirm => "Open or play",
+        PadAction::Back => "Back",
+        PadAction::Favorite => "Favorite",
+        PadAction::Mark => "Mark",
+        PadAction::PageLeft => "Previous screenful",
+        PadAction::PageRight => "Next screenful",
+        PadAction::First => "First game",
+        PadAction::Last => "Last game",
+        PadAction::Layout => "Next layout",
+        PadAction::Fullscreen => "Full screen",
+        PadAction::Random => "Pick at random",
+    }
+}
+
+pub(super) const CAPTURE_PROMPT: &str = "Press a button...";
+pub(super) const UNBOUND: &str = "Unbound";
+pub(super) const RESET_BUTTONS: &str = "Reset to defaults";
+pub(super) const CONTROLLER_SWITCH: &str = "Use a controller in the Library";
+pub(super) const NO_CONTROLLER: &str = "No controller found.";
+
 pub(super) fn version_line() -> String {
     format!("wineo {}", wineo_core::version::VERSION)
+}
+
+/// The coverflow full screen switch. F11 works in any layout either way.
+fn coverflow_rows<'a>(on: bool, locked: bool, palette: Palette) -> Element<'a, Message> {
+    column![
+        switch_row(
+            "Open coverflow in full screen",
+            on,
+            None,
+            |on| send(Event::GlobalCoverflowFullscreen(on)),
+            None,
+            locked,
+            palette,
+        ),
+        text("Leaving coverflow leaves full screen too. F11 toggles it in any layout.")
+            .size(13)
+            .color(palette.muted),
+    ]
+    .spacing(12)
+    .into()
 }
 
 /// The auto-import switch. It stays in place with a reason when it can't do

@@ -221,7 +221,8 @@ impl App {
     /// Zoom input counts while the Library shows with nothing over it: no
     /// menu, popup, flow, or dialog.
     pub(crate) fn zoom_allowed(&self) -> bool {
-        // A list has no posters to size; the zoom waits for the grid.
+        // Only the grid's posters take the zoom; the list has none, and
+        // coverflow sizes its covers to the window.
         self.library_menu_may_open() && self.layout == crate::grid_motion::ViewLayout::Grid
     }
 
@@ -232,6 +233,17 @@ impl App {
     /// screen.
     pub(crate) fn find_anchor(&self) -> (Option<(SlotId, f32)>, bool) {
         let places = self.grid_places();
+        // The strip's middle cover is the place, put a third of the way
+        // down; a collapsed section's card has no slot to keep.
+        if self.layout == crate::grid_motion::ViewLayout::Coverflow {
+            let anchor = match self.header_cursor() {
+                Some(_) => None,
+                None => self
+                    .selected_index(&places)
+                    .map(|index| (places.ids[index].clone(), self.viewport_height / 3.0)),
+            };
+            return (anchor, false);
+        }
         let shown = self.grid_motion.shown(&places);
         let top = self.scroll_offset;
         // What the action bar covers isn't on screen.

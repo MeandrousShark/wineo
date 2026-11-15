@@ -172,6 +172,8 @@ struct Download {
 
 pub(crate) struct Page {
     pub(crate) name: String,
+    /// What the card shows as its title, which Change searches for.
+    pub(crate) title: String,
     pub(crate) generation: u64,
     pub(crate) identity: EnvironmentIdentity,
     showing: Option<String>,
@@ -221,6 +223,7 @@ impl Page {
     ) -> Self {
         Self {
             name,
+            title: String::new(),
             generation,
             identity,
             showing: None,
@@ -258,6 +261,12 @@ impl Page {
     #[cfg(test)]
     pub(crate) fn is_changing(&self) -> bool {
         self.change.is_some()
+    }
+
+    /// What Change's search box holds, while Change is open.
+    #[cfg(test)]
+    pub(crate) fn change_search(&self) -> Option<&str> {
+        self.change.as_ref().map(|change| change.search.as_str())
     }
 
     pub(crate) fn finish_abandoned_write(&mut self, sequence: u64) {
@@ -671,8 +680,9 @@ impl Page {
             }
             Event::Change if !self.writing && key_available => {
                 self.search_sequence = self.search_sequence.wrapping_add(1);
+                let title = self.title.trim();
                 self.change = Some(Change {
-                    search: self.name.clone(),
+                    search: if title.is_empty() { &self.name } else { title }.to_owned(),
                     matches: Vec::new(),
                     selected: None,
                     searching: false,

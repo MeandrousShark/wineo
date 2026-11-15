@@ -62,16 +62,17 @@ jobs:
       run:
         shell: bash
     steps:
-      # Only a C compiler and pkg-config: the windowing and graphics crates
-      # load their libraries at runtime, so no -dev packages are needed.
-      # liblzma-dev is left out on purpose, so lzma-sys compiles its own
-      # copy and the binary has no liblzma runtime dependency.
-      # xz-utils is for the vendored source tarball.
+      # A C compiler, pkg-config, and libudev-dev, which gilrs links for
+      # controllers: the windowing and graphics crates load their libraries
+      # at runtime, so they need no -dev packages. liblzma-dev is left out
+      # on purpose, so lzma-sys compiles its own copy and the binary has no
+      # liblzma runtime dependency. xz-utils is for the vendored source
+      # tarball.
       - name: Install build packages
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-            build-essential ca-certificates curl git pkg-config xz-utils
+            build-essential ca-certificates curl git pkg-config libudev-dev xz-utils
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

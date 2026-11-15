@@ -604,3 +604,152 @@ fn closing_during_picker_use_cancels_and_waits_even_after_leaving() {
         before
     );
 }
+
+/// Runs `task` to its end and returns the messages it produced.
+fn messages(task: Task<Message>) -> Vec<Message> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut messages = Vec::new();
+        while let Ok(Some(action)) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), stream.next()).await
+        {
+            if let iced_runtime::Action::Output(message) = action {
+                messages.push(message);
+            }
+        }
+        messages
+    })
+}
+
+fn titled(app: &App, name: &str, title: &str) -> Vec<crate::library::Card> {
+    let mut cards = crate::library::load_library(&app.paths).unwrap();
+    for card in &mut cards {
+        if card.name == name {
+            card.display_title = title.to_owned();
+        }
+    }
+    cards
+}
+
+fn change_search(app: &mut App, name: &str) -> Option<String> {
+    let generation = app.art_pages[name].generation;
+    let _ = app.art_update(name.to_owned(), generation, art_page::Event::Change);
+    app.art_pages[name].change_search().map(str::to_owned)
+}
+
+#[test]
+fn choose_artwork_on_finished_opens_the_art_page_once_the_library_loads() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
+    app.flow_generation = 1;
+    app.flow = Some(crate::flow::Page::choose(app.paths.clone()));
+    let _ = app.flow_update(1, crate::flow::Event::New);
+    let action = crate::flow::Event::Create(Box::new(crate::flow::new::Event::ChooseArt));
+    // A New page that isn't on Finished doesn't leave.
+    let _ = app.flow_update(1, action.clone());
+    assert!(app.flow.is_some());
+
+    let page = crate::flow::new::Page::finished_for_tests(app.paths.clone(), "game");
+    app.flow = Some(crate::flow::Page::New(Box::new(page)));
+    let reload = app.flow_update(app.flow_generation, action);
+    assert!(app.flow.is_none());
+    assert!(app.art_page.is_none(), "the library loads first");
+    for message in messages(reload) {
+        let _ = app.update(message);
+    }
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert_eq!(app.selected.as_deref(), Some("game"));
+    assert!(app.panel_open);
+    assert!(app.operation.is_none(), "it never launches");
+    assert_eq!(app.art_pages["game"].title, "game");
+}
+
+#[test]
+fn choose_artwork_opens_the_art_page_with_the_card_title() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
+    let cards = titled(&app, "game", "Assassin's Creed: Origins");
+    let _ = app.flow_returned(
+        crate::flow::Action::Art {
+            name: "game".into(),
+        },
+        Ok(cards),
+    );
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert_eq!(
+        change_search(&mut app, "game").as_deref(),
+        Some("Assassin's Creed: Origins")
+    );
+}
+
+#[test]
+fn choose_artwork_while_closing_opens_nothing() {
+    let (_root, mut app) = fixture();
+    app.closing = true;
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.flow_returned(
+        crate::flow::Action::Art {
+            name: "game".into(),
+        },
+        Ok(cards),
+    );
+    assert!(app.art_page.is_none());
+    assert!(app.selected.is_none());
+}
+
+#[test]
+fn choose_artwork_refused_leaves_the_card_selected_with_its_panel() {
+    let (_root, mut app) = fixture();
+    // The close prompt opened while the library loaded.
+    app.close_prompt = true;
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.flow_returned(
+        crate::flow::Action::Art {
+            name: "game".into(),
+        },
+        Ok(cards),
+    );
+    assert!(app.art_page.is_none());
+    assert_eq!(app.selected.as_deref(), Some("game"));
+    assert!(app.panel_open);
+}
+
+#[test]
+fn the_art_page_searches_for_what_the_card_shows() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
+    app.merge(titled(&app, "game", "Notepad++"));
+    app.selected = Some("game".into());
+    let _ = app.update(Message::OpenArt);
+    assert_eq!(
+        change_search(&mut app, "game").as_deref(),
+        Some("Notepad++")
+    );
+    let generation = app.art_pages["game"].generation;
+    let _ = app.art_update("game".into(), generation, art_page::Event::CancelChange);
+    let _ = app.art_update("game".into(), generation, art_page::Event::Back);
+    assert!(app.art_pages.contains_key("game"), "the page stays cached");
+
+    // The cached page takes the title the card shows now.
+    app.merge(titled(&app, "game", "Notepad Plus"));
+    let _ = app.update(Message::OpenArt);
+    assert_eq!(
+        change_search(&mut app, "game").as_deref(),
+        Some("Notepad Plus")
+    );
+
+    // A blank title falls back to the environment name.
+    let generation = app.art_pages["game"].generation;
+    let _ = app.art_update("game".into(), generation, art_page::Event::CancelChange);
+    let _ = app.art_update("game".into(), generation, art_page::Event::Back);
+    app.merge(titled(&app, "game", "  "));
+    let _ = app.update(Message::OpenArt);
+    assert_eq!(change_search(&mut app, "game").as_deref(), Some("game"));
+}

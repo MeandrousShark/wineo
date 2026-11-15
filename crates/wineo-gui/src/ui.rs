@@ -290,6 +290,40 @@ pub(crate) fn list_group<'a, M: Clone + 'a>(
     rows: impl IntoIterator<Item = ListRow<'a, M>>,
     palette: Palette,
 ) -> Element<'a, M> {
+    let (surface, ids) = group_surface(rows, palette);
+    crate::focus_button::rows(list, surface, ids)
+}
+
+/// `list_group` with its rows in sections, each its own grouped surface under
+/// a section heading, like the Settings pages. Up and Down still walk the
+/// rows as one list, so they carry on from one section into the next.
+pub(crate) fn sectioned_list_group<'a, M: Clone + 'a>(
+    list: &'static str,
+    sections: impl IntoIterator<Item = (&'a str, Vec<ListRow<'a, M>>)>,
+    palette: Palette,
+) -> Element<'a, M> {
+    let mut column = Column::new().width(Fill).spacing(24);
+    let mut ids = Vec::new();
+    for (label, rows) in sections {
+        let (surface, section_ids) = group_surface(rows, palette);
+        ids.extend(section_ids);
+        column = column.push(
+            Column::new()
+                .width(Fill)
+                .spacing(8)
+                .push(section_heading(label, palette))
+                .push(surface),
+        );
+    }
+    crate::focus_button::rows(list, column.into(), ids)
+}
+
+/// One surface of rows with a separator between each pair, and the ids of
+/// the rows for the list that wraps it.
+fn group_surface<'a, M: Clone + 'a>(
+    rows: impl IntoIterator<Item = ListRow<'a, M>>,
+    palette: Palette,
+) -> (Element<'a, M>, Vec<(String, bool)>) {
     let mut column = Column::new().width(Fill);
     let mut ids = Vec::new();
     for (index, row) in rows.into_iter().enumerate() {
@@ -305,15 +339,12 @@ pub(crate) fn list_group<'a, M: Clone + 'a>(
         ));
         ids.push((row.id, row.enabled));
     }
-    crate::focus_button::rows(
-        list,
-        container(column)
-            .width(Fill)
-            .padding(4)
-            .style(move |_| section_style(palette))
-            .into(),
-        ids,
-    )
+    let surface = container(column)
+        .width(Fill)
+        .padding(4)
+        .style(move |_| section_style(palette))
+        .into();
+    (surface, ids)
 }
 
 pub(crate) fn secondary_style(palette: Palette, status: button::Status) -> button::Style {

@@ -20,6 +20,9 @@ use super::State;
 pub(crate) struct ListRows {
     pub(crate) list: &'static str,
     pub(crate) ids: Vec<String>,
+    /// The row focus lands on when the list appears, if not the first, like
+    /// the row a page was left from when it comes back to the list.
+    pub(crate) focus: Option<String>,
 }
 
 /// Wraps `content`, which holds one `focus_button::row` for each of `rows`
@@ -42,7 +45,8 @@ pub(crate) fn rows<'a, M: 'a>(
 }
 
 /// Focus for a list that `before` an update looked one way and `after` it
-/// another. A list that opens focuses its first row. One that fills in late
+/// another. A list that opens focuses its first row, or the one it names.
+/// One that fills in late
 /// focuses it only when nothing else has focus, so it doesn't take the keys
 /// from a field being typed in. Either way, and when the list changed under
 /// a focused row, the focused row is scrolled into view.
@@ -209,7 +213,12 @@ fn landing(before: Option<&ListRows>, after: Option<&ListRows>) -> Landing {
     let Some(after) = after else {
         return Landing::Stay;
     };
-    let Some(first) = after.ids.first() else {
+    let Some(first) = after
+        .focus
+        .as_ref()
+        .filter(|focus| after.ids.contains(focus))
+        .or(after.ids.first())
+    else {
         return Landing::Stay;
     };
     match before {

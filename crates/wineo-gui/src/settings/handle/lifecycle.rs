@@ -156,7 +156,8 @@ impl Page {
             self.changed_on_disk = false;
             return Step::none();
         }
-        // Only `[appearance]`, `[desktop]`, or `auto_import` changed. Like the global file under an
+        // Only `[appearance]`, `[desktop]`, `auto_import`, `coverflow_fullscreen`, or
+        // `[input]` changed. Like the global file under an
         // environment page, it rebases, so General's edits stay; edits on
         // the Appearance tab ask for Reload instead.
         // Theme files count with it, since they're the same tab's.

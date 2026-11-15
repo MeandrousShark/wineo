@@ -753,3 +753,131 @@ fn the_game_is_saved_in_art_toml() {
     assert_eq!(crate::art::saved_game(&paths, "hades").unwrap(), Some(5247));
     assert!(crate::art::save_game(&paths, "nope", 1).is_err());
 }
+
+fn fetch_game_with(
+    paths: &Paths,
+    api: &FakeApi,
+    kinds: &[Kind],
+    cancel: &Token,
+) -> Result<Vec<(Kind, Result<Fetched>)>> {
+    fetch_game(
+        paths,
+        "hades",
+        &Api::new(api, "k"),
+        7,
+        kinds,
+        "en",
+        crate::environment::EnvironmentIdentity::read(paths, "hades"),
+        cancel,
+    )
+}
+
+#[test]
+fn fetch_game_records_the_game_and_fills_each_kind() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    serve(&api, Kind::Icon, &[(1, PNG)]);
+    serve(&api, Kind::Grid, &[(2, PNG)]);
+    let fetched = fetch_game_with(&paths, &api, &[Kind::Icon, Kind::Grid], &Token::new()).unwrap();
+    assert_eq!(fetched.len(), 2);
+    assert!(
+        fetched
+            .iter()
+            .all(|(_, result)| matches!(result, Ok(Fetched::Stored { .. })))
+    );
+    assert_eq!(crate::art::saved_game(&paths, "hades").unwrap(), Some(7));
+    assert_eq!(
+        names(&paths.art_dir("hades")),
+        ["art.toml", "grid.png", "icon.png"]
+    );
+}
+
+#[test]
+fn a_canceled_fetch_game_writes_nothing_and_asks_nothing() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    serve(&api, Kind::Icon, &[(1, PNG)]);
+    let cancel = Token::new();
+    cancel.cancel();
+    let err = fetch_game_with(&paths, &api, &[Kind::Icon], &cancel).unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<Error>(),
+        Some(Error::Canceled(_))
+    ));
+    assert!(api.urls().is_empty());
+    assert!(names(&paths.art_dir("hades")).is_empty());
+}
+
+#[test]
+fn fetch_game_canceled_just_before_the_record_writes_nothing() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    serve(&api, Kind::Icon, &[(1, PNG)]);
+    let cancel = Token::new();
+    let hook = cancel.clone();
+    crate::art::on_test_hook("art.save_game", move || hook.cancel());
+    let err = fetch_game_with(&paths, &api, &[Kind::Icon], &cancel).unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<Error>(),
+        Some(Error::Canceled(_))
+    ));
+    assert_eq!(crate::art::saved_game(&paths, "hades").unwrap(), None);
+    assert!(api.urls().is_empty());
+    assert!(
+        !names(&paths.art_dir("hades"))
+            .iter()
+            .any(|name| name.starts_with("icon"))
+    );
+}
+
+#[test]
+fn fetch_game_stops_at_the_token_before_the_next_kind() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    serve(&api, Kind::Icon, &[(1, PNG)]);
+    serve(&api, Kind::Grid, &[(2, PNG)]);
+    let cancel = Token::new();
+    // Canceled while the icon's list is read, after the record was saved.
+    let listed = json!({ "success": true, "data": [{ "id": 1, "url": "https://cdn.example/1", "score": 0 }] }).to_string();
+    let during = cancel.clone();
+    api.answer(
+        Api::images_url(7, Kind::Icon, 0, Filters::Ranked),
+        200,
+        move || {
+            during.cancel();
+            Box::new(io::Cursor::new(listed.clone().into_bytes()))
+        },
+    );
+    let err = fetch_game_with(&paths, &api, &[Kind::Icon, Kind::Grid], &cancel).unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<Error>(),
+        Some(Error::Canceled(_))
+    ));
+    assert_eq!(crate::art::saved_game(&paths, "hades").unwrap(), Some(7));
+    assert_eq!(names(&paths.art_dir("hades")), ["art.toml"]);
+    let grid = Api::images_url(7, Kind::Grid, 0, Filters::Ranked);
+    assert!(!api.urls().contains(&grid), "{:?}", api.urls());
+}
+
+#[test]
+fn fetch_game_canceled_during_its_last_kind_says_so() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    let cancel = Token::new();
+    let listed = json!({ "success": true, "data": [{ "id": 1, "url": "https://cdn.example/1", "score": 0 }] }).to_string();
+    let during = cancel.clone();
+    api.answer(
+        Api::images_url(7, Kind::Icon, 0, Filters::Ranked),
+        200,
+        move || {
+            during.cancel();
+            Box::new(io::Cursor::new(listed.clone().into_bytes()))
+        },
+    );
+    let err = fetch_game_with(&paths, &api, &[Kind::Icon], &cancel).unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<Error>(),
+        Some(Error::Canceled(_))
+    ));
+    assert_eq!(names(&paths.art_dir("hades")), ["art.toml"]);
+}

@@ -46,6 +46,7 @@ fn the_program_list_opens_and_the_arrows_walk_it() {
         Some(ListRows {
             list: PROGRAM_LIST,
             ids: ids.clone(),
+            focus: None,
         })
     );
     let (body, _) = page.view(iced::widget::column![], Palette::DARK);
@@ -61,6 +62,7 @@ fn nothing_installed_focuses_no_row() {
         Some(ListRows {
             list: PROGRAM_LIST,
             ids: Vec::new(),
+            focus: None,
         })
     );
     let (body, _) = page.view(iced::widget::column![], Palette::DARK);

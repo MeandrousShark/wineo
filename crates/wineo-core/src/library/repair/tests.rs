@@ -118,6 +118,7 @@ fn backs_up_the_original_and_recovers_every_recognized_entry() {
             view: ViewRecovery::Recovered,
             appearance: ViewRecovery::Absent,
             desktop: ViewRecovery::Absent,
+            input: ViewRecovery::Absent,
             presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
@@ -180,6 +181,7 @@ fn counts_partly_and_unrecovered_entries_and_skips_invalid_values() {
             view: ViewRecovery::Partly,
             appearance: ViewRecovery::Absent,
             desktop: ViewRecovery::Absent,
+            input: ViewRecovery::Absent,
             presets: ViewRecovery::Absent,
             steam: ViewRecovery::Absent,
             steam_dropped: 0,
@@ -499,6 +501,7 @@ fn wording_for_no_entries_and_lost_view() {
         view: ViewRecovery::Lost,
         appearance: ViewRecovery::Absent,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -516,6 +519,7 @@ fn wording_for_no_entries_and_lost_view() {
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Absent,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -935,7 +939,19 @@ fn repair_keeps_a_valid_layout_and_drops_an_invalid_one() {
         crate::library::ViewLayout::List
     );
 
-    for bad in ["\"table\"", "true", "3"] {
+    // Any text is kept as written, whether or not this wineo knows it.
+    let fixture = Fixture::new();
+    fixture.write("[view]\nlayout = \"table\"\ndescending = true\nthis is broken\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Recovered);
+    assert!(fixture.read().contains("layout = \"table\""));
+    let view = load(&fixture.paths).view;
+    assert_eq!(
+        (view.layout, view.descending),
+        (crate::library::ViewLayout::Grid, true)
+    );
+
+    for bad in ["true", "3"] {
         let fixture = Fixture::new();
         fixture.write(&format!(
             "[view]\nlayout = {bad}\ndescending = true\nthis is broken\n"
@@ -1121,6 +1137,7 @@ fn appearance_wording_for_a_lost_table() {
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Lost,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Absent,
         steam: ViewRecovery::Absent,
         steam_dropped: 0,
@@ -1515,6 +1532,7 @@ fn presets_wording_is_after_appearance_and_before_steam() {
         view: ViewRecovery::Absent,
         appearance: ViewRecovery::Recovered,
         desktop: ViewRecovery::Absent,
+        input: ViewRecovery::Absent,
         presets: ViewRecovery::Partly,
         steam: ViewRecovery::Recovered,
         steam_dropped: 0,
@@ -1658,4 +1676,230 @@ fn repair_keeps_an_on_stop_string_and_drops_a_mistyped_one() {
     assert_eq!(report.desktop, ViewRecovery::Partly);
     assert!(!fixture.read().contains("on_stop"), "{}", fixture.read());
     assert!(!load(&fixture.paths).desktop.tray);
+}
+
+#[test]
+fn repair_keeps_a_layout_string_a_newer_release_may_have_written() {
+    // Any text survives, so a release that knows more layouts keeps its own
+    // choice through this one's repair; non-text still goes.
+    for value in ["\"carousel\"", "\"coverflow\"", "\"table\""] {
+        let fixture = Fixture::new();
+        fixture.write(&format!(
+            "[view]\nlayout = {value}\ndescending = true\nthis is broken\n"
+        ));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.view, ViewRecovery::Recovered, "{value}");
+        assert!(
+            fixture.read().contains(&format!("layout = {value}")),
+            "{value}: {}",
+            fixture.read()
+        );
+        let fixture = Fixture::new();
+        fixture.write(&format!("[presets.P]\nlayout = {value}\nthis is broken\n"));
+        let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert_eq!(report.presets, ViewRecovery::Recovered, "{value}");
+        assert!(
+            fixture.read().contains(&format!("layout = {value}")),
+            "{value}: {}",
+            fixture.read()
+        );
+    }
+    for bad in ["true", "3"] {
+        let fixture = Fixture::new();
+        fixture.write(&format!("[view]\nlayout = {bad}\nthis is broken\n"));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert!(!fixture.read().contains("layout"), "{bad}");
+        let fixture = Fixture::new();
+        fixture.write(&format!("[presets.P]\nlayout = {bad}\nthis is broken\n"));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        assert!(!fixture.read().contains("layout"), "{bad}");
+    }
+    let fixture = Fixture::new();
+    fixture.write("[view]\nlayout = \"coverflow\"\nthis is broken\n");
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        load(&fixture.paths).view.layout,
+        crate::library::ViewLayout::Coverflow
+    );
+}
+
+#[test]
+fn repair_keeps_coverflow_fullscreen_only_as_a_bool() {
+    let fixture = Fixture::new();
+    fixture.write("[view]\ncoverflow_fullscreen = true\nthis is broken\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Recovered);
+    assert!(load(&fixture.paths).view.coverflow_fullscreen);
+
+    let fixture = Fixture::new();
+    fixture.write("[view]\ncoverflow_fullscreen = \"yes\"\ndescending = true\nthis is broken\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("coverflow_fullscreen"));
+}
+
+#[test]
+fn repair_keeps_input_and_its_buttons_from_the_parsed_part() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[input]\ncontroller = false\nfuture = 1\n[input.buttons]\nfavorite = \"rb\"\nfuture_action = \"xx\"\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    // Unknown names stay, since a newer release may have written them.
+    assert!(report.complete(), "{report}");
+    let text = fixture.read();
+    assert!(text.contains("[input]"), "{text}");
+    assert!(text.contains("controller = false"), "{text}");
+    assert!(text.contains("future = 1"), "{text}");
+    assert!(text.contains("[input.buttons]"), "{text}");
+    assert!(text.contains("future_action = \"xx\""), "{text}");
+    let input = load(&fixture.paths).input;
+    assert!(!input.controller);
+    assert_eq!(
+        input.buttons.get(&crate::library::PadAction::Favorite),
+        Some(&crate::library::PadButton::Rb)
+    );
+}
+
+#[test]
+fn repair_salvages_input_from_the_broken_tail() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n[input]\ncontroller = false\n[input.buttons]\nfavorite = \"rb\"\nmark = \"rs\"\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let library = load(&fixture.paths);
+    assert_eq!(library.problem, None);
+    assert!(!library.input.controller, "{}", fixture.read());
+    assert_eq!(library.input.buttons.len(), 2, "{}", fixture.read());
+    assert!(report.backup.exists());
+}
+
+#[test]
+fn repair_salvages_dotted_buttons_and_keeps_a_table_after_input() {
+    // The header after [input.buttons] must still be read as its own table.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[input]\nbuttons.favorite = \"rb\"\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n[desktop]\ntray = false\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let library = load(&fixture.paths);
+    assert_eq!(
+        library
+            .input
+            .buttons
+            .get(&crate::library::PadAction::Favorite),
+        Some(&crate::library::PadButton::Rb),
+        "{}",
+        fixture.read()
+    );
+}
+
+#[test]
+fn repair_drops_bad_input_values_one_at_a_time() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[input]\ncontroller = \"yes\"\n[input.buttons]\nfavorite = 3\nmark = \"rs\"\nback = [\"a\"]\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(!report.complete(), "{report}");
+    let text = fixture.read();
+    assert!(!text.contains("controller"), "{text}");
+    assert!(!text.contains("favorite = 3"), "{text}");
+    assert!(!text.contains("back"), "{text}");
+    assert!(text.contains("mark = \"rs\""), "{text}");
+    assert!(text.contains("[input.buttons]"), "{text}");
+
+    // Everything bad: no empty header is left behind.
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[input]\ncontroller = 1\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(!report.complete(), "{report}");
+    assert!(!fixture.read().contains("[input"), "{}", fixture.read());
+
+    // A buttons value that isn't a table is one dropped field.
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n[input]\ncontroller = false\nbuttons = 3\n[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(!report.complete(), "{report}");
+    assert!(!fixture.read().contains("buttons"), "{}", fixture.read());
+    assert!(!load(&fixture.paths).input.controller);
+}
+
+#[test]
+fn input_in_a_healthy_file_makes_no_repair_and_a_complete_one_reports_complete() {
+    let fixture = Fixture::new();
+    let text =
+        "schema_version = 1\n[input]\ncontroller = false\n[input.buttons]\nfavorite = \"rb\"\n";
+    fixture.write(text);
+    assert_eq!(repair_at(&fixture.paths, STAMP, sync_dir).unwrap(), None);
+    assert_eq!(fixture.read(), text);
+}
+
+#[test]
+fn repair_continues_input_and_its_buttons_past_a_broken_line() {
+    // The parsed part ends inside the table, and the lines after the broken
+    // one still belong to it.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[input]\ncontroller = false\nthis is broken\nfuture = 1\n[input.buttons]\nfavorite = \"rb\"\nalso broken\nmark = \"rs\"\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let text = fixture.read();
+    assert!(text.contains("controller = false"), "{text}");
+    assert!(text.contains("future = 1"), "{text}");
+    let input = load(&fixture.paths).input;
+    assert_eq!(input.buttons.len(), 2, "{text}");
+    assert_eq!(
+        input.buttons.get(&crate::library::PadAction::Mark),
+        Some(&crate::library::PadButton::Rs)
+    );
+    // The line under [input] stays in [input], not in the buttons table.
+    assert!(!input.buttons.contains_key(&crate::library::PadAction::Back));
+    assert!(text.find("future = 1").unwrap() < text.find("[input.buttons]").unwrap());
+
+    // The same break with the buttons table last.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[input.buttons]\nfavorite = \"rb\"\nbroken\nmark = \"rs\"\nlayout = 5\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let input = load(&fixture.paths).input;
+    assert_eq!(input.buttons.len(), 2, "{}", fixture.read());
+    assert!(!fixture.read().contains("layout"), "{}", fixture.read());
+}
+
+#[test]
+fn the_report_says_how_much_of_input_came_back() {
+    let brk = "[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n";
+    let report = |text: &str| {
+        let fixture = Fixture::new();
+        fixture.write(&format!("schema_version = 1\n{text}{brk}"));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap()
+    };
+    let none = report("");
+    assert_eq!(none.input, ViewRecovery::Absent);
+    assert!(none.complete(), "{none}");
+    assert!(!none.to_string().contains("Controller"));
+
+    let whole = report("[input]\ncontroller = false\n[input.buttons]\nmark = \"rs\"\n");
+    assert_eq!(whole.input, ViewRecovery::Recovered);
+    assert!(whole.complete(), "{whole}");
+    assert!(whole.to_string().contains("Controller settings recovered."));
+
+    let part = report("[input]\ncontroller = false\n[input.buttons]\nmark = 3\n");
+    assert_eq!(part.input, ViewRecovery::Partly);
+    assert!(!part.complete());
+    assert!(
+        part.to_string()
+            .contains("Controller settings partly recovered.")
+    );
+
+    let lost = report("[input]\ncontroller = 1\n");
+    assert_eq!(lost.input, ViewRecovery::Lost);
+    assert!(!lost.complete());
+    assert!(
+        lost.to_string()
+            .contains("Controller settings could not be recovered.")
+    );
 }
