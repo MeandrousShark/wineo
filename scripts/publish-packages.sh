@@ -80,7 +80,8 @@
 #
 # --dest-dir DIR replaces every upload and remote status with a local fake in
 # DIR, and nothing needs credentials. Everything else runs for real, so with
-# real podman it proves the container steps. Controls, read from DIR/control:
+# real podman it proves the container steps, and on a host with the overlay's
+# or the AUR's own tools it proves those. Controls, read from DIR/control:
 #   fail-upload-DEST       the next upload fails; holding "always", every one
 #   build-DEST             a remote build's state: built, building, failed,
 #                          hidden (uploaded but not visible yet), or unknown.
@@ -105,6 +106,9 @@
 #                                 6D463D92CDF5CDEABD40D6301C369B098EE69509)
 #   CARGO_DENY                    a cargo-deny to use instead of fetching the
 #                                 pinned one
+#   WINEO_PUBLISH_CONTAINERS      if not empty, the overlay and the AUR use
+#                                 their containers even on a host that has
+#                                 their tools (see host_has below)
 #   With --dest-dir only, for proving the real steps:
 #   WINEO_PUBLISH_TAG_TARBALL     a stand-in for GitHub's tag tarball
 #   WINEO_PUBLISH_PPA_SIMULATE    if set, sign and run `dput --simulate`
@@ -131,6 +135,7 @@ lp_series=https://api.launchpad.net/1.0/ubuntu
 fedora_image=registry.fedoraproject.org/fedora:44
 ubuntu_image=docker.io/library/ubuntu:24.04
 gentoo_image=docker.io/gentoo/stage3:latest
+arch_image=docker.io/library/archlinux:latest
 
 # The PPA goes first because signing asks for the passphrase: the rest needs
 # nobody, so whoever started the run can walk away once that's typed.
@@ -681,6 +686,17 @@ need_tool() {
     command -v "$1" >/dev/null || dest_fail "$1 not found: $2"
 }
 
+# host_has TOOL...: the overlay's and the AUR's tools run on a host that has
+# them (pkgdev and pkgcheck on Gentoo, makepkg on Arch) and in a container
+# anywhere else, so neither destination ties a release to one distribution.
+host_has() {
+    local tool
+    [[ -z ${WINEO_PUBLISH_CONTAINERS:-} ]] || return 1
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null || return 1
+    done
+}
+
 # Container steps. A step that's needed only once a destination has something
 # to do pulls its image then, so a run that skips everything needs no podman.
 
@@ -954,7 +970,55 @@ overlay_status() {
     fi
 }
 
-overlay_ready() { need_tool podman "install podman; the manifest runs in a gentoo/stage3 container"; }
+# The host's gentoo repository, or nothing if it has none.
+host_gentoo_repo() {
+    local gentoo
+    gentoo=$(portageq get_repo_path / gentoo 2>/dev/null) || return 0
+    if [[ -f $gentoo/profiles/profiles.desc ]]; then echo "$gentoo"; fi
+}
+
+# Everything the stage3 container would bring: the tools, a gentoo repository
+# for them to read, and what gentoo-ebuild.sh fetches with. The ebuild's crate
+# list then comes from the host's pycargoebuild, where the container's is the
+# version gentoo-ebuild.sh pins.
+overlay_local() {
+    host_has pkgdev pkgcheck portageq curl || return 1
+    command -v wget >/dev/null || command -v aria2c >/dev/null || return 1
+    [[ -n $(host_gentoo_repo) ]]
+}
+
+overlay_ready() {
+    overlay_local ||
+        need_tool podman "install podman; without Gentoo's tools and repository here, the manifest runs in a gentoo/stage3 container"
+}
+
+# The host's pkgdev and pkgcheck, with a configuration of their own. pkgcore
+# reads none of Portage's defaults, so a host that leaves the gentoo
+# repository to them has none for pkgcore, and the host's "wineo" repository
+# is the installed overlay, not this clone. The profile only has to exist.
+# pkgdev fetches and hashes only what the Manifest lacks, so the DIST lines of
+# older ebuilds stay as they are.
+overlay_manifest_local() {
+    local identity=$1 clone=$work/overlay/repo tree=$work/overlay/tag distfiles=$work/overlay/distfiles
+    local conf=$work/overlay/portage out=$work/overlay/ebuild gentoo profile
+    gentoo=$(host_gentoo_repo)
+    profile=$(awk '$1 == "amd64" && $3 == "stable" { print $2; exit }' "$gentoo/profiles/profiles.desc")
+    [[ -n $profile && -d $gentoo/profiles/$profile ]] ||
+        dest_fail "no stable amd64 profile in $gentoo/profiles/profiles.desc"
+    mkdir -p "$conf" "$out"
+    printf '[DEFAULT]\nmain-repo = gentoo\n\n[gentoo]\nlocation = %s\n\n[wineo]\nlocation = %s\n' \
+        "$gentoo" "$clone" >"$conf/repos.conf"
+    ln -sfn "$gentoo/profiles/$profile" "$conf/make.profile"
+    if ! {
+        (cd "$work/overlay/tmp" &&
+            WINEO_GENTOO_DISTDIR=$distfiles "$tree/scripts/gentoo-ebuild.sh" "$version" "$out") &&
+            cp "$out/wineo-$version.ebuild" "$clone/games-util/wineo/wineo-$identity.ebuild" &&
+            (cd "$clone/games-util/wineo" && pkgdev --config "$conf" manifest -d "$distfiles") &&
+            (cd "$clone" && pkgcheck --config "$conf" scan --repo wineo --exit error)
+    }; then
+        dest_fail "gentoo-ebuild.sh, pkgdev manifest, or pkgcheck failed; see the log"
+    fi
+}
 
 # The crate list has to match the tag's source, and HEAD may have moved on, so
 # gentoo-ebuild.sh runs in the tag's tree with HEAD's recipe laid over it.
@@ -974,7 +1038,20 @@ overlay_prepare() {
     tarball=$(tag_tarball)
     cp "$tarball" "$distfiles/$name"
 
-    # gentoo-ebuild.sh runs in there too, since pycargoebuild needs wget or
+    if overlay_local; then
+        overlay_manifest_local "$identity"
+    else
+        overlay_manifest_container "$identity"
+    fi
+
+    size=$(stat -c %s "$tarball")
+    grep -q "^DIST $name $size " "$package_dir/Manifest" ||
+        dest_fail "the Manifest doesn't hold GitHub's tarball for $tag"
+}
+
+overlay_manifest_container() {
+    local identity=$1 clone=$work/overlay/repo tree=$work/overlay/tag distfiles=$work/overlay/distfiles
+    # gentoo-ebuild.sh runs in the container too, since pycargoebuild needs wget or
     # aria2, which stage3 has. It doesn't write straight into the overlay,
     # because under a new revision that would overwrite the published ebuild.
     # assume-digests keeps the DIST lines of older ebuilds, whose distfiles
@@ -1008,10 +1085,6 @@ MAKECONF
         cd /overlay
         pkgcheck scan --repo wineo --exit error
     ' || dest_fail "gentoo-ebuild.sh, ebuild manifest, or pkgcheck failed; see the log"
-
-    size=$(stat -c %s "$tarball")
-    grep -q "^DIST $name $size " "$package_dir/Manifest" ||
-        dest_fail "the Manifest doesn't hold GitHub's tarball for $tag"
 }
 
 overlay_upload() {
@@ -1072,7 +1145,23 @@ aur_status() {
     done
 }
 
-aur_ready() { need_tool makepkg "it writes .SRCINFO, and comes with Arch's pacman"; }
+aur_ready() {
+    host_has makepkg ||
+        need_tool podman "install podman; without makepkg here, .SRCINFO is written in an archlinux container"
+}
+
+# makepkg refuses to run as root, and keep-id makes the container's user this
+# one, who owns the mounted directory.
+aur_srcinfo() {
+    local out=$1
+    if host_has makepkg; then
+        (cd "$out" && makepkg --printsrcinfo >.SRCINFO)
+    else
+        container "srcinfo-${out##*/}" --rm --userns=keep-id -e STEP=aur-srcinfo \
+            -v "$out:/work" -w /work "$arch_image" \
+            bash -euo pipefail -c 'makepkg --printsrcinfo >.SRCINFO'
+    fi
+}
 
 # check_pins PACKAGE SRCINFO SOURCE SUM: the one source is the expected one, and
 # every checksum makepkg sees, whatever its form in the recipe, is SUM. Fails
@@ -1130,7 +1219,7 @@ aur_prepare() {
         [[ $sum =~ ^[0-9a-f]{64}$ ]] || dest_fail "no sha256 for $package's source"
         sed -i -E "s/^sha256sums=\('SKIP'\)$/sha256sums=('$sum')/" "$out/PKGBUILD"
     fi
-    (cd "$out" && makepkg --printsrcinfo >.SRCINFO) ||
+    aur_srcinfo "$out" ||
         dest_fail "makepkg --printsrcinfo failed for $package"
     [[ -s $out/.SRCINFO ]] || dest_fail "makepkg wrote an empty .SRCINFO for $package"
     if [[ $package == wineo-git ]]; then
