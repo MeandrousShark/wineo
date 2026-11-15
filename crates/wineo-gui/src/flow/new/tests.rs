@@ -2595,8 +2595,12 @@ fn a_stale_check_drops_by_its_own_number_not_by_the_generation() {
     let root = tempfile::tempdir().unwrap();
     let paths =
         Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    // A runner under the test's own root, so the check doesn't turn on
+    // whether the machine has Wine.
+    fake_runner(&paths);
     let mut page = offer_page(&paths);
     let _ = page.update(Event::Name("Hades".to_owned()));
+    let _ = page.update(Event::Runner("fake".to_owned()));
     let _ = page.update(Event::Settled(page.check_sequence));
     let started = page.check_sequence;
     let checked = Box::new(page.draft.clone());
