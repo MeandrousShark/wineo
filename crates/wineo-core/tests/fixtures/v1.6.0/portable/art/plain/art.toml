@@ -1,0 +1,9 @@
+schema_version = 1
+
+[grid]
+file = "grid.png"
+manual = "grid.png"
+
+[targets.main.icon]
+file = "icon.png"
+manual = "grid.png"

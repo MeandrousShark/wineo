@@ -1,0 +1,13 @@
+schema_version = 1
+
+[environments.desktop]
+added = 2026-11-15T20:00:05.678321313Z
+
+[environments.external]
+added = 2026-11-15T20:00:05.706277055Z
+
+[environments.steam-game]
+added = 2026-11-15T20:00:05.722347345Z
+
+[steam.games]
+1086940 = "imported"
