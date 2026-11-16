@@ -350,7 +350,9 @@ drag never pushes a column out, and narrowing can bring back a column the
 list had dropped when you let go. Double-click a divider to put its column
 back to its default width. The widths are kept in `library.toml`
 (`[view.list_columns]`), one setting for every preset, and read when wineo
-starts.
+starts. A drag that gets cut short keeps the width it had reached: the
+window losing focus, closing, or hiding, a switch to another layout, or a
+dialog opening over the Library.
 
 Rows work like cards: click to select, double-click to play, right-click
 for the menu, the arrow keys to move, and the same marking, Tags bar,

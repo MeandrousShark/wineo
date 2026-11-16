@@ -478,6 +478,10 @@ Plan 0062 added these.
   The columns showing don't change during a drag, and a dropped one that
   now fits comes back on release. A double-click puts the column back to
   its default, or as near as Title's minimum allows.
+- A column drag and a zoom slider drag both end, saving where they were,
+  when the release may never arrive: the window loses focus, closes, or
+  hides to the tray, the layout switches, or anything covers the Library,
+  the stop confirmation included.
 - A selected row gets a 2 px primary border, rounded 6; a hovered row fades
   in a surface-colored background with the poster's hover timing. A marked
   row gets the marked poster's 25% primary wash across the row and a 22 px
