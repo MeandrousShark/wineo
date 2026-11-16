@@ -96,8 +96,26 @@ A core is `NAME_libretro.so`, described by `NAME_libretro.info`: lines of
 
 - Gentoo (`games-emulation/retroarch` 1.22.2, checked 2026-11-15): the
   package installs no cores and no `/usr/lib64/libretro` or
-  `/usr/share/libretro`. Cores come from separate packages or RetroArch's
-  own downloader (folders unchecked).
+  `/usr/share/libretro`. Cores from RetroArch's own downloader land in
+  `~/.config/retroarch/cores`, and so do the info files: all of them at
+  once (360 on 2026-11-15), for cores that aren't installed too, beside a
+  `core_info.cache`. So a core is installed when its `.so` is there, not
+  when its `.info` is.
+
+Info files seen on that install:
+
+| Core file | `systemid` | `supported_extensions` |
+|---|---|---|
+| `snes9x_libretro.so` | `super_nes` | `smc\|sfc\|swc\|fig\|bs\|st` |
+| `melondsds_libretro.so` | `nds` | `nds\|ids\|dsi` |
+| `azahar_libretro.so` | `3ds` | `3ds\|3dsx\|app\|axf\|bcci\|bcxi\|cci\|cxi\|elf\|z3dsx\|zcci\|zcxi` |
+| `mgba_libretro.so` | `game_boy_advance` | `gb\|gbc\|gba` |
+
+A core has one `systemid` even when it plays several systems: mGBA's says
+`game_boy_advance` for `gb` and `gbc` files too, and Genesis Plus GX's
+says `mega_drive` for Master System and Game Gear files. The `database`
+key lists each system by name
+(`Nintendo - Game Boy|Nintendo - Game Boy Color|Nintendo - Game Boy Advance`).
 
 `-L` takes a full path to a core, or just its file name
 (`NAME_libretro.so`), per RetroArch's own help text.
