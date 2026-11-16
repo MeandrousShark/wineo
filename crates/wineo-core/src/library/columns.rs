@@ -54,7 +54,7 @@ impl ListColumn {
     }
 
     /// The width the column has until it's resized.
-    pub fn default_width(self) -> u16 {
+    pub const fn default_width(self) -> u16 {
         match self {
             Self::State => 128,
             Self::Playtime => 96,

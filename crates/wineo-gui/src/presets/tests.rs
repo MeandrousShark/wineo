@@ -654,6 +654,35 @@ fn a_taken_name_offers_update_instead() {
     assert!(file(&app).contains("# Kept through every edit."));
 }
 
+/// Plan 0067: list column widths are one global setting, which presets
+/// neither carry nor change.
+#[test]
+fn applying_and_saving_a_preset_leave_the_list_widths_alone() {
+    use wineo_core::library::ListColumn;
+    let (_root, mut app) = booted(&format!("{FILE}\n[view.list_columns]\ntags = 104\n"));
+    // A width dragged this session, which the file doesn't have yet.
+    app.list_widths.set(ListColumn::State, 90.0);
+    let widths = app.list_widths;
+    let saved = |app: &App| wineo_core::library::load(&app.paths).view.list_columns;
+    assert_eq!(saved(&app), [(ListColumn::Tags, 104)].into());
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Apply("Couch co-op".into()));
+    assert_eq!(app.layout, ViewLayout::List);
+    assert_eq!(app.list_widths, widths);
+    open_filters(&mut app);
+    let _ = send(&mut app, Event::Update("Couch co-op".into()));
+    let _ = finish(&mut app);
+    assert!(app.filter_menu, "the popup stays open for another save");
+    let _ = send(&mut app, Event::StartSave);
+    let _ = send(&mut app, Event::Draft("Wide".into()));
+    let _ = send(&mut app, Event::Submit);
+    let _ = finish(&mut app);
+    assert_eq!(names(&app), ["Couch co-op", "Tools", "Wide"]);
+    assert_eq!(app.list_widths, widths);
+    assert_eq!(saved(&app), [(ListColumn::Tags, 104)].into());
+    assert!(!file(&app).contains("state ="), "{}", file(&app));
+}
+
 /// An entry under `[presets]` that isn't a preset holds its name, but Update
 /// would be refused too, so none is offered.
 #[test]
