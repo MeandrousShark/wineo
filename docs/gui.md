@@ -343,6 +343,15 @@ it again to flip the direction. Date added stays in the Sort menu. As the window
 narrows the list, columns leave from the right: Tags, then Source, Last
 played, and Playtime. Title and State always stay.
 
+Drag the divider on the left of State, Playtime, Last played, Source, or
+Tags to make that column narrower or wider; Title takes up the
+difference. A column can't widen once Title is down to its minimum, so a
+drag never pushes a column out, and narrowing can bring back a column the
+list had dropped when you let go. Double-click a divider to put its column
+back to its default width. The widths are kept in `library.toml`
+(`[view.list_columns]`), one setting for every preset, and read when wineo
+starts.
+
 Rows work like cards: click to select, double-click to play, right-click
 for the menu, the arrow keys to move, and the same marking, Tags bar,
 favorites, and random pick. The zoom slider and the titles button leave the
