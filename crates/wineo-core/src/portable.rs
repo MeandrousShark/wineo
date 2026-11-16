@@ -662,6 +662,13 @@ pub fn inspect_native_with(
             }
         }
     }
+    // Paths inside `args`, like the ROM's own, aren't read.
+    if let Some(emulation) = &config.emulation {
+        let path = from.expand(&emulation.rom);
+        if !path.is_absolute() || !paths::resolve(&path).starts_with(&folder) {
+            external_target_paths.push(format!("emulation.rom: {}", emulation.rom));
+        }
+    }
     let FirstCopy {
         first_copy,
         global_text,

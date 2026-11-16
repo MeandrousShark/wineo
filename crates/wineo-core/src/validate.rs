@@ -21,6 +21,7 @@ use crate::components::{Builds, Component, LATEST};
 use crate::config::{EnvironmentConfig, GlobalConfig, Kind, title_problem};
 use crate::deprecated;
 use crate::desktop::{self, Entry, Pending};
+use crate::emulator;
 use crate::environment::{self, Environment};
 use crate::error::{Error, IoContext, Result, chain};
 use crate::files;
@@ -175,6 +176,8 @@ codes! {
     MangohudMissing => "mangohud_missing", Level::Error, Area::Target;
     WaylandUnsupported => "wayland_unsupported", Level::Error, Area::Target;
     NativeExeInvalid => "native_exe_invalid", Level::Error, Area::NativeTarget;
+    EmulatedRomMissing => "emulated_rom_missing", Level::Warning, Area::NativeTarget;
+    EmulatedEmulatorMissing => "emulated_emulator_missing", Level::Warning, Area::NativeTarget;
     TargetAmbiguous => "target_ambiguous", Level::Warning, Area::Environment;
     LostRun => "lost_run", Level::Warning, Area::Runtime;
     InstallerUnresolved => "installer_unresolved", Level::Warning, Area::Runtime;
@@ -535,9 +538,10 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
     check_templates(paths, &global, &mut report)?;
     let names = environment::names(paths)?;
     let entries = listed_entries(paths)?;
+    let exports = emulator::flatpak_exports(paths);
     for name in &names {
         if !pending.contains(name) {
-            check_one(paths, &global, name, &entries, &mut report)?;
+            check_one(paths, &global, name, &entries, &exports, &mut report)?;
         }
     }
     check_nesting(paths, None, &names, &mut report);
@@ -593,7 +597,8 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     // only displays problems and changes nothing, so defaults are enough.
     let global = GlobalConfig::load(paths).unwrap_or_default();
     let entries = listed_entries(paths)?;
-    check_one(paths, &global, name, &entries, &mut report)?;
+    let exports = emulator::flatpak_exports(paths);
+    check_one(paths, &global, name, &entries, &exports, &mut report)?;
     let names = environment::names(paths)?;
     check_nesting(paths, Some(name), &names, &mut report);
     check_gog(
@@ -1136,6 +1141,7 @@ fn check_one(
     global: &GlobalConfig,
     name: &str,
     entries: &[Entry],
+    flatpak_exports: &[PathBuf],
     report: &mut Report,
 ) -> Result<()> {
     // Every command refuses the environment until it is recovered, and the
@@ -1227,6 +1233,7 @@ fn check_one(
     }
     let wine = check_wine(paths, global, &environment, report);
     check_targets(paths, global, &environment, &wine, report);
+    check_emulation(paths, &environment, flatpak_exports, report);
     check_runtime(paths, name, report)?;
     check_desktop(paths, global, &environment, &wine, entries, report)?;
     check_art(paths, name, report);
@@ -1416,6 +1423,45 @@ fn check_wine(
         runner,
         prefix,
         usable,
+    }
+}
+
+/// An emulated game's ROM, and the Flatpak each of its targets runs. A
+/// target's `exe = "flatpak"` is always found, so an uninstalled emulator
+/// only shows as its export script being gone. `exports` are the folders
+/// that hold those scripts.
+fn check_emulation(
+    paths: &Paths,
+    environment: &Environment,
+    exports: &[PathBuf],
+    report: &mut Report,
+) {
+    let Some(emulation) = &environment.config.emulation else {
+        return;
+    };
+    let name = environment.name.as_str();
+    if !paths
+        .config_path(&emulation.rom)
+        .is_ok_and(|rom| rom.exists())
+    {
+        report.push(Problem::new(
+            Code::EmulatedRomMissing,
+            Some(name),
+            format!("ROM {} not found", emulation.rom),
+            None,
+        ));
+    }
+    for (target_name, target) in &environment.config.targets {
+        if let Some(app) = emulator::flatpak_app(&target.exe, &target.args)
+            && !emulator::flatpak_installed(exports, app)
+        {
+            report.push(Problem::new(
+                Code::EmulatedEmulatorMissing,
+                Some(name),
+                format!("target {target_name}: Flatpak app {app} not found"),
+                None,
+            ));
+        }
     }
 }
 

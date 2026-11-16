@@ -62,6 +62,7 @@ fn report(status: wineo_core::runtime::Status) -> EnvironmentReport {
         vkd3d: None,
         desktop: Vec::new(),
         played: None,
+        emulation: None,
     }
 }
 
