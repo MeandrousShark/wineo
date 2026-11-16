@@ -1771,8 +1771,9 @@ impl App {
                 // can't be trusted to still be down.
                 self.modifiers = keyboard::Modifiers::empty();
                 self.zooming.modifiers_changed(self.modifiers);
-                // The release may never arrive, so the drag ends here.
-                self.end_column_drag()
+                // The release may never arrive, so a drag ends here.
+                let zoom = self.end_zoom_drag();
+                Task::batch([zoom, self.end_column_drag()])
             }
             Message::Window(..) => Task::none(),
             Message::ThemeChanged(mode) => {
@@ -2021,6 +2022,13 @@ impl App {
         let task = if self.hook_stop_confirm.is_some() && self.column_drag.is_some() {
             let resized = self.end_column_drag();
             task.chain(resized)
+        } else {
+            task
+        };
+        // The zoom slider's release goes to the scrim too.
+        let task = if self.hook_stop_confirm.is_some() && self.zooming.dragging() {
+            let zoomed = self.end_zoom_drag();
+            task.chain(zoomed)
         } else {
             task
         };
