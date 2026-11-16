@@ -754,3 +754,46 @@ fn two_actions_on_one_button_is_a_warning_that_says_how_it_resolved() {
     let inspection = inspect_text("[input.buttons]\nback = \"z\"\n");
     assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
 }
+
+#[test]
+fn list_columns_with_good_widths_have_no_findings() {
+    let inspection = inspect_text(
+        "schema_version = 1\n[view]\nzoom = 100\n[view.list_columns]\nstate = 56\nplaytime = 96\nlast_played = 112\nsource = 480\ntags = 104\n",
+    );
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[view]\nlist_columns = { tags = 104 }\n");
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
+fn bad_list_column_widths_are_invalid_and_unknown_columns_are_unknown() {
+    let inspection = inspect_text(
+        "[view.list_columns]\nstate = 55\nplaytime = 481\nlast_played = \"112\"\nsource = 80.5\ntags = 104\ntitle = 300\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: view.list_columns.state: expected a whole number from 56 to 480, found 55",
+            "library.toml: view.list_columns.playtime: expected a whole number from 56 to 480, found 481",
+            "library.toml: view.list_columns.last_played: expected a whole number from 56 to 480, found \"112\"",
+            "library.toml: view.list_columns.source: expected a whole number from 56 to 480, found 80.5",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        ["library.toml: view.list_columns.title: unknown key, ignored"]
+    );
+}
+
+#[test]
+fn list_columns_that_is_not_a_table_is_invalid() {
+    let inspection = inspect_text("[view]\nlist_columns = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.list_columns: expected a table, found 4"]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [] as [String; 0]
+    );
+}
