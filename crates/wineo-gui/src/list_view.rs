@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use iced::widget::{Space, button, column, container, image, row, stack, svg, text};
 use iced::{Center, Color, ContentFit, Element, Fill, Font, Length, Padding, border};
-use wineo_core::library::SortKey;
+use wineo_core::library::{LIST_COLUMN_MAX, LIST_COLUMN_MIN, ListColumn, SortKey};
 
 use crate::gog_library::Badge;
 use crate::grid::{card_area, install_bar, shows_identifier};
@@ -31,8 +31,8 @@ const CELL_GAP: f32 = 16.0;
 const THUMB_GAP: f32 = 12.0;
 /// What the Title column keeps, thumbnail and marks included, before the
 /// other columns start leaving.
-const TITLE_MIN: f32 = 200.0;
-const STATE_WIDTH: f32 = 128.0;
+pub(crate) const TITLE_MIN: f32 = 200.0;
+const STATE_WIDTH: f32 = ListColumn::State.default_width() as f32;
 const TITLE_SIZE: f32 = 14.0;
 const CELL_SIZE: f32 = 13.0;
 const IDENTIFIER_SIZE: f32 = 12.0;
@@ -48,9 +48,14 @@ const SELECTED_BORDER: f32 = 2.0;
 /// cells grow by it on each side and its gaps and padding shrink to match,
 /// so the labels still line up with the rows' cells.
 pub(crate) const HEADER_INSET: f32 = 6.0;
+/// What separates two header buttons, which a resize handle sits over.
+pub(crate) const HEADER_GAP: f32 = CELL_GAP - 2.0 * HEADER_INSET;
 const MARKS_GAP: f32 = 4.0;
 /// How much the star grows at the top of its pop.
 const STAR_LIFT: f32 = 4.0;
+/// The sort arrow beside a header label, and its gap to it.
+const ARROW_SIZE: f32 = 12.0;
+const ARROW_GAP: f32 = 4.0;
 
 /// A column after Title and State, which a narrow row drops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,12 +70,17 @@ impl Column {
     /// Left to right. They leave from the right as the row narrows.
     pub(crate) const ALL: [Self; 4] = [Self::Playtime, Self::LastPlayed, Self::Source, Self::Tags];
 
+    /// The width it has until it's resized.
     fn width(self) -> f32 {
+        f32::from(self.list_column().default_width())
+    }
+
+    pub(crate) fn list_column(self) -> ListColumn {
         match self {
-            Self::Playtime => 96.0,
-            Self::LastPlayed => 112.0,
-            Self::Source => 80.0,
-            Self::Tags => 176.0,
+            Self::Playtime => ListColumn::Playtime,
+            Self::LastPlayed => ListColumn::LastPlayed,
+            Self::Source => ListColumn::Source,
+            Self::Tags => ListColumn::Tags,
         }
     }
 
@@ -94,12 +104,108 @@ impl Column {
     }
 }
 
+/// Each resizable column's width in use, which starts as the saved ones.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Widths {
+    state: f32,
+    /// In `Column::ALL`'s order.
+    columns: [f32; 4],
+}
+
+impl Default for Widths {
+    fn default() -> Self {
+        Self {
+            state: STATE_WIDTH,
+            columns: Column::ALL.map(Column::width),
+        }
+    }
+}
+
+impl Widths {
+    /// The defaults with `[view.list_columns]`'s widths over them.
+    pub(crate) fn saved(saved: &std::collections::BTreeMap<ListColumn, u16>) -> Self {
+        let mut widths = Self::default();
+        for (column, width) in saved {
+            widths.set(*column, f32::from(*width));
+        }
+        widths
+    }
+
+    pub(crate) fn of(&self, column: Column) -> f32 {
+        self.columns[column as usize]
+    }
+
+    pub(crate) fn get(&self, column: ListColumn) -> f32 {
+        match column {
+            ListColumn::State => self.state,
+            ListColumn::Playtime => self.of(Column::Playtime),
+            ListColumn::LastPlayed => self.of(Column::LastPlayed),
+            ListColumn::Source => self.of(Column::Source),
+            ListColumn::Tags => self.of(Column::Tags),
+        }
+    }
+
+    pub(crate) fn set(&mut self, column: ListColumn, width: f32) {
+        let slot = match column {
+            ListColumn::State => &mut self.state,
+            ListColumn::Playtime => &mut self.columns[Column::Playtime as usize],
+            ListColumn::LastPlayed => &mut self.columns[Column::LastPlayed as usize],
+            ListColumn::Source => &mut self.columns[Column::Source as usize],
+            ListColumn::Tags => &mut self.columns[Column::Tags as usize],
+        };
+        *slot = width;
+    }
+
+    /// The width as `library.toml` holds it. Widths in use are always whole.
+    pub(crate) fn saved_width(&self, column: ListColumn) -> u16 {
+        self.get(column) as u16
+    }
+}
+
+/// The Title cell's width, thumbnail and marks included, in a row `width`
+/// wide with `columns` beside it.
+pub(crate) fn title_cell(widths: &Widths, columns: &[Column], width: f32) -> f32 {
+    let others: f32 = columns
+        .iter()
+        .map(|column| CELL_GAP + widths.of(*column))
+        .sum();
+    width - 2.0 * ROW_PADDING - CELL_GAP - widths.state - others
+}
+
+/// The widest `column` can be made in a row `width` wide with `columns`
+/// showing: as wide as leaves Title its minimum, but never narrower than
+/// `from`, so a column already past that doesn't jump, and never past the
+/// maximum. Written without `clamp`, which panics once Title is already
+/// under its minimum and the bounds cross.
+pub(crate) fn widest(
+    widths: &Widths,
+    column: ListColumn,
+    columns: &[Column],
+    width: f32,
+    from: f32,
+) -> f32 {
+    let laid =
+        column == ListColumn::State || columns.iter().any(|shown| shown.list_column() == column);
+    let allowed = if laid {
+        (widths.get(column) + title_cell(widths, columns, width) - TITLE_MIN).floor()
+    } else {
+        f32::from(LIST_COLUMN_MAX)
+    };
+    allowed.max(from).min(f32::from(LIST_COLUMN_MAX))
+}
+
+/// `wanted` held between the narrowest a column can be and `widest`, rounded
+/// to a whole pixel.
+pub(crate) fn bounded(wanted: f32, widest: f32) -> f32 {
+    wanted.round().max(f32::from(LIST_COLUMN_MIN)).min(widest)
+}
+
 /// The columns a row `width` wide has room for besides Title and State.
-pub(crate) fn columns(width: f32) -> &'static [Column] {
-    let mut used = 2.0 * ROW_PADDING + TITLE_MIN + CELL_GAP + STATE_WIDTH;
+pub(crate) fn columns(width: f32, widths: &Widths) -> &'static [Column] {
+    let mut used = 2.0 * ROW_PADDING + TITLE_MIN + CELL_GAP + widths.state;
     let mut count = 0;
     for column in Column::ALL {
-        used += CELL_GAP + column.width();
+        used += CELL_GAP + widths.of(column);
         if used > width {
             break;
         }
@@ -157,6 +263,15 @@ pub(crate) struct RowFacts<'a> {
 }
 
 impl App {
+    /// The columns the list shows besides Title and State: the ones that fit,
+    /// or while a handle is dragged, the ones that showed when it started.
+    pub(crate) fn list_columns(&self) -> &'static [Column] {
+        match &self.column_drag {
+            Some(drag) => drag.held,
+            None => columns(self.slot_width(), &self.list_widths),
+        }
+    }
+
     /// What the list's header takes from the scroll's height.
     pub(crate) fn header_room(&self) -> f32 {
         if self.layout == crate::grid_motion::ViewLayout::List {
@@ -212,7 +327,8 @@ impl App {
     }
 
     /// `card`'s row in `slot`, `width` wide with `columns`, the ones
-    /// `columns(width)` gives, at `opacity`, as it fades in or out.
+    /// `list_columns` gives or, for a row fading out, `columns(width)`, at
+    /// `opacity`, as it fades in or out.
     pub(crate) fn row_drawn<'a>(
         &'a self,
         slot: &SlotId,
@@ -263,7 +379,8 @@ impl App {
         } else {
             thumb
         };
-        let fitted = row_text(&facts, columns, width);
+        let widths = &self.list_widths;
+        let fitted = row_text(&facts, columns, width, widths);
         let mut title = column![
             text(fitted.title)
                 .size(TITLE_SIZE)
@@ -329,7 +446,7 @@ impl App {
         ]
         .spacing(8)
         .align_y(Center);
-        let mut cells = row![title_cell, container(state).width(STATE_WIDTH).clip(true)]
+        let mut cells = row![title_cell, container(state).width(widths.state).clip(true)]
             .spacing(CELL_GAP)
             .align_y(Center);
         for (column, value) in fitted.cells {
@@ -340,7 +457,7 @@ impl App {
                         .color(palette.muted)
                         .wrapping(text::Wrapping::None),
                 )
-                .width(column.width())
+                .width(widths.of(column))
                 .clip(true),
             );
         }
@@ -396,50 +513,80 @@ impl App {
 
     /// The column names over the rows, at the rows' width. Every one but
     /// State sorts like the Sort menu's rows, and a second click flips the
-    /// direction.
+    /// direction. A handle on the left edge of each column but Title resizes
+    /// it.
     pub(crate) fn list_header(&self) -> Element<'_, Message> {
         let width = self.slot_width();
+        let widths = &self.list_widths;
+        let shown = self.list_columns();
         let mut cells = row![
-            self.header_cell("Title", Some(SortKey::Name), Length::Fill),
+            self.header_cell(
+                "Title",
+                Some(SortKey::Name),
+                Length::Fill,
+                title_cell(widths, shown, width),
+            ),
             self.header_cell(
                 "State",
                 None,
-                Length::Fixed(STATE_WIDTH + 2.0 * HEADER_INSET)
+                Length::Fixed(widths.state + 2.0 * HEADER_INSET),
+                widths.state,
             ),
         ]
-        .spacing(CELL_GAP - 2.0 * HEADER_INSET)
+        .spacing(HEADER_GAP)
         .align_y(Center);
-        for column in columns(width) {
+        let mut handles = vec![ListColumn::State];
+        for column in shown {
             cells = cells.push(self.header_cell(
                 column.label(),
                 column.sort(),
-                Length::Fixed(column.width() + 2.0 * HEADER_INSET),
+                Length::Fixed(widths.of(*column) + 2.0 * HEADER_INSET),
+                widths.of(*column),
             ));
+            handles.push(column.list_column());
         }
-        container(
-            container(cells)
-                .padding([0.0, ROW_PADDING - HEADER_INSET])
-                .width(width)
-                .height(HEADER_HEIGHT)
-                .center_y(HEADER_HEIGHT),
-        )
+        let inner = container(cells)
+            .padding([0.0, ROW_PADDING - HEADER_INSET])
+            .width(width)
+            .height(HEADER_HEIGHT)
+            .center_y(HEADER_HEIGHT);
+        container(crate::column_resize::Handles::new(
+            inner.into(),
+            handles,
+            self.column_drag.as_ref().map(|drag| drag.column),
+            self.palette,
+        ))
         .padding([0.0, PADDING])
         .width(Fill)
+        .id(iced::widget::Id::new(crate::column_resize::HEADER_ID))
         .into()
     }
 
+    /// A header cell `width` wide whose label has `room` beside the sort
+    /// arrow, cut with an ellipsis so it never reaches past the cell.
     fn header_cell(
         &self,
         label: &'static str,
         sort: Option<SortKey>,
         width: Length,
+        room: f32,
     ) -> Element<'static, Message> {
         let palette = self.palette;
         let active = sort.is_some_and(|sort| sort == self.query.sort);
-        let label = text(label)
-            .size(HEADER_SIZE)
-            .font(crate::fonts::semibold())
-            .wrapping(text::Wrapping::None);
+        let room = if active {
+            room - ARROW_GAP - ARROW_SIZE
+        } else {
+            room
+        };
+        let label = text(crate::tile_title::fit(
+            label,
+            room,
+            HEADER_SIZE,
+            crate::fonts::semibold(),
+        ))
+        .size(HEADER_SIZE)
+        .font(crate::fonts::semibold())
+        .wrapping(text::Wrapping::None);
         let Some(sort) = sort else {
             return container(label.color(palette.muted))
                 .padding([0.0, HEADER_INSET])
@@ -448,14 +595,14 @@ impl App {
                 .into();
         };
         // Colored by the button's style, so hover and press reach it.
-        let mut content = row![label].spacing(4).align_y(Center);
+        let mut content = row![label].spacing(ARROW_GAP).align_y(Center);
         if active {
             let arrow = if self.query.descending {
                 ARROW_DOWN
             } else {
                 ARROW_UP
             };
-            content = content.push(icon(arrow, palette.foreground, 12.0));
+            content = content.push(icon(arrow, palette.foreground, ARROW_SIZE));
         }
         let cell = button(content)
             .padding([2.0, HEADER_INSET])
@@ -477,9 +624,8 @@ pub(crate) struct RowText {
 
 /// The room the title's text has in a row `width` wide with `columns`,
 /// after the thumbnail, the other columns, and the marks beside it.
-pub(crate) fn title_room(facts: &RowFacts, columns: &[Column], width: f32) -> f32 {
-    let others: f32 = columns.iter().map(|column| CELL_GAP + column.width()).sum();
-    let cell = width - 2.0 * ROW_PADDING - CELL_GAP - STATE_WIDTH - others;
+pub(crate) fn title_room(facts: &RowFacts, columns: &[Column], width: f32, widths: &Widths) -> f32 {
+    let cell = title_cell(widths, columns, width);
     let mut marks = STAR_BOX;
     if facts.steam {
         marks += MARK_ICON + MARKS_GAP;
@@ -493,20 +639,32 @@ pub(crate) fn title_room(facts: &RowFacts, columns: &[Column], width: f32) -> f3
     (cell - THUMB_WIDTH - 2.0 * THUMB_GAP - marks).max(0.0)
 }
 
-/// The state's room beside its dot.
-pub(crate) const STATE_ROOM: f32 = STATE_WIDTH - DOT - 8.0;
+/// The state's room beside its dot in a State column `width` wide.
+pub(crate) fn state_room(width: f32) -> f32 {
+    width - DOT - 8.0
+}
 
 /// The row's text for a row `width` wide with `columns`, the ones
-/// `columns(width)` gives.
-pub(crate) fn row_text(facts: &RowFacts, columns: &[Column], width: f32) -> RowText {
+/// `columns(width, widths)` gives.
+pub(crate) fn row_text(
+    facts: &RowFacts,
+    columns: &[Column],
+    width: f32,
+    widths: &Widths,
+) -> RowText {
     use crate::tile_title::fit;
-    let room = title_room(facts, columns, width);
+    let room = title_room(facts, columns, width, widths);
     RowText {
         title: fit(facts.title, room, TITLE_SIZE, crate::fonts::semibold()),
         identifier: facts
             .identifier
             .map(|identifier| fit(identifier, room, IDENTIFIER_SIZE, Font::DEFAULT)),
-        state: fit(facts.state, STATE_ROOM, CELL_SIZE, Font::DEFAULT),
+        state: fit(
+            facts.state,
+            state_room(widths.state),
+            CELL_SIZE,
+            Font::DEFAULT,
+        ),
         cells: columns
             .iter()
             .map(|column| {
@@ -521,7 +679,7 @@ pub(crate) fn row_text(facts: &RowFacts, columns: &[Column], width: f32) -> RowT
                 };
                 (
                     *column,
-                    fit(&value, column.width(), CELL_SIZE, Font::DEFAULT),
+                    fit(&value, widths.of(*column), CELL_SIZE, Font::DEFAULT),
                 )
             })
             .collect(),

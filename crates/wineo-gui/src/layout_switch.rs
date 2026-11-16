@@ -134,7 +134,7 @@ impl App {
         // place kept here.
         self.interrupt_zoom();
         self.grid_scroll_after_settle = None;
-        let stopped = self.stop_zoom();
+        let stopped = Task::batch([self.stop_zoom(), self.end_column_drag()]);
         self.collapse.reset();
         let header = self.header_room();
         let from = self.layout;

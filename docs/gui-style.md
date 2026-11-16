@@ -454,16 +454,34 @@ Plan 0062 added these.
   The star keeps its place when hidden and fades in on hover like the
   poster's. The install bar runs along the row's bottom edge, and a
   warning shows as the State column's dot.
-- Columns are fixed: State 128, Playtime 96, Last played 112, Source 80,
-  and Tags 176 px, with the title at least 200 px. They leave from the
+- Columns default to State 128, Playtime 96, Last played 112, Source 80,
+  and Tags 176 px (plan 0067), and each can be dragged between 56 and
+  480 px. The title takes the rest, at least 200 px. They leave from the
   right as the width drops: Tags, Source, Last played, then Playtime. Text
   that doesn't fit is cut between graphemes and ends in an ellipsis.
 - The header is 32 px and stays put above the scrolling rows. Every label
   but State sorts. Sortable labels are buttons that tint 6 px past their text on hover and press (10%
   and 22% primary, with a primary border pressed), with cells widened so
   labels line up with the row cells below. The active sort shows its
-  direction arrow. The header is mouse-only; the Sort menu covers the
-  keyboard.
+  direction arrow, which always keeps its room: a label that doesn't fit
+  its column is cut with an ellipsis. The header is mouse-only; the Sort
+  menu covers the keyboard.
+- Each column but Title has a resize handle on its left edge: an 8 px hit
+  area centered on the 4 px gap between header buttons. Nothing shows at
+  rest. On hover the cursor becomes the horizontal resize cursor and a
+  1 px muted line shows on the gap's third pixel, the header's height;
+  while dragging the line is primary. The handle takes its presses, so
+  the buttons beside it never sort, show hover or press, or let the press
+  close the panel. A drag resizes the column to the handle's right and
+  Title takes up the change, so the divider stays under the pointer.
+  Widening stops when Title reaches its minimum; narrowing never does.
+  The columns showing don't change during a drag, and a dropped one that
+  now fits comes back on release. A double-click puts the column back to
+  its default, or as near as Title's minimum allows.
+- A column drag and a zoom slider drag both end, saving where they were,
+  when the release may never arrive: the window loses focus, closes, or
+  hides to the tray, the layout switches, or anything covers the Library,
+  the stop confirmation included.
 - A selected row gets a 2 px primary border, rounded 6; a hovered row fades
   in a surface-colored background with the poster's hover timing. A marked
   row gets the marked poster's 25% primary wash across the row and a 22 px

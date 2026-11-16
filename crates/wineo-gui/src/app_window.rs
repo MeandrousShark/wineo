@@ -90,7 +90,8 @@ impl App {
         // A drag the close interrupts saves where it was, and the wait
         // below covers that write.
         let drag = self.end_zoom_drag();
-        Task::batch([drag, self.close_decision()])
+        let resize = self.end_column_drag();
+        Task::batch([drag, resize, self.close_decision()])
     }
 
     fn close_decision(&mut self) -> Task<Message> {
