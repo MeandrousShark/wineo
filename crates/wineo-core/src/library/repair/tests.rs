@@ -2059,3 +2059,54 @@ fn list_columns_in_a_healthy_file_make_no_repair() {
     assert_eq!(repair_at(&fixture.paths, STAMP, sync_dir).unwrap(), None);
     assert_eq!(fixture.read(), text);
 }
+
+#[test]
+fn repair_salvages_an_inline_list_columns_before_and_after_the_break() {
+    use crate::library::ListColumn::State;
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[view]\nzoom = 90\nlist_columns = {{ state = 96, tags = 1 }}\n{BREAK}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96)]),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n{BREAK}[view]\nzoom = 90\nlist_columns = {{ state = 96, tags = 1 }}\n"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96)]),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+}
+
+#[test]
+fn repair_merges_a_repeated_list_columns_table_with_the_first_value_winning() {
+    use crate::library::ListColumn::{Source, State, Tags};
+    // The second header is what makes the file unparseable.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[view.list_columns]\nstate = 96\ntags = 104\n[view.list_columns]\nstate = 200\nsource = 120\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96), (Tags, 104), (Source, 120)]),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(fixture.read().matches("[view.list_columns]").count(), 1);
+}

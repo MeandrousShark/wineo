@@ -2302,15 +2302,23 @@ fn removing_the_last_list_column_drops_the_tables_header() {
 
 #[test]
 fn list_column_no_ops_leave_the_file_alone() {
-    let text = "# keep formatting\nschema_version = 1\n\n[view]\nzoom = 125\n\n[view.list_columns]\nstate   =   96 # mine\nbad = 1\nplaytime = \"wide\"\n";
+    let text = "# keep formatting\nschema_version = 1\n\n[view]\nzoom = 125\n\n[view.list_columns]\nstate   =   96 # mine\nbad = 1\nplaytime = \"wide\"\nsource = 80 # stored default\n";
     let fixture = Fixture::new();
     fixture.write(text);
     let path = fixture.paths.library_file();
     let inode = fs::metadata(&path).unwrap().ino();
 
+    // A stored default reads as an override of that width.
+    assert_eq!(
+        load(&fixture.paths).view.list_columns,
+        BTreeMap::from([(ListColumn::State, 96), (ListColumn::Source, 80)])
+    );
+
     // Same width, an absent column back to its default, a bad value back
-    // to its default, and the default saved over a stored default.
+    // to its default, and a stored default saved or reset over itself.
     assert!(!set_list_column(&fixture.paths, ListColumn::State, Some(96)).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Source, Some(80)).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Source, None).unwrap());
     assert!(!set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
     assert!(!set_list_column(&fixture.paths, ListColumn::Tags, Some(176)).unwrap());
     assert!(!set_list_column(&fixture.paths, ListColumn::Playtime, None).unwrap());
@@ -2386,15 +2394,58 @@ fn files_from_older_releases_read_with_default_list_columns() {
             let Ok(text) = fs::read_to_string(&file) else {
                 continue;
             };
-            assert!(!text.contains("list_columns"), "{}", file.display());
+            // A later release's set may hold the table, which reads fine
+            // and isn't what this checks.
+            if text.contains("list_columns") {
+                continue;
+            }
             let fixture = Fixture::new();
             fixture.write(&text);
             let library = load(&fixture.paths);
             assert_eq!(library.problem, None, "{}", file.display());
             assert!(library.view.list_columns.is_empty(), "{}", file.display());
-            assert_eq!(library.view, View::default(), "{}", file.display());
             checked += 1;
         }
     }
     assert!(checked >= 14, "only {checked} fixture library files found");
+}
+
+#[test]
+fn list_column_edits_work_in_an_inline_view_table() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\nview = { zoom = 90 }\n");
+    assert!(set_list_column(&fixture.paths, ListColumn::State, Some(96)).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!(view.list_columns, BTreeMap::from([(ListColumn::State, 96)]));
+    assert_eq!(view.zoom, 90, "{}", fixture.read());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(104)).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::State, None).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    let view = load(&fixture.paths).view;
+    assert!(view.list_columns.is_empty());
+    assert_eq!(view.zoom, 90, "{}", fixture.read());
+}
+
+#[test]
+fn list_column_edits_work_in_an_inline_list_columns_table() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n\n[view]\nzoom = 90\nlist_columns = { state = 96, tags = 104 }\n",
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::State, Some(100)).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!(
+        view.list_columns,
+        BTreeMap::from([(ListColumn::State, 100), (ListColumn::Tags, 104)])
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::State, None).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    let view = load(&fixture.paths).view;
+    assert!(view.list_columns.is_empty(), "{}", fixture.read());
+    assert_eq!(view.zoom, 90);
+    assert!(
+        !fixture.read().contains("list_columns"),
+        "{}",
+        fixture.read()
+    );
 }
