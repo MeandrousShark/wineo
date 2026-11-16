@@ -558,6 +558,7 @@ impl App {
         ))
         .padding([0.0, PADDING])
         .width(Fill)
+        .id(iced::widget::Id::new(crate::column_resize::HEADER_ID))
         .into()
     }
 

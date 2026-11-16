@@ -2015,6 +2015,14 @@ impl App {
         } else {
             task
         };
+        // The stop dialog's scrim covers the header without hiding the
+        // panel, and takes the release, so a column drag ends here too.
+        let task = if self.hook_stop_confirm.is_some() && self.column_drag.is_some() {
+            let resized = self.end_column_drag();
+            task.chain(resized)
+        } else {
+            task
+        };
         // Leaving the Library, an overlay, or the panel opening by any path
         // puts the cards back at once.
         if !self.collapse.idle() && (self.panel_hidden() || self.panel_open) {

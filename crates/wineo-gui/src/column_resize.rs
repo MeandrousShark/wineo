@@ -2,9 +2,10 @@
 //! the drag and double-click reset they send, and saving the width.
 
 use iced::advanced::{
-    Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget::Operation, widget::tree,
+    Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget::Operation,
+    widget::tree,
 };
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
+use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
 use wineo_core::library::ListColumn;
 
 use crate::list_view::{Column, bounded, widest};
@@ -19,8 +20,7 @@ const GAP: f32 = crate::list_view::HEADER_GAP;
 /// The hover and drag line's place in the gap: its third pixel, the one
 /// nearer the column being resized.
 pub(crate) const LINE_OFFSET: f32 = 2.0;
-/// The header's id, which tests find its place by.
-#[cfg(test)]
+/// The list header's id.
 pub(crate) const HEADER_ID: &str = "library-list-header";
 
 #[derive(Debug, Clone)]
@@ -51,6 +51,9 @@ pub(crate) struct Drag {
     /// The columns showing when it started, which stay until it ends so
     /// nothing jumps under the pointer.
     pub(crate) held: &'static [Column],
+    /// A write of this column landed during the drag and its follow-up
+    /// waited, so the end writes even at the width it started from.
+    owed: bool,
 }
 
 impl App {
@@ -59,6 +62,18 @@ impl App {
         self.column_drag
             .as_ref()
             .is_some_and(|drag| drag.column == column)
+    }
+
+    /// A write of `column` landed during its drag with the window's width
+    /// already past it, so the drag's end writes whatever it lets go at.
+    pub(crate) fn owe_column_write(&mut self, column: ListColumn) {
+        if let Some(drag) = self
+            .column_drag
+            .as_mut()
+            .filter(|drag| drag.column == column)
+        {
+            drag.owed = true;
+        }
     }
 
     /// The widest `column` can go now, never under `from`.
@@ -80,6 +95,7 @@ impl App {
             from: self.list_widths.get(column),
             start_x: x,
             held: self.list_columns(),
+            owed: false,
         });
         ended
     }
@@ -101,7 +117,7 @@ impl App {
         let Some(drag) = self.column_drag.take() else {
             return Task::none();
         };
-        if self.list_widths.get(drag.column) == drag.from {
+        if self.list_widths.get(drag.column) == drag.from && !drag.owed {
             return Task::none();
         }
         self.save_field(Field::Column(
@@ -176,6 +192,9 @@ impl<'a> From<Handles<'a>> for Element<'a, Message> {
 #[derive(Default)]
 struct State {
     dragging: Option<ListColumn>,
+    /// A handle took the press, so it takes the release too, a
+    /// double-click's included.
+    pressed: bool,
     last_click: Option<mouse::Click>,
 }
 
@@ -222,9 +241,16 @@ impl Handles<'_> {
             .find(|(_, gap)| hit_area(bounds, *gap).contains(position))
     }
 
+    /// A drag is going, by the app's word or this widget's own. The app's
+    /// counts when the header's state was made anew mid-drag, as when a
+    /// row above it in the page comes or goes.
+    fn dragging(&self, state: &State) -> bool {
+        self.dragging.is_some() || state.dragging.is_some()
+    }
+
     /// The pointer as the sort buttons see it: gone while a handle has it.
     fn under(&self, state: &State, layout: Layout<'_>, cursor: mouse::Cursor) -> mouse::Cursor {
-        if state.dragging.is_some() || self.hovered(layout, cursor).is_some() {
+        if self.dragging(state) || self.hovered(layout, cursor).is_some() {
             cursor.levitate()
         } else {
             cursor
@@ -277,8 +303,6 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        #[cfg(test)]
-        operation.container(Some(&iced::widget::Id::new(HEADER_ID)), layout.bounds());
         self.content
             .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, operation);
@@ -296,12 +320,14 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
         viewport: &Rectangle,
     ) {
         let hovered = self.hovered(layout, cursor);
+        let dragging = self.dragging(tree.state.downcast_ref::<State>());
         let state = tree.state.downcast_mut::<State>();
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let (Some((column, _)), Some(position)) = (hovered, cursor.position()) {
                     let click = mouse::Click::new(position, mouse::Button::Left, state.last_click);
                     state.last_click = Some(click);
+                    state.pressed = true;
                     if click.kind() == mouse::click::Kind::Double {
                         state.dragging = None;
                         shell.publish(Message::Columns(Event::Reset(column)));
@@ -315,18 +341,19 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
                     return;
                 }
             }
-            iced::Event::Mouse(mouse::Event::CursorMoved { position })
-                if state.dragging.is_some() =>
-            {
+            iced::Event::Mouse(mouse::Event::CursorMoved { position }) if dragging => {
                 shell.publish(Message::Columns(Event::Move(position.x)));
                 shell.capture_event();
                 return;
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if state.dragging.is_some() =>
+                if dragging || state.pressed =>
             {
                 state.dragging = None;
-                shell.publish(Message::Columns(Event::Release));
+                state.pressed = false;
+                if dragging {
+                    shell.publish(Message::Columns(Event::Release));
+                }
                 shell.capture_event();
                 return;
             }
@@ -388,6 +415,23 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
         }
     }
 
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut tree::Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+
     fn mouse_interaction(
         &self,
         tree: &tree::Tree,
@@ -397,7 +441,7 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
         renderer: &Renderer,
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
-        if state.dragging.is_some() || self.hovered(layout, cursor).is_some() {
+        if self.dragging(state) || self.hovered(layout, cursor).is_some() {
             mouse::Interaction::ResizingHorizontally
         } else {
             self.content.as_widget().mouse_interaction(

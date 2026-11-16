@@ -448,8 +448,13 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.current(written) == written
                 || overtaken
                 || (matches!(written, Field::Zoom(_)) && app.zooming.dragging())
-                || matches!(written, Field::Column(column, _) if app.column_dragged(column))
             {
+                Task::none()
+            } else if let Field::Column(column, _) = written
+                && app.column_dragged(column)
+            {
+                // Its release writes instead, even one back where it started.
+                app.owe_column_write(column);
                 Task::none()
             } else {
                 app.save_field(written)

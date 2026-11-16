@@ -8,7 +8,7 @@ use wineo_core::runtime::State;
 
 use super::*;
 use crate::grid_motion::ViewLayout;
-use crate::layout_probe::{Laid, bounds_at, lay_out, layout};
+use crate::layout_probe::{Laid, bounds_at, lay_out, layout, relay_out};
 use crate::list_view::{
     HEADER_GAP, HEADER_INSET, RowFacts, TITLE_MIN, Widths, columns, row_text, state_room,
     title_cell, title_room,
@@ -689,7 +689,7 @@ fn a_click_drag_or_double_click_on_a_handle_doesnt_sort_or_close_the_panel() {
     let (offset, gap) = {
         let alone = header(&app);
         let state = cell(&alone, 1);
-        (inner(&alone), state.x + state.width)
+        (bounds_at(&alone.node, &[]), state.x + state.width)
     };
     let placed = header_in(&mut lay_out(app.view(), app.window_size));
     let at = Point::new(placed.x - offset.x + gap + 2.0, placed.center_y());
@@ -842,6 +842,12 @@ fn an_interrupted_drag_saves_where_it_was() {
     let (_root, mut app) = dragged();
     let _ = app.update(Message::Section(crate::sidebar::Section::Trash));
     ended(&mut app, "section");
+    // The stop dialog, whose scrim covers the header but not the panel. It
+    // opens in an update like any other, which this move stands in for.
+    let (_root, mut app) = dragged();
+    app.hook_stop_confirm = Some("game-000".into());
+    let _ = send(&mut app, Event::Move(1050.0));
+    ended(&mut app, "stop dialog");
 }
 
 #[test]
@@ -874,4 +880,245 @@ fn a_header_label_and_its_arrow_at_the_minimum_width_stay_inside_the_cell() {
     app.list_widths.set(ListColumn::State, 56.0);
     let probe = crate::layout_probe::probe(&mut app.list_header(), size);
     assert!(probe.outside(Rectangle::with_size(size)).is_empty());
+    let cell = bounds_at(&probe.node, &[0, 0, 1]);
+    let label = bounds_at(&probe.node, &[0, 0, 1, 0]);
+    assert_eq!(cell.width, 56.0 + 2.0 * HEADER_INSET);
+    assert!(label.width <= 56.0, "{label:?}");
+    assert!(
+        label.x >= cell.x + HEADER_INSET
+            && label.x + label.width <= cell.x + cell.width - HEADER_INSET
+    );
+}
+
+/// Runs `column`'s write in flight, then the follow-up it starts, if any.
+fn finish_writes(app: &mut App, column: ListColumn) {
+    while app.view_writes.columns.contains_key(&column) {
+        finish_write(app, column);
+    }
+}
+
+#[test]
+fn a_write_landing_mid_drag_is_still_saved_when_the_drag_ends_where_it_started() {
+    let (_root, mut app) = listed(1400.0);
+    let drag = |app: &mut App, by: f32| {
+        let _ = send(app, Event::Press(ListColumn::Tags, 1000.0));
+        let _ = send(app, Event::Move(1000.0 + by));
+        let _ = send(app, Event::Release);
+    };
+    drag(&mut app, 10.0);
+    assert_eq!(app.view_writes.columns, [(ListColumn::Tags, 166)].into());
+    // Released at 156 while 166 is still being written: 156 is owed.
+    drag(&mut app, 10.0);
+    assert_eq!(app.list_widths.get(ListColumn::Tags), 156.0);
+    // 166 lands during the next drag, which lets go without moving.
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, 1000.0));
+    finish_write(&mut app, ListColumn::Tags);
+    assert!(app.view_writes.columns.is_empty());
+    let _ = send(&mut app, Event::Release);
+    finish_writes(&mut app, ListColumn::Tags);
+    assert_eq!(saved(&app).get(&ListColumn::Tags), Some(&156));
+}
+
+#[test]
+fn a_write_landing_mid_drag_is_still_saved_when_a_double_click_resets_to_the_same_width() {
+    let (_root, mut app) = listed(1400.0);
+    let drag = |app: &mut App, by: f32| {
+        let _ = send(app, Event::Press(ListColumn::Tags, 1000.0));
+        let _ = send(app, Event::Move(1000.0 + by));
+        let _ = send(app, Event::Release);
+    };
+    drag(&mut app, 10.0);
+    // Back to the default while 166 is still being written.
+    drag(&mut app, -10.0);
+    assert_eq!(app.list_widths.get(ListColumn::Tags), 176.0);
+    // A double-click's first press starts a drag, 166 lands, then the
+    // second press resets to the width it already has.
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, 1000.0));
+    finish_write(&mut app, ListColumn::Tags);
+    let _ = send(&mut app, Event::Reset(ListColumn::Tags));
+    finish_writes(&mut app, ListColumn::Tags);
+    assert_eq!(
+        saved(&app).get(&ListColumn::Tags),
+        None,
+        "back at the default"
+    );
+}
+
+#[test]
+fn a_header_made_anew_mid_drag_still_sends_its_moves_and_release() {
+    let (_root, mut app) = listed(1400.0);
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, 1000.0));
+    // A fresh header, as when the page's rows above it change mid-drag, and
+    // the pointer outside the window.
+    let messages = {
+        let mut laid = header(&app);
+        let away = Point::new(1030.0, 500.0);
+        events(
+            &mut laid,
+            &[
+                (move_to(away).0, Cursor::Unavailable),
+                (release_at(away).0, Cursor::Unavailable),
+            ],
+        )
+    };
+    assert_eq!(
+        debug(&messages),
+        ["Columns(Move(1030.0))", "Columns(Release)"]
+    );
+    for message in messages {
+        let _ = app.update(message);
+    }
+    assert!(app.column_drag.is_none());
+    assert_eq!(app.view_writes.columns, [(ListColumn::Tags, 146)].into());
+}
+
+#[test]
+fn a_drag_with_the_pointer_outside_the_window_still_moves_and_saves() {
+    let (_root, mut app) = listed(1400.0);
+    let at = Point::new(gap(&app, ListColumn::Tags) + 2.0, 16.0);
+    let mut messages = Vec::new();
+    {
+        let mut laid = header(&app);
+        messages.extend(events(&mut laid, &[press_at(at)]));
+        let away = Point::new(at.x + 20.0, -40.0);
+        messages.extend(events(
+            &mut laid,
+            &[
+                (move_to(away).0, Cursor::Unavailable),
+                (release_at(away).0, Cursor::Unavailable),
+            ],
+        ));
+    }
+    assert_eq!(
+        debug(&messages),
+        [
+            format!("Columns(Press(Tags, {:?}))", at.x),
+            format!("Columns(Move({:?}))", at.x + 20.0),
+            "Columns(Release)".to_owned(),
+        ]
+    );
+    for message in messages {
+        let _ = app.update(message);
+    }
+    finish_write(&mut app, ListColumn::Tags);
+    assert_eq!(saved(&app).get(&ListColumn::Tags), Some(&156));
+}
+
+/// Whether the header's own state says a drag is going.
+fn widget_dragging(tree: &tree::Tree) -> Option<ListColumn> {
+    tree.state.downcast_ref::<super::State>().dragging
+}
+
+#[test]
+fn the_headers_drag_state_stays_while_the_app_drags_and_clears_after() {
+    let (_root, mut app) = listed(1400.0);
+    let size = Size::new(app.viewport_width, 100.0);
+    let at = Point::new(gap(&app, ListColumn::Source) + 2.0, 16.0);
+    let (messages, tree) = {
+        let mut laid = header(&app);
+        let messages = events(&mut laid, &[press_at(at)]);
+        (messages, laid.into_tree())
+    };
+    assert_eq!(widget_dragging(&tree), Some(ListColumn::Source));
+    for message in messages {
+        let _ = app.update(message);
+    }
+    let tree = relay_out(app.list_header(), tree, size).into_tree();
+    assert_eq!(widget_dragging(&tree), Some(ListColumn::Source), "kept");
+    // The app lets go without the header seeing a release, as an
+    // interruption does.
+    let _ = app.end_column_drag();
+    let tree = relay_out(app.list_header(), tree, size).into_tree();
+    assert_eq!(widget_dragging(&tree), None, "cleared");
+}
+
+#[test]
+fn a_handle_captures_its_press_move_and_release_and_a_double_clicks_too() {
+    let (_root, app) = listed(1400.0);
+    let at = Point::new(gap(&app, ListColumn::Playtime) + 2.0, 16.0);
+    let mut laid = header(&app);
+    let status = |laid: &mut Laid<'_, Message>, (event, cursor): (iced::Event, Cursor)| {
+        laid.event_with_status(&event, cursor).1
+    };
+    let captured = iced::event::Status::Captured;
+    assert_eq!(status(&mut laid, press_at(at)), captured, "press");
+    let moved = Point::new(at.x + 5.0, 16.0);
+    assert_eq!(status(&mut laid, move_to(moved)), captured, "move");
+    assert_eq!(status(&mut laid, release_at(moved)), captured, "release");
+    // A fresh header, so the double-click is on one spot.
+    let mut laid = header(&app);
+    for step in [
+        "first press",
+        "first release",
+        "second press",
+        "second release",
+    ] {
+        let event = if step.ends_with("press") {
+            press_at(at)
+        } else {
+            release_at(at)
+        };
+        assert_eq!(status(&mut laid, event), captured, "{step}");
+    }
+    // A release with no handle press before it is left alone.
+    let mut laid = header(&app);
+    assert_eq!(
+        status(&mut laid, release_at(at)),
+        iced::event::Status::Ignored
+    );
+}
+
+#[test]
+fn a_narrow_header_has_handles_only_for_the_columns_it_shows() {
+    // 600 shows Playtime and Last played, and drops Source and Tags.
+    let (_root, app) = listed(viewport(600.0));
+    assert_eq!(app.list_columns(), &Column::ALL[..2]);
+    let laid = header(&app);
+    let bounds = inner(&laid);
+    let mut handles: Vec<(f32, f32)> = Vec::new();
+    let mut x = bounds.x;
+    while x < bounds.x + bounds.width {
+        let at = Cursor::Available(Point::new(x, bounds.center_y()));
+        if laid.interaction_at(at) == mouse::Interaction::ResizingHorizontally {
+            match handles.last_mut() {
+                Some((_, end)) if x - *end <= 0.5 => *end = x,
+                _ => handles.push((x, x)),
+            }
+        }
+        x += 0.5;
+    }
+    let gaps: Vec<f32> = [
+        ListColumn::State,
+        ListColumn::Playtime,
+        ListColumn::LastPlayed,
+    ]
+    .into_iter()
+    .map(|column| gap(&app, column))
+    .collect();
+    assert_eq!(
+        handles,
+        gaps.iter()
+            .map(|gap| (gap - 2.0, gap + 5.5))
+            .collect::<Vec<_>>()
+    );
+    // Nothing past Last played, the last column showing.
+    let last = cell(&laid, 3);
+    assert!(handles.iter().all(|(_, end)| *end < last.x + last.width));
+}
+
+#[test]
+fn the_handles_pass_on_their_cells_overlays() {
+    use iced::widget::{row, text, tooltip};
+    let (_root, app) = listed(1400.0);
+    let cells = row![
+        tooltip(text("Title"), text("A tip"), tooltip::Position::Bottom),
+        text("State"),
+    ];
+    let content: Element<'_, Message> = iced::widget::container(cells).into();
+    let element: Element<'_, Message> =
+        Handles::new(content, vec![ListColumn::State], None, app.palette).into();
+    let mut laid = lay_out(element, Size::new(400.0, 200.0));
+    let title = bounds_at(&laid.node, &[0, 0]);
+    let _ = events(&mut laid, &[move_to(title.center())]);
+    assert!(!laid.overlay_bounds().is_empty(), "the tooltip shows");
 }
