@@ -517,6 +517,38 @@ fn the_source_and_tags_headers_sort_flip_and_show_the_indicator() {
     let _ = app.list_header();
 }
 
+#[test]
+fn an_emulated_game_shows_and_sorts_by_its_emulator() {
+    let (_root, mut app) = fixture();
+    let mut cards = Vec::new();
+    for (name, emulator, native) in [
+        ("a", Some("retroarch"), true),
+        ("b", Some("dolphin"), true),
+        ("c", None, true),
+        ("d", Some("custom"), true),
+        ("e", None, false),
+    ] {
+        let mut card = card(name, State::Inactive, 60);
+        card.source = Source::new(Facts {
+            native,
+            emulator,
+            ..Facts::default()
+        });
+        cards.push(card);
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.layout = ViewLayout::List;
+    app.snap_grid();
+    let sources: Vec<&str> = app.filtered().into_iter().map(source_label).collect();
+    assert_eq!(
+        sources,
+        ["RetroArch", "Dolphin", "Native", "Emulated", "Windows"]
+    );
+    // Source A to Z: Dolphin, Emulated, Native, RetroArch, Windows.
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert_eq!(shown(&app), ["b", "d", "c", "a", "e"]);
+}
+
 /// Which header cells show a sort arrow at `size`: the button's row holds
 /// the label alone, or the label and the arrow.
 fn arrows(app: &App, size: Size) -> Vec<(&'static str, bool)> {

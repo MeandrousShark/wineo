@@ -32,6 +32,7 @@ const STEAM: Facts<'static> = Facts {
     heroic_id: None,
     store_hint: None,
     steam_platform: None,
+    emulator: None,
 };
 const GOG: Facts<'static> = Facts {
     steam: false,
@@ -40,6 +41,7 @@ const GOG: Facts<'static> = Facts {
     heroic_id: None,
     store_hint: None,
     steam_platform: None,
+    emulator: None,
 };
 const NATIVE: Facts<'static> = Facts {
     steam: false,
@@ -48,6 +50,7 @@ const NATIVE: Facts<'static> = Facts {
     heroic_id: None,
     store_hint: None,
     steam_platform: None,
+    emulator: None,
 };
 const WINDOWS: Facts<'static> = Facts {
     steam: false,
@@ -56,6 +59,7 @@ const WINDOWS: Facts<'static> = Facts {
     heroic_id: None,
     store_hint: None,
     steam_platform: None,
+    emulator: None,
 };
 
 /// hades and old-demo are tagged rpg, old-demo is hidden, and notepad is
@@ -1531,4 +1535,97 @@ fn the_popup_draws_included_and_excluded_rows_and_its_hint() {
     let _ = filter(&mut app, Event::ToggleTag("game".into()));
     let _ = filter(&mut app, Event::ExcludeTag("rpg".into()));
     let _ = crate::layout_probe::layout(&mut app.view(), app.window_size);
+}
+
+/// Two Dolphin games, a RetroArch one, a custom emulator's, one from an id
+/// this wineo doesn't know, a plain native program, and a Windows one.
+fn emulated() -> Vec<Card> {
+    let emulator = |id: &'static str| Facts {
+        emulator: Some(id),
+        ..NATIVE
+    };
+    let mut cards = vec![
+        tagged("prime", emulator("dolphin"), &["gamecube"]),
+        tagged("galaxy", emulator("dolphin"), &["wii"]),
+        tagged("metroid", emulator("retroarch"), &["snes"]),
+        tagged("sunshine", emulator("custom"), &[]),
+        tagged("future", emulator("someday"), &[]),
+        tagged("balatro", NATIVE, &[]),
+        tagged("notepad", WINDOWS, &[]),
+    ];
+    cards.sort_by(|a, b| a.name.cmp(&b.name));
+    cards
+}
+
+#[test]
+fn the_popup_offers_a_chip_per_emulator_present_and_one_emulated_chip() {
+    use wineo_core::emulator::Emulator;
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::Loaded(Ok(emulated())));
+    assert_eq!(
+        app.offered().platforms,
+        [
+            Platform::Emulated(Emulator::Dolphin),
+            Platform::Emulated(Emulator::Other),
+            Platform::Native,
+            Platform::Emulated(Emulator::RetroArch),
+            Platform::Windows,
+        ]
+    );
+    let ids = app.filter_menu_ids();
+    for id in [
+        "library-filter-platform-dolphin",
+        "library-filter-platform-emulated",
+        "library-filter-platform-retroarch",
+    ] {
+        assert!(ids.iter().any(|found| found == id), "{id}: {ids:?}");
+    }
+    open_filters(&mut app);
+    let _ = app.view();
+
+    let _ = filter(
+        &mut app,
+        Event::TogglePlatform(Platform::Emulated(Emulator::Other)),
+    );
+    assert_eq!(shown(&app), ["future", "sunshine"]);
+    let _ = filter(&mut app, Event::Clear);
+    let _ = filter(
+        &mut app,
+        Event::TogglePlatform(Platform::Emulated(Emulator::Dolphin)),
+    );
+    assert_eq!(shown(&app), ["galaxy", "prime"]);
+
+    // Without a custom or unknown emulator there's no Emulated chip.
+    let known: Vec<Card> = emulated()
+        .into_iter()
+        .filter(|card| !matches!(card.name.as_str(), "sunshine" | "future"))
+        .collect();
+    let _ = filter(&mut app, Event::Clear);
+    let _ = app.update(Message::Loaded(Ok(known)));
+    assert!(
+        !app.offered()
+            .platforms
+            .contains(&Platform::Emulated(Emulator::Other))
+    );
+}
+
+#[test]
+fn emulated_games_are_not_native() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::Loaded(Ok(emulated())));
+    let _ = filter(&mut app, Event::TogglePlatform(Platform::Native));
+    assert_eq!(shown(&app), ["balatro"]);
+    let _ = filter(&mut app, Event::Clear);
+    let _ = filter(&mut app, Event::ExcludePlatform(Platform::Windows));
+    assert_eq!(
+        shown(&app),
+        [
+            "balatro", "future", "galaxy", "metroid", "prime", "sunshine"
+        ]
+    );
+    let _ = filter(&mut app, Event::ExcludePlatform(Platform::Native));
+    assert_eq!(
+        shown(&app),
+        ["future", "galaxy", "metroid", "prime", "sunshine"]
+    );
 }

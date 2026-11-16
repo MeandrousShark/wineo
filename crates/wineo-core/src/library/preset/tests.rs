@@ -387,6 +387,53 @@ layout = "list"
 }
 
 #[test]
+fn emulator_ids_round_trip_and_unknown_ones_never_match() {
+    use crate::emulator::Emulator;
+    let fixture = Fixture::with(
+        r#"[presets.Retro]
+platforms = ["dolphin", "emulated", "custom", "eden"]
+not_platforms = ["retroarch", "Dolphin"]
+"#,
+    );
+    let read = fixture.preset("Retro");
+    assert_eq!(
+        read,
+        Preset {
+            platforms: set([
+                Platform::Emulated(Emulator::Dolphin),
+                Platform::Emulated(Emulator::Other),
+            ]),
+            not_platforms: set([Platform::Emulated(Emulator::RetroArch)]),
+            ..Preset::default()
+        }
+    );
+    // Saving what it reads keeps the ids it didn't know.
+    set_preset(&fixture.paths, "Retro", &read).unwrap();
+    assert!(
+        fixture
+            .read()
+            .contains(r#"platforms = ["dolphin", "emulated", "custom", "eden"]"#),
+        "{}",
+        fixture.read()
+    );
+    let fresh = Fixture::new();
+    let preset = Preset {
+        platforms: set([
+            Platform::Emulated(Emulator::Mgba),
+            Platform::Emulated(Emulator::Other),
+        ]),
+        ..Preset::default()
+    };
+    set_preset(&fresh.paths, "P", &preset).unwrap();
+    assert!(
+        fresh.read().contains(r#"platforms = ["emulated", "mgba"]"#),
+        "{}",
+        fresh.read()
+    );
+    assert_eq!(fresh.preset("P"), preset);
+}
+
+#[test]
 fn entries_that_are_not_presets_are_skipped_and_the_rest_read() {
     let fixture = Fixture::with(
         "[presets]\nbroken = 1\ntext = \"x\"\n[presets.Good]\nsort = \"added\"\n[presets.\" \"]\nsort = \"added\"\n[presets.\"\"]\n",

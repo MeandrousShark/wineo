@@ -443,6 +443,23 @@ fn a_preset_may_group_by_recently_played() {
 }
 
 #[test]
+fn emulator_platform_ids_are_known_and_others_are_not() {
+    let inspection = inspect_text(
+        r#"[presets.Emulated]
+platforms = ["dolphin", "emulated"]
+not_platforms = ["custom", "eden", "azahar"]
+"#,
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets.Emulated.not_platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found "custom""#,
+            r#"library.toml: presets.Emulated.not_platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found "eden""#,
+        ]
+    );
+}
+
+#[test]
 fn bad_preset_values_name_the_preset_the_field_and_what_was_found() {
     let inspection = inspect_text(
         r#"[presets."Couch co-op"]
@@ -470,10 +487,10 @@ not_tags = 5
             r#"library.toml: presets."Couch co-op".group: expected one of none, recent, tag, source, state, found "genre""#,
             r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, coverflow, found true"#,
             r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
-            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,
-            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found 3"#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found "macos""#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found 3"#,
             r#"library.toml: presets."Couch co-op".not_stores: expected a list of store ids: steam, gog, epic, amazon, found "Steam""#,
-            r#"library.toml: presets."Couch co-op".not_platforms: expected a list of platform ids: native, windows, found ["windows"]"#,
+            r#"library.toml: presets."Couch co-op".not_platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found ["windows"]"#,
             r#"library.toml: presets."Couch co-op".tags: expected a list of tag names, found 3"#,
             r#"library.toml: presets."Couch co-op".not_tags: expected a list of tag names, found 5"#,
         ]
