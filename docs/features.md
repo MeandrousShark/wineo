@@ -16,7 +16,10 @@ in parallel (plan 0065), and Coverflow with controller navigation, library
 views part 5 (plan 0066), shipped in 1.6.0. The rest get a plan when they
 come up, and the rows below have the details.
 
-Nothing is queued. Store imports come next.
+1. Emulated games: add and launch games from emulators like Dolphin,
+   RetroArch, and Cemu (maintainer, 2026-11-15).
+
+Store imports come after.
 
 ## Backlog
 
