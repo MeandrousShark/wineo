@@ -33,8 +33,8 @@ pub use appinfo_cache::AppInfoCache;
 pub use discovery::{Discovery, PendingGame, discover};
 pub use placement::{Placement, place};
 pub use process::{
-    Baseline, Reaper, baseline, client_running, eligible_reapers, matching_reapers, open_reaper,
-    reapers_by_app, stop_tree, wait_pidfd_exit,
+    Baseline, ClientState, Reaper, baseline, client_state, eligible_reapers, matching_reapers,
+    open_reaper, reapers_by_app, stop_tree, wait_pidfd_exit,
 };
 use vdf::{Object, Value};
 

@@ -26,61 +26,93 @@ pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
             if !matches!(launch.host, Host::Proxied { .. }) {
                 return Err(Error::StartFailed("invalid Steam request".to_owned()));
             }
-            let (first, cold) = match silent_start(&launch) {
-                Some(command) => (command, true),
-                None => (launch.command(), false),
+            let report = |report: String| {
+                io::stdout()
+                    .write_all(report.as_bytes())
+                    .context(|| "failed to report Steam request".to_owned())
             };
-            let (started, report) = match spawn_quiet(first) {
-                Ok(child) => (Some(child), "spawned\n".to_owned()),
-                Err(err) => (None, format!("failed {err}\n")),
-            };
-            io::stdout()
-                .write_all(report.as_bytes())
-                .context(|| "failed to report Steam request".to_owned())?;
             // The launch follows the report, so `start`'s own clock covers the
             // client's boot as it did when both went out together. Nothing
-            // is left to report to if this spawn fails.
-            if cold
-                && let Some(mut silent) = started
-                && let Host::Proxied { install, .. } = &launch.host
-            {
-                wait_for_client(install, &mut silent);
-                let _ = spawn_quiet(launch.command());
+            // is left to report to if the launch's spawn fails.
+            match first_step(&launch) {
+                First::Send => {
+                    report(match spawn_quiet(launch.command()) {
+                        Ok(_) => "spawned\n".to_owned(),
+                        Err(err) => format!("failed {err}\n"),
+                    })?;
+                }
+                First::Start(command) => {
+                    let silent = spawn_quiet(command);
+                    report(match &silent {
+                        Ok(_) => "spawned\n".to_owned(),
+                        Err(err) => format!("failed {err}\n"),
+                    })?;
+                    if let (Ok(mut silent), Host::Proxied { install, .. }) = (silent, &launch.host)
+                    {
+                        wait_for_client(install, Some(&mut silent));
+                        let _ = spawn_quiet(launch.command());
+                    }
+                }
+                // A client is already coming up, so `steam` resolved moments
+                // ago. As after a silent start, the launch's own spawn goes
+                // unreported.
+                First::Wait => {
+                    report("spawned\n".to_owned())?;
+                    if let Host::Proxied { install, .. } = &launch.host {
+                        wait_for_client(install, None);
+                        let _ = spawn_quiet(launch.command());
+                    }
+                }
             }
             Ok(())
         })
 }
 
-/// The silent start for a launch when no Steam client is running. Steam
-/// ignores `-silent` when `-applaunch` arrives in the same cold start and
-/// opens its library window, so the launch is sent once a client is up.
-/// None when a client is running or the check can't tell, and the launch is
-/// sent as it is.
-fn silent_start(launch: &Launch) -> Option<Command> {
+/// What the helper does before a launch reaches Steam.
+enum First {
+    /// Send the request now.
+    Send,
+    /// Start the client silently, then send the launch once it's ready.
+    /// Steam ignores `-silent` when `-applaunch` arrives in the same cold
+    /// start and opens its library window.
+    Start(Command),
+    /// A client is coming up: send the launch once it's ready, with no
+    /// second start.
+    Wait,
+}
+
+/// Only a launch waits for the client. When the check can't tell, the
+/// request is sent as it is.
+fn first_step(launch: &Launch) -> First {
     let Host::Proxied {
         install,
         request: SteamRequest::Launch,
         ..
     } = &launch.host
     else {
-        return None;
+        return First::Send;
     };
-    if !matches!(steam::client_running(install), Ok(false)) {
-        return None;
+    match steam::client_state(install) {
+        Ok(steam::ClientState::Absent) => launch
+            .silent_start_command()
+            .map_or(First::Send, First::Start),
+        Ok(steam::ClientState::Starting) => First::Wait,
+        Ok(steam::ClientState::Ready) | Err(_) => First::Send,
     }
-    launch.silent_start_command()
 }
 
-/// Waits for the client a silent start began. Steam may update itself first,
-/// so this is long, and it ends early when the check fails, since the launch
-/// is better sent than lost. The start command is reaped if it exits early,
-/// so it doesn't linger as a zombie for the wait.
-fn wait_for_client(install: &steam::Install, silent: &mut Child) {
+/// Waits for the client to be ready for a launch. Steam may update itself
+/// first, so this is long, and it ends early when the check fails, since the
+/// launch is better sent than lost. A silent start command is reaped if it
+/// exits early, so it doesn't linger as a zombie for the wait.
+fn wait_for_client(install: &steam::Install, mut silent: Option<&mut Child>) {
     let deadline =
         Instant::now() + test_timeout("WINEO_TEST_STEAM_CLIENT_WAIT_MS", CLIENT_START_WAIT);
     wait_until(deadline, CLIENT_POLL, || {
-        let _ = silent.try_wait();
-        steam::client_running(install)
+        if let Some(silent) = silent.as_mut() {
+            let _ = silent.try_wait();
+        }
+        steam::client_state(install).map(|state| state == steam::ClientState::Ready)
     });
 }
 

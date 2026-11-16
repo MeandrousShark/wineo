@@ -160,6 +160,28 @@ fn a_cold_start_runs_steam_silently_and_the_launch_waits_for_the_client() {
 }
 
 #[test]
+fn a_steam_client_still_starting_gets_no_second_start_and_the_launch_waits() {
+    let s = SteamFixture::starting();
+    s.config("");
+    let started = s.run(&["start", "civ", "--target", "steam"]);
+    assert_success(&started);
+    // Many polls of the helper's 250 ms wait pass here, so a launch that
+    // didn't wait for the client would already be sent, and a cold start
+    // would have sent `-silent`.
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(dispatches(&s), Vec::<String>::new());
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 1);
+    assert_eq!(dispatches(&s), ["-applaunch 289070"]);
+    wait_for("Steam reaper claim", || {
+        let state = s.f.state("civ");
+        state.contains("target = \"steam\"") && state.contains("running_at = ")
+    });
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
 fn the_launch_is_sent_when_the_wait_for_the_client_runs_out() {
     let s = SteamFixture::cold();
     s.make_silent_start_inert();

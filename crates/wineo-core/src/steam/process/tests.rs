@@ -99,6 +99,8 @@ struct FakeProc {
     missing_exe: BTreeSet<u32>,
     arguments_by_pid: BTreeMap<u32, Vec<Vec<u8>>>,
     exe_by_pid: BTreeMap<u32, PathBuf>,
+    fds_by_pid: BTreeMap<u32, Vec<PathBuf>>,
+    fds_error: Option<(u32, i32)>,
 }
 
 impl FakeProc {
@@ -120,6 +122,8 @@ impl FakeProc {
             missing_exe: BTreeSet::new(),
             arguments_by_pid: BTreeMap::new(),
             exe_by_pid: BTreeMap::new(),
+            fds_by_pid: BTreeMap::new(),
+            fds_error: None,
         }
     }
 }
@@ -193,6 +197,13 @@ impl ProcessReader for FakeProc {
     fn exited(&self, pid: &u32) -> io::Result<bool> {
         self.calls.borrow_mut().push("exited");
         Ok(self.exited.contains(pid))
+    }
+
+    fn fd_links(&self, pid: u32) -> io::Result<Option<Vec<PathBuf>>> {
+        if let Some((_, error)) = self.fds_error.filter(|(error_pid, _)| *error_pid == pid) {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        Ok(self.fds_by_pid.get(&pid).cloned())
     }
 }
 
@@ -891,6 +902,222 @@ fn only_a_live_client_counts(dir: &str) {
         .arguments_by_pid
         .insert(7, vec![stray.as_os_str().as_bytes().to_vec()]);
     assert!(!scan_client(&outside, vec![7], &install).unwrap());
+}
+
+#[test]
+fn the_steam_dir_comes_from_each_native_root_shape() {
+    let at = |root: &str| {
+        steam_dir(&Install {
+            kind: InstallKind::Native,
+            root: PathBuf::from(root),
+        })
+    };
+    let dot = Some(PathBuf::from("/home/u/.steam"));
+    assert_eq!(at("/home/u/.steam/root"), dot);
+    assert_eq!(at("/home/u/.steam/steam"), dot);
+    assert_eq!(at("/home/u/.local/share/Steam"), dot);
+    // Anything else falls back to the plain process check.
+    assert_eq!(at("/opt/steam"), None);
+    assert_eq!(at("/home/u/.steam/rooted"), None);
+    assert_eq!(at("/home/u/share/Steam"), None);
+}
+
+/// A home with a native install at `.local/share/Steam`, and a fake process
+/// table where pid 7 is its client when `client` is set.
+fn client_table(home: &Path, client: bool) -> (Install, FakeProc, Vec<u32>) {
+    let install = Install {
+        kind: InstallKind::Native,
+        root: home.join(".local/share/Steam"),
+    };
+    let exe = install.root.join("steamrt64/steam");
+    let mut reader = FakeProc::new(&[stat(7, 1, 10), stat(9, 1, 20)]);
+    reader.exe_by_pid.insert(
+        7,
+        if client {
+            exe.clone()
+        } else {
+            PathBuf::from("/usr/bin/other")
+        },
+    );
+    reader
+        .arguments_by_pid
+        .insert(7, vec![exe.as_os_str().as_bytes().to_vec()]);
+    reader.exe_by_pid.insert(9, PathBuf::from("/usr/bin/other"));
+    reader.arguments_by_pid.insert(9, vec![b"other".to_vec()]);
+    fs::create_dir_all(home.join(".steam")).unwrap();
+    (install, reader, vec![7, 9])
+}
+
+#[test]
+fn the_client_is_ready_only_once_its_pid_file_process_holds_the_pipe() {
+    use ClientState::{Absent, Ready, Starting};
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let pid_file = home.join(".steam/steam.pid");
+    let pipe = home.join(".steam/steam.pipe");
+    let state = |client: bool, holder: Option<(u32, Vec<PathBuf>)>| {
+        let (install, mut reader, pids) = client_table(home, client);
+        if let Some((pid, links)) = holder {
+            reader.fds_by_pid.insert(pid, links);
+        }
+        scan_client_state(&reader, pids, &install).unwrap()
+    };
+
+    let _ = fs::remove_file(&pid_file);
+    assert_eq!(state(false, None), Absent);
+    assert_eq!(state(true, None), Starting);
+
+    fs::write(&pid_file, "9\n").unwrap();
+    let holds = || Some((9, vec![PathBuf::from("/dev/null"), pipe.clone()]));
+    assert_eq!(state(true, holds()), Ready);
+    // The pid file's process can hold the pipe a moment before its exe is
+    // the client's, and `steam` already forwards to it then.
+    assert_eq!(state(false, holds()), Ready);
+    // Dead, holding other files, or holding another home's pipe.
+    assert_eq!(state(true, None), Starting);
+    assert_eq!(
+        state(true, Some((9, vec![PathBuf::from("/dev/null")]))),
+        Starting
+    );
+    let elsewhere = temp.path().join("other/.steam/steam.pipe");
+    assert_eq!(state(true, Some((9, vec![elsewhere]))), Starting);
+    // The pid file names someone else.
+    assert_eq!(state(true, Some((8, vec![pipe.clone()]))), Starting);
+    for text in ["", "nine\n", "0\n", "-9\n"] {
+        fs::write(&pid_file, text).unwrap();
+        assert_eq!(
+            state(true, Some((0, vec![pipe.clone()]))),
+            Starting,
+            "{text:?}"
+        );
+    }
+    assert_eq!(state(false, None), Absent);
+}
+
+#[test]
+fn the_pipe_matches_through_a_symlinked_home() {
+    let temp = tempfile::tempdir().unwrap();
+    let real = temp.path().join("real");
+    let (_, _, _) = client_table(&real, true);
+    let pipe = real.join(".steam/steam.pipe");
+    fs::write(&pipe, "").unwrap();
+    let alias = temp.path().join("home");
+    symlink(&real, &alias).unwrap();
+    let (install, mut reader, pids) = client_table(&alias, true);
+    fs::write(alias.join(".steam/steam.pid"), "9\n").unwrap();
+    // The kernel reports the resolved path.
+    reader
+        .fds_by_pid
+        .insert(9, vec![fs::canonicalize(&pipe).unwrap()]);
+    assert_eq!(
+        scan_client_state(&reader, pids, &install).unwrap(),
+        ClientState::Ready
+    );
+}
+
+#[test]
+fn unreadable_fds_are_not_ready_and_other_errors_propagate() {
+    let temp = tempfile::tempdir().unwrap();
+    let (install, mut reader, pids) = client_table(temp.path(), true);
+    fs::write(temp.path().join(".steam/steam.pid"), "9\n").unwrap();
+    reader.fds_error = Some((9, rustix::io::Errno::ACCESS.raw_os_error()));
+    assert_eq!(
+        scan_client_state(&reader, pids.clone(), &install).unwrap(),
+        ClientState::Starting
+    );
+    reader.fds_error = Some((9, rustix::io::Errno::MFILE.raw_os_error()));
+    let error = scan_client_state(&reader, pids, &install).unwrap_err();
+    assert_eq!(
+        error.raw_os_error(),
+        Some(rustix::io::Errno::MFILE.raw_os_error())
+    );
+}
+
+#[test]
+fn flatpak_and_unknown_roots_keep_the_plain_process_check() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    for root in [
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+        home.join("opt/steam"),
+    ] {
+        let kind = if root.ends_with(".local/share/Steam") {
+            InstallKind::Flatpak
+        } else {
+            InstallKind::Native
+        };
+        let install = Install { kind, root };
+        let exe = install.root.join("steamrt64/steam");
+        let mut reader = FakeProc::new(&[stat(7, 1, 10)]);
+        reader.exe_by_pid.insert(7, exe.clone());
+        reader
+            .arguments_by_pid
+            .insert(7, vec![exe.as_os_str().as_bytes().to_vec()]);
+        // A pid file in the home is never read for these: the Flatpak's is
+        // in another pid namespace.
+        fs::create_dir_all(home.join(".steam")).unwrap();
+        fs::write(home.join(".steam/steam.pid"), "7\n").unwrap();
+        assert_eq!(
+            scan_client_state(&reader, vec![7], &install).unwrap(),
+            ClientState::Ready,
+            "{install:?}"
+        );
+        assert_eq!(
+            scan_client_state(&reader, Vec::new(), &install).unwrap(),
+            ClientState::Absent,
+            "{install:?}"
+        );
+    }
+}
+
+#[test]
+fn a_real_process_holding_the_pipe_is_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    let dot = temp.path().join(".steam");
+    fs::create_dir_all(&dot).unwrap();
+    let pipe = dot.join("steam.pipe");
+    let pid_file = dot.join("steam.pid");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &pipe,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let script = temp.path().join("client");
+    crate::test_script::write_script(
+        &script,
+        "#!/bin/sh\nexec 3<>\"$1\"\necho $$ > \"$2.tmp\"\nmv \"$2.tmp\" \"$2\"\nexec sleep 30\n",
+    );
+    let child = crate::test_script::KillOnDrop::new(
+        Command::new(&script)
+            .args([&pipe, &pid_file])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_file.exists() {
+        assert!(Instant::now() < deadline, "the client didn't start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(pipe_held(&Proc, &dot).unwrap());
+    let install = Install {
+        kind: InstallKind::Native,
+        root: temp.path().join(".steam/root"),
+    };
+    assert_eq!(client_state(&install).unwrap(), ClientState::Ready);
+
+    // This test process is alive but doesn't hold the pipe.
+    fs::write(&pid_file, format!("{}\n", std::process::id())).unwrap();
+    assert!(!pipe_held(&Proc, &dot).unwrap());
+    // Once the client is gone, its pid file names nothing.
+    fs::write(&pid_file, format!("{}\n", child.id())).unwrap();
+    drop(child);
+    assert!(!pipe_held(&Proc, &dot).unwrap());
 }
 
 /// Kills a test process's group even when an assertion panics first.
