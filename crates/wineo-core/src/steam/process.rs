@@ -753,22 +753,26 @@ fn install_binaries(install: &Install, name: &str) -> Vec<PathBuf> {
 }
 
 /// The pressure-vessel runtime folder, through the root as given and its
-/// canonical target.
+/// canonical target. The kernel's exe link is fully resolved, so the folder's
+/// own target counts too, for a symlinked `steamrt64` or `pv-runtime`.
 fn install_runtimes(install: &Install) -> Vec<PathBuf> {
     let canonical = fs::canonicalize(install.root()).unwrap_or_else(|_| install.root().to_owned());
-    [install.root(), canonical.as_path()]
+    let mut runtimes: Vec<PathBuf> = [install.root(), canonical.as_path()]
         .iter()
         .map(|root| root.join("steamrt64/pv-runtime"))
-        .collect()
+        .collect();
+    if let Ok(target) = fs::canonicalize(&runtimes[0]) {
+        runtimes.push(target);
+    }
+    runtimes
 }
 
 /// Only the kernel's exe link counts: a helper's argv can name anything.
 fn in_runtime<F>(process: &Inspected<F>, runtimes: &[PathBuf]) -> bool {
-    process.exe.as_deref().is_some_and(|exe| {
-        runtimes.iter().any(|runtime| exe.starts_with(runtime))
-            || fs::canonicalize(exe)
-                .is_ok_and(|exe| runtimes.iter().any(|runtime| exe.starts_with(runtime)))
-    })
+    process
+        .exe
+        .as_deref()
+        .is_some_and(|exe| runtimes.iter().any(|runtime| exe.starts_with(runtime)))
 }
 
 /// `clients` is `install_binaries(install, "steam")`, built once per scan.

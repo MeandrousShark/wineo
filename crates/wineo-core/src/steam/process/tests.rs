@@ -691,6 +691,25 @@ fn reaper_under_the_pressure_vessel_launcher_is_claimed() {
 }
 
 #[test]
+fn a_symlinked_runtime_folder_still_anchors_its_helpers() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Steam");
+    let target = temp.path().join("elsewhere/pv-runtime");
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(root.join("steamrt64")).unwrap();
+    symlink(&target, root.join("steamrt64/pv-runtime")).unwrap();
+    let (mut reader, pids) = pv_table(&root);
+    // The kernel reports the helpers under the link's target.
+    let target = fs::canonicalize(&target).unwrap();
+    for pid in [6043, 6054, 8698] {
+        let exe = reader.exe_by_pid[&pid].clone();
+        let inside = exe.strip_prefix(root.join("steamrt64/pv-runtime")).unwrap();
+        reader.exe_by_pid.insert(pid, target.join(inside));
+    }
+    assert_eq!(pv_claims(&reader, pids, &native(&root)), [8699]);
+}
+
+#[test]
 fn pressure_vessel_helpers_must_come_from_this_install_runtime() {
     let temp = tempfile::tempdir().unwrap();
     let install = native(&temp.path().join("mine"));

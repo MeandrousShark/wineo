@@ -127,9 +127,11 @@ int main(int argc, char **argv) {
     struct sigaction action = {0};
     action.sa_handler = reap;
     sigaction(SIGCHLD, &action, NULL);
+    // The request FIFO comes first, so a client seen as ready can always
+    // take a request.
+    if (mkfifo(argv[1], 0600) && errno != EEXIST) return 3;
     const char *dot_steam = getenv("WINEO_TEST_STEAM_DOT_DIR");
     if (dot_steam && !announce(dot_steam)) return 6;
-    if (mkfifo(argv[1], 0600) && errno != EEXIST) return 3;
     for (;;) {
         int input = open(argv[1], O_RDONLY);
         if (input < 0) { if (errno == EINTR) continue; return 4; }
@@ -333,7 +335,7 @@ impl SteamFixture {
             fs::write(&hold, "").unwrap();
         }
         let client = warm.then(|| {
-            let client = Command::new(client_binary)
+            let client = Command::new(&client_binary)
                 .args([&fifo, &reaper, &child_pid, &reaper_pids])
                 .env("WINEO_TEST_STEAM_PIDS", &request_pids)
                 .env("WINEO_TEST_STEAM_DOT_DIR", f.root.path().join(".steam"))
@@ -345,8 +347,15 @@ impl SteamFixture {
                 .spawn()
                 .unwrap();
             fs::write(&client_pid, format!("{}\n", client.id())).unwrap();
+            // Until the exec, the child's exe is this test binary and wineo
+            // would see no client at all. The FIFO is made just before the
+            // announce, so a starting client is at its hold by then.
+            let exe = format!("/proc/{}/exe", client.id());
+            wait_for("fake Steam client exec", || {
+                fs::read_link(&exe).is_ok_and(|exe| exe == client_binary)
+            });
+            wait_for("fake Steam client FIFO", || fifo.exists());
             if !starting {
-                wait_for("fake Steam client FIFO", || fifo.exists());
                 wait_for("fake Steam client pid file", || {
                     f.root.path().join(".steam/steam.pid").exists()
                 });
