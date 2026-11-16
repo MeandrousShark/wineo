@@ -94,7 +94,28 @@ A core is `NAME_libretro.so`, described by `NAME_libretro.info`: lines of
   `$(flatpak info --show-location org.libretro.RetroArch)/files/share/libretro/info`
   (derived, unchecked).
 
+- Gentoo (`games-emulation/retroarch` 1.22.2, checked 2026-11-15): the
+  package installs no cores and no `/usr/lib64/libretro` or
+  `/usr/share/libretro`. Cores come from separate packages or RetroArch's
+  own downloader (folders unchecked).
+
+`-L` takes a full path to a core, or just its file name
+(`NAME_libretro.so`), per RetroArch's own help text.
+
 The info files are MIT (`libretro/libretro-core-info`).
+
+### Quitting with the game
+
+From the strings and help text of a RetroArch 1.22.2 binary, not from a
+run:
+
+- The config key `quit_on_close_content` exists ("Quit on Close Content"
+  in the menu). Its values weren't confirmed.
+- `--appendconfig=FILE`: "Extra config files are loaded in, and take
+  priority over config selected in -c (or default). Multiple configs are
+  delimited by '|'." So a path with a `|` in it would be split.
+- Whether an appended setting is saved back to the main config on exit
+  (`config_save_on_exit`) is unchecked.
 
 ## Flatpak
 
