@@ -41,9 +41,9 @@ struct ProcStat {
 }
 
 /// Find the reapers for one app in the active install. Steam's real reaper
-/// uses exactly `reaper SteamLaunch AppId=<id> -- ...` and is a direct child
-/// of the client. A path through `~/.steam/root` and its canonical target
-/// identify the same install.
+/// uses exactly `reaper SteamLaunch AppId=<id> -- ...` and descends from the
+/// client, directly or through its pressure-vessel launcher. A path through
+/// `~/.steam/root` and its canonical target identify the same install.
 pub fn matching_reapers(install: &Install, app_id: &str) -> io::Result<Vec<Reaper>> {
     Ok(reapers_by_app(install, &[app_id.to_owned()])?
         .remove(app_id)
@@ -73,6 +73,7 @@ fn scan_reapers<R: ProcessReader>(
 ) -> io::Result<HashMap<String, Vec<Reaper>>> {
     let accepted = install_binaries(install, "reaper");
     let clients = install_binaries(install, "steam");
+    let runtimes = install_runtimes(install);
     let app_args: Vec<String> = app_ids.iter().map(|id| format!("AppId={id}")).collect();
     let mut found: HashMap<String, Vec<Reaper>> = app_ids
         .iter()
@@ -89,12 +90,7 @@ fn scan_reapers<R: ProcessReader>(
         let Some(process) = reaper_candidate(reader, pid, app_args.as_slice(), &accepted)? else {
             continue;
         };
-        let Some(parent) = client_candidate(reader, process.stat.ppid)? else {
-            continue;
-        };
-        if !matches_client(install, &clients, &parent)
-            || !current_child(reader, &process, parent.stat, &parent.fd)?
-        {
+        if !launched_by_client(reader, install, &clients, &runtimes, &process)? {
             continue;
         }
         // The candidate check proved argument 2 is one of the requested
@@ -218,6 +214,45 @@ fn reaper_candidate<R: ProcessReader, W: WantedApps + ?Sized>(
         return Ok(None);
     }
     Ok(Some(process))
+}
+
+/// Steam's pressure-vessel layout starts games from a host-side launcher
+/// service, so the reaper's parent is a runtime helper, not the client. The
+/// 2026-11 client puts three helpers in between (supervisor, launcher service,
+/// client container); the bound leaves one spare.
+const MAX_RUNTIME_HOPS: usize = 4;
+
+/// Whether the reaper descends from this install's client. Helpers may sit in
+/// between only when their binaries come from this install's own runtime, so
+/// another install or an unrelated process can't stand in for the client.
+/// Every edge is checked under pidfds that stay held for the whole walk.
+fn launched_by_client<R: ProcessReader>(
+    reader: &R,
+    install: &Install,
+    clients: &[PathBuf],
+    runtimes: &[PathBuf],
+    reaper: &Inspected<R::Fd>,
+) -> io::Result<bool> {
+    let mut helpers: Vec<Inspected<R::Fd>> = Vec::new();
+    loop {
+        let child = helpers.last().unwrap_or(reaper);
+        if child.stat.ppid <= 1 {
+            return Ok(false);
+        }
+        let Some(parent) = client_candidate(reader, child.stat.ppid)? else {
+            return Ok(false);
+        };
+        if !current_child(reader, child, parent.stat, &parent.fd)? {
+            return Ok(false);
+        }
+        if matches_client(install, clients, &parent) {
+            return Ok(true);
+        }
+        if helpers.len() == MAX_RUNTIME_HOPS || !in_runtime(&parent, runtimes) {
+            return Ok(false);
+        }
+        helpers.push(parent);
+    }
 }
 
 fn client_candidate<R: ProcessReader>(
@@ -609,6 +644,25 @@ fn install_binaries(install: &Install, name: &str) -> Vec<PathBuf> {
             ]
         })
         .collect()
+}
+
+/// The pressure-vessel runtime folder, through the root as given and its
+/// canonical target.
+fn install_runtimes(install: &Install) -> Vec<PathBuf> {
+    let canonical = fs::canonicalize(install.root()).unwrap_or_else(|_| install.root().to_owned());
+    [install.root(), canonical.as_path()]
+        .iter()
+        .map(|root| root.join("steamrt64/pv-runtime"))
+        .collect()
+}
+
+/// Only the kernel's exe link counts: a helper's argv can name anything.
+fn in_runtime<F>(process: &Inspected<F>, runtimes: &[PathBuf]) -> bool {
+    process.exe.as_deref().is_some_and(|exe| {
+        runtimes.iter().any(|runtime| exe.starts_with(runtime))
+            || fs::canonicalize(exe)
+                .is_ok_and(|exe| runtimes.iter().any(|runtime| exe.starts_with(runtime)))
+    })
 }
 
 /// `clients` is `install_binaries(install, "steam")`, built once per scan.

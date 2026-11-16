@@ -579,6 +579,217 @@ fn one_scan_reads_each_process_once_however_many_apps_it_serves() {
     assert!(apart > together);
 }
 
+/// The 2026-11 pressure-vessel launch chain: client 5998, client container
+/// 6043, launcher service 6054, supervisor 8698, reaper 8699 for app 5335510.
+/// A direct child reaper 7000 for app 440 sits beside it.
+fn pv_table(root: &Path) -> (FakeProc, Vec<u32>) {
+    let pv = root.join("steamrt64/pv-runtime/steam-runtime-steamrt");
+    let reaper = root.join("steamrt64/reaper");
+    let client = root.join("steamrt64/steam");
+    let mut reader = FakeProc::new(&[
+        stat(5985, 2, 90),
+        stat(5998, 5985, 100),
+        stat(6043, 5998, 110),
+        stat(6054, 6043, 120),
+        stat(8698, 6054, 200),
+        stat(8699, 8698, 210),
+        stat(7000, 5998, 220),
+    ]);
+    reader
+        .exe_by_pid
+        .insert(5985, PathBuf::from("/usr/bin/bash"));
+    reader.exe_by_pid.insert(5998, client.clone());
+    reader.exe_by_pid.insert(
+        6043,
+        pv.join("pressure-vessel/libexec/steam-runtime-tools-0/srt-client-container"),
+    );
+    reader.exe_by_pid.insert(
+        6054,
+        pv.join(
+            "pressure-vessel/libexec/steam-runtime-tools-0/x86_64-linux-gnu-srt-launcher-service",
+        ),
+    );
+    reader.exe_by_pid.insert(
+        8698,
+        pv.join("pressure-vessel/bin/steam-runtime-supervisor"),
+    );
+    reader.arguments_by_pid.insert(
+        5998,
+        vec![client.as_os_str().as_bytes().to_vec(), b"-silent".to_vec()],
+    );
+    for pid in [5985, 6043, 6054, 8698] {
+        reader
+            .arguments_by_pid
+            .insert(pid, vec![b"helper".to_vec()]);
+    }
+    for (pid, app) in [(8699, "5335510"), (7000, "440")] {
+        reader.exe_by_pid.insert(pid, reaper.clone());
+        reader.arguments_by_pid.insert(
+            pid,
+            vec![
+                reaper.as_os_str().as_bytes().to_vec(),
+                b"SteamLaunch".to_vec(),
+                format!("AppId={app}").into_bytes(),
+                b"--".to_vec(),
+            ],
+        );
+    }
+    (reader, vec![5985, 5998, 6043, 6054, 7000, 8698, 8699])
+}
+
+fn pv_claims(reader: &FakeProc, pids: Vec<u32>, install: &Install) -> Vec<u32> {
+    let apps = ["5335510".to_owned()];
+    scan_reapers(reader, pids, install, &apps, "boot").unwrap()["5335510"]
+        .iter()
+        .map(|reaper| reaper.pid)
+        .collect()
+}
+
+fn native(root: &Path) -> Install {
+    Install {
+        kind: InstallKind::Native,
+        root: root.to_owned(),
+    }
+}
+
+#[test]
+fn reaper_under_the_pressure_vessel_launcher_is_claimed() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(temp.path());
+    let (reader, pids) = pv_table(temp.path());
+    let apps = ["5335510".to_owned(), "440".to_owned()];
+    let found = scan_reapers(&reader, pids, &install, &apps, "boot").unwrap();
+    assert_eq!(found["5335510"].len(), 1);
+    assert_eq!(found["5335510"][0].pid, 8699);
+    assert_eq!(found["5335510"][0].start_time, 210);
+    // The old layout, a reaper straight under the client, still counts.
+    assert_eq!(found["440"].len(), 1);
+    assert_eq!(found["440"][0].pid, 7000);
+
+    // Through a root alias like ~/.steam/root the processes show the
+    // canonical paths, and the client and reaper must exist to be resolved.
+    for binary in ["steam", "reaper"] {
+        let path = temp.path().join("steamrt64").join(binary);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+    }
+    let alias = temp.path().join("alias");
+    symlink(temp.path(), &alias).unwrap();
+    let (reader, pids) = pv_table(temp.path());
+    assert_eq!(pv_claims(&reader, pids, &native(&alias)), [8699]);
+}
+
+#[test]
+fn pressure_vessel_helpers_must_come_from_this_install_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(&temp.path().join("mine"));
+    let other_pv = temp
+        .path()
+        .join("other/steamrt64/pv-runtime/steam-runtime-steamrt/pressure-vessel/bin/x");
+    for exe in [
+        Some(other_pv),
+        Some(PathBuf::from("/usr/bin/something")),
+        // This install's folder, but outside its runtime.
+        Some(install.root.join("steamrt64/steam-launch-wrapper")),
+        Some(install.root.join("steamrt64/pv-runtime-x/helper")),
+        None,
+    ] {
+        let (mut reader, pids) = pv_table(&install.root);
+        match &exe {
+            Some(exe) => {
+                reader.exe_by_pid.insert(6054, exe.clone());
+            }
+            None => {
+                reader.missing_exe.insert(6054);
+            }
+        }
+        assert!(pv_claims(&reader, pids, &install).is_empty(), "{exe:?}");
+    }
+}
+
+#[test]
+fn pressure_vessel_chain_must_reach_this_install_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(&temp.path().join("mine"));
+    let (mut reader, pids) = pv_table(&install.root);
+    let other = temp.path().join("other/steamrt64/steam");
+    reader.exe_by_pid.insert(5998, other.clone());
+    reader
+        .arguments_by_pid
+        .insert(5998, vec![other.as_os_str().as_bytes().to_vec()]);
+    assert!(pv_claims(&reader, pids, &install).is_empty());
+}
+
+#[test]
+fn pressure_vessel_chain_is_bounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(temp.path());
+    let helper = temp
+        .path()
+        .join("steamrt64/pv-runtime/steam-runtime-steamrt/bin/helper");
+    // `extra` more runtime helpers between the launcher service and the
+    // supervisor, on top of the real three.
+    let chain = |extra: u32| {
+        let (mut reader, mut pids) = pv_table(temp.path());
+        let mut parent = 6054;
+        for pid in 6100..6100 + extra {
+            reader.stats.borrow_mut().insert(
+                pid,
+                VecDeque::from([stat(pid, parent, 130 + u64::from(pid))]),
+            );
+            reader.exe_by_pid.insert(pid, helper.clone());
+            reader
+                .arguments_by_pid
+                .insert(pid, vec![b"helper".to_vec()]);
+            pids.push(pid);
+            parent = pid;
+        }
+        reader
+            .stats
+            .borrow_mut()
+            .insert(8698, VecDeque::from([stat(8698, parent, 7000)]));
+        reader
+            .stats
+            .borrow_mut()
+            .insert(8699, VecDeque::from([stat(8699, 8698, 7010)]));
+        pv_claims(&reader, pids, &install)
+    };
+    // Literal counts, so changing the bound fails here.
+    assert_eq!(chain(0), [8699]);
+    assert_eq!(chain(1), [8699]);
+    assert!(chain(2).is_empty());
+}
+
+#[test]
+fn pressure_vessel_helper_identity_is_verified_at_each_hop() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(temp.path());
+
+    let (mut reader, pids) = pv_table(temp.path());
+    reader.exited.insert(6054);
+    assert!(pv_claims(&reader, pids, &install).is_empty());
+
+    // The launcher service's pid is reused, or it is reparented, while the
+    // walk reads it.
+    for changed in [stat(6054, 6043, 125), stat(6054, 1, 120)] {
+        let (reader, pids) = pv_table(temp.path());
+        reader
+            .stats
+            .borrow_mut()
+            .insert(6054, VecDeque::from([stat(6054, 6043, 120), changed]));
+        assert!(pv_claims(&reader, pids, &install).is_empty(), "{changed:?}");
+    }
+
+    // A helper that started after its supposed child is a reused pid, not
+    // the child's real parent.
+    let (reader, pids) = pv_table(temp.path());
+    reader
+        .stats
+        .borrow_mut()
+        .insert(6054, VecDeque::from([stat(6054, 6043, 205)]));
+    assert!(pv_claims(&reader, pids, &install).is_empty());
+}
+
 #[test]
 fn missing_client_exe_keeps_the_argv_fallback() {
     let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
