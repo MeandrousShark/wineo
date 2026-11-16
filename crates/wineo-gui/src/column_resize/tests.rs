@@ -399,6 +399,20 @@ fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_nar
     assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(900.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 56.0);
+
+    // Squeezed so far that Title's minimum would leave State under its own,
+    // where a clamp between the two would panic.
+    let (_root, mut app) = listed_with(3, viewport(250.0), |paths| {
+        set_list_column(paths, ListColumn::State, Some(300)).unwrap();
+    });
+    let _ = send(&mut app, Event::Press(ListColumn::State, 200.0));
+    let _ = send(&mut app, Event::Move(150.0));
+    assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
+    let _ = send(&mut app, Event::Move(300.0));
+    assert_eq!(app.list_widths.get(ListColumn::State), 200.0);
+    let _ = send(&mut app, Event::Release);
+    let _ = send(&mut app, Event::Reset(ListColumn::State));
+    assert_eq!(app.list_widths.get(ListColumn::State), 128.0);
 }
 
 #[test]
@@ -430,6 +444,26 @@ fn narrowing_with_columns_dropped_holds_the_set_until_release_then_brings_one_ba
     let _ = send(&mut app, Event::Release);
     assert_eq!(app.list_columns(), &Column::ALL[..]);
     assert_eq!(cell_count(&header(&app)), 2 + 4);
+}
+
+#[test]
+fn a_row_fading_out_mid_drag_fits_its_own_width_not_the_held_columns() {
+    let (_root, mut app) = listed(viewport(860.0));
+    let x = gap(&app, ListColumn::LastPlayed) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::LastPlayed, x));
+    let _ = send(&mut app, Event::Move(x + 56.0));
+    assert_eq!(app.list_columns(), &Column::ALL[..3]);
+    let _ = app.update(Message::SearchChanged("game-001".into()));
+    assert!(!app.grid_motion.leaving().is_empty(), "a row fades out");
+    let grid = layout(&mut app.grid(), Size::new(app.viewport_width, 2000.0));
+    // Each row is its container, then its cells.
+    let mut counts: Vec<usize> = iced::advanced::Layout::new(&grid)
+        .children()
+        .filter_map(|row| row.children().next())
+        .map(|cells| cells.children().count())
+        .collect();
+    counts.sort_unstable();
+    assert_eq!(counts, [2 + 3, 2 + 4, 2 + 4]);
 }
 
 #[test]
