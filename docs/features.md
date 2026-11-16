@@ -16,8 +16,9 @@ in parallel (plan 0065), and Coverflow with controller navigation, library
 views part 5 (plan 0066), shipped in 1.6.0. The rest get a plan when they
 come up, and the rows below have the details.
 
-1. Emulated games: add and launch games from emulators like Dolphin,
-   RetroArch, and Cemu (maintainer, 2026-11-15).
+1. Resizable list columns (plan 0067).
+2. Emulated games: add and launch games from emulators like Dolphin,
+   RetroArch, and Cemu (plan 0068).
 
 Store imports come after.
 
