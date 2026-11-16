@@ -133,12 +133,24 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
                 let table = ensure_hooks(root, key)?;
                 store_hooks_field(table, field, value);
                 Ok(())
+            } else if let Some(field) = key.strip_prefix("emulation.") {
+                if !EMULATION_FIELDS.contains(&field) {
+                    return Err(EditError::UnknownKey(key.to_owned()));
+                }
+                // Not checked against the built-ins, so an id from a newer
+                // wineo can still be set here.
+                let value = parse_string_value(key, raw)?;
+                let table = ensure_table(root, "emulation", "emulation", false)?;
+                store_value(table, field, value);
+                Ok(())
             } else {
                 Err(EditError::UnknownKey(key.to_string()))
             }
         }
     }
 }
+
+const EMULATION_FIELDS: [&str; 3] = ["emulator", "system", "rom"];
 
 fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
     match key {
@@ -527,7 +539,11 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "hooks"
         | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" | "title" | "desktop"
-        | "gog_id" => Ok(root.remove(key).is_some()),
+        | "gog_id" | "emulation" => Ok(root.remove(key).is_some()),
+        "emulation.system" => unset_field(root, "emulation", "emulation", "system"),
+        "emulation.emulator" | "emulation.rom" => Err(EditError::Refused(format!(
+            "{key} can't be unset on its own, since [emulation] needs it. Unset emulation to remove the table."
+        ))),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {

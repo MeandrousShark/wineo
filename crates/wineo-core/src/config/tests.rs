@@ -1349,3 +1349,99 @@ fn loading_a_config_parses_its_text_twice() {
     // A file with an old name is typed from the table it already has.
     assert_eq!(parses(&|| drop(global("test_old_stop_timeout = 3\n"))), 1);
 }
+
+const EMULATED: &str = "kind = \"native\"\n[emulation]\nemulator = \"dolphin\"\nsystem = \"gamecube\"\nrom = \"~/roms/Metroid Prime (USA).rvz\"\n";
+
+#[test]
+fn a_native_config_can_record_its_emulation() {
+    let config = environment(EMULATED).unwrap();
+    assert!(config.is_native());
+    assert_eq!(
+        config.emulation,
+        Some(Emulation {
+            emulator: "dolphin".to_owned(),
+            system: Some("gamecube".to_owned()),
+            rom: "~/roms/Metroid Prime (USA).rvz".to_owned(),
+        })
+    );
+    // The system is optional, and an id this wineo doesn't know is kept.
+    let config =
+        environment("kind = \"native\"\n[emulation]\nemulator = \"eden\"\nrom = \"/roms/a.nsp\"\n")
+            .unwrap();
+    let emulation = config.emulation.unwrap();
+    assert_eq!(emulation.emulator, "eden");
+    assert_eq!(emulation.system, None);
+    assert_eq!(environment("kind = \"native\"\n").unwrap().emulation, None);
+}
+
+#[test]
+fn emulation_is_refused_for_wine_and_proxied_with_their_own_lines() {
+    let table = "[emulation]\nemulator = \"dolphin\"\nrom = \"/roms/a.rvz\"\n";
+    let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+    for kind in [wine.to_owned(), format!("kind = \"wine\"\n{wine}")] {
+        let err = named("prime", &format!("{kind}{table}")).unwrap_err();
+        assert!(matches!(err, Error::ConfigInvalid { .. }), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "invalid config /test/prime.toml: prime isn't a native environment, so it can't set emulation."
+        );
+    }
+    let err = named("bg3", &format!("{PROXIED}{table}")).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid config /test/bg3.toml: bg3 is a Steam game, so it can't set emulation."
+    );
+}
+
+#[test]
+fn emulator_and_rom_are_required_and_nothing_may_be_empty() {
+    for (body, message) in [
+        (
+            "rom = \"/roms/a.rvz\"\n",
+            "missing field `emulator`".to_owned(),
+        ),
+        ("emulator = \"dolphin\"\n", "missing field `rom`".to_owned()),
+        (
+            "emulator = \"\"\nrom = \"/roms/a.rvz\"\n",
+            "Invalid emulation.emulator: empty.".to_owned(),
+        ),
+        (
+            "emulator = \"dolphin\"\nrom = \"\"\n",
+            "Invalid emulation.rom: empty.".to_owned(),
+        ),
+        (
+            "emulator = \"dolphin\"\nsystem = \"\"\nrom = \"/roms/a.rvz\"\n",
+            "Invalid emulation.system: empty.".to_owned(),
+        ),
+    ] {
+        let err = environment(&format!("kind = \"native\"\n[emulation]\n{body}")).unwrap_err();
+        assert!(
+            crate::error::chain(&err).contains(&message),
+            "{body}: {err}"
+        );
+    }
+    let err = environment(&format!("{EMULATED}core = \"snes9x\"\n")).unwrap_err();
+    assert!(matches!(err, Error::ConfigUnknownKey { .. }), "{err}");
+}
+
+#[test]
+fn a_legacy_emulated_config_loads_and_is_left_alone() {
+    let (_root, paths) = temp_paths();
+    // No schema_version, as a file from before versioning would have.
+    let text = format!("# mine\n{EMULATED}\n[targets.prime]\nexe = \"/bin/true\" # emulator\n");
+    let path = paths.environment_config("prime");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, &text).unwrap();
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    let environment = crate::environment::Environment::load(&paths, "prime").unwrap();
+    assert_eq!(environment.config.schema_version, 0);
+    assert_eq!(
+        environment
+            .config
+            .emulation
+            .map(|emulation| emulation.emulator),
+        Some("dolphin".to_owned())
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+}

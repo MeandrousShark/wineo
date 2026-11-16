@@ -12,6 +12,7 @@ pub mod deprecated;
 pub mod desktop;
 pub mod download;
 pub mod edit;
+pub mod emulator;
 pub mod environment;
 pub mod error;
 pub mod external_runners;
