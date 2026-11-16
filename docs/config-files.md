@@ -495,7 +495,7 @@ there, so the columns keep their default widths, and its `validate` warns
 `view.list_columns: unknown key, ignored`. Its repair keeps the table when
 it comes before the broken line and drops it when it comes after. A
 repair from this version on keeps each good width and drops each bad one,
-wherever the table sits.
+whether the table comes before or after the broken line.
 
 Each `[presets."<name>"]` table is a saved view the desktop app can apply: a
 sort and direction, `favorites_first`, the filters, `show_hidden`, `group`,
