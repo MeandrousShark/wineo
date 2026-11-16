@@ -6,6 +6,7 @@ use std::fs;
 
 use toml_edit::{DocumentMut, Item, Key};
 
+use super::columns::{LIST_COLUMN_MAX, LIST_COLUMN_MIN, ListColumn, read_width};
 use super::input::{PadAction, PadButton, read_input};
 use super::preset::{preset_name_rule, readable_name};
 use super::record::{Recorded, valid_app_id};
@@ -167,6 +168,10 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
             },
             "zoom" if read_zoom(value).is_some() => continue,
             "zoom" => format!("expected a whole number from {ZOOM_MIN} to {ZOOM_MAX}"),
+            "list_columns" => {
+                inspect_list_columns(value, inspection);
+                continue;
+            }
             _ => {
                 inspection.findings.push(unknown(None, &path));
                 continue;
@@ -175,6 +180,30 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
         inspection
             .findings
             .push(invalid(None, &path, &expected, value));
+    }
+}
+
+fn inspect_list_columns(item: &Item, inspection: &mut Inspection) {
+    let Some(table) = item.as_table_like() else {
+        inspection.findings.push(invalid(
+            None,
+            &display_path(&["view", "list_columns"]),
+            TABLE,
+            item,
+        ));
+        return;
+    };
+    for (column, width) in table.iter() {
+        let path = display_path(&["view", "list_columns", column]);
+        if ListColumn::parse(column).is_none() {
+            inspection.findings.push(unknown(None, &path));
+        } else if read_width(width).is_none() {
+            let expected =
+                format!("expected a whole number from {LIST_COLUMN_MIN} to {LIST_COLUMN_MAX}");
+            inspection
+                .findings
+                .push(invalid(None, &path, &expected, width));
+        }
     }
 }
 

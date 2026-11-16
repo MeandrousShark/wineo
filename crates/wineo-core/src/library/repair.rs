@@ -11,6 +11,7 @@ use jiff::Zoned;
 use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 
 use super::check::{is_newer, is_offset_datetime};
+use super::columns::{ListColumn, read_width};
 use super::preset::readable_name;
 use super::record::{Recorded, valid_app_id};
 use super::{GroupBy, RandomPool, SCHEMA_VERSION, SortKey, read_zoom};
@@ -303,9 +304,9 @@ impl<'a> Lines<'a> {
 
 /// A header line, or one `key = value` with every line its value spans.
 enum Unit {
-    /// None for a header that isn't `[view]`, `[appearance]`, `[desktop]`, `[steam]`,
-    /// `[steam.games]`, `[input]`, `[input.buttons]`, `[presets.<name>]`, or
-    /// `[environments.<name>]`.
+    /// None for a header that isn't `[view]`, `[view.list_columns]`, `[appearance]`,
+    /// `[desktop]`, `[steam]`, `[steam.games]`, `[input]`, `[input.buttons]`,
+    /// `[presets.<name>]`, or `[environments.<name>]`.
     Header {
         start: usize,
         header: Option<Header>,
@@ -328,6 +329,7 @@ impl Unit {
 
 enum Header {
     View,
+    ViewListColumns,
     Appearance,
     Desktop,
     Steam,
@@ -479,7 +481,7 @@ impl Scan {
 
 #[derive(Debug, Default)]
 struct Salvaged {
-    view: Option<Section>,
+    view: Option<ViewSection>,
     appearance: Option<Section>,
     desktop: Option<Section>,
     steam: Option<SteamSection>,
@@ -627,6 +629,68 @@ impl SteamSection {
     }
 }
 
+/// `[view]` with its `list_columns` table kept key by key, so one bad width
+/// costs only itself.
+#[derive(Debug, Default)]
+struct ViewSection {
+    other: Section,
+    list_columns: Section,
+}
+
+impl ViewSection {
+    /// Takes one field of `[view]`, whether the parser read it or the tail
+    /// gave it up.
+    fn read(&mut self, key: &Key, item: &Item) {
+        if key.get() != "list_columns" {
+            self.other.keep(key, item.clone(), valid_view_field);
+            return;
+        }
+        match item.as_table_like() {
+            Some(columns) => {
+                for (column, width) in columns.iter() {
+                    let key = columns
+                        .key(column)
+                        .cloned()
+                        .unwrap_or_else(|| Key::new(column));
+                    self.list_columns
+                        .keep(&key, width.clone(), valid_list_column_field);
+                }
+            }
+            None => self.list_columns.fields += 1,
+        }
+    }
+
+    fn fields(&self) -> usize {
+        self.other.fields + self.list_columns.fields
+    }
+
+    fn kept(&self) -> usize {
+        self.other.kept + self.list_columns.kept
+    }
+
+    fn recovery(&self) -> ViewRecovery {
+        if self.kept() == self.fields() {
+            ViewRecovery::Recovered
+        } else if self.kept() == 0 {
+            ViewRecovery::Lost
+        } else {
+            ViewRecovery::Partly
+        }
+    }
+
+    fn table(&self) -> Table {
+        let mut table = fresh_table(&self.other.table);
+        if self.list_columns.kept > 0 {
+            table.insert(
+                "list_columns",
+                Item::Table(fresh_table(&self.list_columns.table)),
+            );
+        }
+        table.set_implicit(true);
+        table
+    }
+}
+
 /// `[input]` with its `buttons` table kept key by key, so one bad remap
 /// costs only itself.
 #[derive(Debug, Default)]
@@ -731,6 +795,7 @@ fn merge(table: &mut Table, key: &Key, item: Item) -> bool {
 enum Current {
     Top,
     View,
+    ViewListColumns,
     Appearance,
     Desktop,
     Steam,
@@ -756,8 +821,12 @@ fn salvage(bytes: &[u8]) -> Salvaged {
                 top = false;
                 current = match header {
                     Some(Header::View) => {
-                        salvaged.view.get_or_insert_with(Section::default);
+                        salvaged.view.get_or_insert_default();
                         Current::View
+                    }
+                    Some(Header::ViewListColumns) => {
+                        salvaged.view.get_or_insert_default();
+                        Current::ViewListColumns
                     }
                     Some(Header::Appearance) => {
                         salvaged.appearance.get_or_insert_with(Section::default);
@@ -827,11 +896,19 @@ fn salvage(bytes: &[u8]) -> Salvaged {
             }
             Current::Unattributed => salvaged.dropped_text = true,
             _ if !key_shaped => salvaged.dropped_text = true,
-            Current::View => salvaged
+            Current::View => {
+                let view = salvaged.view.as_mut().expect("view section was recorded");
+                match lone_field(text) {
+                    Some((key, item)) => view.read(&key, &item),
+                    None => view.other.fields += 1,
+                }
+            }
+            Current::ViewListColumns => salvaged
                 .view
                 .as_mut()
                 .expect("view section was recorded")
-                .offer(text, valid_view_field),
+                .list_columns
+                .offer(text, valid_list_column_field),
             Current::Appearance => salvaged
                 .appearance
                 .as_mut()
@@ -931,10 +1008,10 @@ impl Salvaged {
             match (key, item.as_table_like()) {
                 ("schema_version", _) => {}
                 ("view", Some(table)) => {
-                    let view = self.view.get_or_insert_with(Section::default);
+                    let view = self.view.get_or_insert_default();
                     for (name, field) in table.iter() {
                         let key = table.key(name).cloned().unwrap_or_else(|| Key::new(name));
-                        view.read(&key, field, valid_view_field);
+                        view.read(&key, field);
                     }
                 }
                 ("appearance", Some(table)) => {
@@ -1004,6 +1081,11 @@ impl Salvaged {
             None => Current::Top,
             Some(path) => match path.as_slice() {
                 [view] if view == "view" && self.view.is_some() => Current::View,
+                [view, columns]
+                    if view == "view" && columns == "list_columns" && self.view.is_some() =>
+                {
+                    Current::ViewListColumns
+                }
                 [appearance] if appearance == "appearance" && self.appearance.is_some() => {
                     Current::Appearance
                 }
@@ -1073,9 +1155,9 @@ fn last_header(
     last.as_ref().map(|(_, path)| path.clone())
 }
 
-/// A header line on its own: exactly `[view]`, `[appearance]`, `[desktop]`, `[steam]`,
-/// `[steam.games]`, `[input]`, `[input.buttons]`, `[presets.<name>]`, or
-/// `[environments.<name>]`.
+/// A header line on its own: exactly `[view]`, `[view.list_columns]`, `[appearance]`,
+/// `[desktop]`, `[steam]`, `[steam.games]`, `[input]`, `[input.buttons]`,
+/// `[presets.<name>]`, or `[environments.<name>]`.
 fn header(line: &str) -> Option<Header> {
     let document = line.parse::<DocumentMut>().ok()?;
     let mut keys = document.iter();
@@ -1085,7 +1167,17 @@ fn header(line: &str) -> Option<Header> {
     }
     let table = item.as_table()?;
     match key {
-        "view" => table.is_empty().then_some(Header::View),
+        "view" => {
+            let mut children = table.iter();
+            match (children.next(), children.next()) {
+                (None, _) => Some(Header::View),
+                (Some(("list_columns", child)), None) => child
+                    .as_table()
+                    .is_some_and(|child| child.is_empty())
+                    .then_some(Header::ViewListColumns),
+                _ => None,
+            }
+        }
         "appearance" => table.is_empty().then_some(Header::Appearance),
         "desktop" => table.is_empty().then_some(Header::Desktop),
         "steam" => {
@@ -1156,6 +1248,11 @@ fn valid_preset_field(key: &str, item: &Item) -> bool {
     }
 }
 
+/// A known column needs a width in range, and one a newer wineo added stays.
+fn valid_list_column_field(key: &str, item: &Item) -> bool {
+    ListColumn::parse(key).is_none_or(|_| read_width(item).is_some())
+}
+
 fn valid_view_field(key: &str, item: &Item) -> bool {
     match key {
         "sort" => item.as_str().and_then(SortKey::from_str).is_some(),
@@ -1194,8 +1291,8 @@ impl Salvaged {
     fn render(&self) -> String {
         let mut document = DocumentMut::new();
         document.insert("schema_version", Item::Value(SCHEMA_VERSION.into()));
-        if let Some(view) = self.view.as_ref().filter(|view| view.kept > 0) {
-            document.insert("view", Item::Table(fresh_table(&view.table)));
+        if let Some(view) = self.view.as_ref().filter(|view| view.kept() > 0) {
+            document.insert("view", Item::Table(view.table()));
         }
         if let Some(appearance) = self.appearance.as_ref().filter(|table| table.kept > 0) {
             document.insert("appearance", Item::Table(fresh_table(&appearance.table)));
@@ -1265,7 +1362,7 @@ impl Salvaged {
             view: self
                 .view
                 .as_ref()
-                .map_or(ViewRecovery::Absent, Section::recovery),
+                .map_or(ViewRecovery::Absent, ViewSection::recovery),
             appearance: self
                 .appearance
                 .as_ref()

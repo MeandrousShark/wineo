@@ -403,6 +403,10 @@ layout = "list"           # grid (default), list, or coverflow
 group = "tag"             # none (default), recent, tag, source, or state
 coverflow_fullscreen = true
 
+[view.list_columns]       # list view column widths, only the ones moved off their default
+state = 96
+tags = 104
+
 [appearance]
 follow_system = true
 dark = "cellar"
@@ -473,6 +477,25 @@ screen whenever the library switches to coverflow, and defaults to
 default, `recent`, `tag`, `source`, or `state`; collapsed sections aren't
 saved. The
 window's filters and Show hidden aren't saved in `[view]`, only in a preset.
+
+`[view.list_columns]` (plan 0067) holds the widths the list view's columns
+were dragged to, in whole logical pixels from 56 to 480, so the interface
+size setting scales them with everything else. The keys are `state`,
+`playtime`, `last_played`, `source`, and `tags`; Title takes what's left and
+has none. Only a column moved off its default is written (`state` 128,
+`playtime` 96, `last_played` 112, `source` 80, `tags` 176), so the table is
+absent until you resize one, and saving a column at its default or resetting
+it removes the key, and the table goes with its last key. The widths are one
+setting for the whole library, not part of a preset, and they're read when
+the app starts. A value that isn't a whole number in range counts as unset
+for that column only and stays in the file, and `validate` warns about it,
+as it does about a `list_columns` that isn't a table; unknown keys under the
+table are ignored. An older wineo reads the file as if the table weren't
+there, so the columns keep their default widths, and its `validate` warns
+`view.list_columns: unknown key, ignored`. Its repair keeps the table when
+it comes before the broken line and drops it when it comes after. A
+repair from this version on keeps each good width and drops each bad one,
+whether the table comes before or after the broken line.
 
 Each `[presets."<name>"]` table is a saved view the desktop app can apply: a
 sort and direction, `favorites_first`, the filters, `show_hidden`, `group`,
@@ -589,7 +612,8 @@ so the file stays exactly as it is. `wineo validate --fix` or Checkup can
 repair it: the original is copied to `library.toml.broken-<time>` (with
 `-2`, `-3` if that name is taken), and that copy is synced to disk before
 the new file replaces it. The repair keeps each setting whose line still
-reads correctly on its own, under an entry, `[view]`, `[appearance]`,
+reads correctly on its own, under an entry, `[view]` (and
+`[view.list_columns]`), `[appearance]`,
 `[desktop]`, `[input]`, `[steam]`, or a preset, and reports what it couldn't keep. A
 file from a newer wineo is never repaired;
 update wineo instead. The fix that removes entries for environments that no
