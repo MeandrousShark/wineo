@@ -974,6 +974,8 @@ fn a_header_made_anew_mid_drag_still_sends_its_moves_and_release() {
 
 #[test]
 fn a_drag_with_the_pointer_outside_the_window_still_moves_and_saves() {
+    // One header from press to release: this is about the pointer leaving
+    // the window, not the header being made anew.
     let (_root, mut app) = listed(1400.0);
     let at = Point::new(gap(&app, ListColumn::Tags) + 2.0, 16.0);
     let mut messages = Vec::new();
@@ -1121,4 +1123,95 @@ fn the_handles_pass_on_their_cells_overlays() {
     let title = bounds_at(&laid.node, &[0, 0]);
     let _ = events(&mut laid, &[move_to(title.center())]);
     assert!(!laid.overlay_bounds().is_empty(), "the tooltip shows");
+}
+
+#[test]
+fn a_write_landing_at_the_width_a_drag_passes_through_is_still_owed() {
+    let (_root, mut app) = listed(1400.0);
+    let drag = |app: &mut App, by: f32| {
+        let _ = send(app, Event::Press(ListColumn::Tags, 1000.0));
+        let _ = send(app, Event::Move(1000.0 + by));
+        let _ = send(app, Event::Release);
+    };
+    drag(&mut app, 10.0);
+    // Released at 156 while 166 is still being written.
+    drag(&mut app, 10.0);
+    // A third drag passes back through 166 just as that write lands.
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, 1000.0));
+    let _ = send(&mut app, Event::Move(990.0));
+    assert_eq!(app.list_widths.get(ListColumn::Tags), 166.0);
+    finish_write(&mut app, ListColumn::Tags);
+    let _ = send(&mut app, Event::Move(1000.0));
+    let _ = send(&mut app, Event::Release);
+    finish_writes(&mut app, ListColumn::Tags);
+    assert_eq!(app.list_widths.get(ListColumn::Tags), 156.0);
+    assert_eq!(saved(&app).get(&ListColumn::Tags), Some(&156));
+}
+
+#[test]
+fn a_handle_press_whose_release_never_came_doesnt_swallow_a_later_sort_click() {
+    let (_root, app) = listed(1400.0);
+    let at = Point::new(gap(&app, ListColumn::Playtime) + 2.0, 16.0);
+    let label = cell(&header(&app), 2).center();
+    // A double-click whose second release went elsewhere.
+    let mut laid = header(&app);
+    let _ = events(&mut laid, &[press_at(at), release_at(at), press_at(at)]);
+    let messages = events(&mut laid, &[press_at(label), release_at(label)]);
+    assert_eq!(debug(&messages), ["Sort(Header(Playtime))"]);
+    // A little jitter between a double-click's second press and release
+    // still leaves the release to the handle.
+    let mut laid = header(&app);
+    let _ = events(&mut laid, &[press_at(at), release_at(at), press_at(at)]);
+    let jitter = Point::new(at.x + 1.0, at.y);
+    let _ = events(&mut laid, &[move_to(jitter)]);
+    assert_eq!(
+        laid.event_with_status(&release_at(jitter).0, Cursor::Available(jitter))
+            .1,
+        iced::event::Status::Captured
+    );
+}
+
+#[test]
+fn a_drag_the_app_ended_leaves_no_release_owed_to_the_handle() {
+    let (_root, mut app) = listed(1400.0);
+    let size = Size::new(app.viewport_width, 100.0);
+    let at = Point::new(gap(&app, ListColumn::Playtime) + 2.0, 16.0);
+    let label = cell(&header(&app), 2).center();
+    let (messages, tree) = {
+        let mut laid = header(&app);
+        (events(&mut laid, &[press_at(at)]), laid.into_tree())
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+    // An interruption, whose scrim then takes the release.
+    let _ = app.end_column_drag();
+    let mut laid = relay_out(app.list_header(), tree, size);
+    assert_eq!(
+        laid.event_with_status(&release_at(label).0, Cursor::Available(label))
+            .1,
+        iced::event::Status::Ignored
+    );
+}
+
+#[test]
+fn losing_focus_ends_a_drag_and_saves_it_once() {
+    let (_root, mut app) = listed(1400.0);
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, 1000.0));
+    let _ = send(&mut app, Event::Move(1050.0));
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
+    assert!(app.column_drag.is_none());
+    assert_eq!(app.view_writes.columns, [(ListColumn::Tags, 126)].into());
+    // The pointer coming back with no button held moves nothing.
+    let _ = send(&mut app, Event::Move(900.0));
+    assert_eq!(app.list_widths.get(ListColumn::Tags), 126.0);
+    finish_write(&mut app, ListColumn::Tags);
+    assert!(app.view_writes.columns.is_empty());
+    assert_eq!(saved(&app).get(&ListColumn::Tags), Some(&126));
+    // With no drag, losing focus writes nothing.
+    let (_root, mut app) = listed(1400.0);
+    let before = std::fs::read(app.paths.library_file()).ok();
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
+    assert!(app.view_writes.columns.is_empty());
+    assert_eq!(std::fs::read(app.paths.library_file()).ok(), before);
 }

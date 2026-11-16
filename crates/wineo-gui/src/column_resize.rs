@@ -64,8 +64,8 @@ impl App {
             .is_some_and(|drag| drag.column == column)
     }
 
-    /// A write of `column` landed during its drag with the window's width
-    /// already past it, so the drag's end writes whatever it lets go at.
+    /// A write of `column` landed during its drag, so the drag's end writes
+    /// whatever it lets go at.
     pub(crate) fn owe_column_write(&mut self, column: ListColumn) {
         if let Some(drag) = self
             .column_drag
@@ -276,7 +276,13 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
         // has let go of, as an interruption does, is over here too.
         let state = tree.state.downcast_mut::<State>();
         if self.dragging.is_none() {
-            state.dragging = None;
+            // The app ended a drag this press started without the release
+            // reaching here, so that release isn't owed to the handle any
+            // more. A double-click's second press starts no drag, so its
+            // release stays taken.
+            if state.dragging.take().is_some() {
+                state.pressed = false;
+            }
         }
         tree.diff_children(std::slice::from_ref(&self.content));
     }
@@ -340,6 +346,8 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
                     shell.capture_event();
                     return;
                 }
+                // A press elsewhere means no handle's release is coming.
+                state.pressed = false;
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) if dragging => {
                 shell.publish(Message::Columns(Event::Move(position.x)));

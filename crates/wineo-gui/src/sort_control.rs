@@ -444,17 +444,18 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 ));
             }
             // A drag saves only where it lets go, so the values it passes
-            // through wait for its release.
-            if app.current(written) == written
+            // through wait for its release. A column's release writes
+            // whatever this one wrote, even where the drag started, since
+            // the drag may pass back through it before letting go.
+            if let Field::Column(column, _) = written
+                && app.column_dragged(column)
+            {
+                app.owe_column_write(column);
+                Task::none()
+            } else if app.current(written) == written
                 || overtaken
                 || (matches!(written, Field::Zoom(_)) && app.zooming.dragging())
             {
-                Task::none()
-            } else if let Field::Column(column, _) = written
-                && app.column_dragged(column)
-            {
-                // Its release writes instead, even one back where it started.
-                app.owe_column_write(column);
                 Task::none()
             } else {
                 app.save_field(written)

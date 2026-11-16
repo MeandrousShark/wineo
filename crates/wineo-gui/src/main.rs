@@ -1771,7 +1771,8 @@ impl App {
                 // can't be trusted to still be down.
                 self.modifiers = keyboard::Modifiers::empty();
                 self.zooming.modifiers_changed(self.modifiers);
-                Task::none()
+                // The release may never arrive, so the drag ends here.
+                self.end_column_drag()
             }
             Message::Window(..) => Task::none(),
             Message::ThemeChanged(mode) => {
