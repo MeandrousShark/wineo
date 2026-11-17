@@ -214,7 +214,7 @@ impl ClientWait {
     /// or with none of ours, once it stays gone for `absent_limit`. While a
     /// seen client is gone the launch isn't sent into the gap, for up to
     /// `absent_limit`, and a gap that long with our start still running
-    /// sends it.
+    /// sends it, unless a startup update still counts.
     fn step(
         &mut self,
         now: Instant,
@@ -237,7 +237,13 @@ impl ClientWait {
                         Ours::Running => false,
                         Ours::None => gone_long,
                     };
+                // A counting update outlasts any gap while our start runs,
+                // as the supervisor's window does.
                 if self.seen && !quit {
+                    if update.is_some() {
+                        self.updating = true;
+                        return Next::Wait;
+                    }
                     return if gone_long { Next::Send } else { Next::Wait };
                 }
                 if quit {
@@ -1207,6 +1213,65 @@ mod tests {
         }
         assert_eq!(
             wait.step(after(now, 11_000), absent(), None, Ours::Running),
+            Next::Send
+        );
+    }
+
+    #[test]
+    fn a_counting_update_outlasts_a_long_gap_with_our_start_running() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        assert_eq!(
+            wait.step(now, starting(), Some(&UPDATE), Ours::Running),
+            Next::Wait
+        );
+        for millis in (1_000..=30_000).step_by(250) {
+            assert_eq!(
+                wait.step(after(now, millis), absent(), Some(&UPDATE), Ours::Running),
+                Next::Wait,
+                "at {millis} ms"
+            );
+        }
+        // Once the update stops counting, the gap is long, and that sends.
+        assert_eq!(
+            wait.step(after(now, 30_250), absent(), None, Ours::Running),
+            Next::Send
+        );
+    }
+
+    #[test]
+    fn an_update_ending_in_a_short_gap_restarts_the_15_s_when_the_client_is_back() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        assert_eq!(wait.step(now, starting(), None, Ours::Running), Next::Wait);
+        // The relaunched client's block shows the update while no client
+        // process is up yet.
+        assert_eq!(
+            wait.step(after(now, 14_000), absent(), None, Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(now, 20_000), absent(), Some(&UPDATE), Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(now, 21_000), absent(), None, Ours::Running),
+            Next::Wait
+        );
+        let back = after(now, 22_000);
+        assert_eq!(wait.step(back, starting(), None, Ours::Running), Next::Wait);
+        let limit = back + CLIENT_STARTING_LIMIT;
+        assert_eq!(
+            wait.step(
+                limit - Duration::from_millis(1),
+                starting(),
+                None,
+                Ours::Running
+            ),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(limit, starting(), None, Ours::Running),
             Next::Send
         );
     }

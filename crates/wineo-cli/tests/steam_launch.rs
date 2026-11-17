@@ -291,7 +291,7 @@ fn a_client_relaunching_itself_under_our_silent_start_gets_no_second_start() {
     s.config("");
     let started = s
         .wineo()
-        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "10000")
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "20000")
         .args(["start", "civ", "--target", "steam"])
         .output()
         .unwrap();
