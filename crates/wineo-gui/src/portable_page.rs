@@ -902,7 +902,7 @@ fn push_warnings<'a>(
             let mut warnings = vec!["Program files stay where they are.".to_owned()];
             if !review.external_target_paths.is_empty() {
                 warnings
-                    .push("Some target paths still point outside the portable folder.".to_owned());
+                    .push("Some target or ROM paths still point outside the portable folder.".to_owned());
             }
             warnings
         }

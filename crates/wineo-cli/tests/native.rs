@@ -908,7 +908,7 @@ fn portable_copy_takes_a_native_config_and_lists_host_paths() {
     );
     assert!(
         out.contains(&format!(
-            "  external target path: targets.game.exe: {} (kept in place)\n",
+            "  external path: targets.game.exe: {} (kept in place)\n",
             game.display()
         )),
         "{out}"
