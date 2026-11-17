@@ -169,11 +169,11 @@ mod emulation_table {
         }
     }
 
-    fn build(emulator: Emulator, rom: &str, fullscreen: bool) -> Command {
+    fn build(emulator: Emulator, rom: &str, fullscreen: bool) -> TargetCommand {
         build_target(emulator, &native(emulator), Path::new(rom), fullscreen).unwrap()
     }
 
-    fn message(result: Result<Command, crate::error::Error>) -> String {
+    fn message(result: Result<TargetCommand, crate::error::Error>) -> String {
         result.unwrap_err().to_string()
     }
 
@@ -806,36 +806,205 @@ mod emulation_table {
         assert!(installs(Emulator::Other, &path, &exports).is_empty());
     }
 
+    fn paths_at(home: &Path) -> crate::paths::Paths {
+        let home = home.as_os_str().to_owned();
+        crate::paths::Paths::from_lookup(move |key| (key == "HOME").then(|| home.clone())).unwrap()
+    }
+
+    fn pick(home: &Path, exports: &[PathBuf], picked: &str) -> crate::error::Result<Install> {
+        pick_file(&paths_at(home), Emulator::Cemu, exports, picked)
+    }
+
     #[test]
     fn a_picked_file_must_be_an_absolute_executable_file() {
         let (dir, first, ..) = fake_roots();
         let good = first.join("Cemu.AppImage");
         write_script(&good, "#!/bin/sh\n");
-        assert_eq!(pick_file(&good).unwrap(), Install::File(good.clone()));
+        let good_text = good.to_str().unwrap();
+        assert_eq!(
+            pick(dir.path(), &[], good_text).unwrap(),
+            Install::File(good.clone())
+        );
 
         let plain = first.join("plain");
         std::fs::write(&plain, "").unwrap();
-        let error = pick_file(&plain).unwrap_err();
+        let error = pick(dir.path(), &[], plain.to_str().unwrap()).unwrap_err();
         assert!(
             matches!(error, crate::error::Error::NotExecutable(_)),
             "{error}"
         );
 
-        let error = pick_file(&dir.path().join("missing")).unwrap_err();
+        let missing = dir.path().join("missing");
+        let error = pick(dir.path(), &[], missing.to_str().unwrap()).unwrap_err();
         assert!(
             matches!(error, crate::error::Error::ExeNotFound(_)),
             "{error}"
         );
         // A folder has the execute bit, but isn't a file.
-        let error = pick_file(&first).unwrap_err();
+        let error = pick(dir.path(), &[], first.to_str().unwrap()).unwrap_err();
         assert!(
             matches!(error, crate::error::Error::ExeNotFound(_)),
             "{error}"
         );
-        let error = pick_file(Path::new("Cemu.AppImage")).unwrap_err();
+        let error = pick(dir.path(), &[], "Cemu.AppImage").unwrap_err();
         assert!(
             matches!(error, crate::error::Error::RelativeExe(_)),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn a_picked_file_expands_a_leading_home_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Apps")).unwrap();
+        let script = dir.path().join("Apps/Cemu.AppImage");
+        write_script(&script, "#!/bin/sh\n");
+        assert_eq!(
+            pick(dir.path(), &[], "~/Apps/Cemu.AppImage").unwrap(),
+            Install::File(script)
+        );
+        let error = pick(dir.path(), &[], "~/Apps/missing").unwrap_err();
+        assert!(
+            matches!(error, crate::error::Error::ExeNotFound(_)),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_picked_windows_program_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["x.exe", "X.EXE", "setup.msi", "run.bat", "a.lnk"] {
+            let script = dir.path().join(name);
+            write_script(&script, "#!/bin/sh\n");
+            let error = pick(dir.path(), &[], script.to_str().unwrap())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("is a Windows program"), "{name}: {error}");
+        }
+        let error = pick(dir.path(), &[], "C:\\emu\\cemu")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is a Windows program"), "{error}");
+    }
+
+    #[test]
+    fn a_picked_export_script_is_the_flatpak_and_a_lookalike_elsewhere_is_not() {
+        let (dir, first, _second, system, user) = fake_roots();
+        let exports = [system.clone(), user.clone()];
+        let script = user.join("info.cemu.Cemu");
+        write_script(&script, "#!/bin/sh\n");
+        assert_eq!(
+            pick(dir.path(), &exports, script.to_str().unwrap()).unwrap(),
+            Install::Flatpak {
+                script: script.clone()
+            }
+        );
+        let command = build_target(
+            Emulator::Cemu,
+            &pick(dir.path(), &exports, script.to_str().unwrap()).unwrap(),
+            Path::new(ROM),
+            false,
+        )
+        .unwrap();
+        assert_eq!(command.exe, "flatpak");
+        // The same name outside the export folders is just a file.
+        let outside = first.join("info.cemu.Cemu");
+        write_script(&outside, "#!/bin/sh\n");
+        assert_eq!(
+            pick(dir.path(), &exports, outside.to_str().unwrap()).unwrap(),
+            Install::File(outside)
+        );
+        // So is another name inside them, and the script with no exports given.
+        let other = user.join("net.pcsx2.PCSX2");
+        write_script(&other, "#!/bin/sh\n");
+        assert_eq!(
+            pick(dir.path(), &exports, other.to_str().unwrap()).unwrap(),
+            Install::File(other)
+        );
+        assert_eq!(
+            pick(dir.path(), &[], script.to_str().unwrap()).unwrap(),
+            Install::File(script)
+        );
+    }
+
+    #[test]
+    fn names_that_lead_to_the_same_binary_count_once_under_the_first() {
+        let (_dir, first, second, _system, _user) = fake_roots();
+        write_script(first.join("pcsx2-qt"), "#!/bin/sh\n");
+        std::os::unix::fs::symlink(first.join("pcsx2-qt"), second.join("pcsx2")).unwrap();
+        let found = installs(Emulator::Pcsx2, &path_of(&[&first, &second]), &[]);
+        assert_eq!(
+            found,
+            [Install::Path {
+                name: "pcsx2-qt",
+                found: first.join("pcsx2-qt"),
+            }]
+        );
+        // Different binaries stay separate.
+        std::fs::remove_file(second.join("pcsx2")).unwrap();
+        write_script(second.join("pcsx2"), "#!/bin/sh\n");
+        let found = installs(Emulator::Pcsx2, &path_of(&[&first, &second]), &[]);
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn a_folder_named_like_the_app_is_not_a_flatpak_install() {
+        let (_dir, _first, _second, system, user) = fake_roots();
+        std::fs::create_dir(system.join("net.pcsx2.PCSX2")).unwrap();
+        let exports = [system.clone(), user.clone()];
+        assert!(installs(Emulator::Pcsx2, &path_of(&[]), &exports).is_empty());
+        assert!(!flatpak_installed(&exports, "net.pcsx2.PCSX2"));
+        write_script(user.join("net.pcsx2.PCSX2"), "#!/bin/sh\n");
+        assert!(flatpak_installed(&exports, "net.pcsx2.PCSX2"));
+        assert_eq!(installs(Emulator::Pcsx2, &path_of(&[]), &exports).len(), 1);
+    }
+
+    #[test]
+    fn a_rom_path_with_dot_dot_is_refused_for_every_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.join("games/x")).unwrap();
+        std::fs::create_dir_all(dir.join("games/ps2")).unwrap();
+        std::fs::write(dir.join("games/ps2/a.iso"), "").unwrap();
+        for rom in [
+            dir.join("games/x/../ps2/a.iso"),
+            dir.join("games/x/../ps2/missing.iso"),
+            PathBuf::from("/games/x/../ps2/a.iso"),
+        ] {
+            for install in [native(Emulator::Pcsx2), flatpak()] {
+                let error = message(build_target(Emulator::Pcsx2, &install, &rom, false));
+                assert_eq!(
+                    error,
+                    format!("ROM path `{}` can't contain `..`.", rom.display())
+                );
+            }
+            assert!(custom_target("emu", "{rom}", &rom).is_err());
+        }
+        // A name that only looks like `..` is fine.
+        let dotted = build(Emulator::Pcsx2, "/games/..x/a..iso", false);
+        assert_eq!(dotted.args.last().unwrap(), "/games/..x/a..iso");
+    }
+
+    #[test]
+    fn a_flatpak_cannot_share_the_root_but_a_native_emulator_can_open_a_game_there() {
+        let error = message(build_target(
+            Emulator::Pcsx2,
+            &flatpak(),
+            Path::new("/a.iso"),
+            false,
+        ));
+        assert_eq!(error, "A Flatpak emulator can't read a game directly in /.");
+        let command = build(Emulator::Pcsx2, "/a.iso", false);
+        assert_eq!(command.args.last().unwrap(), "/a.iso");
+        // One folder below the root is fine.
+        assert!(
+            build_target(
+                Emulator::Pcsx2,
+                &flatpak(),
+                Path::new("/games/a.iso"),
+                false
+            )
+            .is_ok()
         );
     }
 
@@ -874,6 +1043,35 @@ mod emulation_table {
     }
 
     #[test]
+    fn a_hash_that_starts_an_argument_must_be_quoted() {
+        let error = message(custom_target("emu", "-x {rom} --slot #2", Path::new(ROM)));
+        assert_eq!(error, "Quote a # that starts an argument, like '#2'.");
+        let error = message(custom_target("emu", "#1 {rom}", Path::new(ROM)));
+        assert_eq!(error, "Quote a # that starts an argument, like '#2'.");
+        for (args, expected) in [
+            ("-x {rom} --slot '#2'", "#2"),
+            ("-x {rom} --slot \\#2", "#2"),
+            ("-x {rom} --slot a#b", "a#b"),
+            ("-x {rom} --slot \"#2\"", "#2"),
+        ] {
+            let command = custom_target("emu", args, Path::new(ROM)).unwrap();
+            assert_eq!(
+                command.args,
+                strings(&["-x", ROM, "--slot", expected]),
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_emulator_command_is_refused() {
+        for exe in ["", "  ", "\t"] {
+            let error = message(custom_target(exe, "{rom}", Path::new(ROM)));
+            assert_eq!(error, "The emulator's command is empty.", "{exe:?}");
+        }
+    }
+
+    #[test]
     fn a_custom_target_needs_rom_and_a_closed_quote() {
         let error = message(custom_target("emu", "--fast --windowed", Path::new(ROM)));
         assert_eq!(error, "The arguments need {rom} for the game.");
@@ -884,7 +1082,15 @@ mod emulation_table {
             "--title 'Unclosed {rom}",
             Path::new(ROM),
         ));
-        assert_eq!(error, "The arguments have an unclosed quote.");
+        assert_eq!(
+            error,
+            "The arguments have an unclosed quote or a trailing backslash."
+        );
+        let error = message(custom_target("emu", "{rom} \\", Path::new(ROM)));
+        assert_eq!(
+            error,
+            "The arguments have an unclosed quote or a trailing backslash."
+        );
     }
 
     #[test]

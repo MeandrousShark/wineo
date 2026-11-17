@@ -2,14 +2,14 @@
 //! one ROM, written out in full at import. Nothing here goes through a shell,
 //! so a path with spaces or quotes stays one argument.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::{Emulator, Install};
 use crate::error::{Error, Result};
 
 /// A target's `exe` and `args`, as a native `Target` holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Command {
+pub struct TargetCommand {
     pub exe: String,
     pub args: Vec<String>,
 }
@@ -27,6 +27,13 @@ fn absolute_rom(rom: &Path) -> Result<&str> {
     if !rom.is_absolute() {
         return Err(invalid(format!(
             "ROM path `{}` isn't absolute.",
+            rom.display()
+        )));
+    }
+    // Flatpak refuses a `--filesystem` path with `..` in it.
+    if rom.components().any(|part| part == Component::ParentDir) {
+        return Err(invalid(format!(
+            "ROM path `{}` can't contain `..`.",
             rom.display()
         )));
     }
@@ -100,6 +107,12 @@ fn filesystem_dirs(rom: &Path) -> Result<Vec<String>> {
     {
         dirs.push(dir);
     }
+    // Flatpak refuses to share the whole filesystem this way.
+    if dirs.iter().any(|dir| dir.parent().is_none()) {
+        return Err(invalid(
+            "A Flatpak emulator can't read a game directly in /.".to_owned(),
+        ));
+    }
     dirs.iter()
         .map(|dir| utf8(dir).map(escape_filesystem))
         .collect()
@@ -112,15 +125,15 @@ pub fn build_target(
     install: &Install,
     rom: &Path,
     fullscreen: bool,
-) -> Result<Command> {
+) -> Result<TargetCommand> {
     let rom_str = absolute_rom(rom)?;
     let emulator_args = emulator_args(emulator, rom_str, fullscreen)?;
     match install {
-        Install::Path { name, .. } => Ok(Command {
+        Install::Path { name, .. } => Ok(TargetCommand {
             exe: (*name).to_owned(),
             args: emulator_args,
         }),
-        Install::File(path) => Ok(Command {
+        Install::File(path) => Ok(TargetCommand {
             exe: utf8(path)?.to_owned(),
             args: emulator_args,
         }),
@@ -134,7 +147,7 @@ pub fn build_target(
             }
             args.push(app.to_owned());
             args.extend(emulator_args);
-            Ok(Command {
+            Ok(TargetCommand {
                 exe: "flatpak".to_owned(),
                 args,
             })
@@ -145,16 +158,27 @@ pub fn build_target(
 /// The target for a custom emulator: `exe` (a path or a bare PATH name) and
 /// `args`, split like a shell would, with `{rom}` replaced by the ROM, whole
 /// or inside an argument.
-pub fn custom_target(exe: &str, args: &str, rom: &Path) -> Result<Command> {
+pub fn custom_target(exe: &str, args: &str, rom: &Path) -> Result<TargetCommand> {
+    if exe.trim().is_empty() {
+        return Err(invalid("The emulator's command is empty.".to_owned()));
+    }
     let rom = absolute_rom(rom)?;
-    let words = shlex::split(args)
-        .ok_or_else(|| invalid("The arguments have an unclosed quote.".to_owned()))?;
+    let words = shlex::split(args).ok_or_else(|| {
+        invalid("The arguments have an unclosed quote or a trailing backslash.".to_owned())
+    })?;
+    // shlex reads an unquoted `#` as the start of a comment and drops the rest.
+    let hashes = |text: &str| text.matches('#').count();
+    if words.iter().map(|word| hashes(word)).sum::<usize>() < hashes(args) {
+        return Err(invalid(
+            "Quote a # that starts an argument, like '#2'.".to_owned(),
+        ));
+    }
     if !words.iter().any(|word| word.contains(PLACEHOLDER)) {
         return Err(invalid(format!(
             "The arguments need {PLACEHOLDER} for the game."
         )));
     }
-    Ok(Command {
+    Ok(TargetCommand {
         exe: exe.to_owned(),
         args: words
             .iter()

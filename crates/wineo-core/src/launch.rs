@@ -44,7 +44,7 @@ const EXPOSE_WAYLAND: &str = "--expose-wayland";
 /// overridden from a config or the command line.
 const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
 /// Endings that mark a Windows program, which a native environment can't run.
-const WINDOWS_EXTENSIONS: [&str; 4] = [".exe", ".msi", ".bat", ".lnk"];
+pub(crate) const WINDOWS_EXTENSIONS: [&str; 4] = [".exe", ".msi", ".bat", ".lnk"];
 
 /// Command line overrides for launching a target.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

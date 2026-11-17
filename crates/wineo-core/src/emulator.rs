@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::paths::Paths;
 
-pub use build::{Command, build_target, custom_target};
+pub use build::{TargetCommand, build_target, custom_target};
 pub use install::{Install, installs, pick_file};
 pub use table::{ExtSystem, FolderGame};
 
@@ -206,10 +206,11 @@ pub fn flatpak_app<'a>(exe: &str, args: &'a [String]) -> Option<&'a str> {
 }
 
 /// Whether `app` still has its script in one of `exports`. A link left
-/// behind by an uninstall points nowhere, so it doesn't count.
+/// behind by an uninstall points nowhere, and a folder isn't a script, so
+/// neither counts.
 pub fn flatpak_installed(exports: &[PathBuf], app: &str) -> bool {
     // A path-shaped value would escape the exports directory.
-    is_app_id(app) && exports.iter().any(|dir| dir.join(app).exists())
+    is_app_id(app) && exports.iter().any(|dir| dir.join(app).is_file())
 }
 
 #[cfg(test)]
