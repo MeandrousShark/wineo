@@ -61,7 +61,7 @@ else
 fi
 
 # Every source detection input is present at least once.
-for pattern in 'kind = "proxied"' 'kind = "native"' '^gog_id' '^heroic_id' 'store = "egs"' 'store = "amazon"'; do
+for pattern in 'kind = "proxied"' 'kind = "native"' '^gog_id' '^heroic_id' 'store = "egs"' 'store = "amazon"' '^\[emulation\]'; do
     if grep -lq "$pattern" "$tmp"/one/config/environments/*.toml; then
         pass
     else
