@@ -339,6 +339,12 @@ impl Paths {
         self.host_state.join(".locks").join("gog-adoption.lock")
     }
 
+    /// Held while an emulated game import checks that its ROM isn't imported
+    /// yet and writes the environment. Host-wide, like the GOG folder locks.
+    pub fn emulated_rom_lock(&self) -> PathBuf {
+        self.host_state.join(".locks").join("emulated-roms.lock")
+    }
+
     /// A GOG game folder's in-use lock, which launches hold for their whole
     /// run. Host-wide like the state lock.
     pub fn gog_folder_in_use_lock(&self, key: &str) -> PathBuf {
