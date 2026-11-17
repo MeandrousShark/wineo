@@ -769,7 +769,7 @@ fn push_review<'a>(
             );
             content = push_values(
                 content,
-                "External target paths",
+                "External paths",
                 &review.external_target_paths,
                 palette,
             );
@@ -832,7 +832,7 @@ fn push_review<'a>(
             );
             content = push_values(
                 content,
-                "External target paths",
+                "External paths",
                 &review.external_target_paths,
                 palette,
             );
