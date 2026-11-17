@@ -44,7 +44,7 @@ const EXPOSE_WAYLAND: &str = "--expose-wayland";
 /// overridden from a config or the command line.
 const MANAGED: [&str; 3] = ["PROTONPATH", "GAMEID", "STORE"];
 /// Endings that mark a Windows program, which a native environment can't run.
-const WINDOWS_EXTENSIONS: [&str; 4] = [".exe", ".msi", ".bat", ".lnk"];
+pub(crate) const WINDOWS_EXTENSIONS: [&str; 4] = [".exe", ".msi", ".bat", ".lnk"];
 
 /// Command line overrides for launching a target.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -976,7 +976,7 @@ pub fn resolve_native_exe(
 /// Looks a bare name up on PATH the way a shell would. Unlike
 /// `runner::find_on_path`, symlinks are kept, since a program can behave
 /// differently depending on the name it is run as.
-fn native_on_path(path_var: &OsStr, name: &str) -> Option<PathBuf> {
+pub(crate) fn native_on_path(path_var: &OsStr, name: &str) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(name))
