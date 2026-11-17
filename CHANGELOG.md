@@ -4,6 +4,12 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.6.1 - 2026-11-17
+
+A fix for Steam games after Steam's November client update.
+
+- Steam launches work again with Steam's pressure-vessel client, and a Steam that updates itself on start no longer fails the launch.
+
 ## 1.6.0 - 2026-11-15
 
 Coverflow with controller navigation, a simpler New environment flow, and
