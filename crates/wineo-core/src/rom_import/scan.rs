@@ -44,9 +44,15 @@ pub(super) struct Scanned {
 /// Whether `dir` is a folder game of `kind`.
 pub(super) fn is_folder_game(dir: &Path, kind: FolderGame) -> bool {
     match kind {
-        FolderGame::CemuTitle => read_sheet(&dir.join("code/app.xml"))
-            .and_then(|xml| cemu_title_type(&xml))
-            .is_some_and(|kind| matches!(kind, CEMU_BASE | CEMU_DEMO)),
+        // Cemu's own `DetectFormat` needs all three folders before it reads
+        // the title id.
+        FolderGame::CemuTitle => {
+            dir.join("content").is_dir()
+                && dir.join("meta").is_dir()
+                && read_sheet(&dir.join("code/app.xml"))
+                    .and_then(|xml| cemu_title_type(&xml))
+                    .is_some_and(|kind| matches!(kind, CEMU_BASE | CEMU_DEMO))
+        }
         FolderGame::PpssppEboot => fs::read_dir(dir).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
                 entry.file_name().eq_ignore_ascii_case("EBOOT.PBP") && entry.path().is_file()

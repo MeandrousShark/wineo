@@ -200,6 +200,9 @@ fn a_cemu_title_folder_is_a_game_and_an_update_or_dlc_folder_is_not() {
     cemu_title("Garbled", "not hex");
     let missing = roms.join("No App Xml");
     touch(&missing.join("code/game.rpx"));
+    // A base title id without Cemu's content/ and meta/ isn't a title folder.
+    cemu_title("Half Copied", "0005000010101D00");
+    fs::remove_dir(roms.join("Half Copied/content")).unwrap();
     let listing = list(&paths, Emulator::Cemu, &roms);
     assert_eq!(names(&listing), ["Zelda [0005000010101C00]", "Zelda Demo"]);
     assert_eq!(listing.entries[0].title, "Zelda");
