@@ -398,7 +398,11 @@ fn token_cancel_child() {
         &prefix,
         &BTreeMap::new(),
         &["-q".to_owned(), "corefonts".to_owned()],
-        1,
+        // The script's trap only runs once its `sleep` returns, which can
+        // take over a second on a loaded machine. A force-kill before then
+        // would leave `partial` behind; the run still ends as soon as the
+        // script exits.
+        10,
         &token,
         Output::Log(&prefix.join("output.log")),
         |event| events.push(event),
