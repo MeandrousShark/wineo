@@ -238,7 +238,11 @@ impl ClientWait {
                         Ours::None => gone_long,
                     };
                 // A counting update outlasts any gap while our start runs,
-                // as the supervisor's window does.
+                // as the supervisor's window does. Known limits, kept on
+                // purpose: a quit still wins over a counting update, so a
+                // second quit can send into a gap; and a gap already
+                // `absent_limit` long sends as soon as an update stops
+                // counting, with no fresh wait.
                 if self.seen && !quit {
                     if update.is_some() {
                         self.updating = true;
@@ -1273,6 +1277,27 @@ mod tests {
         assert_eq!(
             wait.step(limit, starting(), None, Ours::Running),
             Next::Send
+        );
+    }
+
+    // A fresh log can't show a client is alive, so once our start has
+    // exited, a gone client has quit even while an update counts.
+    #[test]
+    fn a_client_whose_start_exited_quits_even_while_an_update_counts() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        assert_eq!(
+            wait.step(now, starting(), Some(&UPDATE), Ours::Running),
+            Next::Wait
+        );
+        let gone = after(now, 1_000);
+        assert_eq!(
+            wait.step(gone, absent(), Some(&UPDATE), Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(gone, 250), absent(), Some(&UPDATE), Ours::Exited),
+            Next::Restart
         );
     }
 
