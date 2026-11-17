@@ -74,7 +74,8 @@ pub(super) fn cemu_title_type(xml: &str) -> Option<u8> {
     let value = &rest[rest.find('>')? + 1..];
     let value = value[..value.find('<')?].trim();
     let id = u64::from_str_radix(value.trim_start_matches("0x"), 16).ok()?;
-    Some((id >> 32) as u8)
+    // Wii U title ids all start 0005; the next byte is the type.
+    ((id >> 48) == 0x0005).then_some((id >> 32) as u8)
 }
 
 /// The games under `root`, a folder that can be read and isn't a folder game

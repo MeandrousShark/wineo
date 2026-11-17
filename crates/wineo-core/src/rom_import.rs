@@ -433,10 +433,12 @@ impl Emulating {
                 command
             }
             Self::Custom { exe, args } => {
+                // Trimmed as `check` sees it, so what was checked is stored.
+                let exe = exe.trim();
                 let mut command = emulator::custom_target(exe, args, rom)?;
                 // A bare name stays one, for PATH.
                 if exe.contains('/') || exe.starts_with('~') {
-                    let path = paths.expand(exe.trim());
+                    let path = paths.expand(exe);
                     if path.is_absolute() {
                         command.exe = paths.store(&path)?;
                     }

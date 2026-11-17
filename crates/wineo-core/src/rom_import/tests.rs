@@ -198,6 +198,8 @@ fn a_cemu_title_folder_is_a_game_and_an_update_or_dlc_folder_is_not() {
     cemu_title("Zelda DLC", "0005000C10101C00");
     cemu_title("Homebrew", "0005000F10101C00");
     cemu_title("Garbled", "not hex");
+    // A 3DS-style id with a base type byte isn't a Wii U title.
+    cemu_title("Not Wii U", "0004000010101C00");
     let missing = roms.join("No App Xml");
     touch(&missing.join("code/game.rpx"));
     // A base title id without Cemu's content/ and meta/ isn't a title folder.
@@ -463,14 +465,16 @@ fn a_large_folder_lists_and_plans_quickly() {
         planned < Duration::from_secs(20),
         "listed in {listed:?}, planned in {planned:?}"
     );
-    // Importing loads each environment once, not once per game.
+    // A real-sized batch applies. Each import still rewrites library.toml,
+    // so this stays small; that an import doesn't reload every environment
+    // is pinned by `catching_up_on_imports_loads_only_new_environments`.
     let started = Instant::now();
     let some = Batch {
-        ready: batch.ready[..2000].to_vec(),
+        ready: batch.ready[..300].to_vec(),
         ..Batch::default()
     };
     let report = apply_batch(&paths, some, &Token::new(), |_| Ok(())).unwrap();
-    assert_eq!(report.done.len(), 2000);
+    assert_eq!(report.done.len(), 300);
     assert!(
         started.elapsed() < Duration::from_secs(120),
         "applied in {:?}",
@@ -1051,6 +1055,8 @@ fn a_custom_emulators_command_is_checked_when_planning() {
             .map_err(|error| error.to_string())
     };
     assert_eq!(plan("eden"), Ok("eden".to_owned()));
+    // Stored as checked, so a stray space can't pass here and fail at launch.
+    assert_eq!(plan(" eden "), Ok("eden".to_owned()));
     assert_eq!(plan("~/bin/eden"), Ok("~/bin/eden".to_owned()));
     assert_eq!(
         plan("missing"),
