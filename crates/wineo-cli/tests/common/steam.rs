@@ -165,6 +165,7 @@ const STEAM: &str = r#"
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -188,6 +189,8 @@ static int client_alive(const char *root) {
 
 // Starts the fake client like a cold `steam -silent`, unless one is running.
 // The FIFO exists before this returns, so a launch right after can't miss it.
+// A test can make it live as long as its client, as `steam.sh` does, and
+// start the client once more 2 s after it exits, as Steam relaunching itself.
 static int start_client(const char *root, const char *fifo, const char *request_pids) {
     char inert[PATH_MAX], client[PATH_MAX], reaper[PATH_MAX];
     char child_pid[PATH_MAX], reaper_pids[PATH_MAX], pid_file[PATH_MAX];
@@ -205,23 +208,35 @@ static int start_client(const char *root, const char *fifo, const char *request_
     snprintf(reaper_pids, sizeof(reaper_pids), "%s/steam-reaper-pids", root);
     snprintf(pid_file, sizeof(pid_file), "%s/steam-client-pid", root);
     if (mkfifo(fifo, 0600) && errno != EEXIST) return 7;
-    pid_t child = fork();
-    if (child < 0) return 8;
-    if (child == 0) {
-        if (setsid() < 0) _exit(126);
-        setenv("WINEO_TEST_STEAM_PIDS", request_pids, 1);
-        char dot_steam[PATH_MAX];
-        snprintf(dot_steam, sizeof(dot_steam), "%s/.steam", root);
-        setenv("WINEO_TEST_STEAM_DOT_DIR", dot_steam, 1);
-        char announce_hold[PATH_MAX];
-        snprintf(announce_hold, sizeof(announce_hold), "%s/steam-announce-hold", root);
-        setenv("WINEO_TEST_STEAM_ANNOUNCE_HOLD", announce_hold, 1);
-        execl(client, client, fifo, reaper, child_pid, reaper_pids, (char *)NULL);
-        _exit(127);
+    char relaunch[PATH_MAX];
+    snprintf(relaunch, sizeof(relaunch), "%s/steam-silent-relaunch", root);
+    int relaunching = !access(relaunch, F_OK);
+    for (int round = 0; round < 2; round++) {
+        pid_t child = fork();
+        if (child < 0) return 8;
+        if (child == 0) {
+            if (setsid() < 0) _exit(126);
+            setenv("WINEO_TEST_STEAM_PIDS", request_pids, 1);
+            char dot_steam[PATH_MAX];
+            snprintf(dot_steam, sizeof(dot_steam), "%s/.steam", root);
+            setenv("WINEO_TEST_STEAM_DOT_DIR", dot_steam, 1);
+            char announce_hold[PATH_MAX];
+            snprintf(announce_hold, sizeof(announce_hold), "%s/steam-announce-hold", root);
+            setenv("WINEO_TEST_STEAM_ANNOUNCE_HOLD", announce_hold, 1);
+            execl(client, client, fifo, reaper, child_pid, reaper_pids, (char *)NULL);
+            _exit(127);
+        }
+        char line[64];
+        snprintf(line, sizeof(line), "%ld\n", (long)child);
+        append(pid_file, line);
+        if (!relaunching) return 0;
+        // The client ends itself within ten minutes, so this wait is bounded.
+        while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+        if (round == 0) {
+            struct timespec gap = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&gap, NULL);
+        }
     }
-    char line[64];
-    snprintf(line, sizeof(line), "%ld\n", (long)child);
-    append(pid_file, line);
     return 0;
 }
 
@@ -512,6 +527,12 @@ impl SteamFixture {
     /// ready, until `release_client_ready`.
     pub fn hold_client_ready(&self) {
         fs::write(self.f.root.path().join("steam-announce-hold"), "").unwrap();
+    }
+
+    /// Makes the fake `steam -silent` live as long as its client, and start
+    /// the client again once, 2 s after it exits.
+    pub fn relaunch_client_once(&self) {
+        fs::write(self.f.root.path().join("steam-silent-relaunch"), "").unwrap();
     }
 
     /// Lets the client of `starting` become ready for a launch.

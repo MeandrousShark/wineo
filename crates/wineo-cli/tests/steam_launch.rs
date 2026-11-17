@@ -284,6 +284,39 @@ fn a_cold_started_client_that_quits_gets_one_silent_restart_then_the_launch() {
 }
 
 #[test]
+fn a_client_relaunching_itself_under_our_silent_start_gets_no_second_start() {
+    let s = SteamFixture::cold();
+    s.hold_client_ready();
+    s.relaunch_client_once();
+    s.config("");
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "10000")
+        .args(["start", "civ", "--target", "steam"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    let first = s.client_pid();
+    // Several polls of the helper, so it has seen the client coming up.
+    thread::sleep(Duration::from_millis(1000));
+    signal(first, "-KILL");
+    let pids = s.f.root.path().join("steam-client-pid");
+    wait_for("the relaunched client", || {
+        fs::read_to_string(&pids).unwrap().lines().count() == 2
+    });
+    // Polls of the helper pass with the new client up, after a gap that
+    // `steam -silent` outlived.
+    thread::sleep(Duration::from_millis(700));
+    assert_eq!(dispatches(&s), ["-silent"]);
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 2);
+    assert_eq!(dispatches(&s), ["-silent", "-applaunch 289070"]);
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
 fn the_launch_is_sent_when_the_wait_for_the_client_runs_out() {
     let s = SteamFixture::cold();
     s.make_silent_start_inert();

@@ -167,8 +167,10 @@ enum Next {
     Restart,
 }
 
-/// The newest silent start command of ours. It's `steam.sh`, which lives as
-/// long as the client does.
+/// The newest silent start command of ours. The wait takes it to live as
+/// long as the client does, which holds for `steam.sh` and `flatpak run`. A
+/// wrapper that hands off and exits early would make a relaunch gap read as
+/// a quit, which costs the one restart and then sends the launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ours {
     /// The client was already coming up, and nothing of ours started it.
@@ -209,8 +211,10 @@ impl ClientWait {
 
     /// A failed check sends the launch, which is better sent than lost. A
     /// client that was seen has quit once our silent start has exited too,
-    /// or with none of ours, once it stays gone for `absent_limit`. Shorter
-    /// gaps change nothing.
+    /// or with none of ours, once it stays gone for `absent_limit`. While a
+    /// seen client is gone the launch isn't sent into the gap, for up to
+    /// `absent_limit`, and a gap that long with our start still running
+    /// sends it.
     fn step(
         &mut self,
         now: Instant,
@@ -226,12 +230,16 @@ impl ClientWait {
             }
             Ok(steam::ClientState::Absent) => {
                 let gone_since = *self.absent_since.get_or_insert(now);
+                let gone_long = now.duration_since(gone_since) >= self.absent_limit;
                 let quit = self.seen
                     && match ours {
                         Ours::Exited => true,
                         Ours::Running => false,
-                        Ours::None => now.duration_since(gone_since) >= self.absent_limit,
+                        Ours::None => gone_long,
                     };
+                if self.seen && !quit {
+                    return if gone_long { Next::Send } else { Next::Wait };
+                }
                 if quit {
                     if self.restarted {
                         return Next::Send;
@@ -1091,6 +1099,115 @@ mod tests {
         assert_eq!(
             wait.step(gone + CLIENT_ABSENT_LIMIT, absent(), None, Ours::None),
             Next::Restart
+        );
+    }
+
+    /// Steps a wait every 250 ms through what `script` shows at each moment,
+    /// restarting when asked, and returns when it sent the launch.
+    fn send_time(
+        now: Instant,
+        mut script: impl FnMut(Duration) -> (io::Result<steam::ClientState>, Ours),
+    ) -> Duration {
+        let mut wait = limits(now);
+        for tick in 0..4 * 120 {
+            let at = CLIENT_POLL * tick;
+            let (client, ours) = script(at);
+            if wait.step(now + at, client, None, ours) == Next::Send {
+                return at;
+            }
+        }
+        panic!("the launch was never sent");
+    }
+
+    #[test]
+    fn the_start_window_outlasts_the_helpers_latest_send() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let secs = Duration::from_secs_f64;
+        // Gone just before the 15 s, and still gone 10 s later.
+        let gap = send_time(now, |at| {
+            let client = if at < secs(14.75) {
+                starting()
+            } else {
+                absent()
+            };
+            (client, Ours::Running)
+        });
+        assert_eq!(gap, secs(24.75));
+        // The same with nothing of ours to watch: the restart's client comes
+        // up just before its own 15 s, then is gone 10 s more.
+        let restarted = send_time(now, |at| match at {
+            at if at < secs(14.75) => (starting(), Ours::None),
+            at if at <= secs(24.75) => (absent(), Ours::None),
+            at if at == secs(39.5) => (starting(), Ours::Running),
+            _ => (absent(), Ours::Running),
+        });
+        assert_eq!(restarted, secs(49.75));
+        let wait = StartingWait::new(now);
+        for sent in [gap, restarted] {
+            assert!(!wait.expired(now + sent + Duration::from_secs(5), start, stall));
+        }
+    }
+
+    #[test]
+    fn a_client_we_didnt_start_quitting_at_8_s_is_restarted_at_18_s() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        for millis in (0..8_000).step_by(250) {
+            assert_eq!(
+                wait.step(after(now, millis), starting(), None, Ours::None),
+                Next::Wait
+            );
+        }
+        for millis in (8_000..18_000).step_by(250) {
+            assert_eq!(
+                wait.step(after(now, millis), absent(), None, Ours::None),
+                Next::Wait,
+                "at {millis} ms"
+            );
+        }
+        assert_eq!(
+            wait.step(after(now, 18_000), absent(), None, Ours::None),
+            Next::Restart
+        );
+    }
+
+    #[test]
+    fn a_gap_across_the_15_s_holds_the_launch_until_the_client_is_back() {
+        for ours in [Ours::Running, Ours::None] {
+            let now = Instant::now();
+            let mut wait = limits(now);
+            assert_eq!(wait.step(now, starting(), None, ours), Next::Wait);
+            for millis in (14_000..16_000).step_by(250) {
+                assert_eq!(
+                    wait.step(after(now, millis), absent(), None, ours),
+                    Next::Wait,
+                    "{ours:?} at {millis} ms"
+                );
+            }
+            assert_eq!(
+                wait.step(after(now, 16_000), starting(), None, ours),
+                Next::Send
+            );
+        }
+    }
+
+    #[test]
+    fn a_10_s_gap_with_our_start_running_sends_the_launch() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        assert_eq!(wait.step(now, starting(), None, Ours::Running), Next::Wait);
+        for millis in (1_000..11_000).step_by(250) {
+            assert_eq!(
+                wait.step(after(now, millis), absent(), None, Ours::Running),
+                Next::Wait,
+                "at {millis} ms"
+            );
+        }
+        assert_eq!(
+            wait.step(after(now, 11_000), absent(), None, Ours::Running),
+            Next::Send
         );
     }
 
