@@ -644,6 +644,9 @@ fn update_with_target(
         .collect();
     let set = set.as_slice();
 
+    if scope == Scope::Environment {
+        edit::check_new_emulation(&doc, set)?;
+    }
     for (key, value) in set {
         let value = match (scope, *key) {
             // Stored the same way `wineo new` writes them.

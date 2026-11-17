@@ -454,6 +454,17 @@ fn set_takes_emulation_on_native_only() {
     assert_success(&f.run(&["set", "prime", "--unset", "emulation"]));
     let config = fs::read_to_string(f.config_dir().join("environments/prime.toml")).unwrap();
     assert!(!config.contains("emulation"), "{config}");
+    let alone = f.run(&["set", "prime", "emulation.system=gamecube"]);
+    assert!(!alone.status.success());
+    assert!(
+        stderr(&alone).contains(
+            "emulation.system needs emulation.emulator and emulation.rom in the same set."
+        ),
+        "{}",
+        stderr(&alone)
+    );
+    let config = fs::read_to_string(f.config_dir().join("environments/prime.toml")).unwrap();
+    assert!(!config.contains("emulation"), "{config}");
 
     let before = fs::read_to_string(f.config_dir().join("environments/app.toml")).unwrap();
     let wine = f.run(&["set", "app", "emulation.emulator=dolphin"]);

@@ -46,6 +46,29 @@ pub fn set(doc: &mut DocumentMut, scope: Scope, key: &str, raw: &str) -> Result<
     }
 }
 
+/// Refuses emulation keys that would start an `[emulation]` table without
+/// both its emulator and rom, which is what the table needs to read back.
+pub fn check_new_emulation(doc: &DocumentMut, set: &[(&str, &str)]) -> Result<(), EditError> {
+    if doc.get("emulation").is_some() {
+        return Ok(());
+    }
+    let Some((first, _)) = set.iter().find(|(key, _)| key.starts_with("emulation.")) else {
+        return Ok(());
+    };
+    let missing: Vec<String> = ["emulator", "rom"]
+        .iter()
+        .map(|field| format!("emulation.{field}"))
+        .filter(|key| !set.iter().any(|(given, _)| given == key))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(EditError::Refused(format!(
+        "{first} needs {} in the same set.",
+        missing.join(" and ")
+    )))
+}
+
 /// Removes `key`. Returns Ok(false) if the key is valid but wasn't present.
 pub fn unset(doc: &mut DocumentMut, scope: Scope, key: &str) -> Result<bool, EditError> {
     let root = doc.as_table_mut();

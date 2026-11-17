@@ -228,23 +228,56 @@ fn emulation_is_refused_for_wine_and_steam_before_writing() {
 }
 
 #[test]
-fn a_system_without_the_rest_of_emulation_is_not_written() {
+fn emulation_without_the_rest_of_its_table_is_not_written() {
     let (_root, paths) = setup();
     let text = "kind = \"native\"\n";
     write_env(&paths, text);
-    let err = update(
+    for (set, message) in [
+        (
+            &[("emulation.system", "wii")][..],
+            "emulation.system needs emulation.emulator and emulation.rom in the same set.",
+        ),
+        (
+            &[("emulation.emulator", "dolphin")],
+            "emulation.emulator needs emulation.rom in the same set.",
+        ),
+        (
+            &[("emulation.rom", "/roms/a.iso")],
+            "emulation.rom needs emulation.emulator in the same set.",
+        ),
+        (
+            &[
+                ("emulation.emulator", "dolphin"),
+                ("emulation.system", "wii"),
+            ],
+            "emulation.emulator needs emulation.rom in the same set.",
+        ),
+    ] {
+        let err = update(&paths, ConfigFile::Environment("notepad"), set, &[]).unwrap_err();
+        assert_eq!(crate::error::chain(&err), message, "{set:?}");
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            text
+        );
+    }
+}
+
+#[test]
+fn a_system_can_be_set_alone_once_the_table_exists() {
+    let (_root, paths) = setup();
+    write_env(
+        &paths,
+        "kind = \"native\"\n\n[emulation]\nemulator = \"dolphin\"\nrom = \"/roms/a.iso\"\n",
+    );
+    update(
         &paths,
         ConfigFile::Environment("notepad"),
         &[("emulation.system", "wii")],
         &[],
     )
-    .unwrap_err();
-    let err = crate::error::chain(&err);
-    assert!(err.contains("missing field `emulator`"), "{err}");
-    assert_eq!(
-        fs::read_to_string(paths.environment_config("notepad")).unwrap(),
-        text
-    );
+    .unwrap();
+    let text = fs::read_to_string(paths.environment_config("notepad")).unwrap();
+    assert!(text.contains("system = \"wii\""), "{text}");
 }
 
 #[test]
