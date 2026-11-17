@@ -1426,13 +1426,21 @@ fn emulator_and_rom_are_required_and_nothing_may_be_empty() {
 
 #[test]
 fn a_legacy_emulated_config_loads_and_is_left_alone() {
-    let (_root, paths) = temp_paths();
-    // No schema_version, as a file from before versioning would have.
-    let text = format!("# mine\n{EMULATED}\n[targets.prime]\nexe = \"/bin/true\" # emulator\n");
+    let (root, paths) = temp_paths();
+    // No schema_version, as a file from before versioning would have, and
+    // single quotes a rewrite would turn into double ones.
+    let text = "# mine\nkind = 'native'\n[emulation]\nemulator = 'dolphin'\nrom = '~/roms/Metroid Prime (USA).rvz'\n\n[targets.prime]\nexe = \"/bin/true\" # emulator\n";
     let path = paths.environment_config("prime");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, &text).unwrap();
-    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, text).unwrap();
+    // An old time, so a rewrite can't land on the same timestamp.
+    let before = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(before)
+        .unwrap();
     let environment = crate::environment::Environment::load(&paths, "prime").unwrap();
     assert_eq!(environment.config.schema_version, 0);
     assert_eq!(
@@ -1442,6 +1450,19 @@ fn a_legacy_emulated_config_loads_and_is_left_alone() {
             .map(|emulation| emulation.emulator),
         Some("dolphin".to_owned())
     );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+
+    // A set that changes nothing, with the rom spelled as a full path.
+    let rom = root.path().join("roms/Metroid Prime (USA).rvz");
+    let rom = rom.to_str().unwrap();
+    crate::settings::update(
+        &paths,
+        crate::settings::ConfigFile::Environment("prime"),
+        &[("emulation.emulator", "dolphin"), ("emulation.rom", rom)],
+        &[],
+    )
+    .unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
 }
