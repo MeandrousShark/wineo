@@ -273,8 +273,42 @@ pub struct EnvironmentConfig {
     pub winetricks: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub targets: BTreeMap<String, Target>,
+    /// Only a native environment has it. Nothing that launches reads it.
+    pub emulation: Option<Emulation>,
     /// The deprecated keys the file used, moved to their new names.
     pub deprecated: Vec<Moved>,
+}
+
+/// `[emulation]`: the game an emulated environment's target runs, recorded
+/// for its Source, its checks, and knowing a ROM is already imported.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Emulation {
+    /// A built-in's id, `custom`, or an id from a newer wineo, kept as is.
+    pub emulator: String,
+    pub system: Option<String>,
+    /// As written, with `~` or relative to a portable root.
+    pub rom: String,
+}
+
+impl Emulation {
+    fn validate(&self) -> Result<(), String> {
+        for (key, value) in [
+            ("emulator", Some(&self.emulator)),
+            ("system", self.system.as_ref()),
+            ("rom", Some(&self.rom)),
+        ] {
+            if value.is_some_and(|value| value.is_empty()) {
+                return Err(format!("Invalid emulation.{key}: empty."));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The refusal for `[emulation]` on a Wine environment.
+pub fn wine_emulation_message(name: &str) -> String {
+    format!("{name} isn't a native environment, so it can't set emulation.")
 }
 
 /// What an environment runs on. A config without `kind` is Wine.
@@ -386,6 +420,7 @@ struct RawEnvironmentConfig {
     app_id: Option<String>,
     title: Option<String>,
     desktop: Option<bool>,
+    emulation: Option<Emulation>,
 }
 
 impl RawEnvironmentConfig {
@@ -395,6 +430,9 @@ impl RawEnvironmentConfig {
             && let Some(key) = PROXIED_ONLY_KEYS.iter().find(|key| self.has(key))
         {
             return Err(proxied_only_key_message(name, key));
+        }
+        if kind_name == KindName::Wine && self.emulation.is_some() {
+            return Err(wine_emulation_message(name));
         }
         if kind_name != KindName::Proxied
             && let Some(gog_id) = &self.gog_id
@@ -470,6 +508,7 @@ impl RawEnvironmentConfig {
             winetricks: self.winetricks.unwrap_or_default(),
             env: self.env.unwrap_or_default(),
             targets: self.targets.unwrap_or_default(),
+            emulation: self.emulation,
             deprecated: Vec::new(),
         })
     }
@@ -496,6 +535,7 @@ impl RawEnvironmentConfig {
             "launcher" => self.launcher.is_some(),
             "app_id" => self.app_id.is_some(),
             "desktop" => self.desktop.is_some(),
+            "emulation" => self.emulation.is_some(),
             _ => unreachable!("not a kind-specific key: {key}"),
         }
     }
@@ -536,7 +576,7 @@ pub const PROXIED_ONLY_KEYS: [&str; 3] = ["launcher", "app_id", "desktop"];
 /// Keys a proxied environment can't have, since its launcher owns the prefix
 /// and the launch. Everything but `schema_version`, `kind`, `tags`, `hooks`,
 /// `title`, and the proxied-only keys.
-pub const PROXIED_REFUSED_KEYS: [&str; 16] = [
+pub const PROXIED_REFUSED_KEYS: [&str; 17] = [
     "prefix",
     "runner",
     "arch",
@@ -553,6 +593,7 @@ pub const PROXIED_REFUSED_KEYS: [&str; 16] = [
     "gog_id",
     "env",
     "targets",
+    "emulation",
 ];
 
 /// The refusal for a key a proxied environment can't have.
@@ -934,6 +975,9 @@ impl EnvironmentConfig {
     fn validate(&self) -> Result<(), String> {
         validate_tags(&self.tags)?;
         validate_winetricks(&self.winetricks)?;
+        if let Some(emulation) = &self.emulation {
+            emulation.validate()?;
+        }
         // Only wine reads WINEPREFIX, so a native program may have its own.
         match self.kind {
             Kind::Wine(_) => validate_env(&self.env)?,

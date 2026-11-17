@@ -12,7 +12,7 @@ use wineo_core::paths::Paths;
 use wineo_core::refresh::RefreshSnapshot;
 use wineo_core::report::{self, OverviewFilter};
 use wineo_core::runtime::State;
-use wineo_core::source::{Facts, Source};
+use wineo_core::source::{Facts, Platform, Source};
 use wineo_core::trash::PendingScan;
 use wineo_core::{stats, steam, time};
 
@@ -113,8 +113,12 @@ pub(super) struct Card {
 }
 
 impl Card {
+    /// "Play" for a game: one tagged `game`, or an emulated one, which gets
+    /// no tag for it.
     pub(super) fn launch_button_label(&self) -> &'static str {
-        if self.tags.iter().any(|tag| tag == "game") {
+        if self.tags.iter().any(|tag| tag == "game")
+            || matches!(self.source.platform, Some(Platform::Emulated(_)))
+        {
             "Play"
         } else {
             "Launch"

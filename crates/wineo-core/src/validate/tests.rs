@@ -784,6 +784,95 @@ fn native_targets_are_resolved_like_a_launch() {
 }
 
 #[test]
+fn an_emulated_rom_that_is_gone_is_a_warning() {
+    let f = Fixture::new();
+    let emulator = f.root.join("emulator");
+    executable(&emulator, "#!/bin/sh\n");
+    let config = |rom: &str| {
+        format!(
+            "[emulation]\nemulator = 'dolphin'\nrom = '{rom}'\n\
+             [targets.game]\nexe = '{}'\ndefault = true\n",
+            emulator.display()
+        )
+    };
+    f.native("prime", &config("~/roms/Metroid Prime.rvz"));
+    let problem = f.only(Code::EmulatedRomMissing);
+    assert_eq!(problem.level, Level::Warning);
+    assert_eq!(problem.area, Area::NativeTarget);
+    assert_eq!(problem.environment.as_deref(), Some("prime"));
+    assert_eq!(problem.message, "ROM ~/roms/Metroid Prime.rvz not found");
+
+    // `~` is the home folder, and a folder game is a ROM too.
+    fs::create_dir_all(f.root.join("roms")).unwrap();
+    fs::write(f.root.join("roms/Metroid Prime.rvz"), b"").unwrap();
+    assert_eq!(f.codes(), []);
+    fs::create_dir_all(f.root.join("roms/Game")).unwrap();
+    f.native("prime", &config("~/roms/Game"));
+    assert_eq!(f.codes(), []);
+}
+
+#[test]
+fn an_uninstalled_flatpak_emulator_is_a_warning() {
+    let f = Fixture::new();
+    let system = f.root.join("flatpak/system");
+    let user = f.root.join("flatpak/user");
+    fs::create_dir_all(&system).unwrap();
+    fs::create_dir_all(&user).unwrap();
+    let exports = [system.clone(), user.clone()];
+    let rom = f.root.join("a.iso");
+    fs::write(&rom, b"").unwrap();
+    let targets = concat!(
+        "[targets.game]\nexe = 'flatpak'\n",
+        "args = ['run', '--filesystem=/roms', 'net.pcsx2.PCSX2', '-batch', '--', '/roms/a.iso']\n",
+        "default = true\n",
+        "[targets.other]\nexe = '/usr/bin/flatpak'\nargs = ['run', 'org.DolphinEmu.dolphin-emu']\n",
+    );
+    let check = |emulation: &str| {
+        f.native("ps2", &format!("{emulation}{targets}"));
+        let environment = Environment::load(&f.paths, "ps2").unwrap();
+        let mut report = Report::default();
+        check_emulation(&f.paths, &environment, &exports, &mut report);
+        report.problems
+    };
+    let emulation = format!(
+        "[emulation]\nemulator = 'pcsx2'\nsystem = 'ps2'\nrom = '{}'\n",
+        rom.display()
+    );
+    let problems = check(&emulation);
+    assert_eq!(
+        problems
+            .iter()
+            .map(|problem| (
+                problem.code,
+                problem.level,
+                problem.area,
+                problem.message.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                "target game: Flatpak app net.pcsx2.PCSX2 not found"
+            ),
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                "target other: Flatpak app org.DolphinEmu.dolphin-emu not found"
+            ),
+        ]
+    );
+    fs::write(system.join("net.pcsx2.PCSX2"), b"").unwrap();
+    fs::write(user.join("org.DolphinEmu.dolphin-emu"), b"").unwrap();
+    assert!(check(&emulation).is_empty());
+    // Only an emulated game is checked.
+    fs::remove_file(system.join("net.pcsx2.PCSX2")).unwrap();
+    assert!(check("").is_empty());
+}
+
+#[test]
 fn several_targets_without_a_default_is_a_warning() {
     let f = Fixture::new();
     let two = "[targets.a]\nexe = 'notepad'\n[targets.b]\nexe = 'notepad'\n";
@@ -1616,7 +1705,7 @@ fn check_environment_reports_only_pairs_that_include_it() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 51] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 53] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1636,6 +1725,8 @@ fn check_environment_reports_only_pairs_that_include_it() {
         (Code::MangohudMissing, "mangohud_missing", "error", "target"),
         (Code::WaylandUnsupported, "wayland_unsupported", "error", "target"),
         (Code::NativeExeInvalid, "native_exe_invalid", "error", "native_target"),
+        (Code::EmulatedRomMissing, "emulated_rom_missing", "warning", "native_target"),
+        (Code::EmulatedEmulatorMissing, "emulated_emulator_missing", "warning", "native_target"),
         (Code::TargetAmbiguous, "target_ambiguous", "warning", "environment"),
         (Code::LostRun, "lost_run", "warning", "runtime"),
         (Code::InstallerUnresolved, "installer_unresolved", "warning", "runtime"),

@@ -135,8 +135,9 @@ highlighted and its tooltip shows the text.
 the card), Last played, Playtime, Date added, Source, or Tags. Picking one
 starts it in its natural direction: Name, Source, and Tags A to Z, Last
 played most recent first, Playtime most played first, and Date added newest
-first. Source goes by the label a game's list row shows, like GOG, Steam, or
-Windows. Tags compares each game's tags in A to Z order, one by one, so
+first. Source goes by the label a game's list row shows, like GOG, Steam,
+Windows, or an [emulated game's](native.md#emulated-games) emulator, like
+Dolphin. Tags compares each game's tags in A to Z order, one by one, so
 `co-op, rpg` comes before `rpg`; untagged games come last either way, as do
 games with no source. The arrow button next to it
 flips the direction, and its tooltip names the order you have, like "Most
@@ -190,7 +191,8 @@ grouped the same way.
 ### Filters and hidden games
 
 **Filters** opens a popup with the stores your games came from (Steam,
-GOG, Epic, Amazon), the platforms they run on (Native, Windows), your
+GOG, Epic, Amazon), the platforms they run on (Native, Windows, and the
+emulators your emulated games use, with Emulated for a custom one), your
 tags, **Show hidden**, and **Clear filters**, listing only what's in your
 library. Within each group, a game has to match any of the checked
 entries, and with checks in more than one group, it has to match each of
@@ -521,8 +523,8 @@ out. Closing takes effect immediately, including stopping log follows.
 Switching cards while open changes the details without replaying the entrance.
 
 - **Play** or **Launch** starts the environment's default target. The label
-  is Play for the exact `game` tag and Launch otherwise, including native
-  applications and games. New environments from the built-in `gaming`
+  is Play for the exact `game` tag or an emulated game, and Launch otherwise,
+  including native applications and games. New environments from the built-in `gaming`
   template receive the tag; existing environments can add it in Settings.
   An environment with more than one target has a **Launch target:** dropdown.
 - **Stop** stops it, like `wineo stop`. If it's still running 3 seconds

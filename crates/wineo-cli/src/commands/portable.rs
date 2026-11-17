@@ -113,7 +113,7 @@ fn copy_native(paths: &Paths, folder: &Paths, name: &str) -> anyhow::Result<Exit
         println!("  art: copied");
     }
     for path in &reviewed.external_target_paths {
-        println!("  external target path: {path} (kept in place)");
+        println!("  external path: {path} (kept in place)");
     }
     println!("The source stays as it is. External game files stay where they are.");
 
@@ -178,7 +178,7 @@ fn print_review(reviewed: &CopyInspection, verbose: bool) {
         println!("  source path in settings: {path} (check after copying)");
     }
     for path in &reviewed.external_target_paths {
-        println!("  external target path: {path} (kept in place)");
+        println!("  external path: {path} (kept in place)");
     }
     transfer::print_external_links(
         "external",

@@ -8,7 +8,7 @@ use crate::art::TargetCleanup;
 use crate::build_lock;
 use crate::config::{
     self, EnvironmentConfig, GlobalConfig, Kind, Launcher, WINE_ONLY_KEYS, native_key_message,
-    proxied_key_message,
+    proxied_key_message, wine_emulation_message,
 };
 use crate::deprecated::{self, FileKind};
 use crate::desktop;
@@ -409,7 +409,7 @@ fn check_desktop(
 
 /// Refuses the keys a native environment can't have, with the same line its
 /// config would be refused with, and checks the exes it is given the way a
-/// launch resolves them. Nothing to do for a Wine environment.
+/// launch resolves them. A Wine environment only has `emulation` refused.
 fn check_native(
     paths: &Paths,
     global: &GlobalConfig,
@@ -421,7 +421,15 @@ fn check_native(
         return Ok(());
     };
     match &environment.config.kind {
-        Kind::Wine(_) => return Ok(()),
+        Kind::Wine(_) => {
+            if pairs
+                .iter()
+                .any(|(key, _)| key.split('.').next() == Some("emulation"))
+            {
+                bail!("{}", wine_emulation_message(name));
+            }
+            return Ok(());
+        }
         Kind::Proxied(proxied) => return check_proxied(name, proxied.launcher, pairs),
         Kind::Native => {}
     }
@@ -636,10 +644,16 @@ fn update_with_target(
         .collect();
     let set = set.as_slice();
 
+    if scope == Scope::Environment {
+        edit::check_new_emulation(&doc, set)?;
+    }
     for (key, value) in set {
         let value = match (scope, *key) {
             // Stored the same way `wineo new` writes them.
             (Scope::Environment, "prefix") => paths.store_prefix(&paths.absolute(value)?)?,
+            (Scope::Environment, "emulation.rom") if !value.is_empty() => {
+                paths.store(&paths.absolute(value)?)?
+            }
             (Scope::Global, "defaults.prefix_root") => {
                 let dir = paths.absolute(value)?;
                 paths.check_prefix_root(&dir)?;

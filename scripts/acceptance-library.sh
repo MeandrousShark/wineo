@@ -25,6 +25,7 @@
 #   art/NAME/                       posters (grid.png and art.toml)
 #   prefixes/NAME                   minimal fake Wine prefixes
 #   games/NAME.sh                   native stubs
+#   roms/NAME.EXT                   empty fake ROMs for the emulated games
 #   runners/fake/bin/               a fake Wine runner named "fake"
 #   installers/setup.exe            a fake installer the fake runner runs
 #   import/legacy-app/              a standalone fake prefix for Import prefix
@@ -238,6 +239,8 @@ daily() {
 #   art=0..7                 a poster from the embedded list
 #   noprefix                 leave a Wine game's prefix unbuilt
 #   run=sleep                a native stub that sleeps 600 s instead of exiting
+#   emulator=ID system=ID rom=FILE   an emulated native game's [emulation]
+#                            table; FILE is made empty under roms/
 #   target=TEXT              the default target's desktop entry name, which the
 #                            card shows when there's no title (no quote or backslash)
 add() {
@@ -245,6 +248,7 @@ add() {
     shift
     local kind=wine title='' tags='' gog_id='' heroic_id='' store='' app_id='' added=''
     local sessions='' imported='' art='' prefix=1 favorite=0 hidden=0 run='' target=''
+    local emulator='' system='' rom=''
     local arg tag first
     for arg in "$@"; do
         case $arg in
@@ -261,6 +265,9 @@ add() {
             art=*) art=${arg#art=} ;;
             run=*) run=${arg#run=} ;;
             target=*) target=${arg#target=} ;;
+            emulator=*) emulator=${arg#emulator=} ;;
+            system=*) system=${arg#system=} ;;
+            rom=*) rom=${arg#rom=} ;;
             noprefix) prefix=0 ;;
             favorite) favorite=1 ;;
             hidden) hidden=1 ;;
@@ -272,6 +279,9 @@ add() {
     [[ $title != *[\"\\]* ]] || die "bug: $name's title needs TOML escaping"
     [[ $target != *[\"\\]* ]] || die "bug: $name's target name needs TOML escaping"
     [[ -z $target || $kind != steam ]] || die "bug: $name is a Steam game, which has no targets"
+    [[ -z $emulator || $kind == native ]] || die "bug: $name is emulated, which only a native game can be"
+    [[ -z $emulator || -n $rom ]] || die "bug: $name is emulated but has no rom"
+    [[ $rom != *[\"\\/]* ]] || die "bug: $name's rom must be a plain file name"
     games=$((games + 1))
 
     {
@@ -311,6 +321,15 @@ add() {
         if [[ -n $store ]]; then
             echo "store = \"$store\""
         fi
+        if [[ -n $emulator ]]; then
+            echo
+            echo '[emulation]'
+            echo "emulator = \"$emulator\""
+            if [[ -n $system ]]; then
+                echo "system = \"$system\""
+            fi
+            echo "rom = \"roms/$rom\""
+        fi
         case $kind in
             wine)
                 echo
@@ -341,6 +360,11 @@ add() {
         printf 'WINE REGISTRY Version 2\n' >"$prefix_dir/userdef.reg"
         ln -s ../drive_c "$prefix_dir/dosdevices/c:"
         : >"$prefix_dir/drive_c/Games/$name/game.exe"
+    fi
+
+    if [[ -n $rom ]]; then
+        mkdir -p "$root/roms"
+        : >"$root/roms/$rom"
     fi
 
     if [[ $kind == native ]]; then
@@ -492,6 +516,28 @@ add native-stellar-odyssey kind=native favorite hidden added=2026-08-30T20:00:00
 # real HOME, nowhere else.
 add long-running-test kind=native tags=game title="Running Test (sleeps 10 min)" run=sleep \
     added=2026-11-05T23:00:00Z
+
+# Emulated games, written by hand as plan 0068 step 1 has no import yet. Each
+# is a native stub with an [emulation] table and an empty fake ROM, so none
+# needs a real emulator. They say Play without a game tag, and their system
+# is their only tag.
+
+# source: Dolphin (emulated); tags: one, the system (gamecube); says Play with no game tag; art
+add emu-metroid-prime kind=native emulator=dolphin system=gamecube rom="Metroid Prime (USA).rvz" \
+    title="Metroid Prime" tags=gamecube added=2026-11-12T18:00:00Z art=5 \
+    sessions="2026-11-12T19:00:00Z@3600"
+
+# source: Dolphin (emulated); tags: one, the system (wii); the second Dolphin game, so grouping by Source puts both together and grouping by tag splits them
+add emu-mario-galaxy kind=native emulator=dolphin system=wii rom="Super Mario Galaxy (USA).wbfs" \
+    title="Super Mario Galaxy" tags=wii added=2026-11-12T18:05:00Z
+
+# source: RetroArch (emulated); tags: one, the system (snes)
+add emu-super-metroid kind=native emulator=retroarch system=snes rom="Super Metroid (Japan, USA).sfc" \
+    title="Super Metroid" tags=snes added=2026-11-12T18:10:00Z
+
+# source: Emulated (an emulator id this wineo doesn't know, as a newer wineo or a hand edit writes); tags: one, the system (switch)
+add emu-unknown-emulator kind=native emulator=someday-emu system=switch rom="Hollow Knight.nsp" \
+    title="Hollow Knight (Unknown Emulator)" tags=switch added=2026-11-12T18:15:00Z
 
 # Plain Wine games (Windows).
 

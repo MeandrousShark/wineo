@@ -579,6 +579,7 @@ fn draft(
         .clone()
         .unwrap_or_else(|| target_name.to_owned());
     let gaming = runner.is_some_and(Runner::is_proton)
+        || environment.config.emulation.is_some()
         || launch::gamemode(global, environment, Some(target))
         || launch::gamescope(environment, Some(target)).is_some()
         || launch::mangohud(global, environment, Some(target));

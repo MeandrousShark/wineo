@@ -1,6 +1,7 @@
 //! Where an environment came from, for sorting and filtering the library.
 
 use crate::config::{EnvironmentConfig, Kind};
+use crate::emulator::Emulator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Store {
@@ -38,24 +39,44 @@ impl Store {
     }
 }
 
-/// What an environment runs on.
+/// What an environment runs on. An emulated game runs on its emulator,
+/// not on Native, though its environment is native.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Platform {
     Native,
     Windows,
+    Emulated(Emulator),
 }
 
 impl Platform {
-    pub const ALL: [Self; 2] = [Self::Native, Self::Windows];
+    pub const ALL: [Self; 14] = [
+        Self::Native,
+        Self::Windows,
+        Self::Emulated(Emulator::Dolphin),
+        Self::Emulated(Emulator::RetroArch),
+        Self::Emulated(Emulator::Cemu),
+        Self::Emulated(Emulator::Pcsx2),
+        Self::Emulated(Emulator::DuckStation),
+        Self::Emulated(Emulator::Ppsspp),
+        Self::Emulated(Emulator::Rpcs3),
+        Self::Emulated(Emulator::MelonDs),
+        Self::Emulated(Emulator::Mgba),
+        Self::Emulated(Emulator::Xemu),
+        Self::Emulated(Emulator::Azahar),
+        Self::Emulated(Emulator::Other),
+    ];
 
     /// The lowercase id a saved preset names it by; see `Store::id`.
     pub fn id(self) -> &'static str {
         match self {
             Self::Native => "native",
             Self::Windows => "windows",
+            Self::Emulated(emulator) => emulator.id(),
         }
     }
 
+    /// Exact, so an emulator id this wineo doesn't know is no platform at
+    /// all rather than `Emulated(Other)`, whose id is `emulated`.
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|platform| platform.id() == id)
     }
@@ -64,6 +85,7 @@ impl Platform {
         match self {
             Self::Native => "Native",
             Self::Windows => "Windows",
+            Self::Emulated(emulator) => emulator.name(),
         }
     }
 }
@@ -100,6 +122,8 @@ pub struct Facts<'a> {
     /// What a proxied Steam game runs on, when something shows it (see
     /// `steam::place`). Ignored for every other game.
     pub steam_platform: Option<Platform>,
+    /// `[emulation] emulator`, which makes the platform that emulator.
+    pub emulator: Option<&'a str>,
 }
 
 impl Source {
@@ -137,6 +161,8 @@ impl Source {
         };
         let platform = if facts.steam {
             facts.steam_platform
+        } else if let Some(emulator) = facts.emulator {
+            Some(Platform::Emulated(Emulator::from_config(emulator)))
         } else if facts.native {
             Some(Platform::Native)
         } else {
@@ -161,6 +187,10 @@ impl Source {
                 _ => None,
             },
             steam_platform,
+            emulator: config
+                .emulation
+                .as_ref()
+                .map(|emulation| emulation.emulator.as_str()),
         })
     }
 }
@@ -364,7 +394,25 @@ mod tests {
             Store::ALL.map(Store::id),
             ["steam", "gog", "epic", "amazon"]
         );
-        assert_eq!(Platform::ALL.map(Platform::id), ["native", "windows"]);
+        assert_eq!(
+            Platform::ALL.map(Platform::id),
+            [
+                "native",
+                "windows",
+                "dolphin",
+                "retroarch",
+                "cemu",
+                "pcsx2",
+                "duckstation",
+                "ppsspp",
+                "rpcs3",
+                "melonds",
+                "mgba",
+                "xemu",
+                "azahar",
+                "emulated",
+            ]
+        );
         for store in Store::ALL {
             assert_eq!(Store::from_id(store.id()), Some(store));
         }
@@ -420,6 +468,91 @@ mod tests {
             ..Source::new(Facts::default())
         };
         assert_eq!(none.label(), None);
+    }
+
+    #[test]
+    fn an_emulated_game_runs_on_its_emulator_not_native() {
+        for (id, platform, label) in [
+            ("dolphin", Platform::Emulated(Emulator::Dolphin), "Dolphin"),
+            (
+                "retroarch",
+                Platform::Emulated(Emulator::RetroArch),
+                "RetroArch",
+            ),
+            ("custom", Platform::Emulated(Emulator::Other), "Emulated"),
+            ("eden", Platform::Emulated(Emulator::Other), "Emulated"),
+        ] {
+            let source = Source::new(Facts {
+                native: true,
+                emulator: Some(id),
+                ..Facts::default()
+            });
+            assert_eq!(
+                (source.store, source.integration, source.platform),
+                (None, Integration::Plain, Some(platform)),
+                "{id}"
+            );
+            assert_eq!(source.label(), Some(label), "{id}");
+        }
+    }
+
+    #[test]
+    fn an_emulated_game_with_a_store_keeps_the_store() {
+        let gog = Source::new(Facts {
+            native: true,
+            emulator: Some("dolphin"),
+            gog_id: Some("1207658924"),
+            ..Facts::default()
+        });
+        assert_eq!(
+            (gog.store, gog.integration, gog.platform),
+            (
+                Some(Store::Gog),
+                Integration::GogInstall,
+                Some(Platform::Emulated(Emulator::Dolphin))
+            )
+        );
+        assert_eq!(gog.label(), Some("GOG"));
+        let heroic = Source::new(Facts {
+            native: true,
+            emulator: Some("retroarch"),
+            heroic_id: Some("id"),
+            ..Facts::default()
+        });
+        // A native Heroic import has no store, so its emulator shows.
+        assert_eq!(heroic.label(), Some("RetroArch"));
+    }
+
+    #[test]
+    fn only_a_known_preset_id_names_an_emulator() {
+        assert_eq!(
+            Platform::from_id("dolphin"),
+            Some(Platform::Emulated(Emulator::Dolphin))
+        );
+        assert_eq!(
+            Platform::from_id("emulated"),
+            Some(Platform::Emulated(Emulator::Other))
+        );
+        for id in ["custom", "eden", "Dolphin", "Emulated"] {
+            assert_eq!(Platform::from_id(id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn of_reads_the_emulator_and_a_missing_system_is_fine() {
+        let parse = |text: &str| {
+            EnvironmentConfig::parse(
+                std::path::Path::new("game.toml"),
+                &format!("schema_version = 1\nkind = 'native'\n{text}"),
+            )
+            .unwrap()
+        };
+        let emulated = parse("[emulation]\nemulator = 'cemu'\nrom = '/roms/a.wua'\n");
+        let source = Source::of(&emulated, None);
+        assert_eq!(source.platform, Some(Platform::Emulated(Emulator::Cemu)));
+        assert_eq!(source.label(), Some("Cemu"));
+        let plain = parse("");
+        assert_eq!(Source::of(&plain, None).platform, Some(Platform::Native));
     }
 
     #[test]

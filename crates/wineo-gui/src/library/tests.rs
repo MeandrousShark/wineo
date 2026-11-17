@@ -181,6 +181,52 @@ fn cards_know_their_kind() {
 }
 
 #[test]
+fn an_emulated_card_shows_its_emulator_and_says_play_without_a_tag() {
+    use wineo_core::emulator::Emulator;
+    use wineo_core::source::Platform;
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    let emulated = |emulator: &str| {
+        format!(
+            "kind = 'native'\ntags = ['gamecube']\n[emulation]\nemulator = '{emulator}'\nrom = '/roms/a.rvz'\n"
+        )
+    };
+    for (name, text) in [
+        ("prime", emulated("dolphin")),
+        ("sunshine", emulated("custom")),
+        ("dusk", "kind = 'native'\n".to_owned()),
+    ] {
+        fs::write(paths.environment_config(name), text).unwrap();
+    }
+    let cards = load_library(&paths).unwrap();
+    let card = |name: &str| cards.iter().find(|card| card.name == name).unwrap();
+    for (name, platform, label, button) in [
+        (
+            "prime",
+            Platform::Emulated(Emulator::Dolphin),
+            "Dolphin",
+            "Play",
+        ),
+        (
+            "sunshine",
+            Platform::Emulated(Emulator::Other),
+            "Emulated",
+            "Play",
+        ),
+        ("dusk", Platform::Native, "Native", "Launch"),
+    ] {
+        let card = card(name);
+        assert_eq!(card.source.platform, Some(platform), "{name}");
+        assert_eq!(card.source.label(), Some(label), "{name}");
+        assert_eq!(card.launch_button_label(), button, "{name}");
+    }
+    assert_eq!(card("prime").tags, ["gamecube"]);
+}
+
+#[test]
 fn steam_cards_read_live_state_title_size_proton_and_implicit_art() {
     let root = tempfile::tempdir().unwrap();
     let paths =

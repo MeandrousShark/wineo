@@ -149,6 +149,138 @@ fn prefix_paths_are_stored_relative_to_home() {
 }
 
 #[test]
+fn a_rom_is_stored_absolute_with_home_as_a_tilde() {
+    let (root, paths) = setup();
+    write_env(&paths, "kind = \"native\" # mine\n");
+    let rom = root.path().join("roms/Metroid Prime.rvz");
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[
+            ("emulation.emulator", "dolphin"),
+            ("emulation.system", "gamecube"),
+            ("emulation.rom", rom.to_str().unwrap()),
+        ],
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(paths.environment_config("notepad")).unwrap();
+    assert_eq!(
+        text,
+        "kind = \"native\" # mine\nschema_version = 1\n\n[emulation]\nemulator = \"dolphin\"\nsystem = \"gamecube\"\nrom = \"~/roms/Metroid Prime.rvz\"\n"
+    );
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("emulation.rom", "/mnt/roms/a.rvz")],
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(paths.environment_config("notepad")).unwrap();
+    assert!(text.contains("rom = \"/mnt/roms/a.rvz\""), "{text}");
+    // Empty is left for the config's own refusal, not resolved to a folder.
+    let err = update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("emulation.rom", "")],
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().ends_with("Invalid emulation.rom: empty."),
+        "{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn emulation_is_refused_for_wine_and_steam_before_writing() {
+    let (_root, paths) = setup();
+    for (text, message) in [
+        (
+            NOTEPAD,
+            "notepad isn't a native environment, so it can't set emulation.",
+        ),
+        (
+            "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1\"\n",
+            "notepad is a Steam game, so it can't set emulation.",
+        ),
+    ] {
+        write_env(&paths, text);
+        for key in ["emulation.emulator", "emulation.rom", "emulation.system"] {
+            let err = apply(
+                &paths,
+                ConfigFile::Environment("notepad"),
+                &[(key, "x")],
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), message, "{key}");
+            assert_eq!(
+                fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+                text
+            );
+        }
+    }
+}
+
+#[test]
+fn emulation_without_the_rest_of_its_table_is_not_written() {
+    let (_root, paths) = setup();
+    let text = "kind = \"native\"\n";
+    write_env(&paths, text);
+    for (set, message) in [
+        (
+            &[("emulation.system", "wii")][..],
+            "emulation.system needs emulation.emulator and emulation.rom in the same set.",
+        ),
+        (
+            &[("emulation.emulator", "dolphin")],
+            "emulation.emulator needs emulation.rom in the same set.",
+        ),
+        (
+            &[("emulation.rom", "/roms/a.iso")],
+            "emulation.rom needs emulation.emulator in the same set.",
+        ),
+        (
+            &[
+                ("emulation.emulator", "dolphin"),
+                ("emulation.system", "wii"),
+            ],
+            "emulation.emulator needs emulation.rom in the same set.",
+        ),
+    ] {
+        let err = update(&paths, ConfigFile::Environment("notepad"), set, &[]).unwrap_err();
+        assert_eq!(crate::error::chain(&err), message, "{set:?}");
+        assert_eq!(
+            fs::read_to_string(paths.environment_config("notepad")).unwrap(),
+            text
+        );
+    }
+}
+
+#[test]
+fn a_system_can_be_set_alone_once_the_table_exists() {
+    let (_root, paths) = setup();
+    write_env(
+        &paths,
+        "kind = \"native\"\n\n[emulation]\nemulator = \"dolphin\"\nrom = \"/roms/a.iso\"\n",
+    );
+    update(
+        &paths,
+        ConfigFile::Environment("notepad"),
+        &[("emulation.system", "wii")],
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(paths.environment_config("notepad")).unwrap();
+    assert!(text.contains("system = \"wii\""), "{text}");
+}
+
+#[test]
 fn global_config_is_created_on_first_set() {
     let (_root, paths) = setup();
     update(&paths, ConfigFile::Global, &[("stop_timeout", "30")], &[]).unwrap();
