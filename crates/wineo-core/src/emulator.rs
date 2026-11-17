@@ -135,6 +135,12 @@ const FLATPAK_RUN_VALUE_OPTIONS: &[&str] = &[
     "--instance-id-fd",
     "--a11y-own-name",
     "--installation",
+    "--nofilesystem",
+    "--share-if",
+    "--socket-if",
+    "--device-if",
+    "--allow-if",
+    "--parent-pid",
 ];
 
 /// An app id is at least three dot-separated parts of letters, digits,
@@ -289,6 +295,9 @@ mod tests {
             &["run", "--commit", "abc", "net.pcsx2.PCSX2"],
             &["run", "--cwd", "/tmp", "net.pcsx2.PCSX2"],
             &["run", "--filesystem", "/roms", "net.pcsx2.PCSX2"],
+            // A value shaped like an app id must still be skipped.
+            &["run", "--nofilesystem", "xdg.config.dir", "net.pcsx2.PCSX2"],
+            &["run", "--parent-pid", "1.2.3", "net.pcsx2.PCSX2"],
             &["run", "--filesystem=/x", "net.pcsx2.PCSX2", "/x/game.iso"],
             &["run", "--", "net.pcsx2.PCSX2"],
             &["run", "net.pcsx2.PCSX2//stable"],
