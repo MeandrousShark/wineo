@@ -141,8 +141,28 @@ The info files are MIT (`libretro/libretro-core-info`).
 
 ### Quitting with the game
 
-From the strings and help text of a RetroArch 1.22.2 binary, not from a
-run:
+Run on 2026-11-17 against RetroArch 1.22.2 (Gentoo) with the mGBA core, the
+null video, input, and audio drivers, a throwaway HOME, its own
+`--config`, and a blank GBA image (zeros, with `0xEA` at offset 3 and
+`0x96` at `0xB2` so mGBA accepts it). Content was closed with
+`CLOSE_CONTENT` over the network command interface:
+
+- `quit_on_close_content` is `0` (RetroArch stays open), `1` (it quits,
+  exit 0), or `2` (it quits when the content was started from the command
+  line, as a launcher starts it; exit 0).
+- A setting from `--appendconfig` is saved back into the main config: one
+  run with `quit_on_close_content = "1"` appended left a full, existing
+  main config at `"1"`, after closing the game or quitting.
+- Appending `config_save_on_exit = "false"` as well keeps the main config
+  byte-for-byte unchanged, and closing the game still quits.
+- A missing appended file is logged (`Failed to append config`) and
+  ignored.
+- A `|` anywhere in the appended file's path splits it, and the append
+  fails.
+- A stub main config is rewritten in full on startup, so checks like these
+  need a complete config seeded by an earlier run.
+
+Earlier notes, from the binary's strings and help text:
 
 - The config key `quit_on_close_content` exists ("Quit on Close Content"
   in the menu). Its values weren't confirmed.
