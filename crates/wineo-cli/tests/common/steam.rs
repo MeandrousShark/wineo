@@ -510,6 +510,20 @@ impl SteamFixture {
         fs::remove_file(self.f.root.path().join("steam-announce-hold")).unwrap();
     }
 
+    /// Adds lines to the install's `logs/bootstrap_log.txt`, as the Steam
+    /// bootstrapper writes while it starts or updates the client.
+    pub fn append_client_log(&self, text: &str) {
+        let logs = self.root.join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("bootstrap_log.txt"))
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+    }
+
     pub fn make_silent_start_inert(&self) {
         fs::write(self.f.root.path().join("steam-silent-inert"), "").unwrap();
     }
