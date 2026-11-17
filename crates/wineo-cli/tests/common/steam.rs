@@ -73,6 +73,7 @@ const CLIENT: &str = r#"
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +81,7 @@ const CLIENT: &str = r#"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static void reap(int signal_number) {
@@ -96,13 +98,40 @@ static void append_pid(const char *path, pid_t pid) {
     close(fd);
 }
 
+// Like the real client, holds `~/.steam/steam.pipe` open and names itself in
+// `~/.steam/steam.pid`, which is how `steam` tells it can take a launch.
+static int announce(const char *dot_steam) {
+    // A test holds this back to stand for a client still verifying. The wait
+    // is bounded so a failed test can't leave this running.
+    const char *hold = getenv("WINEO_TEST_STEAM_ANNOUNCE_HOLD");
+    struct timespec tick = {.tv_sec = 0, .tv_nsec = 10000000};
+    for (int i = 0; hold && i < 2000 && !access(hold, F_OK); i++) nanosleep(&tick, NULL);
+    char pipe[PATH_MAX], pid_file[PATH_MAX], temporary[PATH_MAX];
+    snprintf(pipe, sizeof(pipe), "%s/steam.pipe", dot_steam);
+    snprintf(pid_file, sizeof(pid_file), "%s/steam.pid", dot_steam);
+    snprintf(temporary, sizeof(temporary), "%s/steam.pid.tmp", dot_steam);
+    if (mkdir(dot_steam, 0700) && errno != EEXIST) return 0;
+    if (mkfifo(pipe, 0600) && errno != EEXIST) return 0;
+    // Read-write, so the open doesn't wait for a writer.
+    if (open(pipe, O_RDWR) < 0) return 0;
+    FILE *file = fopen(temporary, "w");
+    if (!file) return 0;
+    fprintf(file, "%ld\n", (long)getpid());
+    if (fclose(file)) return 0;
+    return !rename(temporary, pid_file);
+}
+
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     alarm(600);
     struct sigaction action = {0};
     action.sa_handler = reap;
     sigaction(SIGCHLD, &action, NULL);
+    // The request FIFO comes first, so a client seen as ready can always
+    // take a request.
     if (mkfifo(argv[1], 0600) && errno != EEXIST) return 3;
+    const char *dot_steam = getenv("WINEO_TEST_STEAM_DOT_DIR");
+    if (dot_steam && !announce(dot_steam)) return 6;
     for (;;) {
         int input = open(argv[1], O_RDONLY);
         if (input < 0) { if (errno == EINTR) continue; return 4; }
@@ -136,6 +165,7 @@ const STEAM: &str = r#"
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -159,6 +189,8 @@ static int client_alive(const char *root) {
 
 // Starts the fake client like a cold `steam -silent`, unless one is running.
 // The FIFO exists before this returns, so a launch right after can't miss it.
+// A test can make it live as long as its client, as `steam.sh` does, and
+// start the client once more 2 s after it exits, as Steam relaunching itself.
 static int start_client(const char *root, const char *fifo, const char *request_pids) {
     char inert[PATH_MAX], client[PATH_MAX], reaper[PATH_MAX];
     char child_pid[PATH_MAX], reaper_pids[PATH_MAX], pid_file[PATH_MAX];
@@ -176,17 +208,35 @@ static int start_client(const char *root, const char *fifo, const char *request_
     snprintf(reaper_pids, sizeof(reaper_pids), "%s/steam-reaper-pids", root);
     snprintf(pid_file, sizeof(pid_file), "%s/steam-client-pid", root);
     if (mkfifo(fifo, 0600) && errno != EEXIST) return 7;
-    pid_t child = fork();
-    if (child < 0) return 8;
-    if (child == 0) {
-        if (setsid() < 0) _exit(126);
-        setenv("WINEO_TEST_STEAM_PIDS", request_pids, 1);
-        execl(client, client, fifo, reaper, child_pid, reaper_pids, (char *)NULL);
-        _exit(127);
+    char relaunch[PATH_MAX];
+    snprintf(relaunch, sizeof(relaunch), "%s/steam-silent-relaunch", root);
+    int relaunching = !access(relaunch, F_OK);
+    for (int round = 0; round < 2; round++) {
+        pid_t child = fork();
+        if (child < 0) return 8;
+        if (child == 0) {
+            if (setsid() < 0) _exit(126);
+            setenv("WINEO_TEST_STEAM_PIDS", request_pids, 1);
+            char dot_steam[PATH_MAX];
+            snprintf(dot_steam, sizeof(dot_steam), "%s/.steam", root);
+            setenv("WINEO_TEST_STEAM_DOT_DIR", dot_steam, 1);
+            char announce_hold[PATH_MAX];
+            snprintf(announce_hold, sizeof(announce_hold), "%s/steam-announce-hold", root);
+            setenv("WINEO_TEST_STEAM_ANNOUNCE_HOLD", announce_hold, 1);
+            execl(client, client, fifo, reaper, child_pid, reaper_pids, (char *)NULL);
+            _exit(127);
+        }
+        char line[64];
+        snprintf(line, sizeof(line), "%ld\n", (long)child);
+        append(pid_file, line);
+        if (!relaunching) return 0;
+        // The client ends itself within ten minutes, so this wait is bounded.
+        while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+        if (round == 0) {
+            struct timespec gap = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&gap, NULL);
+        }
     }
-    char line[64];
-    snprintf(line, sizeof(line), "%ld\n", (long)child);
-    append(pid_file, line);
     return 0;
 }
 
@@ -261,16 +311,22 @@ pub struct SteamFixture {
 
 impl SteamFixture {
     pub fn new() -> Self {
-        Self::build(true)
+        Self::build(true, false)
     }
 
     /// No Steam client running yet. The fake `steam -silent` starts one, as a
     /// cold start would.
     pub fn cold() -> Self {
-        Self::build(false)
+        Self::build(false, false)
     }
 
-    fn build(warm: bool) -> Self {
+    /// A Steam client process that is up but not ready for a launch, as while
+    /// it verifies itself, until `release_client_ready`.
+    pub fn starting() -> Self {
+        Self::build(true, true)
+    }
+
+    fn build(warm: bool, starting: bool) -> Self {
         let f = Fixture::new();
         let root = f.root.path().join(".local/share/Steam");
         let reaper_dir = root.join("ubuntu12_32");
@@ -292,10 +348,16 @@ impl SteamFixture {
         let steam = f.root.path().join("bin/steam");
         compile(&steam, STEAM);
         let client_pid = f.root.path().join("steam-client-pid");
+        let hold = f.root.path().join("steam-announce-hold");
+        if starting {
+            fs::write(&hold, "").unwrap();
+        }
         let client = warm.then(|| {
-            let client = Command::new(client_binary)
+            let client = Command::new(&client_binary)
                 .args([&fifo, &reaper, &child_pid, &reaper_pids])
                 .env("WINEO_TEST_STEAM_PIDS", &request_pids)
+                .env("WINEO_TEST_STEAM_DOT_DIR", f.root.path().join(".steam"))
+                .env("WINEO_TEST_STEAM_ANNOUNCE_HOLD", &hold)
                 .process_group(0)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -303,7 +365,19 @@ impl SteamFixture {
                 .spawn()
                 .unwrap();
             fs::write(&client_pid, format!("{}\n", client.id())).unwrap();
+            // Until the exec, the child's exe is this test binary and wineo
+            // would see no client at all. The FIFO is made just before the
+            // announce, so a starting client is at its hold by then.
+            let exe = format!("/proc/{}/exe", client.id());
+            wait_for("fake Steam client exec", || {
+                fs::read_link(&exe).is_ok_and(|exe| exe == client_binary)
+            });
             wait_for("fake Steam client FIFO", || fifo.exists());
+            if !starting {
+                wait_for("fake Steam client pid file", || {
+                    f.root.path().join(".steam/steam.pid").exists()
+                });
+            }
             client
         });
         let fixture = Self {
@@ -447,6 +521,37 @@ impl SteamFixture {
     /// Lets a held `steam -silent` start the client.
     pub fn release_silent_start(&self) {
         fs::remove_file(self.f.root.path().join("steam-silent-hold")).unwrap();
+    }
+
+    /// Makes clients the fake `steam -silent` starts come up but not get
+    /// ready, until `release_client_ready`.
+    pub fn hold_client_ready(&self) {
+        fs::write(self.f.root.path().join("steam-announce-hold"), "").unwrap();
+    }
+
+    /// Makes the fake `steam -silent` live as long as its client, and start
+    /// the client again once, 2 s after it exits.
+    pub fn relaunch_client_once(&self) {
+        fs::write(self.f.root.path().join("steam-silent-relaunch"), "").unwrap();
+    }
+
+    /// Lets the client of `starting` become ready for a launch.
+    pub fn release_client_ready(&self) {
+        fs::remove_file(self.f.root.path().join("steam-announce-hold")).unwrap();
+    }
+
+    /// Adds lines to the install's `logs/bootstrap_log.txt`, as the Steam
+    /// bootstrapper writes while it starts or updates the client.
+    pub fn append_client_log(&self, text: &str) {
+        let logs = self.root.join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("bootstrap_log.txt"))
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
     }
 
     pub fn make_silent_start_inert(&self) {

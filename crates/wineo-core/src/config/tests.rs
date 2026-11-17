@@ -962,16 +962,16 @@ fn proxied_only_keys_are_refused_for_wine_and_native() {
     let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
     let explicit_wine = format!("kind = \"wine\"\n{wine}");
     for kind in [wine, "kind = \"native\"\n", explicit_wine.as_str()] {
-        for (key, line) in [
-            ("launcher", "launcher = \"steam\""),
-            ("app_id", "app_id = \"1\""),
-            ("desktop", "desktop = false"),
+        for (key, line, hint) in [
+            ("launcher", "launcher = \"steam\"", ""),
+            ("app_id", "app_id = \"1\"", ""),
+            ("desktop", "desktop = false", " Set it on a target instead."),
         ] {
             let err = named("dusk", &format!("{kind}{line}\n")).unwrap_err();
             assert_eq!(
                 err.to_string(),
                 format!(
-                    "invalid config /test/dusk.toml: dusk isn't a Steam game, so it can't set {key}."
+                    "invalid config /test/dusk.toml: dusk isn't a Steam game, so it can't set {key}.{hint}"
                 ),
                 "{kind}{key}"
             );

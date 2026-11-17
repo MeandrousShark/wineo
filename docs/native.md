@@ -66,7 +66,8 @@ name = "RimWorld"
 ```
 
 `kind = "native"` refuses the Wine-only keys `prefix`, `runner`, `arch`,
-`gameid`, `store`, `dxvk`, and `vkd3d`, each with its own line:
+`gameid`, `store`, `dxvk`, `vkd3d`, `wayland`, and `winetricks`, plus a
+target's `wayland`, each with its own line:
 
 ```
 native environment dusklight can't set runner

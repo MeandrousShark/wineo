@@ -99,6 +99,8 @@ struct FakeProc {
     missing_exe: BTreeSet<u32>,
     arguments_by_pid: BTreeMap<u32, Vec<Vec<u8>>>,
     exe_by_pid: BTreeMap<u32, PathBuf>,
+    fds_by_pid: BTreeMap<u32, Vec<PathBuf>>,
+    fds_error: Option<(u32, i32)>,
 }
 
 impl FakeProc {
@@ -120,6 +122,8 @@ impl FakeProc {
             missing_exe: BTreeSet::new(),
             arguments_by_pid: BTreeMap::new(),
             exe_by_pid: BTreeMap::new(),
+            fds_by_pid: BTreeMap::new(),
+            fds_error: None,
         }
     }
 }
@@ -193,6 +197,13 @@ impl ProcessReader for FakeProc {
     fn exited(&self, pid: &u32) -> io::Result<bool> {
         self.calls.borrow_mut().push("exited");
         Ok(self.exited.contains(pid))
+    }
+
+    fn fd_links(&self, pid: u32) -> io::Result<Option<Vec<PathBuf>>> {
+        if let Some((_, error)) = self.fds_error.filter(|(error_pid, _)| *error_pid == pid) {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        Ok(self.fds_by_pid.get(&pid).cloned())
     }
 }
 
@@ -579,6 +590,236 @@ fn one_scan_reads_each_process_once_however_many_apps_it_serves() {
     assert!(apart > together);
 }
 
+/// The 2026-11 pressure-vessel launch chain: client 5998, client container
+/// 6043, launcher service 6054, supervisor 8698, reaper 8699 for app 5335510.
+/// A direct child reaper 7000 for app 440 sits beside it.
+fn pv_table(root: &Path) -> (FakeProc, Vec<u32>) {
+    let pv = root.join("steamrt64/pv-runtime/steam-runtime-steamrt");
+    let reaper = root.join("steamrt64/reaper");
+    let client = root.join("steamrt64/steam");
+    let mut reader = FakeProc::new(&[
+        stat(5985, 2, 90),
+        stat(5998, 5985, 100),
+        stat(6043, 5998, 110),
+        stat(6054, 6043, 120),
+        stat(8698, 6054, 200),
+        stat(8699, 8698, 210),
+        stat(7000, 5998, 220),
+    ]);
+    reader
+        .exe_by_pid
+        .insert(5985, PathBuf::from("/usr/bin/bash"));
+    reader.exe_by_pid.insert(5998, client.clone());
+    reader.exe_by_pid.insert(
+        6043,
+        pv.join("pressure-vessel/libexec/steam-runtime-tools-0/srt-client-container"),
+    );
+    reader.exe_by_pid.insert(
+        6054,
+        pv.join(
+            "pressure-vessel/libexec/steam-runtime-tools-0/x86_64-linux-gnu-srt-launcher-service",
+        ),
+    );
+    reader.exe_by_pid.insert(
+        8698,
+        pv.join("pressure-vessel/bin/steam-runtime-supervisor"),
+    );
+    reader.arguments_by_pid.insert(
+        5998,
+        vec![client.as_os_str().as_bytes().to_vec(), b"-silent".to_vec()],
+    );
+    for pid in [5985, 6043, 6054, 8698] {
+        reader
+            .arguments_by_pid
+            .insert(pid, vec![b"helper".to_vec()]);
+    }
+    for (pid, app) in [(8699, "5335510"), (7000, "440")] {
+        reader.exe_by_pid.insert(pid, reaper.clone());
+        reader.arguments_by_pid.insert(
+            pid,
+            vec![
+                reaper.as_os_str().as_bytes().to_vec(),
+                b"SteamLaunch".to_vec(),
+                format!("AppId={app}").into_bytes(),
+                b"--".to_vec(),
+            ],
+        );
+    }
+    (reader, vec![5985, 5998, 6043, 6054, 7000, 8698, 8699])
+}
+
+fn pv_claims(reader: &FakeProc, pids: Vec<u32>, install: &Install) -> Vec<u32> {
+    let apps = ["5335510".to_owned()];
+    scan_reapers(reader, pids, install, &apps, "boot").unwrap()["5335510"]
+        .iter()
+        .map(|reaper| reaper.pid)
+        .collect()
+}
+
+fn native(root: &Path) -> Install {
+    Install {
+        kind: InstallKind::Native,
+        root: root.to_owned(),
+    }
+}
+
+#[test]
+fn reaper_under_the_pressure_vessel_launcher_is_claimed() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(temp.path());
+    let (reader, pids) = pv_table(temp.path());
+    let apps = ["5335510".to_owned(), "440".to_owned()];
+    let found = scan_reapers(&reader, pids, &install, &apps, "boot").unwrap();
+    assert_eq!(found["5335510"].len(), 1);
+    assert_eq!(found["5335510"][0].pid, 8699);
+    assert_eq!(found["5335510"][0].start_time, 210);
+    // The old layout, a reaper straight under the client, still counts.
+    assert_eq!(found["440"].len(), 1);
+    assert_eq!(found["440"][0].pid, 7000);
+
+    // Through a root alias like ~/.steam/root the processes show the
+    // canonical paths, and the client and reaper must exist to be resolved.
+    for binary in ["steam", "reaper"] {
+        let path = temp.path().join("steamrt64").join(binary);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+    }
+    let alias = temp.path().join("alias");
+    symlink(temp.path(), &alias).unwrap();
+    let (reader, pids) = pv_table(temp.path());
+    assert_eq!(pv_claims(&reader, pids, &native(&alias)), [8699]);
+}
+
+#[test]
+fn a_symlinked_runtime_folder_still_anchors_its_helpers() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Steam");
+    let target = temp.path().join("elsewhere/pv-runtime");
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(root.join("steamrt64")).unwrap();
+    symlink(&target, root.join("steamrt64/pv-runtime")).unwrap();
+    let (mut reader, pids) = pv_table(&root);
+    // The kernel reports the helpers under the link's target.
+    let target = fs::canonicalize(&target).unwrap();
+    for pid in [6043, 6054, 8698] {
+        let exe = reader.exe_by_pid[&pid].clone();
+        let inside = exe.strip_prefix(root.join("steamrt64/pv-runtime")).unwrap();
+        reader.exe_by_pid.insert(pid, target.join(inside));
+    }
+    assert_eq!(pv_claims(&reader, pids, &native(&root)), [8699]);
+}
+
+#[test]
+fn pressure_vessel_helpers_must_come_from_this_install_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(&temp.path().join("mine"));
+    let other_pv = temp
+        .path()
+        .join("other/steamrt64/pv-runtime/steam-runtime-steamrt/pressure-vessel/bin/x");
+    for exe in [
+        Some(other_pv),
+        Some(PathBuf::from("/usr/bin/something")),
+        // This install's folder, but outside its runtime.
+        Some(install.root.join("steamrt64/steam-launch-wrapper")),
+        Some(install.root.join("steamrt64/pv-runtime-x/helper")),
+        None,
+    ] {
+        let (mut reader, pids) = pv_table(&install.root);
+        match &exe {
+            Some(exe) => {
+                reader.exe_by_pid.insert(6054, exe.clone());
+            }
+            None => {
+                reader.missing_exe.insert(6054);
+            }
+        }
+        assert!(pv_claims(&reader, pids, &install).is_empty(), "{exe:?}");
+    }
+}
+
+#[test]
+fn pressure_vessel_chain_must_reach_this_install_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(&temp.path().join("mine"));
+    let (mut reader, pids) = pv_table(&install.root);
+    let other = temp.path().join("other/steamrt64/steam");
+    reader.exe_by_pid.insert(5998, other.clone());
+    reader
+        .arguments_by_pid
+        .insert(5998, vec![other.as_os_str().as_bytes().to_vec()]);
+    assert!(pv_claims(&reader, pids, &install).is_empty());
+}
+
+#[test]
+fn pressure_vessel_chain_is_bounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(temp.path());
+    let helper = temp
+        .path()
+        .join("steamrt64/pv-runtime/steam-runtime-steamrt/bin/helper");
+    // `extra` more runtime helpers between the launcher service and the
+    // supervisor, on top of the real three.
+    let chain = |extra: u32| {
+        let (mut reader, mut pids) = pv_table(temp.path());
+        let mut parent = 6054;
+        for pid in 6100..6100 + extra {
+            reader.stats.borrow_mut().insert(
+                pid,
+                VecDeque::from([stat(pid, parent, 130 + u64::from(pid))]),
+            );
+            reader.exe_by_pid.insert(pid, helper.clone());
+            reader
+                .arguments_by_pid
+                .insert(pid, vec![b"helper".to_vec()]);
+            pids.push(pid);
+            parent = pid;
+        }
+        reader
+            .stats
+            .borrow_mut()
+            .insert(8698, VecDeque::from([stat(8698, parent, 7000)]));
+        reader
+            .stats
+            .borrow_mut()
+            .insert(8699, VecDeque::from([stat(8699, 8698, 7010)]));
+        pv_claims(&reader, pids, &install)
+    };
+    // Literal counts, so changing the bound fails here.
+    assert_eq!(chain(0), [8699]);
+    assert_eq!(chain(1), [8699]);
+    assert!(chain(2).is_empty());
+}
+
+#[test]
+fn pressure_vessel_helper_identity_is_verified_at_each_hop() {
+    let temp = tempfile::tempdir().unwrap();
+    let install = native(temp.path());
+
+    let (mut reader, pids) = pv_table(temp.path());
+    reader.exited.insert(6054);
+    assert!(pv_claims(&reader, pids, &install).is_empty());
+
+    // The launcher service's pid is reused, or it is reparented, while the
+    // walk reads it.
+    for changed in [stat(6054, 6043, 125), stat(6054, 1, 120)] {
+        let (reader, pids) = pv_table(temp.path());
+        reader
+            .stats
+            .borrow_mut()
+            .insert(6054, VecDeque::from([stat(6054, 6043, 120), changed]));
+        assert!(pv_claims(&reader, pids, &install).is_empty(), "{changed:?}");
+    }
+
+    // A helper that started after its supposed child is a reused pid, not
+    // the child's real parent.
+    let (reader, pids) = pv_table(temp.path());
+    reader
+        .stats
+        .borrow_mut()
+        .insert(6054, VecDeque::from([stat(6054, 6043, 205)]));
+    assert!(pv_claims(&reader, pids, &install).is_empty());
+}
+
 #[test]
 fn missing_client_exe_keeps_the_argv_fallback() {
     let mut reader = FakeProc::new(&[stat(10, 2, 20)]);
@@ -680,6 +921,222 @@ fn only_a_live_client_counts(dir: &str) {
         .arguments_by_pid
         .insert(7, vec![stray.as_os_str().as_bytes().to_vec()]);
     assert!(!scan_client(&outside, vec![7], &install).unwrap());
+}
+
+#[test]
+fn the_steam_dir_comes_from_each_native_root_shape() {
+    let at = |root: &str| {
+        steam_dir(&Install {
+            kind: InstallKind::Native,
+            root: PathBuf::from(root),
+        })
+    };
+    let dot = Some(PathBuf::from("/home/u/.steam"));
+    assert_eq!(at("/home/u/.steam/root"), dot);
+    assert_eq!(at("/home/u/.steam/steam"), dot);
+    assert_eq!(at("/home/u/.local/share/Steam"), dot);
+    // Anything else falls back to the plain process check.
+    assert_eq!(at("/opt/steam"), None);
+    assert_eq!(at("/home/u/.steam/rooted"), None);
+    assert_eq!(at("/home/u/share/Steam"), None);
+}
+
+/// A home with a native install at `.local/share/Steam`, and a fake process
+/// table where pid 7 is its client when `client` is set.
+fn client_table(home: &Path, client: bool) -> (Install, FakeProc, Vec<u32>) {
+    let install = Install {
+        kind: InstallKind::Native,
+        root: home.join(".local/share/Steam"),
+    };
+    let exe = install.root.join("steamrt64/steam");
+    let mut reader = FakeProc::new(&[stat(7, 1, 10), stat(9, 1, 20)]);
+    reader.exe_by_pid.insert(
+        7,
+        if client {
+            exe.clone()
+        } else {
+            PathBuf::from("/usr/bin/other")
+        },
+    );
+    reader
+        .arguments_by_pid
+        .insert(7, vec![exe.as_os_str().as_bytes().to_vec()]);
+    reader.exe_by_pid.insert(9, PathBuf::from("/usr/bin/other"));
+    reader.arguments_by_pid.insert(9, vec![b"other".to_vec()]);
+    fs::create_dir_all(home.join(".steam")).unwrap();
+    (install, reader, vec![7, 9])
+}
+
+#[test]
+fn the_client_is_ready_only_once_its_pid_file_process_holds_the_pipe() {
+    use ClientState::{Absent, Ready, Starting};
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let pid_file = home.join(".steam/steam.pid");
+    let pipe = home.join(".steam/steam.pipe");
+    let state = |client: bool, holder: Option<(u32, Vec<PathBuf>)>| {
+        let (install, mut reader, pids) = client_table(home, client);
+        if let Some((pid, links)) = holder {
+            reader.fds_by_pid.insert(pid, links);
+        }
+        scan_client_state(&reader, pids, &install).unwrap()
+    };
+
+    let _ = fs::remove_file(&pid_file);
+    assert_eq!(state(false, None), Absent);
+    assert_eq!(state(true, None), Starting);
+
+    fs::write(&pid_file, "9\n").unwrap();
+    let holds = || Some((9, vec![PathBuf::from("/dev/null"), pipe.clone()]));
+    assert_eq!(state(true, holds()), Ready);
+    // The pid file's process can hold the pipe a moment before its exe is
+    // the client's, and `steam` already forwards to it then.
+    assert_eq!(state(false, holds()), Ready);
+    // Dead, holding other files, or holding another home's pipe.
+    assert_eq!(state(true, None), Starting);
+    assert_eq!(
+        state(true, Some((9, vec![PathBuf::from("/dev/null")]))),
+        Starting
+    );
+    let elsewhere = temp.path().join("other/.steam/steam.pipe");
+    assert_eq!(state(true, Some((9, vec![elsewhere]))), Starting);
+    // The pid file names someone else.
+    assert_eq!(state(true, Some((8, vec![pipe.clone()]))), Starting);
+    for text in ["", "nine\n", "0\n", "-9\n"] {
+        fs::write(&pid_file, text).unwrap();
+        assert_eq!(
+            state(true, Some((0, vec![pipe.clone()]))),
+            Starting,
+            "{text:?}"
+        );
+    }
+    assert_eq!(state(false, None), Absent);
+}
+
+#[test]
+fn the_pipe_matches_through_a_symlinked_home() {
+    let temp = tempfile::tempdir().unwrap();
+    let real = temp.path().join("real");
+    let (_, _, _) = client_table(&real, true);
+    let pipe = real.join(".steam/steam.pipe");
+    fs::write(&pipe, "").unwrap();
+    let alias = temp.path().join("home");
+    symlink(&real, &alias).unwrap();
+    let (install, mut reader, pids) = client_table(&alias, true);
+    fs::write(alias.join(".steam/steam.pid"), "9\n").unwrap();
+    // The kernel reports the resolved path.
+    reader
+        .fds_by_pid
+        .insert(9, vec![fs::canonicalize(&pipe).unwrap()]);
+    assert_eq!(
+        scan_client_state(&reader, pids, &install).unwrap(),
+        ClientState::Ready
+    );
+}
+
+#[test]
+fn unreadable_fds_are_not_ready_and_other_errors_propagate() {
+    let temp = tempfile::tempdir().unwrap();
+    let (install, mut reader, pids) = client_table(temp.path(), true);
+    fs::write(temp.path().join(".steam/steam.pid"), "9\n").unwrap();
+    reader.fds_error = Some((9, rustix::io::Errno::ACCESS.raw_os_error()));
+    assert_eq!(
+        scan_client_state(&reader, pids.clone(), &install).unwrap(),
+        ClientState::Starting
+    );
+    reader.fds_error = Some((9, rustix::io::Errno::MFILE.raw_os_error()));
+    let error = scan_client_state(&reader, pids, &install).unwrap_err();
+    assert_eq!(
+        error.raw_os_error(),
+        Some(rustix::io::Errno::MFILE.raw_os_error())
+    );
+}
+
+#[test]
+fn flatpak_and_unknown_roots_keep_the_plain_process_check() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    for root in [
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+        home.join("opt/steam"),
+    ] {
+        let kind = if root.ends_with(".local/share/Steam") {
+            InstallKind::Flatpak
+        } else {
+            InstallKind::Native
+        };
+        let install = Install { kind, root };
+        let exe = install.root.join("steamrt64/steam");
+        let mut reader = FakeProc::new(&[stat(7, 1, 10)]);
+        reader.exe_by_pid.insert(7, exe.clone());
+        reader
+            .arguments_by_pid
+            .insert(7, vec![exe.as_os_str().as_bytes().to_vec()]);
+        // A pid file in the home is never read for these: the Flatpak's is
+        // in another pid namespace.
+        fs::create_dir_all(home.join(".steam")).unwrap();
+        fs::write(home.join(".steam/steam.pid"), "7\n").unwrap();
+        assert_eq!(
+            scan_client_state(&reader, vec![7], &install).unwrap(),
+            ClientState::Ready,
+            "{install:?}"
+        );
+        assert_eq!(
+            scan_client_state(&reader, Vec::new(), &install).unwrap(),
+            ClientState::Absent,
+            "{install:?}"
+        );
+    }
+}
+
+#[test]
+fn a_real_process_holding_the_pipe_is_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    let dot = temp.path().join(".steam");
+    fs::create_dir_all(&dot).unwrap();
+    let pipe = dot.join("steam.pipe");
+    let pid_file = dot.join("steam.pid");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &pipe,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let script = temp.path().join("client");
+    crate::test_script::write_script(
+        &script,
+        "#!/bin/sh\nexec 3<>\"$1\"\necho $$ > \"$2.tmp\"\nmv \"$2.tmp\" \"$2\"\nexec sleep 30\n",
+    );
+    let child = crate::test_script::KillOnDrop::new(
+        Command::new(&script)
+            .args([&pipe, &pid_file])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_file.exists() {
+        assert!(Instant::now() < deadline, "the client didn't start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(pipe_held(&Proc, &dot).unwrap());
+    let install = Install {
+        kind: InstallKind::Native,
+        root: temp.path().join(".steam/root"),
+    };
+    assert_eq!(client_state(&install).unwrap(), ClientState::Ready);
+
+    // This test process is alive but doesn't hold the pipe.
+    fs::write(&pid_file, format!("{}\n", std::process::id())).unwrap();
+    assert!(!pipe_held(&Proc, &dot).unwrap());
+    // Once the client is gone, its pid file names nothing.
+    fs::write(&pid_file, format!("{}\n", child.id())).unwrap();
+    drop(child);
+    assert!(!pipe_held(&Proc, &dot).unwrap());
 }
 
 /// Kills a test process's group even when an assertion panics first.

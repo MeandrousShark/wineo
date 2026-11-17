@@ -160,6 +160,163 @@ fn a_cold_start_runs_steam_silently_and_the_launch_waits_for_the_client() {
 }
 
 #[test]
+fn a_steam_client_still_starting_gets_no_second_start_and_the_launch_waits() {
+    let s = SteamFixture::starting();
+    s.config("");
+    let started = s.run(&["start", "civ", "--target", "steam"]);
+    assert_success(&started);
+    // Many polls of the helper's 250 ms wait pass here, so a launch that
+    // didn't wait for the client would already be sent, and a cold start
+    // would have sent `-silent`.
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(dispatches(&s), Vec::<String>::new());
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 1);
+    assert_eq!(dispatches(&s), ["-applaunch 289070"]);
+    wait_for("Steam reaper claim", || {
+        let state = s.f.state("civ");
+        state.contains("target = \"steam\"") && state.contains("running_at = ")
+    });
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn a_steam_client_updating_at_start_holds_the_launch_and_the_run_succeeds() {
+    let s = SteamFixture::starting();
+    s.config("");
+    s.append_client_log(concat!(
+        "[2026-11-13 10:32:51] Startup - updater built Oct 21 2026 21:09:45\n",
+        "[2026-11-13 10:32:51] Startup - Steam Client launched with: '/home/user/.local/share/Steam/ubuntu12_32/steam' '-srt-logger-opened' '-silent'\n",
+        "[2026-11-13 10:32:51] Checking for update on startup\n",
+    ));
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "2000")
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "500")
+        .env("WINEO_TEST_STEAM_CLIENT_STALL_MS", "2500")
+        .args(["start", "civ", "--target", "steam"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    // The update outlasts both the start limit and the client wait, and each
+    // line keeps the log well inside the silence limit.
+    for done in 1..=40 {
+        thread::sleep(Duration::from_millis(100));
+        s.append_client_log(&format!(
+            "[2026-11-13 10:32:52] Downloading update ({done},000 of 40,000 KB)...\n"
+        ));
+        assert_eq!(dispatches(&s), Vec::<String>::new());
+        assert!(
+            !s.f.state("civ").contains("status = \"failed\""),
+            "the client update was treated as a failed start"
+        );
+    }
+    s.append_client_log(concat!(
+        "[2026-11-13 10:33:10] Update complete, launching Steam...\n",
+        "[2026-11-13 10:33:10] Shutdown\n\n\n",
+        "[2026-11-13 10:33:11] Startup - updater built Nov  9 2026 22:38:13\n",
+        "[2026-11-13 10:33:11] Verifying installation...\n",
+    ));
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 1);
+    assert_eq!(dispatches(&s), ["-applaunch 289070"]);
+    claimed_pid(&s);
+    let status = s.run(&["status", "civ"]);
+    assert!(
+        stdout(&status).contains("civ: running"),
+        "{}",
+        stdout(&status)
+    );
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn a_steam_client_that_never_gets_ready_gets_the_launch_after_the_client_wait() {
+    let s = SteamFixture::starting();
+    s.config("");
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "1500")
+        .args(["start", "civ", "--target", "steam"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    thread::sleep(Duration::from_millis(700));
+    assert_eq!(dispatches(&s), Vec::<String>::new());
+    wait_for("the launch", || s.dispatch_count() == 1);
+    assert_eq!(dispatches(&s), ["-applaunch 289070"]);
+    // The fake `steam` waits on the client's request pipe until it reads.
+    s.release_client_ready();
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn a_cold_started_client_that_quits_gets_one_silent_restart_then_the_launch() {
+    let s = SteamFixture::cold();
+    s.hold_client_ready();
+    s.config("");
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "10000")
+        .args(["start", "civ", "--target", "steam"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    let first = s.client_pid();
+    // Several polls of the helper, so it has seen the client coming up. The
+    // fake `steam -silent` has already exited, as `steam.sh` does once its
+    // client is gone.
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(dispatches(&s), ["-silent"]);
+    signal(first, "-KILL");
+    wait_for("the silent restart", || s.dispatch_count() == 2);
+    assert_eq!(dispatches(&s), ["-silent", "-silent"]);
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 3);
+    assert_eq!(dispatches(&s), ["-silent", "-silent", "-applaunch 289070"]);
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn a_client_relaunching_itself_under_our_silent_start_gets_no_second_start() {
+    let s = SteamFixture::cold();
+    s.hold_client_ready();
+    s.relaunch_client_once();
+    s.config("");
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "20000")
+        .args(["start", "civ", "--target", "steam"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    let first = s.client_pid();
+    // Several polls of the helper, so it has seen the client coming up.
+    thread::sleep(Duration::from_millis(1000));
+    signal(first, "-KILL");
+    let pids = s.f.root.path().join("steam-client-pid");
+    wait_for("the relaunched client", || {
+        fs::read_to_string(&pids).unwrap().lines().count() == 2
+    });
+    // Polls of the helper pass with the new client up, after a gap that
+    // `steam -silent` outlived.
+    thread::sleep(Duration::from_millis(700));
+    assert_eq!(dispatches(&s), ["-silent"]);
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 2);
+    assert_eq!(dispatches(&s), ["-silent", "-applaunch 289070"]);
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
 fn the_launch_is_sent_when_the_wait_for_the_client_runs_out() {
     let s = SteamFixture::cold();
     s.make_silent_start_inert();
