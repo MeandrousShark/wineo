@@ -565,7 +565,14 @@ pub fn proxied_key_message(name: &str, launcher: Launcher, key: &str) -> String 
 
 /// The refusal for a proxied-only key on a Wine or native environment.
 pub fn proxied_only_key_message(name: &str, key: &str) -> String {
-    format!("{name} isn't a Steam game, so it can't set {key}.")
+    // Every kind's targets take `desktop`, so a top-level one is usually
+    // meant for a target.
+    let hint = if key == "desktop" {
+        " Set it on a target instead."
+    } else {
+        ""
+    };
+    format!("{name} isn't a Steam game, so it can't set {key}.{hint}")
 }
 
 /// Keys only a Wine environment can have.

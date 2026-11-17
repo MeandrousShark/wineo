@@ -329,7 +329,7 @@ fn proxied_only_keys_are_refused_on_wine_and_native() {
         assert!(!refused.status.success(), "{name}");
         assert!(
             stderr(&refused).contains(&format!(
-                "{name} isn't a Steam game, so it can't set desktop."
+                "{name} isn't a Steam game, so it can't set desktop. Set it on a target instead."
             )),
             "{}",
             stderr(&refused)
