@@ -35,24 +35,18 @@ pub(super) fn extension(path: &Path) -> Option<String> {
 
 #[derive(Debug, Default)]
 pub(super) struct Scanned {
-    /// Every game, a file or a folder game's folder, in no set order.
+    /// Every game, a file or a folder game's folder, in path order.
     pub games: Vec<PathBuf>,
-    /// Subfolders that couldn't be read.
+    /// Subfolders that couldn't be read or looked inside.
     pub skipped: Vec<PathBuf>,
 }
 
 /// Whether `dir` is a folder game of `kind`.
 pub(super) fn is_folder_game(dir: &Path, kind: FolderGame) -> bool {
     match kind {
-        FolderGame::CemuTitle => {
-            dir.join("content").is_dir()
-                && dir.join("meta").is_dir()
-                && fs::read_dir(dir.join("code")).is_ok_and(|entries| {
-                    entries.flatten().any(|entry| {
-                        extension(&entry.path()).as_deref() == Some("rpx") && entry.path().is_file()
-                    })
-                })
-        }
+        FolderGame::CemuTitle => read_sheet(&dir.join("code/app.xml"))
+            .and_then(|xml| cemu_title_type(&xml))
+            .is_some_and(|kind| matches!(kind, CEMU_BASE | CEMU_DEMO)),
         FolderGame::PpssppEboot => fs::read_dir(dir).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
                 entry.file_name().eq_ignore_ascii_case("EBOOT.PBP") && entry.path().is_file()
@@ -60,6 +54,21 @@ pub(super) fn is_folder_game(dir: &Path, kind: FolderGame) -> bool {
         }),
         FolderGame::Rpcs3Disc => dir.join("PS3_GAME/USRDIR/EBOOT.BIN").is_file(),
     }
+}
+
+/// Cemu's title types, from bits 32 to 39 of a title id. Updates (0x0E),
+/// DLC (0x0C), homebrew, and system titles aren't games of their own.
+const CEMU_BASE: u8 = 0x00;
+const CEMU_DEMO: u8 = 0x02;
+
+/// The title type in an `app.xml`'s `<title_id>`, a 64-bit hex number.
+pub(super) fn cemu_title_type(xml: &str) -> Option<u8> {
+    let start = xml.find("<title_id")?;
+    let rest = &xml[start..];
+    let value = &rest[rest.find('>')? + 1..];
+    let value = value[..value.find('<')?].trim();
+    let id = u64::from_str_radix(value.trim_start_matches("0x"), 16).ok()?;
+    Some((id >> 32) as u8)
 }
 
 /// The games under `root`, a folder that can be read and isn't a folder game
@@ -82,12 +91,18 @@ pub(super) fn scan(root: &Path, rules: &Rules<'_>) -> Scanned {
                 continue;
             }
         };
+        let mut unsearchable = false;
         for entry in entries.flatten() {
             let path = entry.path();
             // Followed, so a link counts as what it leads to; a broken one
-            // is nothing.
-            let Ok(metadata) = fs::metadata(&path) else {
-                continue;
+            // is nothing. A folder that can be read but not searched lists
+            // names it can't look at.
+            let metadata = match fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    unsearchable |= error.kind() == std::io::ErrorKind::PermissionDenied;
+                    continue;
+                }
             };
             if metadata.is_dir() {
                 if rules.folder.is_some_and(|kind| is_folder_game(&path, kind)) {
@@ -99,23 +114,35 @@ pub(super) fn scan(root: &Path, rules: &Rules<'_>) -> Scanned {
                 scanned.games.push(path);
             }
         }
+        if unsearchable {
+            scanned.skipped.push(folder);
+        }
     }
+    // A file linked from two places is one game, under the first path.
+    scanned.games.sort();
+    let mut real: HashSet<PathBuf> = HashSet::new();
+    scanned.games.retain(|game| real.insert(resolve(game)));
     hide_covered(&mut scanned.games, rules);
     scanned
 }
 
-/// The most of a `.cue` or `.m3u` that is read. Real ones are a few lines,
+/// The most of a `.cue`, `.m3u`, or Cemu `app.xml` that is read. Real ones are a few lines,
 /// so anything longer is something else with that name.
 const SHEET_LIMIT: u64 = 1 << 20;
 
 fn read_sheet(path: &Path) -> Option<String> {
+    // Opening a FIFO or a device by that name could block or never end.
+    if !path.is_file() {
+        return None;
+    }
     let mut bytes = Vec::new();
     fs::File::open(path)
         .ok()?
         .take(SHEET_LIMIT)
         .read_to_end(&mut bytes)
         .ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    let text = String::from_utf8_lossy(&bytes);
+    Some(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned())
 }
 
 /// The files a cue sheet's `FILE` lines name, relative to its folder.

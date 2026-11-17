@@ -9,12 +9,14 @@ use std::path::{Component, Path, PathBuf};
 use toml_edit::{Array, Item, Table, Value, value};
 
 use crate::cancel::Token;
-use crate::config::{self, EnvironmentConfig};
+use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::emulator::{self, Emulator, ExtSystem, Install, TargetCommand};
 use crate::environment::{self, Environment};
+use crate::launch::{self, WINDOWS_EXTENSIONS};
 use crate::name;
 use crate::operation::{Locks, Operation};
 use crate::paths::{self, Paths};
+use crate::winpath;
 
 mod scan;
 mod title;
@@ -211,19 +213,53 @@ fn absolute(paths: &Paths, path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 /// Each imported ROM, resolved, with the environment that has it.
-fn imported_roms(paths: &Paths) -> crate::Result<HashMap<PathBuf, String>> {
-    let mut found = HashMap::new();
-    for name in environment::names(paths)? {
-        let Ok(environment) = Environment::load(paths, &name) else {
-            continue;
-        };
-        if let Some(emulation) = &environment.config.emulation
-            && let Ok(rom) = paths.config_path(&emulation.rom)
-        {
-            found.entry(paths::resolve(&rom)).or_insert(name);
-        }
+#[derive(Default)]
+struct Imported {
+    roms: HashMap<PathBuf, String>,
+    /// Every environment name read so far, loaded or not.
+    names: HashSet<String>,
+}
+
+impl Imported {
+    fn read(paths: &Paths) -> crate::Result<Self> {
+        let mut imported = Self::default();
+        imported.refresh(paths)?;
+        Ok(imported)
     }
-    Ok(found)
+
+    /// Catches up with the environments on disk. Only names it hasn't seen
+    /// are loaded: an import or a clone always makes a new name, so this
+    /// stays cheap across a batch. Names that are gone are dropped.
+    fn refresh(&mut self, paths: &Paths) -> crate::Result<()> {
+        let names: HashSet<String> = environment::names(paths)?.into_iter().collect();
+        self.roms.retain(|_, name| names.contains(name));
+        self.names.retain(|name| names.contains(name));
+        let mut pending = None;
+        let mut new: Vec<&String> = names
+            .iter()
+            .filter(|name| !self.names.contains(*name))
+            .collect();
+        new.sort();
+        for name in new {
+            let pending = pending.get_or_insert_with(|| crate::trash::PendingScan::new(paths));
+            let Ok(environment) = Environment::load_with_pending(paths, name, pending) else {
+                continue;
+            };
+            if let Some(emulation) = &environment.config.emulation
+                && let Ok(rom) = paths.config_path(&emulation.rom)
+            {
+                self.roms
+                    .entry(paths::resolve(&rom))
+                    .or_insert_with(|| name.clone());
+            }
+        }
+        self.names = names;
+        Ok(())
+    }
+
+    fn get(&self, rom: &Path) -> Option<&String> {
+        self.roms.get(&paths::resolve(rom))
+    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -232,14 +268,33 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn title_for(path: &Path, folder_game: bool) -> String {
-    let stem = if folder_game {
+/// The title a game's file or folder name gives. A PSP or PS1 `EBOOT.PBP`
+/// is named after its folder, and a compressed image loses its inner
+/// extension too, so `Game.iso.gz` is `Game`.
+fn title_for(path: &Path, folder_game: bool, extensions: &[String]) -> String {
+    let eboot = !folder_game
+        && path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("EBOOT.PBP"));
+    let mut stem = if folder_game {
         file_name(path)
+    } else if eboot {
+        path.parent().map(file_name).unwrap_or_default()
     } else {
         path.file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default()
     };
+    if !folder_game && scan::extension(path).as_deref() == Some("gz") {
+        let inner = Path::new(&stem);
+        if let Some(extension) = scan::extension(inner)
+            && extension != "gz"
+            && extensions.contains(&extension)
+            && let Some(inner_stem) = inner.file_stem()
+        {
+            stem = inner_stem.to_string_lossy().into_owned();
+        }
+    }
     title::clean(&stem)
 }
 
@@ -283,20 +338,20 @@ pub fn listing(paths: &Paths, scan: &Scan, path: &Path) -> anyhow::Result<Listin
             }
         }
     }
-    let imported = imported_roms(paths)?;
+    let imported = Imported::read(paths)?;
     let mut entries: Vec<Entry> = found
         .into_iter()
         .map(|(rom, folder_game)| {
             let state = if rom.to_str().is_none() {
                 EntryState::Unusable(format!("{} isn't valid UTF-8.", rom.display()))
-            } else if let Some(name) = imported.get(&paths::resolve(&rom)) {
+            } else if let Some(name) = imported.get(&rom) {
                 EntryState::AlreadyImported(name.clone())
             } else {
                 EntryState::New
             };
             Entry {
                 file_name: file_name(&rom),
-                title: title_for(&rom, folder_game),
+                title: title_for(&rom, folder_game, &rules.extensions),
                 note: None,
                 system: rules.system(&rom, folder_game),
                 state,
@@ -339,6 +394,29 @@ impl Emulating {
             Self::BuiltIn { emulator, .. } => emulator.id(),
             Self::Custom { .. } => emulator::CUSTOM,
         }
+    }
+
+    /// Refuses a custom emulator's command that can't run, the way a native
+    /// target's exe is checked: a bare name must be on PATH, and a path must
+    /// be absolute (`~/` counts) and an executable file, not a Windows
+    /// program.
+    fn check(&self, paths: &Paths, global: &GlobalConfig) -> anyhow::Result<()> {
+        let Self::Custom { exe, .. } = self else {
+            return Ok(());
+        };
+        let exe = exe.trim();
+        if exe.is_empty() {
+            anyhow::bail!("The emulator's command is empty.");
+        }
+        let lower = exe.to_ascii_lowercase();
+        if winpath::is_windows_path(exe)
+            || WINDOWS_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+        {
+            anyhow::bail!("`{exe}` is a Windows program, not a native one.");
+        }
+        let path_var = launch::path_or_inherited(global.env.get("PATH"));
+        launch::resolve_native_exe(paths, exe, exe, &path_var)?;
+        Ok(())
     }
 
     fn target(&self, paths: &Paths, rom: &Path) -> anyhow::Result<TargetCommand> {
@@ -414,20 +492,22 @@ pub struct Batch {
 /// or an earlier game here, gets its system added, then a number.
 pub fn plan_batch(
     paths: &Paths,
+    global: &GlobalConfig,
     emulating: &Emulating,
     entries: impl IntoIterator<Item = Entry>,
     ambiguous: Option<&str>,
 ) -> anyhow::Result<Batch> {
     check_portable(paths)?;
+    emulating.check(paths, global)?;
     let entries: Vec<Entry> = entries.into_iter().collect();
     let ambiguous = ambiguous_system(emulating, &entries, ambiguous)?;
-    let imported = imported_roms(paths)?;
+    let imported = Imported::read(paths)?;
     let mut batch = Batch::default();
     let mut names: HashSet<String> = HashSet::new();
     for entry in entries {
         let existing = match &entry.state {
             EntryState::AlreadyImported(name) => Some(name.clone()),
-            _ => imported.get(&paths::resolve(&entry.rom)).cloned(),
+            _ => imported.get(&entry.rom).cloned(),
         };
         if let Some(name) = existing {
             batch.already.push(Already {
@@ -451,7 +531,7 @@ pub fn plan_batch(
             EntrySystem::Ambiguous => ambiguous.clone(),
             EntrySystem::Unknown => None,
         };
-        let name = free_name(paths, &names, &entry, system.as_deref());
+        let name = free_name(paths, &names, &entry.title, system.as_deref());
         match emulating.target(paths, &entry.rom) {
             Ok(target) => {
                 names.insert(name.clone());
@@ -514,16 +594,21 @@ fn ambiguous_system(
     Ok(Some(chosen.to_owned()))
 }
 
+/// The name a title makes, or `game` when it has nothing a name can use.
+fn base_name(title: &str) -> String {
+    let name = name::from_title(title);
+    if name.is_empty() {
+        "game".to_owned()
+    } else {
+        name
+    }
+}
+
 /// The game's title as a name, with its system and then a number added
 /// when that is taken.
-fn free_name(
-    paths: &Paths,
-    batch: &HashSet<String>,
-    entry: &Entry,
-    system: Option<&str>,
-) -> String {
+fn free_name(paths: &Paths, batch: &HashSet<String>, title: &str, system: Option<&str>) -> String {
     let taken = |name: &str| batch.contains(name) || paths.environment_config(name).exists();
-    let base = crate::targets::suggest_name(&entry.title, &entry.file_name);
+    let base = base_name(title);
     if !taken(&base) {
         return base;
     }
@@ -549,8 +634,8 @@ pub enum ApplyOutcome {
     AlreadyImported(String),
 }
 
-/// The config `plan` writes, checked as a config would be on load.
-fn config_text(paths: &Paths, plan: &Plan) -> anyhow::Result<String> {
+/// The config `plan` writes as `name`, checked as a config would be on load.
+fn config_text(paths: &Paths, plan: &Plan, name: &str) -> anyhow::Result<String> {
     let mut document = config::new_document();
     document["kind"] = value("native");
     document["title"] = value(&plan.title);
@@ -574,7 +659,7 @@ fn config_text(paths: &Paths, plan: &Plan) -> anyhow::Result<String> {
     target["name"] = value(&plan.title);
     let mut targets = Table::new();
     targets.set_implicit(true);
-    targets[&plan.name] = Item::Table(target);
+    targets[name] = Item::Table(target);
     document["targets"] = Item::Table(targets);
     let text = document.to_string();
     EnvironmentConfig::parse(Path::new("<import>"), &text)?;
@@ -583,21 +668,39 @@ fn config_text(paths: &Paths, plan: &Plan) -> anyhow::Result<String> {
 
 /// Creates the game's environment, unless its ROM was imported since it was
 /// planned. The check and the write hold one lock, so two imports of the
-/// same ROM can't both write.
+/// same ROM can't both write. A name taken since planning is picked again
+/// the way planning picks one.
 pub fn apply(paths: &Paths, plan: &Plan, cancel: &Token) -> anyhow::Result<ApplyOutcome> {
     check_portable(paths)?;
+    apply_with(paths, plan, cancel, &mut Imported::default())
+}
+
+/// `apply` with what is known to be imported so far, which it brings up to
+/// date under the lock.
+fn apply_with(
+    paths: &Paths,
+    plan: &Plan,
+    cancel: &Token,
+    imported: &mut Imported,
+) -> anyhow::Result<ApplyOutcome> {
     crate::import::check_cancelled(cancel)?;
     let locks = Locks::new(paths);
     let _roms = locks.emulated_roms()?;
-    if let Some(name) = imported_roms(paths)?.remove(&paths::resolve(&plan.rom)) {
-        return Ok(ApplyOutcome::AlreadyImported(name));
+    imported.refresh(paths)?;
+    if let Some(name) = imported.get(&plan.rom) {
+        return Ok(ApplyOutcome::AlreadyImported(name.clone()));
     }
-    environment::check_new_name(paths, &plan.name)?;
-    let text = config_text(paths, plan)?;
-    let _operation = locks.acquire(Operation::Create, &plan.name, &[])?;
+    let name = if paths.environment_config(&plan.name).exists() {
+        free_name(paths, &HashSet::new(), &plan.title, plan.system.as_deref())
+    } else {
+        plan.name.clone()
+    };
+    environment::check_new_name(paths, &name)?;
+    let text = config_text(paths, plan, &name)?;
+    let _operation = locks.acquire(Operation::Create, &name, &[])?;
     crate::import::check_cancelled(cancel)?;
-    let environment = crate::import::write_native_config(paths, &plan.name, &text)?;
-    let warnings = crate::library_lifecycle::fresh_warning(paths, &plan.name)
+    let environment = crate::import::write_native_config(paths, &name, &text)?;
+    let warnings = crate::library_lifecycle::fresh_warning(paths, &name)
         .into_iter()
         .collect();
     Ok(ApplyOutcome::Imported(Applied {
@@ -648,6 +751,7 @@ pub fn apply_batch(
     mut each: impl FnMut(Applying<'_>) -> anyhow::Result<()>,
 ) -> anyhow::Result<BatchReport> {
     check_portable(paths)?;
+    let mut imported = Imported::read(paths)?;
     let ready = std::mem::take(&mut batch.ready);
     let mut report = BatchReport {
         total: ready.len(),
@@ -659,7 +763,7 @@ pub fn apply_batch(
             break;
         }
         each(Applying::Starting(&plan))?;
-        match apply(paths, &plan, cancel) {
+        match apply_with(paths, &plan, cancel, &mut imported) {
             Ok(ApplyOutcome::Imported(applied)) => {
                 each(Applying::Imported(&plan, &applied))?;
                 report.done.push(applied.environment.name);

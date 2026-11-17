@@ -78,7 +78,14 @@ fn existing(paths: &Paths, name: &str) {
 }
 
 fn import_all(paths: &Paths, emulating: &Emulating, listing: Listing) -> BatchReport {
-    let batch = plan_batch(paths, emulating, listing.entries, None).unwrap();
+    let batch = plan_batch(
+        paths,
+        &GlobalConfig::default(),
+        emulating,
+        listing.entries,
+        None,
+    )
+    .unwrap();
     assert!(batch.failures.is_empty(), "{:?}", batch.failures);
     apply_batch(paths, batch, &Token::new(), |_| Ok(())).unwrap()
 }
@@ -169,21 +176,32 @@ fn a_ppsspp_folder_game_is_listed_once_and_not_looked_inside() {
 }
 
 #[test]
-fn a_cemu_title_folder_is_a_game_and_an_update_folder_is_not() {
+fn a_cemu_title_folder_is_a_game_and_an_update_or_dlc_folder_is_not() {
     let (_home, paths, roms) = home();
-    let title = roms.join("Zelda [0005000010101C00]");
-    touch(&title.join("code/U-King.rpx"));
-    fs::create_dir_all(title.join("content")).unwrap();
-    fs::create_dir_all(title.join("meta")).unwrap();
-    let update = roms.join("Zelda Update");
-    touch(&update.join("code/app.xml"));
-    fs::create_dir_all(update.join("content")).unwrap();
-    fs::create_dir_all(update.join("meta")).unwrap();
-    let dlc = roms.join("Zelda DLC");
-    fs::create_dir_all(dlc.join("content")).unwrap();
-    fs::create_dir_all(dlc.join("meta")).unwrap();
+    let cemu_title = |folder: &str, title_id: &str| {
+        let dir = roms.join(folder);
+        write(
+            &dir.join("code/app.xml"),
+            &format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<app type=\"complex\" access=\"777\">\n  \
+                 <title_id type=\"hexBinary\" length=\"8\">{title_id}</title_id>\n</app>\n"
+            ),
+        );
+        touch(&dir.join("code/game.rpx"));
+        fs::create_dir_all(dir.join("content")).unwrap();
+        fs::create_dir_all(dir.join("meta")).unwrap();
+    };
+    cemu_title("Zelda [0005000010101C00]", "0005000010101C00");
+    cemu_title("Zelda Demo", "0005000210101C00");
+    // An update ships code of its own, .rpx and all.
+    cemu_title("Zelda Update", "0005000E10101C00");
+    cemu_title("Zelda DLC", "0005000C10101C00");
+    cemu_title("Homebrew", "0005000F10101C00");
+    cemu_title("Garbled", "not hex");
+    let missing = roms.join("No App Xml");
+    touch(&missing.join("code/game.rpx"));
     let listing = list(&paths, Emulator::Cemu, &roms);
-    assert_eq!(names(&listing), ["Zelda [0005000010101C00]"]);
+    assert_eq!(names(&listing), ["Zelda [0005000010101C00]", "Zelda Demo"]);
     assert_eq!(listing.entries[0].title, "Zelda");
     assert_eq!(
         listing.entries[0].system,
@@ -216,8 +234,16 @@ fn a_folder_link_loop_is_read_once() {
     touch(&roms.join("sub/Game.gba"));
     symlink(&roms, roms.join("sub/back")).unwrap();
     symlink(roms.join("sub"), roms.join("sub/again")).unwrap();
-    let listing = list(&paths, Emulator::Mgba, &roms);
+    // Bounded, since a scan that follows the loop wouldn't end.
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sent.send(list(&paths, Emulator::Mgba, &roms));
+    });
+    let listing = received
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the scan followed the loop");
     assert_eq!(names(&listing), ["Game.gba"]);
+    assert!(listing.skipped.is_empty(), "{:?}", listing.skipped);
 }
 
 #[test]
@@ -238,7 +264,14 @@ fn titles_drop_bracketed_notes_and_fall_back_when_nothing_is_left() {
         ["(Note) -", "[!] (USA)", "Metroid Prime", "Open (Bracket"]
     );
     let dolphin = picked(home.path(), Emulator::Dolphin);
-    let batch = plan_batch(&paths, &dolphin, listing.entries, Some("gamecube")).unwrap();
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &dolphin,
+        listing.entries,
+        Some("gamecube"),
+    )
+    .unwrap();
     assert_eq!(
         plan_names(&batch),
         ["note", "usa", "metroid-prime", "open-bracket"]
@@ -273,7 +306,14 @@ fn two_files_with_one_title_get_notes_and_distinct_names() {
         [None, Some("Tetris (Europe).gb"), Some("Tetris (USA).gb")]
     );
     let mgba = picked(home.path(), Emulator::Mgba);
-    let batch = plan_batch(&paths, &mgba, listing.entries, None).unwrap();
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries,
+        None,
+    )
+    .unwrap();
     assert_eq!(plan_names(&batch), ["other", "tetris", "tetris-gb"]);
 }
 
@@ -296,7 +336,7 @@ fn a_name_an_environment_has_gets_the_system_then_a_number() {
     // A game with no system gets just the number.
     entries[1].system = EntrySystem::Unknown;
     let dolphin = picked(home.path(), Emulator::Dolphin);
-    let batch = plan_batch(&paths, &dolphin, entries, None).unwrap();
+    let batch = plan_batch(&paths, &GlobalConfig::default(), &dolphin, entries, None).unwrap();
     assert_eq!(
         plan_names(&batch),
         ["metroid-prime-gamecube", "unknown-2", "zelda-wii-3"]
@@ -338,12 +378,26 @@ fn dolphins_ambiguous_files_take_one_system_choice() {
         ]
     );
     let dolphin = picked(home.path(), Emulator::Dolphin);
-    let error = plan_batch(&paths, &dolphin, listing.entries.clone(), None).unwrap_err();
+    let error = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &dolphin,
+        listing.entries.clone(),
+        None,
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
         "Choose gamecube or wii for the games whose files could be either."
     );
-    let error = plan_batch(&paths, &dolphin, listing.entries.clone(), Some("ps2")).unwrap_err();
+    let error = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &dolphin,
+        listing.entries.clone(),
+        Some("ps2"),
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
         "`ps2` isn't a system Dolphin plays: gamecube, wii."
@@ -351,13 +405,20 @@ fn dolphins_ambiguous_files_take_one_system_choice() {
     // Without an ambiguous file, no choice is needed.
     let plain = listing.entries[2..].to_vec();
     assert_eq!(
-        plan_batch(&paths, &dolphin, plain, None)
+        plan_batch(&paths, &GlobalConfig::default(), &dolphin, plain, None)
             .unwrap()
             .ready
             .len(),
         2
     );
-    let batch = plan_batch(&paths, &dolphin, listing.entries, Some("wii")).unwrap();
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &dolphin,
+        listing.entries,
+        Some("wii"),
+    )
+    .unwrap();
     let systems: Vec<Option<&str>> = batch
         .ready
         .iter()
@@ -385,11 +446,31 @@ fn a_large_folder_lists_and_plans_quickly() {
     let listed = started.elapsed();
     assert_eq!(listing.entries.len(), 4000);
     let mgba = picked(home.path(), Emulator::Mgba);
-    let batch = plan_batch(&paths, &mgba, listing.entries, None).unwrap();
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries,
+        None,
+    )
+    .unwrap();
     assert_eq!(batch.ready.len(), 4000);
+    let planned = started.elapsed();
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "listed in {listed:?}, planned in {:?}",
+        planned < Duration::from_secs(20),
+        "listed in {listed:?}, planned in {planned:?}"
+    );
+    // Importing loads each environment once, not once per game.
+    let started = Instant::now();
+    let some = Batch {
+        ready: batch.ready[..2000].to_vec(),
+        ..Batch::default()
+    };
+    let report = apply_batch(&paths, some, &Token::new(), |_| Ok(())).unwrap();
+    assert_eq!(report.done.len(), 2000);
+    assert!(
+        started.elapsed() < Duration::from_secs(120),
+        "applied in {:?}",
         started.elapsed()
     );
 }
@@ -453,7 +534,7 @@ fn a_rerun_after_import_finds_everything_already_imported() {
     let states: Vec<&EntryState> = again.entries.iter().map(|entry| &entry.state).collect();
     assert_eq!(states, imported);
     let mgba = picked(home.path(), Emulator::Mgba);
-    let batch = plan_batch(&paths, &mgba, again.entries, None).unwrap();
+    let batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, again.entries, None).unwrap();
     assert!(batch.ready.is_empty());
     let already: Vec<&str> = batch
         .already
@@ -469,8 +550,22 @@ fn a_second_apply_of_the_same_rom_reports_it_already_imported() {
     touch(&roms.join("Game.gba"));
     let mgba = picked(home.path(), Emulator::Mgba);
     let listing = list(&paths, Emulator::Mgba, &roms);
-    let first = plan_batch(&paths, &mgba, listing.entries.clone(), None).unwrap();
-    let mut second = plan_batch(&paths, &mgba, listing.entries, None).unwrap();
+    let first = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries.clone(),
+        None,
+    )
+    .unwrap();
+    let mut second = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries,
+        None,
+    )
+    .unwrap();
     // A second import that picked another name for the same ROM.
     second.ready[0].name = "game-again".to_owned();
     let report = apply_batch(&paths, first, &Token::new(), |_| Ok(())).unwrap();
@@ -491,20 +586,39 @@ fn a_second_apply_of_the_same_rom_reports_it_already_imported() {
 }
 
 #[test]
+fn a_name_taken_after_planning_is_picked_again() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("A.gba"));
+    touch(&roms.join("B.gba"));
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let entries = list(&paths, Emulator::Mgba, &roms).entries;
+    let batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, entries, None).unwrap();
+    // Taken after planning.
+    existing(&paths, "a");
+    let report = apply_batch(&paths, batch, &Token::new(), |_| Ok(())).unwrap();
+    assert_eq!(report.done, ["a-gba", "b"]);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let config = Environment::load(&paths, "a-gba").unwrap().config;
+    assert!(config.targets.contains_key("a-gba"));
+}
+
+#[test]
 fn a_failed_game_is_reported_and_the_rest_go_on() {
     let (home, paths, roms) = home();
     touch(&roms.join("A.gba"));
     touch(&roms.join("B.gba"));
     let mgba = picked(home.path(), Emulator::Mgba);
     let entries = list(&paths, Emulator::Mgba, &roms).entries;
-    let batch = plan_batch(&paths, &mgba, entries, None).unwrap();
-    // Taken after planning.
-    existing(&paths, "a");
+    let mut batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, entries, None).unwrap();
+    batch.ready[0].name = "not valid".to_owned();
     let report = apply_batch(&paths, batch, &Token::new(), |_| Ok(())).unwrap();
     assert_eq!(report.done, ["b"]);
     assert_eq!(report.failures.len(), 1);
-    assert_eq!(report.failures[0].name.as_deref(), Some("a"));
-    assert_eq!(report.failures[0].reason, "environment `a` already exists");
+    assert_eq!(report.failures[0].name.as_deref(), Some("not valid"));
+    assert_eq!(
+        report.failures[0].reason,
+        "invalid name `not valid`: use letters, digits, `-`, and `_`"
+    );
 }
 
 #[test]
@@ -513,7 +627,14 @@ fn retroarch_is_refused_per_game_until_it_is_supported() {
     touch(&roms.join("A.gba"));
     let listing = list(&paths, Emulator::Mgba, &roms);
     let retroarch = picked(home.path(), Emulator::RetroArch);
-    let batch = plan_batch(&paths, &retroarch, listing.entries, None).unwrap();
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &retroarch,
+        listing.entries,
+        None,
+    )
+    .unwrap();
     assert!(batch.ready.is_empty());
     assert_eq!(
         batch.failures[0].reason,
@@ -527,12 +648,26 @@ fn a_portable_root_is_refused_in_listing_planning_and_applying() {
     touch(&roms.join("Game.gba"));
     let mgba = picked(home.path(), Emulator::Mgba);
     let listing = list(&paths, Emulator::Mgba, &roms);
-    let batch = plan_batch(&paths, &mgba, listing.entries.clone(), None).unwrap();
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries.clone(),
+        None,
+    )
+    .unwrap();
     let portable = portable_paths(home.path());
     let refused = "Emulated games can't be imported into a portable folder.";
     let error = super::listing(&portable, &Scan::BuiltIn(Emulator::Mgba), &roms).unwrap_err();
     assert_eq!(error.to_string(), refused);
-    let error = plan_batch(&portable, &mgba, listing.entries, None).unwrap_err();
+    let error = plan_batch(
+        &portable,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries,
+        None,
+    )
+    .unwrap_err();
     assert_eq!(error.to_string(), refused);
     let error = apply(&portable, &batch.ready[0], &Token::new()).unwrap_err();
     assert_eq!(error.to_string(), refused);
@@ -680,4 +815,295 @@ fn an_imported_game_launches_its_emulator_with_the_rom() {
         fs::read_to_string(&ran).unwrap(),
         format!("-f\n{}\n", rom.display())
     );
+}
+
+#[test]
+fn a_byte_order_mark_doesnt_hide_a_sheets_first_line() {
+    let (_home, paths, roms) = home();
+    write(&roms.join("Game.cue"), "\u{feff}FILE \"Game.bin\" BINARY\n");
+    touch(&roms.join("Game.bin"));
+    write(&roms.join("Saga.m3u"), "\u{feff}Saga (Disc 1).chd\n");
+    touch(&roms.join("Saga (Disc 1).chd"));
+    let listing = list(&paths, Emulator::DuckStation, &roms);
+    assert_eq!(names(&listing), ["Game.cue", "Saga.m3u"]);
+}
+
+#[test]
+fn a_file_linked_from_two_places_is_listed_once_under_the_first_path() {
+    let (_home, paths, roms) = home();
+    touch(&roms.join("b/Game.gba"));
+    fs::create_dir_all(roms.join("a")).unwrap();
+    symlink(roms.join("b/Game.gba"), roms.join("a/Alias.gba")).unwrap();
+    let listing = list(&paths, Emulator::Mgba, &roms);
+    assert_eq!(names(&listing), ["Alias.gba"]);
+    assert_eq!(listing.entries[0].rom, roms.join("a/Alias.gba"));
+}
+
+#[test]
+fn sheet_lines_naming_absolute_missing_and_outside_files_hide_only_what_is_listed() {
+    let (home, paths, roms) = home();
+    let track = roms.join("tracks/Game (Track 1).bin");
+    touch(&track);
+    touch(&roms.join("tracks/Game (Track 2).bin"));
+    write(
+        &roms.join("Game.cue"),
+        &format!(
+            "FILE \"{}\" BINARY\nFILE \"gone.bin\" BINARY\n",
+            track.display()
+        ),
+    );
+    touch(&home.path().join("elsewhere/Outside.chd"));
+    write(
+        &roms.join("Saga.m3u"),
+        "../elsewhere/Outside.chd\nmissing.chd\nInside.chd\n",
+    );
+    touch(&roms.join("Inside.chd"));
+    let listing = list(&paths, Emulator::DuckStation, &roms);
+    assert_eq!(
+        names(&listing),
+        ["Game.cue", "Game (Track 2).bin", "Saga.m3u"]
+    );
+}
+
+#[test]
+fn a_fifo_named_by_a_playlist_is_not_opened() {
+    let (_home, paths, roms) = home();
+    let status = std::process::Command::new("mkfifo")
+        .arg(roms.join("Pipe.cue"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    write(&roms.join("Saga.m3u"), "Pipe.cue\n");
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let listing = list(&paths, Emulator::DuckStation, &roms);
+        let _ = sent.send(names(&listing).join(","));
+    });
+    let names = received
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the listing blocked on the FIFO");
+    assert_eq!(names, "Saga.m3u");
+}
+
+#[test]
+fn a_folder_that_can_be_read_but_not_searched_is_skipped() {
+    let (_home, paths, roms) = home();
+    touch(&roms.join("Readable.gba"));
+    let locked = roms.join("locked");
+    touch(&locked.join("Hidden.gba"));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o444)).unwrap();
+    let searchable_anyway = fs::metadata(locked.join("Hidden.gba")).is_ok();
+    let listing = list(&paths, Emulator::Mgba, &roms);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if searchable_anyway {
+        return;
+    }
+    assert_eq!(names(&listing), ["Readable.gba"]);
+    assert_eq!(listing.skipped, [locked]);
+}
+
+#[test]
+fn compressed_images_and_eboot_files_get_their_game_names() {
+    let (_home, paths, roms) = home();
+    touch(&roms.join("Okami (USA).iso.gz"));
+    touch(&roms.join("Plain.gz"));
+    let titles = |listing: Listing| -> Vec<String> {
+        listing
+            .entries
+            .into_iter()
+            .map(|entry| entry.title)
+            .collect()
+    };
+    assert_eq!(
+        titles(list(&paths, Emulator::Pcsx2, &roms)),
+        ["Okami", "Plain"]
+    );
+    let ps1 = roms.join("ps1");
+    touch(&ps1.join("Final Fantasy VII (USA)/EBOOT.PBP"));
+    assert_eq!(
+        titles(list(&paths, Emulator::DuckStation, &ps1)),
+        ["Final Fantasy VII"]
+    );
+}
+
+#[test]
+fn names_fold_accents_and_a_title_with_none_is_game() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("Pokémon Snap (USA).gba"));
+    touch(&roms.join("ハーデス (Japan).gba"));
+    touch(&roms.join("ゼルダ (Japan).gbc"));
+    // Multi-byte and over the limit, short enough in bytes for a file name.
+    let long = "ポaa ".repeat(32);
+    touch(&roms.join(format!("{long}.gb")));
+    let listing = list(&paths, Emulator::Mgba, &roms);
+    let long_title = listing
+        .entries
+        .iter()
+        .find(|entry| entry.file_name.starts_with("ポaa"))
+        .unwrap()
+        .title
+        .clone();
+    assert_eq!(long_title.chars().count(), 119);
+    assert_eq!(title_problem(&long_title), None);
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let entries = listing
+        .entries
+        .into_iter()
+        .filter(|entry| entry.title != long_title);
+    let batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, entries, None).unwrap();
+    let named: Vec<(&str, &str)> = batch
+        .ready
+        .iter()
+        .map(|plan| (plan.title.as_str(), plan.name.as_str()))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("Pokémon Snap", "pokemon-snap"),
+            ("ゼルダ", "game"),
+            ("ハーデス", "game-gba"),
+        ]
+    );
+}
+
+#[test]
+fn apply_waits_for_another_import_holding_the_lock() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("Game.gba"));
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let entries = list(&paths, Emulator::Mgba, &roms).entries;
+    let batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, entries, None).unwrap();
+    let plan = batch.ready[0].clone();
+    let held = Locks::new(&paths).emulated_roms().unwrap();
+    let (waiting, waited) = std::sync::mpsc::channel();
+    let importer = {
+        let paths = paths.clone();
+        std::thread::spawn(move || {
+            crate::operation::lock_wait_hooks::on_wait(move || waiting.send(()).unwrap());
+            apply(&paths, &plan, &Token::new()).map(|outcome| match outcome {
+                ApplyOutcome::Imported(applied) => applied.environment.name,
+                ApplyOutcome::AlreadyImported(name) => format!("already {name}"),
+            })
+        })
+    };
+    waited
+        .recv_timeout(Duration::from_secs(10))
+        .expect("apply never waited on the lock");
+    assert!(!paths.environment_config("game").exists());
+    drop(held);
+    assert_eq!(importer.join().unwrap().unwrap(), "game");
+}
+
+#[test]
+fn canceling_a_batch_stops_before_the_next_game() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("A.gba"));
+    touch(&roms.join("B.gba"));
+    touch(&roms.join("C.gba"));
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let entries = list(&paths, Emulator::Mgba, &roms).entries;
+    let batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, entries, None).unwrap();
+    let cancel = Token::new();
+    let mut starts = 0;
+    let report = apply_batch(&paths, batch, &cancel, |applying| {
+        if let Applying::Starting(_) = applying {
+            starts += 1;
+            if starts == 2 {
+                cancel.cancel();
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(report.canceled);
+    assert_eq!(report.done, ["a"]);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(environment::names(&paths).unwrap(), ["a"]);
+}
+
+#[test]
+fn a_custom_emulators_command_is_checked_when_planning() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("Game.nsp"));
+    let bin = home.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    write_script(bin.join("eden"), "#!/bin/sh\n");
+    write(&bin.join("plain"), "not executable");
+    let mut global = GlobalConfig::default();
+    global
+        .env
+        .insert("PATH".to_owned(), bin.to_str().unwrap().to_owned());
+    let scan = Scan::Custom {
+        extensions: vec!["nsp".to_owned()],
+        system: None,
+    };
+    let entries = listing(&paths, &scan, &roms).unwrap().entries;
+    let plan = |exe: &str| {
+        let custom = Emulating::Custom {
+            exe: exe.to_owned(),
+            args: "{rom}".to_owned(),
+        };
+        plan_batch(&paths, &global, &custom, entries.clone(), None)
+            .map(|batch| batch.ready[0].target.exe.clone())
+            .map_err(|error| error.to_string())
+    };
+    assert_eq!(plan("eden"), Ok("eden".to_owned()));
+    assert_eq!(plan("~/bin/eden"), Ok("~/bin/eden".to_owned()));
+    assert_eq!(
+        plan("missing"),
+        Err("`missing` was not found on PATH".to_owned())
+    );
+    assert_eq!(
+        plan("bin/eden"),
+        Err("invalid exe `bin/eden`: use an absolute path or one starting with ~/".to_owned())
+    );
+    assert_eq!(
+        plan("~/bin/gone"),
+        Err("`~/bin/gone` does not exist".to_owned())
+    );
+    assert_eq!(
+        plan("~/bin/plain"),
+        Err(format!(
+            "{} is not executable. Run chmod +x on it.",
+            "~/bin/plain"
+        ))
+    );
+    assert_eq!(
+        plan("~/bin/eden.exe"),
+        Err("`~/bin/eden.exe` is a Windows program, not a native one.".to_owned())
+    );
+    assert_eq!(
+        plan(" "),
+        Err("The emulator's command is empty.".to_owned())
+    );
+}
+
+#[test]
+fn catching_up_on_imports_loads_only_new_environments() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("A.gba"));
+    touch(&roms.join("B.gba"));
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let entries = list(&paths, Emulator::Mgba, &roms).entries;
+    let mut batch = plan_batch(&paths, &GlobalConfig::default(), &mgba, entries, None).unwrap();
+    let b = batch.ready.pop().unwrap();
+    apply_batch(&paths, batch, &Token::new(), |_| Ok(())).unwrap();
+    let mut imported = Imported::read(&paths).unwrap();
+    assert_eq!(imported.get(&roms.join("A.gba")), Some(&"a".to_owned()));
+    // An environment already read isn't read again, so an edit to it
+    // doesn't show; a new one does, and one that's gone is dropped.
+    let config = paths.environment_config("a");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace("A.gba", "Moved.gba")).unwrap();
+    assert!(matches!(
+        apply(&paths, &b, &Token::new()).unwrap(),
+        ApplyOutcome::Imported(_)
+    ));
+    imported.refresh(&paths).unwrap();
+    assert_eq!(imported.get(&roms.join("A.gba")), Some(&"a".to_owned()));
+    assert_eq!(imported.get(&roms.join("Moved.gba")), None);
+    assert_eq!(imported.get(&roms.join("B.gba")), Some(&"b".to_owned()));
+    fs::remove_file(&config).unwrap();
+    imported.refresh(&paths).unwrap();
+    assert_eq!(imported.get(&roms.join("A.gba")), None);
 }
