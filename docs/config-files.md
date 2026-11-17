@@ -126,8 +126,10 @@ to `false`. Every Wine and native key is refused, as is `[targets]`:
 bg3 is a Steam game, so it can't set runner.
 ```
 
-`launcher` and `app_id` are refused the other way around, on Wine and native
-configs (`hades isn't a Steam game, so it can't set app_id.`), and an empty
+`launcher`, `app_id`, and a top-level `desktop` are refused the other way
+around, on Wine and native configs (`hades isn't a Steam game, so it can't
+set app_id.`). The `desktop` refusal adds `Set it on a target instead.`,
+since every kind's targets take `desktop`. An empty
 `app_id` is `Invalid app_id: empty.` A new `kind` value needed no schema
 bump, for the same reason as `native`. Install state, size, and Proton build
 are read from the launcher each time and never stored.
