@@ -19,6 +19,8 @@ come up, and the rows below have the details.
 1. Resizable list columns (plan 0067).
 2. Emulated games: add and launch games from emulators like Dolphin,
    RetroArch, and Cemu (plan 0068).
+3. Settings in tabs: split the desktop app's settings into more tabs and
+   hide advanced settings unless they're turned on (plan 0069, after 0068).
 
 Store imports come after.
 
