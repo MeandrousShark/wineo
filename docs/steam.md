@@ -275,13 +275,37 @@ see [Downloads and imports](downloads-and-imports.md#use-builds-from-steam-heroi
 `wineo start bg3` asks Steam to launch the game with `steam -applaunch
 1086940`, or through `flatpak run` for Flatpak Steam, and returns once the
 request is handed off. When Steam isn't running, wineo starts it first with
-`steam -silent` and sends the launch once its client is up (up to a minute),
-because Steam ignores `-silent` when the launch comes in the same cold start.
+`steam -silent` and sends the launch once the client can take it, because
+Steam ignores `-silent` when the launch comes in the same cold start. Ready
+means what `steam` itself checks before handing a command to a running
+client: the process in `~/.steam/steam.pid` holds `~/.steam/steam.pipe` open.
+Flatpak Steam counts as ready once its client process is up. A Steam that's
+still starting, say one opened a moment ago, gets the same wait and no second
+start.
+
+- A client that's starting gets 15 seconds, then the launch goes out anyway.
+  A Steam wrapped in its own pid namespace never looks ready, so every launch
+  to it takes those 15 seconds.
+- While Steam updates itself on start, the wait lasts as long as Steam keeps
+  writing `logs/bootstrap_log.txt` in its folder, up to 30 minutes. Two
+  minutes without a write counts as done, and the 15 seconds start over. An
+  update Steam downloads while it's running doesn't count, since Steam
+  applies it at its next start.
+- If Steam quits during the wait, wineo starts it silently once more, and if
+  it quits again, the launch goes out. A Steam wineo started has quit once
+  its `steam` command exits. One wineo didn't start has quit after 10 seconds
+  with no client, since Steam has none for a moment while it restarts itself.
+  The launch never goes out during such a gap: the 15 seconds wait for the
+  client to come back, for up to those 10 seconds, or as long as Steam is
+  still updating itself.
+
 That keeps the library window closed, unless Steam has shaders to process
-before the launch: it shows that progress inside the library window, and
-wineo can't turn it off. Turning off Shader Pre-Caching in Steam's settings
-may avoid it. A Steam that's already open stays as it is, and Steam may still
-show its own launch progress:
+before the launch: it shows that progress inside the library window and
+starts the game only after it, and wineo can't turn it off. A long shader
+pass can outlast the 60 seconds below, so wineo reports that Steam didn't
+start the game, and the game still starts later. Turning off Shader
+Pre-Caching in Steam's settings may avoid it. A Steam that's already open
+stays as it is, and Steam may still show its own launch progress:
 
 ```
 $ wineo start bg3
@@ -289,11 +313,18 @@ Asked Steam to start bg3.
 ```
 
 The run is `starting` until the game's process appears, then `running`.
-Steam may have to start itself or update the game first, so the wait is
-generous: 60 seconds for the game to appear, and while Steam is updating it,
-as long as the download or staging keeps making progress, giving up after
-10 minutes without any. A game that never appears ends the run with `Steam
-didn't start bg3.`
+The game's process is Steam's `reaper` for it, started either by the client
+itself or, since Steam's November 2026 client, through the launcher of
+Steam's own runtime. wineo accepts the second only when every process in
+between comes from the same Steam install's `steamrt64/pv-runtime` folder.
+That hasn't been tried with Flatpak Steam, where those processes run inside
+the sandbox. Steam may have to start itself or update the game first, so the
+wait is generous: 60 seconds for the game to appear. While Steam is updating
+the game, the wait lasts as long as the download or staging keeps making
+progress, giving up after 10 minutes without any. While Steam updates itself
+on start, the 60 seconds pause and start over once the update is done, up to
+30 minutes in all. A game that never appears ends the run with `Steam didn't
+start bg3.`
 
 `wineo run bg3` stays in the foreground through all of it. It exits 0 when
 the game exits on its own, 130 when it's stopped, and 1 when Steam never
