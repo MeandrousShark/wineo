@@ -1,8 +1,16 @@
 //! The emulators wineo knows by name, for an emulated game's Source.
 
+mod build;
+mod install;
+mod table;
+
 use std::path::{Path, PathBuf};
 
 use crate::paths::Paths;
+
+pub use build::{Command, build_target, custom_target};
+pub use install::{Install, installs, pick_file};
+pub use table::{ExtSystem, FolderGame};
 
 /// The `[emulation] emulator` a custom emulator writes. It names no built-in,
 /// so its games show as `Emulator::Other`.
@@ -205,151 +213,4 @@ pub fn flatpak_installed(exports: &[PathBuf], app: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn built_in_ids_and_names_are_fixed() {
-        assert_eq!(
-            Emulator::BUILT_IN.map(Emulator::id),
-            [
-                "dolphin",
-                "retroarch",
-                "cemu",
-                "pcsx2",
-                "duckstation",
-                "ppsspp",
-                "rpcs3",
-                "melonds",
-                "mgba",
-                "xemu",
-                "azahar",
-            ]
-        );
-        assert_eq!(
-            Emulator::BUILT_IN.map(Emulator::name),
-            [
-                "Dolphin",
-                "RetroArch",
-                "Cemu",
-                "PCSX2",
-                "DuckStation",
-                "PPSSPP",
-                "RPCS3",
-                "melonDS",
-                "mGBA",
-                "xemu",
-                "Azahar",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_config_id_reads_back_and_anything_else_is_other() {
-        for emulator in Emulator::BUILT_IN {
-            assert_eq!(Emulator::from_config(emulator.id()), emulator);
-        }
-        for id in [CUSTOM, "eden", "Dolphin", "", "emulated"] {
-            assert_eq!(Emulator::from_config(id), Emulator::Other, "{id}");
-        }
-        assert_eq!(Emulator::Other.name(), "Emulated");
-    }
-
-    fn flatpak_args(args: &[&str]) -> Vec<String> {
-        args.iter().map(|arg| (*arg).to_owned()).collect()
-    }
-
-    #[test]
-    fn the_flatpak_app_is_the_first_word_after_run() {
-        let run = flatpak_args(&[
-            "run",
-            "--filesystem=/games/ps2",
-            "net.pcsx2.PCSX2",
-            "-batch",
-            "--",
-            "/games/ps2/a.iso",
-        ]);
-        assert_eq!(flatpak_app("flatpak", &run), Some("net.pcsx2.PCSX2"));
-        assert_eq!(
-            flatpak_app("/usr/bin/flatpak", &run),
-            Some("net.pcsx2.PCSX2")
-        );
-        assert_eq!(flatpak_app("dolphin-emu", &run), None);
-        assert_eq!(flatpak_app("flatpak", &flatpak_args(&["info", "x"])), None);
-        assert_eq!(
-            flatpak_app("flatpak", &flatpak_args(&["run", "--verbose"])),
-            None
-        );
-        assert_eq!(flatpak_app("flatpak", &[]), None);
-    }
-
-    #[test]
-    fn a_flatpak_app_is_found_past_options_with_separate_values() {
-        let app = |args: &[&str]| flatpak_app("flatpak", &flatpak_args(args)).map(str::to_owned);
-        let id = Some("net.pcsx2.PCSX2".to_owned());
-        for args in [
-            &["run", "--branch", "stable", "net.pcsx2.PCSX2"][..],
-            &["run", "--arch", "x86_64", "net.pcsx2.PCSX2"],
-            &["run", "--command", "sh", "net.pcsx2.PCSX2"],
-            &["run", "--runtime", "org.x.Platform", "net.pcsx2.PCSX2"],
-            &["run", "--commit", "abc", "net.pcsx2.PCSX2"],
-            &["run", "--cwd", "/tmp", "net.pcsx2.PCSX2"],
-            &["run", "--filesystem", "/roms", "net.pcsx2.PCSX2"],
-            // A value shaped like an app id must still be skipped.
-            &["run", "--nofilesystem", "xdg.config.dir", "net.pcsx2.PCSX2"],
-            &["run", "--parent-pid", "1.2.3", "net.pcsx2.PCSX2"],
-            &["run", "--filesystem=/x", "net.pcsx2.PCSX2", "/x/game.iso"],
-            &["run", "--", "net.pcsx2.PCSX2"],
-            &["run", "net.pcsx2.PCSX2//stable"],
-            &["run", "net.pcsx2.PCSX2/x86_64/stable", "-batch"],
-            &["--user", "run", "net.pcsx2.PCSX2"],
-            &["-v", "run", "net.pcsx2.PCSX2"],
-            &["--installation", "games", "run", "net.pcsx2.PCSX2"],
-            &["--installation=games", "run", "net.pcsx2.PCSX2"],
-        ] {
-            assert_eq!(app(args), id, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn a_flatpak_app_that_isnt_an_app_id_gives_nothing() {
-        let app = |args: &[&str]| flatpak_app("flatpak", &flatpak_args(args)).map(str::to_owned);
-        for args in [
-            &["run", "/roms/game.iso"][..],
-            &["run", "game.iso"],
-            &["run", "--filesystem", "/roms"],
-            &["run", "--branch", "stable"],
-            &["run", "stable", "net.pcsx2.PCSX2"],
-            &["run", "/abs/path.with.dots"],
-            &["run", "../a.b.c"],
-            &["run", "a..c"],
-            &["run", "a.b.c d"],
-            &["run", "//stable"],
-            &["--user", "info", "net.pcsx2.PCSX2"],
-            &["info", "run", "net.pcsx2.PCSX2"],
-            &["--installation"],
-        ] {
-            assert_eq!(app(args), None, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn an_app_counts_as_installed_only_while_its_script_is_there() {
-        let dir = tempfile::tempdir().unwrap();
-        let system = dir.path().join("system");
-        let user = dir.path().join("user");
-        std::fs::create_dir_all(&system).unwrap();
-        std::fs::create_dir_all(&user).unwrap();
-        let exports = [system.clone(), user.clone()];
-        assert!(!flatpak_installed(&exports, "org.DolphinEmu.dolphin-emu"));
-        std::fs::write(user.join("org.DolphinEmu.dolphin-emu"), "").unwrap();
-        assert!(flatpak_installed(&exports, "org.DolphinEmu.dolphin-emu"));
-        std::os::unix::fs::symlink(dir.path().join("gone"), system.join("net.pcsx2.PCSX2"))
-            .unwrap();
-        assert!(!flatpak_installed(&exports, "net.pcsx2.PCSX2"));
-        // A path never counts, even when it exists.
-        std::fs::write(dir.path().join("a.b.c"), "").unwrap();
-        assert!(!flatpak_installed(&exports, "../a.b.c"));
-        assert!(!flatpak_installed(&exports, "/tmp"));
-    }
-}
+mod tests;

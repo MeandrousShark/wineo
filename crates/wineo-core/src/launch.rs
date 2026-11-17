@@ -976,7 +976,7 @@ pub fn resolve_native_exe(
 /// Looks a bare name up on PATH the way a shell would. Unlike
 /// `runner::find_on_path`, symlinks are kept, since a program can behave
 /// differently depending on the name it is run as.
-fn native_on_path(path_var: &OsStr, name: &str) -> Option<PathBuf> {
+pub(crate) fn native_on_path(path_var: &OsStr, name: &str) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(name))
