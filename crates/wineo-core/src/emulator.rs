@@ -95,24 +95,107 @@ pub fn flatpak_exports(paths: &Paths) -> Vec<PathBuf> {
     ]
 }
 
-/// The app a target's `flatpak run ... ID ...` runs, if that's its form.
+/// `flatpak run` options that take a value, which they may be given as the
+/// next argument instead of after an `=`.
+const FLATPAK_RUN_VALUE_OPTIONS: &[&str] = &[
+    "--arch",
+    "--branch",
+    "--command",
+    "--cwd",
+    "--commit",
+    "--runtime",
+    "--runtime-version",
+    "--filesystem",
+    "--share",
+    "--unshare",
+    "--socket",
+    "--nosocket",
+    "--device",
+    "--nodevice",
+    "--allow",
+    "--disallow",
+    "--env",
+    "--env-fd",
+    "--unset-env",
+    "--add-policy",
+    "--remove-policy",
+    "--persist",
+    "--usb",
+    "--nousb",
+    "--own-name",
+    "--talk-name",
+    "--no-talk-name",
+    "--system-own-name",
+    "--system-talk-name",
+    "--system-no-talk-name",
+    "--sandbox-flag",
+    "--app-path",
+    "--usr-path",
+    "--bind-mount",
+    "--instance-id-fd",
+    "--a11y-own-name",
+    "--installation",
+];
+
+/// An app id is at least three dot-separated parts of letters, digits,
+/// `_` and `-`.
+fn is_app_id(word: &str) -> bool {
+    let mut parts = 0;
+    for part in word.split('.') {
+        if part.is_empty()
+            || !part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return false;
+        }
+        parts += 1;
+    }
+    parts >= 3
+}
+
+/// The app a target's `flatpak [options] run [options] ID ...` runs, if that's
+/// its form. Fails open: anything it can't read as an app id gives None, so a
+/// form it doesn't know never warns.
 pub fn flatpak_app<'a>(exe: &str, args: &'a [String]) -> Option<&'a str> {
     if Path::new(exe).file_name()? != "flatpak" {
         return None;
     }
-    let (run, rest) = args.split_first()?;
-    if run != "run" {
-        return None;
+    let mut args = args.iter().map(String::as_str);
+    loop {
+        let arg = args.next()?;
+        if arg == "run" {
+            break;
+        }
+        if !arg.starts_with('-') {
+            return None;
+        }
+        if arg == "--installation" {
+            args.next()?;
+        }
     }
-    rest.iter()
-        .map(String::as_str)
-        .find(|arg| !arg.starts_with('-'))
+    let mut after_options = false;
+    let candidate = loop {
+        let arg = args.next()?;
+        if after_options || !arg.starts_with('-') {
+            break arg;
+        }
+        if arg == "--" {
+            after_options = true;
+        } else if FLATPAK_RUN_VALUE_OPTIONS.contains(&arg) {
+            args.next()?;
+        }
+    };
+    // A ref may carry an arch and branch after the id: ID//stable, ID/arch/branch.
+    let id = candidate.split('/').next()?;
+    is_app_id(id).then_some(id)
 }
 
 /// Whether `app` still has its script in one of `exports`. A link left
 /// behind by an uninstall points nowhere, so it doesn't count.
 pub fn flatpak_installed(exports: &[PathBuf], app: &str) -> bool {
-    exports.iter().any(|dir| dir.join(app).exists())
+    // A path-shaped value would escape the exports directory.
+    is_app_id(app) && exports.iter().any(|dir| dir.join(app).exists())
 }
 
 #[cfg(test)]
@@ -166,10 +249,13 @@ mod tests {
         assert_eq!(Emulator::Other.name(), "Emulated");
     }
 
+    fn flatpak_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
     #[test]
     fn the_flatpak_app_is_the_first_word_after_run() {
-        let args = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-        let run = args(&[
+        let run = flatpak_args(&[
             "run",
             "--filesystem=/games/ps2",
             "net.pcsx2.PCSX2",
@@ -183,9 +269,59 @@ mod tests {
             Some("net.pcsx2.PCSX2")
         );
         assert_eq!(flatpak_app("dolphin-emu", &run), None);
-        assert_eq!(flatpak_app("flatpak", &args(&["info", "x"])), None);
-        assert_eq!(flatpak_app("flatpak", &args(&["run", "--verbose"])), None);
+        assert_eq!(flatpak_app("flatpak", &flatpak_args(&["info", "x"])), None);
+        assert_eq!(
+            flatpak_app("flatpak", &flatpak_args(&["run", "--verbose"])),
+            None
+        );
         assert_eq!(flatpak_app("flatpak", &[]), None);
+    }
+
+    #[test]
+    fn a_flatpak_app_is_found_past_options_with_separate_values() {
+        let app = |args: &[&str]| flatpak_app("flatpak", &flatpak_args(args)).map(str::to_owned);
+        let id = Some("net.pcsx2.PCSX2".to_owned());
+        for args in [
+            &["run", "--branch", "stable", "net.pcsx2.PCSX2"][..],
+            &["run", "--arch", "x86_64", "net.pcsx2.PCSX2"],
+            &["run", "--command", "sh", "net.pcsx2.PCSX2"],
+            &["run", "--runtime", "org.x.Platform", "net.pcsx2.PCSX2"],
+            &["run", "--commit", "abc", "net.pcsx2.PCSX2"],
+            &["run", "--cwd", "/tmp", "net.pcsx2.PCSX2"],
+            &["run", "--filesystem", "/roms", "net.pcsx2.PCSX2"],
+            &["run", "--filesystem=/x", "net.pcsx2.PCSX2", "/x/game.iso"],
+            &["run", "--", "net.pcsx2.PCSX2"],
+            &["run", "net.pcsx2.PCSX2//stable"],
+            &["run", "net.pcsx2.PCSX2/x86_64/stable", "-batch"],
+            &["--user", "run", "net.pcsx2.PCSX2"],
+            &["-v", "run", "net.pcsx2.PCSX2"],
+            &["--installation", "games", "run", "net.pcsx2.PCSX2"],
+            &["--installation=games", "run", "net.pcsx2.PCSX2"],
+        ] {
+            assert_eq!(app(args), id, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_flatpak_app_that_isnt_an_app_id_gives_nothing() {
+        let app = |args: &[&str]| flatpak_app("flatpak", &flatpak_args(args)).map(str::to_owned);
+        for args in [
+            &["run", "/roms/game.iso"][..],
+            &["run", "game.iso"],
+            &["run", "--filesystem", "/roms"],
+            &["run", "--branch", "stable"],
+            &["run", "stable", "net.pcsx2.PCSX2"],
+            &["run", "/abs/path.with.dots"],
+            &["run", "../a.b.c"],
+            &["run", "a..c"],
+            &["run", "a.b.c d"],
+            &["run", "//stable"],
+            &["--user", "info", "net.pcsx2.PCSX2"],
+            &["info", "run", "net.pcsx2.PCSX2"],
+            &["--installation"],
+        ] {
+            assert_eq!(app(args), None, "{args:?}");
+        }
     }
 
     #[test]
@@ -202,5 +338,9 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("gone"), system.join("net.pcsx2.PCSX2"))
             .unwrap();
         assert!(!flatpak_installed(&exports, "net.pcsx2.PCSX2"));
+        // A path never counts, even when it exists.
+        std::fs::write(dir.path().join("a.b.c"), "").unwrap();
+        assert!(!flatpak_installed(&exports, "../a.b.c"));
+        assert!(!flatpak_installed(&exports, "/tmp"));
     }
 }
