@@ -41,9 +41,9 @@ struct ProcStat {
 }
 
 /// Find the reapers for one app in the active install. Steam's real reaper
-/// uses exactly `reaper SteamLaunch AppId=<id> -- ...` and is a direct child
-/// of the client. A path through `~/.steam/root` and its canonical target
-/// identify the same install.
+/// uses exactly `reaper SteamLaunch AppId=<id> -- ...` and descends from the
+/// client, directly or through its pressure-vessel launcher. A path through
+/// `~/.steam/root` and its canonical target identify the same install.
 pub fn matching_reapers(install: &Install, app_id: &str) -> io::Result<Vec<Reaper>> {
     Ok(reapers_by_app(install, &[app_id.to_owned()])?
         .remove(app_id)
@@ -73,6 +73,7 @@ fn scan_reapers<R: ProcessReader>(
 ) -> io::Result<HashMap<String, Vec<Reaper>>> {
     let accepted = install_binaries(install, "reaper");
     let clients = install_binaries(install, "steam");
+    let runtimes = install_runtimes(install);
     let app_args: Vec<String> = app_ids.iter().map(|id| format!("AppId={id}")).collect();
     let mut found: HashMap<String, Vec<Reaper>> = app_ids
         .iter()
@@ -89,12 +90,7 @@ fn scan_reapers<R: ProcessReader>(
         let Some(process) = reaper_candidate(reader, pid, app_args.as_slice(), &accepted)? else {
             continue;
         };
-        let Some(parent) = client_candidate(reader, process.stat.ppid)? else {
-            continue;
-        };
-        if !matches_client(install, &clients, &parent)
-            || !current_child(reader, &process, parent.stat, &parent.fd)?
-        {
+        if !launched_by_client(reader, install, &clients, &runtimes, &process)? {
             continue;
         }
         // The candidate check proved argument 2 is one of the requested
@@ -121,10 +117,91 @@ fn scan_reapers<R: ProcessReader>(
     Ok(found)
 }
 
-/// Whether any live process is this install's Steam client, wherever it was
-/// started from. Unlike a reaper check this has no parent to anchor to.
-pub fn client_running(install: &Install) -> io::Result<bool> {
-    scan_client(&Proc, proc_pids()?, install)
+/// Whether a launch sent now would reach a Steam client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientState {
+    /// No client of this install is running.
+    Absent,
+    /// A client process is up but can't take a launch yet: it's verifying,
+    /// updating, or a bootstrap about to restart itself.
+    Starting,
+    /// `steam` hands a launch to the running client.
+    Ready,
+}
+
+/// Where this install's client stands. A Flatpak's pid file is in the
+/// sandbox's pid namespace, so any running Flatpak client counts as Ready.
+pub fn client_state(install: &Install) -> io::Result<ClientState> {
+    scan_client_state(&Proc, proc_pids()?, install)
+}
+
+fn scan_client_state<R: ProcessReader>(
+    reader: &R,
+    pids: Vec<u32>,
+    install: &Install,
+) -> io::Result<ClientState> {
+    let dir = match install.kind() {
+        InstallKind::Native => steam_dir(install),
+        InstallKind::Flatpak => None,
+    };
+    if let Some(dir) = &dir
+        && pipe_held(reader, dir)?
+    {
+        return Ok(ClientState::Ready);
+    }
+    Ok(match (scan_client(reader, pids, install)?, dir) {
+        (false, _) => ClientState::Absent,
+        (true, Some(_)) => ClientState::Starting,
+        // Without a pid file to read, any client is taken as up, as before.
+        (true, None) => ClientState::Ready,
+    })
+}
+
+/// `~/.steam`, which holds the client's pid file and pipe whichever folder it
+/// runs from. Every native root `installs` finds sits at a fixed place under
+/// the home, so the home needn't travel with the install. None for any other
+/// root.
+fn steam_dir(install: &Install) -> Option<PathBuf> {
+    let root = install.root();
+    if root.ends_with(".steam/root") || root.ends_with(".steam/steam") {
+        root.parent().map(Path::to_owned)
+    } else if root.ends_with(".local/share/Steam") {
+        root.ancestors().nth(3).map(|home| home.join(".steam"))
+    } else {
+        None
+    }
+}
+
+/// The test `steam.sh` uses to forward a command to a running client: the pid
+/// in `steam.pid` holds `steam.pipe` open. Client processes come up before
+/// that, including a bootstrap that restarts itself, and a launch sent to
+/// them is lost or cold-starts Steam with its library window open.
+fn pipe_held<R: ProcessReader>(reader: &R, steam_dir: &Path) -> io::Result<bool> {
+    let text = match fs::read(steam_dir.join("steam.pid")) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let Some(pid) = std::str::from_utf8(&text)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|pid| *pid > 0)
+    else {
+        return Ok(false);
+    };
+    let links = match reader.fd_links(pid) {
+        Ok(Some(links)) => links,
+        Ok(None) => return Ok(false),
+        Err(error) if permission_denied(&error) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let pipe = steam_dir.join("steam.pipe");
+    // The fd link is the resolved path, which differs from the home as given
+    // when the home goes through a symlink.
+    let canonical = fs::canonicalize(&pipe).ok();
+    Ok(links
+        .iter()
+        .any(|link| *link == pipe || canonical.as_ref() == Some(link)))
 }
 
 fn scan_client<R: ProcessReader>(
@@ -218,6 +295,45 @@ fn reaper_candidate<R: ProcessReader, W: WantedApps + ?Sized>(
         return Ok(None);
     }
     Ok(Some(process))
+}
+
+/// Steam's pressure-vessel layout starts games from a host-side launcher
+/// service, so the reaper's parent is a runtime helper, not the client. The
+/// 2026-11 client puts three helpers in between (supervisor, launcher service,
+/// client container); the bound leaves one spare.
+const MAX_RUNTIME_HOPS: usize = 4;
+
+/// Whether the reaper descends from this install's client. Helpers may sit in
+/// between only when their binaries come from this install's own runtime, so
+/// another install or an unrelated process can't stand in for the client.
+/// Every edge is checked under pidfds that stay held for the whole walk.
+fn launched_by_client<R: ProcessReader>(
+    reader: &R,
+    install: &Install,
+    clients: &[PathBuf],
+    runtimes: &[PathBuf],
+    reaper: &Inspected<R::Fd>,
+) -> io::Result<bool> {
+    let mut helpers: Vec<Inspected<R::Fd>> = Vec::new();
+    loop {
+        let child = helpers.last().unwrap_or(reaper);
+        if child.stat.ppid <= 1 {
+            return Ok(false);
+        }
+        let Some(parent) = client_candidate(reader, child.stat.ppid)? else {
+            return Ok(false);
+        };
+        if !current_child(reader, child, parent.stat, &parent.fd)? {
+            return Ok(false);
+        }
+        if matches_client(install, clients, &parent) {
+            return Ok(true);
+        }
+        if helpers.len() == MAX_RUNTIME_HOPS || !in_runtime(&parent, runtimes) {
+            return Ok(false);
+        }
+        helpers.push(parent);
+    }
 }
 
 fn client_candidate<R: ProcessReader>(
@@ -504,6 +620,8 @@ trait ProcessReader {
     fn arguments(&self, pid: u32) -> io::Result<Option<Vec<Vec<u8>>>>;
     fn exe(&self, pid: u32) -> io::Result<Option<PathBuf>>;
     fn exited(&self, fd: &Self::Fd) -> io::Result<bool>;
+    /// Where each open fd of `pid` points. None when the process is gone.
+    fn fd_links(&self, pid: u32) -> io::Result<Option<Vec<PathBuf>>>;
 }
 
 struct Proc;
@@ -533,6 +651,29 @@ impl ProcessReader for Proc {
 
     fn exited(&self, fd: &OwnedFd) -> io::Result<bool> {
         pidfd_exited(fd)
+    }
+
+    fn fd_links(&self, pid: u32) -> io::Result<Option<Vec<PathBuf>>> {
+        let entries = match fs::read_dir(format!("/proc/{pid}/fd")) {
+            Ok(entries) => entries,
+            Err(error) if process_gone(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut links = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if process_gone(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            // An fd can close between the listing and the read.
+            match fs::read_link(entry.path()) {
+                Ok(link) => links.push(link),
+                Err(error) if process_gone(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Some(links))
     }
 }
 
@@ -609,6 +750,29 @@ fn install_binaries(install: &Install, name: &str) -> Vec<PathBuf> {
             ]
         })
         .collect()
+}
+
+/// The pressure-vessel runtime folder, through the root as given and its
+/// canonical target. The kernel's exe link is fully resolved, so the folder's
+/// own target counts too, for a symlinked `steamrt64` or `pv-runtime`.
+fn install_runtimes(install: &Install) -> Vec<PathBuf> {
+    let canonical = fs::canonicalize(install.root()).unwrap_or_else(|_| install.root().to_owned());
+    let mut runtimes: Vec<PathBuf> = [install.root(), canonical.as_path()]
+        .iter()
+        .map(|root| root.join("steamrt64/pv-runtime"))
+        .collect();
+    if let Ok(target) = fs::canonicalize(&runtimes[0]) {
+        runtimes.push(target);
+    }
+    runtimes
+}
+
+/// Only the kernel's exe link counts: a helper's argv can name anything.
+fn in_runtime<F>(process: &Inspected<F>, runtimes: &[PathBuf]) -> bool {
+    process
+        .exe
+        .as_deref()
+        .is_some_and(|exe| runtimes.iter().any(|runtime| exe.starts_with(runtime)))
 }
 
 /// `clients` is `install_binaries(install, "steam")`, built once per scan.
