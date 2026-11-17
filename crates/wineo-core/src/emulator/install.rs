@@ -3,7 +3,7 @@
 //! the host.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::Emulator;
 use crate::error::{Error, Result};
@@ -87,11 +87,23 @@ pub fn pick_file(
         path.file_name().is_some_and(|name| name == app)
             && path
                 .parent()
-                .is_some_and(|dir| flatpak_exports.iter().any(|export| export == dir))
+                .is_some_and(|dir| flatpak_exports.iter().any(|export| same_dir(export, dir)))
     });
     Ok(if is_export {
         Install::Flatpak { script: path }
     } else {
         Install::File(path)
     })
+}
+
+/// Whether two folders are the same, also through symlinks: on Fedora
+/// Atomic `/home` links to `/var/home`, so a picker can hand back either.
+/// Only folders are resolved, since an export script is itself a link into
+/// its app.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(a), Ok(b)) if a == b
+        )
 }

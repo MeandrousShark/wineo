@@ -928,6 +928,24 @@ mod emulation_table {
     }
 
     #[test]
+    fn a_picked_export_script_counts_through_a_linked_home() {
+        // Like Fedora Atomic, where /home links to /var/home: the exports
+        // are known by one spelling and the picker returns the other.
+        let (dir, _first, _second, system, user) = fake_roots();
+        let real = dir.path().join("var-home");
+        std::fs::create_dir_all(real.join("exports")).unwrap();
+        let linked = dir.path().join("home");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let script = real.join("exports/info.cemu.Cemu");
+        write_script(&script, "#!/bin/sh\n");
+        let exports = [system, user, linked.join("exports")];
+        assert_eq!(
+            pick(dir.path(), &exports, script.to_str().unwrap()).unwrap(),
+            Install::Flatpak { script }
+        );
+    }
+
+    #[test]
     fn names_that_lead_to_the_same_binary_count_once_under_the_first() {
         let (_dir, first, second, _system, _user) = fake_roots();
         write_script(first.join("pcsx2-qt"), "#!/bin/sh\n");
