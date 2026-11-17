@@ -7,11 +7,14 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use super::Install;
 
-/// Only the end of the log is read. A download writes a line about every
-/// 300 ms, so this holds the start of a block through many minutes of one.
+/// Only the end of the log is read. A download writes a line of about 66
+/// bytes every 300 ms, so this holds the start of a block through about 40
+/// minutes of one, past the 30 minutes a launch waits on the client at most
+/// (`CLIENT_WAIT_CAP` in the supervisor).
 const TAIL: u64 = 512 * 1024;
 
 const BLOCK_START: &str = "Startup - updater built";
@@ -20,9 +23,6 @@ const BLOCK_START: &str = "Startup - updater built";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientUpdate {
     pub phase: ClientUpdatePhase,
-    /// The log's length when read. Steam logs often while it updates, so a
-    /// length that stops changing means the update is stuck.
-    pub log_len: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,16 +36,30 @@ pub enum ClientUpdatePhase {
 }
 
 /// The startup update the newest block of the install's bootstrapper log
-/// shows, if any. A log that can't be read or isn't understood shows none.
-pub fn client_update(install: &Install) -> Option<ClientUpdate> {
-    let (tail, log_len) = read_tail(&install.root().join("logs/bootstrap_log.txt")).ok()?;
-    newest_block_update(&tail).map(|phase| ClientUpdate { phase, log_len })
+/// shows, if any. Steam logs often while it updates, so a log last written
+/// `silence` ago or longer shows none: that update is stuck, or Steam was
+/// killed during it. The file's own time makes every process that asks agree
+/// on when it stopped. A log that can't be read or isn't understood shows
+/// none.
+pub fn client_update(install: &Install, silence: Duration) -> Option<ClientUpdate> {
+    let (tail, modified) = read_tail(&install.root().join("logs/bootstrap_log.txt")).ok()?;
+    if !written_within(modified, SystemTime::now(), silence) {
+        return None;
+    }
+    newest_block_update(&tail).map(|phase| ClientUpdate { phase })
 }
 
-/// The last `TAIL` bytes of whole lines, and the file's length.
-fn read_tail(path: &Path) -> io::Result<(String, u64)> {
+/// A time ahead of `now` counts as just now.
+fn written_within(modified: SystemTime, now: SystemTime, limit: Duration) -> bool {
+    now.duration_since(modified).map_or(true, |age| age < limit)
+}
+
+/// The last `TAIL` bytes of whole lines, and when the file was last written.
+fn read_tail(path: &Path) -> io::Result<(String, SystemTime)> {
     let mut file = File::open(path)?;
-    let len = file.metadata()?.len();
+    let metadata = file.metadata()?;
+    let len = metadata.len();
+    let modified = metadata.modified()?;
     // One byte more, so a cut that lands just after a newline keeps its line.
     let start = len.saturating_sub(TAIL + 1);
     file.seek(SeekFrom::Start(start))?;
@@ -59,7 +73,7 @@ fn read_tail(path: &Path) -> io::Result<(String, u64)> {
     } else {
         &bytes[..]
     };
-    Ok((String::from_utf8_lossy(whole).into_owned(), len))
+    Ok((String::from_utf8_lossy(whole).into_owned(), modified))
 }
 
 /// Only the part of a block before the client starts normally counts: a

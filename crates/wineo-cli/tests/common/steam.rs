@@ -213,6 +213,9 @@ static int start_client(const char *root, const char *fifo, const char *request_
         char dot_steam[PATH_MAX];
         snprintf(dot_steam, sizeof(dot_steam), "%s/.steam", root);
         setenv("WINEO_TEST_STEAM_DOT_DIR", dot_steam, 1);
+        char announce_hold[PATH_MAX];
+        snprintf(announce_hold, sizeof(announce_hold), "%s/steam-announce-hold", root);
+        setenv("WINEO_TEST_STEAM_ANNOUNCE_HOLD", announce_hold, 1);
         execl(client, client, fifo, reaper, child_pid, reaper_pids, (char *)NULL);
         _exit(127);
     }
@@ -503,6 +506,12 @@ impl SteamFixture {
     /// Lets a held `steam -silent` start the client.
     pub fn release_silent_start(&self) {
         fs::remove_file(self.f.root.path().join("steam-silent-hold")).unwrap();
+    }
+
+    /// Makes clients the fake `steam -silent` starts come up but not get
+    /// ready, until `release_client_ready`.
+    pub fn hold_client_ready(&self) {
+        fs::write(self.f.root.path().join("steam-announce-hold"), "").unwrap();
     }
 
     /// Lets the client of `starting` become ready for a launch.

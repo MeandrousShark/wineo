@@ -2,6 +2,8 @@ use super::*;
 use crate::steam::{InstallKind, installs};
 use std::fs;
 
+const SILENCE: Duration = Duration::from_secs(120);
+
 // Trimmed from a real bootstrap_log.txt.
 const NORMAL_START: &str = "\
 [2026-11-16 08:30:44] Startup - updater built Nov 13 2026 02:01:47
@@ -208,25 +210,39 @@ fn write_log(install: &Install, text: &[u8]) {
 #[test]
 fn a_missing_or_empty_log_is_not_updating() {
     let (_home, install) = native_home();
-    assert_eq!(client_update(&install), None);
+    assert_eq!(client_update(&install, SILENCE), None);
     write_log(&install, b"");
-    assert_eq!(client_update(&install), None);
+    assert_eq!(client_update(&install, SILENCE), None);
     write_log(&install, &[0xff, 0xfe, b'\n', 0x80]);
-    assert_eq!(client_update(&install), None);
+    assert_eq!(client_update(&install, SILENCE), None);
 }
 
 #[test]
-fn the_update_carries_the_log_length() {
+fn a_log_left_unwritten_for_the_silence_limit_shows_no_update() {
     let (_home, install) = native_home();
-    let text = format!("{STARTUP_CHECK}{STARTUP_DOWNLOAD}");
-    write_log(&install, text.as_bytes());
-    let first = client_update(&install).unwrap();
-    assert_eq!(first.log_len, text.len() as u64);
-    let longer = text + "[2026-11-13 10:32:53] Downloading update (165,659 of 410,553 KB)...\n";
-    write_log(&install, longer.as_bytes());
-    let second = client_update(&install).unwrap();
-    assert_eq!(second.log_len, longer.len() as u64);
-    assert_ne!(first, second);
+    write_log(&install, PENDING_AT_START.as_bytes());
+    let log = install.root().join("logs/bootstrap_log.txt");
+    let set_age = |age: Duration| {
+        fs::File::options()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_modified(SystemTime::now() - age)
+            .unwrap();
+    };
+    set_age(SILENCE - Duration::from_secs(5));
+    assert!(client_update(&install, SILENCE).is_some());
+    set_age(SILENCE + Duration::from_secs(1));
+    assert_eq!(client_update(&install, SILENCE), None);
+}
+
+#[test]
+fn a_log_written_in_the_future_counts_as_just_written() {
+    let now = SystemTime::now();
+    let ahead = now + Duration::from_secs(3600);
+    assert!(written_within(ahead, now, SILENCE));
+    assert!(written_within(now - Duration::from_secs(119), now, SILENCE));
+    assert!(!written_within(now - SILENCE, now, SILENCE));
 }
 
 #[test]
@@ -241,7 +257,7 @@ fn an_oversized_log_is_read_from_its_end() {
     text.push_str(STARTUP_DOWNLOAD);
     write_log(&install, text.as_bytes());
     assert!(matches!(
-        client_update(&install).map(|update| update.phase),
+        client_update(&install, SILENCE).map(|update| update.phase),
         Some(ClientUpdatePhase::Downloading { .. })
     ));
     // A block whose start fell out of the tail can't be judged.
@@ -251,7 +267,7 @@ fn an_oversized_log_is_read_from_its_end() {
         text.push_str(line);
     }
     write_log(&install, text.as_bytes());
-    assert_eq!(client_update(&install), None);
+    assert_eq!(client_update(&install, SILENCE), None);
 }
 
 #[test]
@@ -266,7 +282,7 @@ fn a_cut_on_a_line_boundary_keeps_the_block_start() {
     let text = format!("{NORMAL_START}\n\n{block}");
     write_log(&install, text.as_bytes());
     assert_eq!(
-        client_update(&install).map(|update| update.phase),
+        client_update(&install, SILENCE).map(|update| update.phase),
         Some(ClientUpdatePhase::Installing)
     );
 }
@@ -282,7 +298,7 @@ fn a_flatpak_install_reads_its_own_log() {
     assert_eq!(install.kind(), InstallKind::Flatpak);
     write_log(&install, PENDING_AT_START.as_bytes());
     assert_eq!(
-        client_update(&install).map(|update| update.phase),
+        client_update(&install, SILENCE).map(|update| update.phase),
         Some(ClientUpdatePhase::Installing)
     );
 }

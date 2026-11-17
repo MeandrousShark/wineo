@@ -8,9 +8,14 @@ const REQUEST_COMMAND: &str = "__steam_request";
 /// sending the launch anyway. A client in its own pid namespace never looks
 /// ready, so this is well inside `start`'s own 60 s.
 const CLIENT_STARTING_LIMIT: Duration = Duration::from_secs(15);
-/// How long Steam's startup update may leave its log unchanged before it
-/// counts as stuck. It logs about every 300 ms while downloading.
+/// How long Steam's startup update may leave its log unwritten before it
+/// stops counting, as stuck or killed. It logs about every 300 ms while
+/// downloading.
 const CLIENT_UPDATE_SILENCE: Duration = Duration::from_secs(120);
+/// How long a client that was coming up must stay gone before it counts as
+/// quit, when there's no silent start of ours to watch. Steam's client
+/// processes come and go for a moment or two while it restarts itself.
+const CLIENT_ABSENT_LIMIT: Duration = Duration::from_secs(10);
 /// The longest a launch waits on a client, so an update whose log never
 /// stops changing can't hold the launch forever.
 const CLIENT_WAIT_CAP: Duration = Duration::from_secs(30 * 60);
@@ -108,29 +113,35 @@ fn first_step(launch: &Launch) -> First {
 }
 
 /// Waits for the client to be ready for a launch, giving a startup update of
-/// the client as long as its log keeps moving, and starting the client again
-/// once if it quits on the way. Started commands are reaped as they exit, so
-/// they don't linger as zombies for the wait.
+/// the client as long as it counts, and starting the client again once if it
+/// quits on the way. Started commands are reaped as they exit, so they don't
+/// linger as zombies for the wait.
 fn wait_for_client(launch: &Launch, install: &steam::Install, silent: Option<Child>) {
     let mut started: Vec<Child> = silent.into_iter().collect();
     let begun = Instant::now();
+    let silence = client_update_silence();
     let mut wait = ClientWait::new(
         begun,
         test_timeout("WINEO_TEST_STEAM_CLIENT_WAIT_MS", CLIENT_STARTING_LIMIT),
-        test_timeout("WINEO_TEST_STEAM_CLIENT_STALL_MS", CLIENT_UPDATE_SILENCE),
+        test_timeout("WINEO_TEST_STEAM_CLIENT_ABSENT_MS", CLIENT_ABSENT_LIMIT),
     );
     while begun.elapsed() < CLIENT_WAIT_CAP {
+        let mut ours = Ours::None;
         for child in &mut started {
-            let _ = child.try_wait();
+            // A check that fails can't show the command is still there.
+            ours = match child.try_wait() {
+                Ok(None) => Ours::Running,
+                Ok(Some(_)) | Err(_) => Ours::Exited,
+            };
         }
         let client = steam::client_state(install);
         let update = match client {
             Ok(steam::ClientState::Starting | steam::ClientState::Absent) => {
-                steam::client_update(install)
+                steam::client_update(install, silence)
             }
             _ => None,
         };
-        match wait.step(Instant::now(), client, update.as_ref()) {
+        match wait.step(Instant::now(), client, update.as_ref(), ours) {
             Next::Wait => thread::sleep(CLIENT_POLL),
             Next::Send => return,
             Next::Restart => match launch.silent_start_command().map(spawn_quiet) {
@@ -139,6 +150,12 @@ fn wait_for_client(launch: &Launch, install: &steam::Install, silent: Option<Chi
             },
         }
     }
+}
+
+/// The helper and the supervisor read the log with the same limit, so they
+/// agree on when an update stops counting.
+fn client_update_silence() -> Duration {
+    test_timeout("WINEO_TEST_STEAM_CLIENT_STALL_MS", CLIENT_UPDATE_SILENCE)
 }
 
 /// What the wait for a client does after one look at it.
@@ -150,72 +167,92 @@ enum Next {
     Restart,
 }
 
+/// The newest silent start command of ours. It's `steam.sh`, which lives as
+/// long as the client does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ours {
+    /// The client was already coming up, and nothing of ours started it.
+    None,
+    Running,
+    Exited,
+}
+
 /// The rules of the wait for a client, apart from the clock and `/proc`.
 struct ClientWait {
     starting_limit: Duration,
-    silence_limit: Duration,
+    absent_limit: Duration,
     /// When the client began its way up: the wait's start, a restart, or the
     /// end of a startup update.
     starting_since: Instant,
-    /// The update's log length, and when it last changed.
-    update: Option<(u64, Instant)>,
-    /// A client process was seen since the wait began or restarted, so one
-    /// gone now has quit. Until then a silent start is still on its way.
+    /// A startup update counted at the last look.
+    updating: bool,
+    /// When the client was last seen going, if it's gone now.
+    absent_since: Option<Instant>,
+    /// A client process was seen since the wait began or restarted. Until
+    /// then a silent start is still on its way.
     seen: bool,
     restarted: bool,
 }
 
 impl ClientWait {
-    fn new(now: Instant, starting_limit: Duration, silence_limit: Duration) -> Self {
+    fn new(now: Instant, starting_limit: Duration, absent_limit: Duration) -> Self {
         Self {
             starting_limit,
-            silence_limit,
+            absent_limit,
             starting_since: now,
-            update: None,
+            updating: false,
+            absent_since: None,
             seen: false,
             restarted: false,
         }
     }
 
-    /// A failed check sends the launch, which is better sent than lost.
+    /// A failed check sends the launch, which is better sent than lost. A
+    /// client that was seen has quit once our silent start has exited too,
+    /// or with none of ours, once it stays gone for `absent_limit`. Shorter
+    /// gaps change nothing.
     fn step(
         &mut self,
         now: Instant,
         client: io::Result<steam::ClientState>,
         update: Option<&steam::ClientUpdate>,
+        ours: Ours,
     ) -> Next {
         match client {
             Err(_) | Ok(steam::ClientState::Ready) => return Next::Send,
-            Ok(steam::ClientState::Absent) if self.seen => {
-                if self.restarted {
-                    return Next::Send;
-                }
-                self.restarted = true;
-                self.seen = false;
-                self.starting_since = now;
-                self.update = None;
-                return Next::Restart;
+            Ok(steam::ClientState::Starting) => {
+                self.seen = true;
+                self.absent_since = None;
             }
-            Ok(steam::ClientState::Starting) => self.seen = true,
-            Ok(steam::ClientState::Absent) => {}
-        }
-        let (since, limit) = match update {
-            Some(update) => {
-                let changed_at = match self.update {
-                    Some((len, at)) if len == update.log_len => at,
-                    _ => now,
-                };
-                self.update = Some((update.log_len, changed_at));
-                (changed_at, self.silence_limit)
-            }
-            None => {
-                if self.update.take().is_some() {
+            Ok(steam::ClientState::Absent) => {
+                let gone_since = *self.absent_since.get_or_insert(now);
+                let quit = self.seen
+                    && match ours {
+                        Ours::Exited => true,
+                        Ours::Running => false,
+                        Ours::None => now.duration_since(gone_since) >= self.absent_limit,
+                    };
+                if quit {
+                    if self.restarted {
+                        return Next::Send;
+                    }
+                    self.restarted = true;
+                    self.seen = false;
                     self.starting_since = now;
+                    self.updating = false;
+                    self.absent_since = None;
+                    return Next::Restart;
                 }
-                (self.starting_since, self.starting_limit)
             }
-        };
-        if now.duration_since(since) >= limit {
+        }
+        if update.is_some() {
+            self.updating = true;
+            return Next::Wait;
+        }
+        if std::mem::take(&mut self.updating) {
+            self.starting_since = now;
+        }
+        if now.duration_since(self.starting_since) >= self.starting_limit {
             Next::Send
         } else {
             Next::Wait
@@ -392,10 +429,8 @@ impl Supervisor {
             unreachable!()
         };
         let dispatched = Instant::now();
-        let mut waiting = StartingWait::new(dispatched).with_client_stall(test_timeout(
-            "WINEO_TEST_STEAM_CLIENT_STALL_MS",
-            CLIENT_UPDATE_SILENCE,
-        ));
+        let mut waiting = StartingWait::new(dispatched);
+        let client_silence = client_update_silence();
         let mut next_scan = dispatched;
         let mut next_manifest = dispatched;
         let mut heartbeat = Instant::now();
@@ -440,7 +475,7 @@ impl Supervisor {
             if now >= next_manifest {
                 let (app_state, progress) = steam::app_snapshot(Some(install), app_id);
                 waiting.observe(now, &app_state, progress);
-                waiting.observe_client(now, steam::client_update(install).as_ref());
+                waiting.observe_client(now, steam::client_update(install, client_silence).as_ref());
                 next_manifest = now + Duration::from_secs(1);
             }
             if waiting.expired(now, start_limit, stall_limit) {
@@ -518,18 +553,17 @@ fn claim(state: &mut RunState, reaper: &steam::Reaper) {
     state.running_at = Some(jiff::Timestamp::now());
 }
 
-/// The clocks for a launch Steam hasn't started yet. While the game or the
-/// Steam client updates, the start window waits and a stall clock runs
-/// instead, and the window starts over when the updates end.
+/// The clocks for a launch Steam hasn't started yet. While the game updates,
+/// the start window waits and a stall clock runs instead. While a startup
+/// update of the client counts, both wait and only `CLIENT_WAIT_CAP` can end
+/// the run. The window starts over when an update ends.
 struct StartingWait {
     updating: bool,
     start_window: Instant,
     progressed_at: Instant,
     previous_progress: Option<steam::Progress>,
-    /// The client's startup update as last read, and when it last moved.
-    client_update: Option<steam::ClientUpdate>,
-    client_progressed_at: Instant,
-    client_stall_limit: Duration,
+    began: Instant,
+    client_updating: bool,
 }
 
 impl StartingWait {
@@ -539,28 +573,19 @@ impl StartingWait {
             start_window: now,
             progressed_at: now,
             previous_progress: None,
-            client_update: None,
-            client_progressed_at: now,
-            client_stall_limit: CLIENT_UPDATE_SILENCE,
+            began: now,
+            client_updating: false,
         }
     }
 
-    /// The client's log changes far more often than a game's manifest, so a
-    /// client update gets a shorter stall limit of its own.
-    fn with_client_stall(mut self, limit: Duration) -> Self {
-        self.client_stall_limit = limit;
-        self
-    }
-
-    /// Any change to the client's update, its log's length included, is
-    /// progress.
+    /// The end of a client update also restarts the game's stall clock,
+    /// which stood still while the client updated.
     fn observe_client(&mut self, now: Instant, update: Option<&steam::ClientUpdate>) {
-        match (self.client_update, update) {
-            (Some(_), None) => self.start_window = now,
-            (previous, Some(next)) if previous != Some(*next) => self.client_progressed_at = now,
-            _ => {}
+        if self.client_updating && update.is_none() {
+            self.start_window = now;
+            self.progressed_at = now;
         }
-        self.client_update = update.copied();
+        self.client_updating = update.is_some();
     }
 
     fn observe(
@@ -591,16 +616,16 @@ impl StartingWait {
         }
     }
 
-    /// With both the game and the client updating, both must stall.
+    /// The helper gives up on the client after `CLIENT_WAIT_CAP`, and the
+    /// launch then gets the usual window.
     fn expired(&self, now: Instant, start_limit: Duration, stall_limit: Duration) -> bool {
-        let client_updating = self.client_update.is_some();
-        if !self.updating && !client_updating {
-            return now.duration_since(self.start_window) >= start_limit;
+        if self.client_updating {
+            now.duration_since(self.began) >= CLIENT_WAIT_CAP + start_limit
+        } else if self.updating {
+            now.duration_since(self.progressed_at) >= stall_limit
+        } else {
+            now.duration_since(self.start_window) >= start_limit
         }
-        let game_stalled = !self.updating || now.duration_since(self.progressed_at) >= stall_limit;
-        let client_stalled = !client_updating
-            || now.duration_since(self.client_progressed_at) >= self.client_stall_limit;
-        game_stalled && client_stalled
     }
 }
 
@@ -802,15 +827,9 @@ mod tests {
         ));
     }
 
-    fn client_update(log_len: u64) -> steam::ClientUpdate {
-        steam::ClientUpdate {
-            phase: steam::ClientUpdatePhase::Downloading {
-                done_kb: log_len,
-                total_kb: 410_553,
-            },
-            log_len,
-        }
-    }
+    const UPDATE: steam::ClientUpdate = steam::ClientUpdate {
+        phase: steam::ClientUpdatePhase::Installing,
+    };
 
     #[test]
     fn a_client_update_pauses_the_start_window_until_it_ends() {
@@ -820,7 +839,7 @@ mod tests {
         let mut wait = StartingWait::new(now);
         for second in 0..=100 {
             let at = now + Duration::from_secs(second);
-            wait.observe_client(at, Some(&client_update(second)));
+            wait.observe_client(at, Some(&UPDATE));
             assert!(!wait.expired(at, start, stall), "expired at {second} s");
         }
         let ended = now + Duration::from_secs(101);
@@ -830,24 +849,71 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_client_update_fails_after_its_own_stall_limit() {
+    fn a_counting_client_update_ends_the_run_only_at_the_cap() {
         let now = Instant::now();
         let start = Duration::from_secs(60);
         let stall = Duration::from_secs(600);
-        let mut wait = StartingWait::new(now).with_client_stall(CLIENT_UPDATE_SILENCE);
-        wait.observe_client(now, Some(&client_update(7)));
-        for second in 1..120 {
+        let mut wait = StartingWait::new(now);
+        let cap = now + CLIENT_WAIT_CAP + start;
+        wait.observe_client(cap - Duration::from_secs(1), Some(&UPDATE));
+        assert!(!wait.expired(cap - Duration::from_secs(1), start, stall));
+        assert!(wait.expired(cap, start, stall));
+    }
+
+    #[test]
+    fn the_start_window_outlasts_the_helpers_send_after_a_client_update() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut supervisor = StartingWait::new(now);
+        let mut helper = limits(now);
+        let ended = 400;
+        let mut sent = None;
+        // Ticks of the helper's 250 ms poll. The supervisor reads the log
+        // once a second, so it can see the end up to a second later or a
+        // poll sooner.
+        for tick in 0..4 * 200 {
+            let at = now + CLIENT_POLL * tick;
+            let update = (tick < ended).then_some(&UPDATE);
+            if tick % 4 == 1 {
+                supervisor.observe_client(at, update);
+            }
+            if sent.is_none() && helper.step(at, starting(), update, Ours::Running) == Next::Send {
+                sent = Some(at);
+            }
+            if let Some(sent) = sent
+                && at <= sent + Duration::from_secs(5)
+            {
+                assert!(!supervisor.expired(at, start, stall), "expired at {tick}");
+            }
+        }
+        let sent = sent.expect("the helper sends");
+        let end = now + CLIENT_POLL * ended;
+        assert!(sent >= end + CLIENT_STARTING_LIMIT, "sent early");
+    }
+
+    #[test]
+    fn the_game_stall_clock_waits_while_the_client_updates() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe(now, &steam::AppState::Updating, Some(progress(1030, 0)));
+        wait.observe_client(now, Some(&UPDATE));
+        for second in 1..=700 {
             let at = now + Duration::from_secs(second);
-            wait.observe_client(at, Some(&client_update(7)));
+            wait.observe(at, &steam::AppState::Updating, Some(progress(1030, 0)));
+            wait.observe_client(at, Some(&UPDATE));
             assert!(!wait.expired(at, start, stall), "expired at {second} s");
         }
-        let silent = now + CLIENT_UPDATE_SILENCE;
-        wait.observe_client(silent, Some(&client_update(7)));
-        assert!(wait.expired(silent, start, stall));
+        let ended = now + Duration::from_secs(701);
+        wait.observe_client(ended, None);
+        assert!(!wait.expired(ended + Duration::from_secs(599), start, stall));
+        assert!(wait.expired(ended + stall, start, stall));
     }
 
     fn limits(now: Instant) -> ClientWait {
-        ClientWait::new(now, CLIENT_STARTING_LIMIT, CLIENT_UPDATE_SILENCE)
+        ClientWait::new(now, CLIENT_STARTING_LIMIT, CLIENT_ABSENT_LIMIT)
     }
 
     fn starting() -> io::Result<steam::ClientState> {
@@ -866,11 +932,11 @@ mod tests {
     fn a_ready_client_gets_the_launch() {
         let now = Instant::now();
         let mut wait = limits(now);
-        assert_eq!(wait.step(now, starting(), None), Next::Wait);
+        assert_eq!(wait.step(now, starting(), None, Ours::None), Next::Wait);
         let ready = Ok(steam::ClientState::Ready);
         // Ready wins even over a log that still says updating.
         assert_eq!(
-            wait.step(after(now, 250), ready, Some(&client_update(1))),
+            wait.step(after(now, 250), ready, Some(&UPDATE), Ours::None),
             Next::Send
         );
     }
@@ -879,69 +945,59 @@ mod tests {
     fn a_failed_client_check_sends_the_launch() {
         let now = Instant::now();
         let mut wait = limits(now);
-        assert_eq!(wait.step(now, starting(), None), Next::Wait);
+        assert_eq!(wait.step(now, starting(), None, Ours::None), Next::Wait);
         let failed = Err(io::Error::other("no /proc"));
-        assert_eq!(wait.step(after(now, 250), failed, None), Next::Send);
+        assert_eq!(
+            wait.step(after(now, 250), failed, None, Ours::None),
+            Next::Send
+        );
     }
 
     #[test]
     fn a_client_starting_with_no_update_gets_the_launch_after_15_s() {
         let now = Instant::now();
         let mut wait = limits(now);
-        assert_eq!(wait.step(now, starting(), None), Next::Wait);
-        assert_eq!(wait.step(after(now, 14_999), starting(), None), Next::Wait);
-        assert_eq!(wait.step(after(now, 15_000), starting(), None), Next::Send);
+        assert_eq!(wait.step(now, starting(), None, Ours::None), Next::Wait);
+        assert_eq!(
+            wait.step(after(now, 14_999), starting(), None, Ours::None),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(now, 15_000), starting(), None, Ours::None),
+            Next::Send
+        );
     }
 
     #[test]
     fn a_silent_start_not_up_yet_counts_as_starting() {
         let now = Instant::now();
         let mut wait = limits(now);
-        assert_eq!(wait.step(now, absent(), None), Next::Wait);
-        assert_eq!(wait.step(after(now, 14_999), absent(), None), Next::Wait);
-        assert_eq!(wait.step(after(now, 15_000), absent(), None), Next::Send);
+        // Even with our command gone, a client never seen hasn't quit.
+        for ours in [Ours::Running, Ours::Exited] {
+            assert_eq!(wait.step(now, absent(), None, ours), Next::Wait);
+            assert_eq!(
+                wait.step(after(now, 14_999), absent(), None, ours),
+                Next::Wait
+            );
+        }
+        assert_eq!(
+            wait.step(after(now, 15_000), absent(), None, Ours::Exited),
+            Next::Send
+        );
     }
 
     #[test]
-    fn a_client_update_keeps_the_launch_waiting_while_its_log_moves() {
+    fn a_client_update_keeps_the_launch_waiting_while_it_counts() {
         let now = Instant::now();
         let mut wait = limits(now);
         for second in 0..=600 {
             let at = now + Duration::from_secs(second);
             assert_eq!(
-                wait.step(at, starting(), Some(&client_update(second))),
+                wait.step(at, starting(), Some(&UPDATE), Ours::Running),
                 Next::Wait,
                 "sent at {second} s"
             );
         }
-    }
-
-    #[test]
-    fn a_client_update_silent_for_120_s_sends_the_launch() {
-        let now = Instant::now();
-        let mut wait = limits(now);
-        assert_eq!(
-            wait.step(now, starting(), Some(&client_update(5))),
-            Next::Wait
-        );
-        let moved = after(now, 30_000);
-        assert_eq!(
-            wait.step(moved, starting(), Some(&client_update(6))),
-            Next::Wait
-        );
-        let quiet = moved + CLIENT_UPDATE_SILENCE;
-        assert_eq!(
-            wait.step(
-                quiet - Duration::from_millis(1),
-                starting(),
-                Some(&client_update(6))
-            ),
-            Next::Wait
-        );
-        assert_eq!(
-            wait.step(quiet, starting(), Some(&client_update(6))),
-            Next::Send
-        );
     }
 
     #[test]
@@ -951,18 +1007,91 @@ mod tests {
         for second in 0..100 {
             let at = now + Duration::from_secs(second);
             assert_eq!(
-                wait.step(at, starting(), Some(&client_update(second))),
+                wait.step(at, starting(), Some(&UPDATE), Ours::Running),
                 Next::Wait
             );
         }
         let ended = now + Duration::from_secs(100);
-        assert_eq!(wait.step(ended, starting(), None), Next::Wait);
-        let limit = ended + CLIENT_STARTING_LIMIT;
         assert_eq!(
-            wait.step(limit - Duration::from_millis(1), starting(), None),
+            wait.step(ended, starting(), None, Ours::Running),
             Next::Wait
         );
-        assert_eq!(wait.step(limit, starting(), None), Next::Send);
+        let limit = ended + CLIENT_STARTING_LIMIT;
+        assert_eq!(
+            wait.step(
+                limit - Duration::from_millis(1),
+                starting(),
+                None,
+                Ours::Running
+            ),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(limit, starting(), None, Ours::Running),
+            Next::Send
+        );
+    }
+
+    #[test]
+    fn a_relaunch_gap_with_our_start_running_changes_nothing() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        assert_eq!(wait.step(now, starting(), None, Ours::Running), Next::Wait);
+        // Steam's verify-only block, then the real one a couple of seconds
+        // later, with no client process between.
+        for millis in (250..=2_250).step_by(250) {
+            assert_eq!(
+                wait.step(after(now, millis), absent(), None, Ours::Running),
+                Next::Wait
+            );
+        }
+        assert_eq!(
+            wait.step(after(now, 2_500), starting(), None, Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(now, 15_000), starting(), None, Ours::Running),
+            Next::Send
+        );
+    }
+
+    #[test]
+    fn a_client_we_didnt_start_quits_only_after_10_s_gone() {
+        let now = Instant::now();
+        let mut wait = limits(now);
+        assert_eq!(
+            wait.step(now, starting(), Some(&UPDATE), Ours::None),
+            Next::Wait
+        );
+        // Gaps shorter than the limit, even back to back, change nothing.
+        for gap in 0..2 {
+            let from = 20_000 * gap;
+            for millis in (from + 250..from + 10_000).step_by(250) {
+                assert_eq!(
+                    wait.step(after(now, millis), absent(), Some(&UPDATE), Ours::None),
+                    Next::Wait,
+                    "at {millis} ms"
+                );
+            }
+            assert_eq!(
+                wait.step(
+                    after(now, from + 10_000),
+                    starting(),
+                    Some(&UPDATE),
+                    Ours::None
+                ),
+                Next::Wait
+            );
+        }
+        let gone = after(now, 50_000);
+        assert_eq!(
+            wait.step(gone, absent(), Some(&UPDATE), Ours::None),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(gone + CLIENT_ABSENT_LIMIT, absent(), None, Ours::None),
+            Next::Restart
+        );
     }
 
     #[test]
@@ -970,16 +1099,33 @@ mod tests {
         let now = Instant::now();
         let mut wait = limits(now);
         assert_eq!(
-            wait.step(now, starting(), Some(&client_update(1))),
+            wait.step(now, starting(), Some(&UPDATE), Ours::Running),
             Next::Wait
         );
         let quit = after(now, 10_000);
-        assert_eq!(wait.step(quit, absent(), None), Next::Restart);
-        // The restart is on its way, and its 15 s run from the restart.
-        assert_eq!(wait.step(after(quit, 250), absent(), None), Next::Wait);
-        assert_eq!(wait.step(after(quit, 5_000), starting(), None), Next::Wait);
-        assert_eq!(wait.step(after(quit, 14_999), starting(), None), Next::Wait);
-        assert_eq!(wait.step(after(quit, 15_000), absent(), None), Next::Send);
+        assert_eq!(wait.step(quit, absent(), None, Ours::Running), Next::Wait);
+        assert_eq!(
+            wait.step(after(quit, 250), absent(), None, Ours::Exited),
+            Next::Restart
+        );
+        let restart = after(quit, 250);
+        // The new start is on its way, and its 15 s run from the restart.
+        assert_eq!(
+            wait.step(after(restart, 250), absent(), None, Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(restart, 5_000), starting(), None, Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(restart, 14_999), starting(), None, Ours::Running),
+            Next::Wait
+        );
+        assert_eq!(
+            wait.step(after(restart, 14_999), absent(), None, Ours::Exited),
+            Next::Send
+        );
     }
 
     #[test]

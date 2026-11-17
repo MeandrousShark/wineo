@@ -192,7 +192,7 @@ fn a_steam_client_updating_at_start_holds_the_launch_and_the_run_succeeds() {
     ));
     let started = s
         .wineo()
-        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "1000")
+        .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "2000")
         .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "500")
         .env("WINEO_TEST_STEAM_CLIENT_STALL_MS", "2500")
         .args(["start", "civ", "--target", "steam"])
@@ -200,11 +200,11 @@ fn a_steam_client_updating_at_start_holds_the_launch_and_the_run_succeeds() {
         .unwrap();
     assert_success(&started);
     // The update outlasts both the start limit and the client wait, and each
-    // line moves the log well inside the stall limit.
-    for done in 1..=30 {
+    // line keeps the log well inside the silence limit.
+    for done in 1..=40 {
         thread::sleep(Duration::from_millis(100));
         s.append_client_log(&format!(
-            "[2026-11-13 10:32:52] Downloading update ({done},000 of 30,000 KB)...\n"
+            "[2026-11-13 10:32:52] Downloading update ({done},000 of 40,000 KB)...\n"
         ));
         assert_eq!(dispatches(&s), Vec::<String>::new());
         assert!(
@@ -249,6 +249,35 @@ fn a_steam_client_that_never_gets_ready_gets_the_launch_after_the_client_wait() 
     assert_eq!(dispatches(&s), ["-applaunch 289070"]);
     // The fake `steam` waits on the client's request pipe until it reads.
     s.release_client_ready();
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn a_cold_started_client_that_quits_gets_one_silent_restart_then_the_launch() {
+    let s = SteamFixture::cold();
+    s.hold_client_ready();
+    s.config("");
+    let started = s
+        .wineo()
+        .env("WINEO_TEST_STEAM_CLIENT_WAIT_MS", "10000")
+        .args(["start", "civ", "--target", "steam"])
+        .output()
+        .unwrap();
+    assert_success(&started);
+    let first = s.client_pid();
+    // Several polls of the helper, so it has seen the client coming up. The
+    // fake `steam -silent` has already exited, as `steam.sh` does once its
+    // client is gone.
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(dispatches(&s), ["-silent"]);
+    signal(first, "-KILL");
+    wait_for("the silent restart", || s.dispatch_count() == 2);
+    assert_eq!(dispatches(&s), ["-silent", "-silent"]);
+    s.release_client_ready();
+    wait_for("the launch", || s.dispatch_count() == 3);
+    assert_eq!(dispatches(&s), ["-silent", "-silent", "-applaunch 289070"]);
     claimed_pid(&s);
     assert_success(&s.run(&["stop", "civ"]));
     s.f.wait_for_run_end("civ", "stopped");
