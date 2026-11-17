@@ -97,6 +97,20 @@ nullable `last_played`. See [Playtime](stats.md).
 A [native environment](native.md) has no runner or prefix, so `runner` and
 `prefix` are `null`, along with `gameid`, `store`, `dxvk`, and `vkd3d`.
 
+An [emulated game](native.md#emulated-games), a native environment with an
+`[emulation]` table, keeps `"kind": "native"` and adds `emulation`:
+
+```json
+"emulation": {
+  "emulator": "dolphin",
+  "system": "gamecube",
+  "rom": "~/Games/roms/gamecube/Metroid Prime (USA).rvz"
+}
+```
+
+`system` is `null` when the table has none, and `rom` is the path as the
+config holds it. Other environments leave `emulation` out.
+
 A [Steam game](steam.md) has `"kind": "proxied"` and more fields:
 `launcher` (`steam`), `app_id`, `install`, one of `installed`, `updating`,
 `installing`, `install_queued`, `uninstalling`, `not_installed`,
@@ -130,9 +144,9 @@ Nameless `status --json` and `list --json` return the same envelope:
 ```
 
 Each item in `environments` contains the common status fields shown above,
-including `hooks`, plus `kind`, which is `null` for a config that can't be read, and a Steam
+including `hooks`, plus `kind`, which is `null` for a config that can't be read, a Steam
 game's `launcher`, `app_id`, `install`, `install_progress`, `install_problem`,
-and `started_by`.
+and `started_by`, and an emulated game's `emulation`.
 `list` includes every environment whose runtime status can be read, and
 `list --tag` only those with every given tag. Nameless `status` includes
 running, busy, or unresolved environments. Both sort by environment name.
@@ -349,7 +363,7 @@ The codes are stable:
 | `environment_config` | `environment_config_invalid`, `title_invalid` |
 | `wine` | `runner_missing`, `build_missing`, `prefix_missing`, `prefix_refused`, `prefix_nested`, `winetricks_missing`, `winetricks_unavailable` |
 | `target` | `exe_missing`, `cwd_missing`, `gamemode_missing`, `gamescope_missing`, `mangohud_missing`, `wayland_unsupported` |
-| `native_target` | `native_exe_invalid` |
+| `native_target` | `native_exe_invalid`, `emulated_rom_missing`, `emulated_emulator_missing` |
 | `environment` | `target_ambiguous` |
 | `runtime` | `lost_run`, `installer_unresolved`, `snapshot_restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |

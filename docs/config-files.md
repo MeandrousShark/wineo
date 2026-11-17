@@ -114,6 +114,15 @@ configs never get the key written. `docs/native-environment.toml.example`
 (installed next to the Wine example) lists every key a native config can
 hold. See [Native Linux games](native.md).
 
+An emulated game is a native config with an `[emulation]` table
+(`emulator`, `rom`, and an optional `system`). It needed no schema bump
+either: a wineo before 1.7.0 refuses the file for its unknown key
+rather than misreading it, and nothing else gets the table
+written. A Wine config refuses it with its own line, and a proxied one like
+its other refused keys. `emulator` ids aren't checked against wineo's list,
+so a newer wineo's emulator reads and `set`s fine in an older one that has
+the table. See [Emulated games](native.md#emulated-games).
+
 ## Proxied environments
 
 `kind = "proxied"` makes an environment a game another launcher installs,
@@ -503,7 +512,8 @@ Each `[presets."<name>"]` table is a saved view the desktop app can apply: a
 sort and direction, `favorites_first`, the filters, `show_hidden`, `group`,
 and `layout`. The filters are lists of ids: `stores` and `not_stores` take
 `steam`, `gog`, `epic`, and `amazon`; `platforms` and `not_platforms` take
-`native` and `windows`; `tags` and `not_tags` take tag names. A `not_` list
+`native`, `windows`, an emulator id like `dolphin`, and `emulated` for a
+custom or unknown emulator; `tags` and `not_tags` take tag names. A `not_` list
 excludes what it names, and an empty or missing list filters nothing. A
 preset doesn't hold the search, zoom, titles, or random setting, and
 applying one doesn't change `[view]`. Names are up to 60 characters, not

@@ -816,6 +816,10 @@ fn native_example_config_parses_with_every_setting_uncommented() {
     );
     assert!(config.heroic_id.is_some());
     assert!(!config.env.is_empty());
+    let emulation = config.emulation.as_ref().unwrap();
+    assert_eq!(emulation.emulator, "dolphin");
+    assert!(emulation.system.is_some());
+    assert!(!emulation.rom.is_empty());
 
     let game = &config.targets["game"];
     assert!(!game.exe.is_empty());

@@ -139,17 +139,88 @@ leaves.
 | `set` | `gamemode`, `mangohud`, `gamescope.*`, `env.*`, and `targets.*` work. Wine-only keys, including `wayland` and `winetricks`, and `kind` are refused. |
 | `setup` | Skips the prefix and program scan. Adding a target goes straight to entering a path. |
 | `desktop`, `art` | Work. The icon comes from art only, and an entry with no art uses the theme's generic icon. |
-| `clone` | Copies the config and art under the new name, with desktop entries off |
-| `portable copy` | Copies the config and art. Absolute exe paths stay host paths and are listed in the review. |
+| `clone` | Copies the config and art under the new name, with desktop entries off. An `[emulation]` table comes along, so the copy counts as the same ROM. |
+| `portable copy` | Copies the config and art. Absolute exe paths and an `[emulation] rom` outside the folder stay host paths and are listed in the review as `external path:` lines. |
 | `rm` | Works and trashes config, art, and playtime. `--include-prefix` is refused because there is no prefix. |
 | `exec`, `winetricks`, `programs`, `snapshot` | Refused: `dusklight is a native environment, so it has no prefix` |
 | `templates`, `import` of a prefix | Wine only |
 
 Desktop entries get `Game;` as their category when gamemode, gamescope, or
-MangoHud is on, and `Utility;Software;` otherwise.
+MangoHud is on, or the environment is an [emulated game](#emulated-games),
+and `Utility;Software;` otherwise.
 
 `status --json` has `"kind": "native"`, with `runner` and `prefix` set to
 `null`. See [JSON output](json-output.md).
+
+## Emulated games
+
+A game that runs in an emulator is a native environment whose target runs
+the emulator with the game, plus an `[emulation]` table saying where it came
+from:
+
+```toml
+schema_version = 1
+kind = "native"
+title = "Metroid Prime"
+tags = ["gamecube"]
+
+[emulation]
+emulator = "dolphin"
+system = "gamecube"
+rom = "~/Games/roms/gamecube/Metroid Prime (USA).rvz"
+
+[targets.metroid-prime]
+exe = "dolphin-emu"
+args = ["-b", "-e", "/home/me/Games/roms/gamecube/Metroid Prime (USA).rvz"]
+default = true
+```
+
+The target is what runs. Nothing builds the command from `[emulation]`, so
+if the two drift apart, the target wins. Launching, stopping, playtime,
+hooks, and desktop entries work as for any native game.
+
+| Key | Meaning |
+|---|---|
+| `emulator` | Required. One of `dolphin`, `retroarch`, `cemu`, `pcsx2`, `duckstation`, `ppsspp`, `rpcs3`, `melonds`, `mgba`, `xemu`, or `azahar`, or `custom` for anything else. An id wineo doesn't know is kept. |
+| `system` | Optional. The game's system, like `gamecube` or `snes`. |
+| `rom` | Required. The game's file or folder. `set` stores it absolute, with your home as `~`. |
+
+Only a native environment can have the table. A Wine environment refuses it
+with `dusklight isn't a native environment, so it can't set emulation.`, and
+a Steam game refuses it like its other Wine and native keys. `emulator` and
+`rom` can't be empty.
+
+`set` and `unset` take `emulation.*`. A new table needs its emulator and ROM
+in the same `set`:
+
+```
+$ wineo set prime emulation.emulator=dolphin emulation.rom=~/roms/prime.rvz
+$ wineo set prime emulation.system=gamecube
+```
+
+Setting `emulation.system` alone before the table exists is refused with
+`emulation.system needs emulation.emulator and emulation.rom in the same
+set.` `unset` takes `emulation`, which removes the table, and
+`emulation.system`. `emulation.emulator` and `emulation.rom` can't be unset
+on their own, since the table needs them.
+
+In the desktop app, an emulated game's Source is its emulator, like
+"Dolphin" or "RetroArch", so the list's Source column, sorting, grouping,
+and filter chips follow it. A game with a `gog_id` stays GOG. `custom` and
+ids wineo doesn't know show "Emulated". The filter offers a chip for each
+emulator the library has, and emulated games no longer match the Native
+chip. A [preset](gui.md#presets) names an emulator by its id, like `dolphin`, or
+`emulated`. The card's button says Play.
+
+`validate` warns `emulated_rom_missing` when the ROM is gone, and
+`emulated_emulator_missing` when a target runs `flatpak run ID` and that
+Flatpak isn't installed. The Flatpak check reads a target written as
+`flatpak [options] run [options] ID ...` with a reverse-DNS app id, and
+skips anything else rather than guess. A missing native emulator is
+`native_exe_invalid`, as for any native target.
+
+`list --json` and `status --json` add an `emulation` object. See
+[JSON output](json-output.md).
 
 ## Heroic
 
