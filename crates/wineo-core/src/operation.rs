@@ -650,9 +650,19 @@ impl Locks {
         )
     }
 
+    /// Serializes emulated game imports between their "already imported"
+    /// check and the write, across every root.
+    pub(crate) fn emulated_roms(&self) -> Result<ConfigGuard> {
+        let lock = match &self.paths {
+            Some(paths) => paths.emulated_rom_lock(),
+            None => self.dir.join("emulated-roms.lock"),
+        };
+        self.write_lock(&lock, "emulated game imports".to_owned(), CONFIG_ATTEMPTS)
+    }
+
     fn write_lock(&self, lock: &Path, subject: String, attempts: u32) -> Result<ConfigGuard> {
-        fs::create_dir_all(&self.dir)
-            .context(|| format!("failed to create {}", self.dir.display()))?;
+        let dir = lock.parent().unwrap_or(&self.dir);
+        fs::create_dir_all(dir).context(|| format!("failed to create {}", dir.display()))?;
         let file = open(lock)?;
         if !take(&file, lock, false, attempts)? {
             return Err(Error::Busy {

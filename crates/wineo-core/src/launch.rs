@@ -928,7 +928,7 @@ pub fn native_path_var(env: &BTreeMap<String, String>) -> OsString {
     path_or_inherited(env.get("PATH"))
 }
 
-fn path_or_inherited(path: Option<&String>) -> OsString {
+pub(crate) fn path_or_inherited(path: Option<&String>) -> OsString {
     match path {
         Some(path) => OsString::from(path),
         None => std::env::var_os("PATH").unwrap_or_default(),

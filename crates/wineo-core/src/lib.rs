@@ -43,6 +43,7 @@ pub mod programs;
 pub mod read_log;
 pub mod refresh;
 pub mod report;
+pub mod rom_import;
 pub mod runner;
 pub mod runner_alias;
 pub mod runners;
