@@ -1197,6 +1197,34 @@ fn a_one_core_folder_keeps_its_picks_through_back_and_next() {
 }
 
 #[test]
+fn two_names_that_arent_utf8_are_picked_apart() {
+    use std::os::unix::ffi::OsStrExt;
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(temp.path(), &[]);
+    for name in [&b"Game \xfe.gba"[..], &b"Game \xff.gba"[..]] {
+        fs::write(folder.join(std::ffi::OsStr::from_bytes(name)), "").unwrap();
+    }
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::Mgba, &folder);
+    // A scan calls them unusable today; the picks mustn't rely on that.
+    for entry in &mut page.listing.as_mut().unwrap().entries {
+        assert!(matches!(entry.state, EntryState::Unusable(_)));
+        entry.state = EntryState::New;
+    }
+    assert_eq!(page.listing.as_ref().unwrap().entries.len(), 2);
+    let _ = page.update(Event::Toggle(0), false);
+    assert_eq!(page.grid.chosen.len(), 1);
+    let (_, entries, _) = page.plan_inputs().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].rom,
+        page.listing.as_ref().unwrap().entries[0].rom
+    );
+}
+
+#[test]
 fn a_home_path_or_a_single_game_file_lists_its_games() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);

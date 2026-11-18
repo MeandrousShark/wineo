@@ -78,7 +78,7 @@ impl Page {
                     poster: None,
                     reason,
                     note: entry.note.clone(),
-                    chosen: self.grid.chosen.contains(&*entry.rom.to_string_lossy()),
+                    chosen: self.grid.chosen.contains(&super::rom_key(&entry.rom)),
                     focus_ring: self.grid.focus_ring(index),
                     dimmed: false,
                 },

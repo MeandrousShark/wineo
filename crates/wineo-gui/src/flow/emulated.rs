@@ -132,7 +132,7 @@ pub(crate) struct Page {
     core: Option<Core>,
     system: Option<String>,
     listing: Option<Listing>,
-    /// Picks ROM paths.
+    /// Picks ROM paths, by `rom_key`.
     grid: ImportGrid<Event>,
     fullscreen: bool,
     fetch_art: bool,
@@ -417,7 +417,7 @@ impl Page {
             listing
                 .entries
                 .iter()
-                .any(|entry| entry.state == EntryState::New && entry.rom.to_string_lossy() == *rom)
+                .any(|entry| entry.state == EntryState::New && rom_key(&entry.rom) == *rom)
         });
         self.grid.focus = self
             .grid
@@ -444,7 +444,7 @@ impl Page {
             .iter()
             .flat_map(|listing| listing.entries.iter())
             .filter(|entry| entry.state == EntryState::New)
-            .map(|entry| entry.rom.to_string_lossy().into_owned())
+            .map(|entry| rom_key(&entry.rom))
     }
 
     fn toggle(&mut self, index: usize) {
@@ -458,7 +458,7 @@ impl Page {
         if entry.state != EntryState::New {
             return;
         }
-        let rom = entry.rom.to_string_lossy().into_owned();
+        let rom = rom_key(&entry.rom);
         self.grid.toggle(&rom);
     }
 
@@ -470,7 +470,7 @@ impl Page {
         let entries = listing
             .entries
             .iter()
-            .filter(|entry| self.grid.chosen.contains(&*entry.rom.to_string_lossy()))
+            .filter(|entry| self.grid.chosen.contains(&rom_key(&entry.rom)))
             .cloned()
             .collect();
         // A custom emulator's system is its games' tag, not a choice.
@@ -891,6 +891,19 @@ impl Page {
             (None, _) => String::new(),
         }
     }
+}
+
+/// A ROM's key among the picks: its path's bytes in hex, so names that
+/// aren't UTF-8 stay apart.
+fn rom_key(rom: &std::path::Path) -> String {
+    use std::fmt::Write;
+    rom.as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(String::new(), |mut key, byte| {
+            let _ = write!(key, "{byte:02x}");
+            key
+        })
 }
 
 #[cfg(test)]
