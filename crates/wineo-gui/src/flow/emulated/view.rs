@@ -89,14 +89,16 @@ impl Page {
     }
 
     /// The options above the games: fullscreen where the emulator has it,
-    /// and art.
+    /// and art. They hold still while the games are checked, since Review
+    /// shows what they were then.
     fn options(&self, key_available: bool, palette: Palette) -> Element<'_, Event> {
+        let idle = !self.waiting();
         let mut options = column![].spacing(8);
         if self.chosen.as_ref().is_some_and(Chosen::has_fullscreen) {
             options = options.push(
                 checkbox(self.fullscreen)
                     .label("Start in fullscreen")
-                    .on_toggle(Event::Fullscreen),
+                    .on_toggle_maybe(idle.then_some(Event::Fullscreen)),
             );
         }
         if !self.art_enabled() {
@@ -107,7 +109,7 @@ impl Page {
             options = options.push(
                 checkbox(self.fetch_art)
                     .label("Fetch art using the top SteamGridDB match")
-                    .on_toggle(Event::FetchArt),
+                    .on_toggle_maybe(idle.then_some(Event::FetchArt)),
             );
         } else {
             options = options.push(

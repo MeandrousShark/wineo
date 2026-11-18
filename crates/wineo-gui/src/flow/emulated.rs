@@ -729,11 +729,11 @@ impl Page {
             Event::ImportSelected if self.step == Step::Games => {
                 self.import_selected(key_available)
             }
-            Event::Fullscreen(on) if self.step == Step::Games => {
+            Event::Fullscreen(on) if self.step == Step::Games && !self.waiting() => {
                 self.fullscreen = on;
                 Task::none()
             }
-            Event::FetchArt(on) if self.step == Step::Games => {
+            Event::FetchArt(on) if self.step == Step::Games && !self.waiting() => {
                 self.fetch_art = on && self.art_enabled() && key_available;
                 Task::none()
             }

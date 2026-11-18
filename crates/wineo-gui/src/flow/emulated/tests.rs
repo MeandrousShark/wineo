@@ -1146,6 +1146,35 @@ fn editing_the_folder_while_it_is_looked_at_drops_the_lookup() {
 }
 
 #[test]
+fn fullscreen_and_art_hold_still_while_the_games_are_checked() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(temp.path(), &["Metroid Fusion.gba"]);
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::Mgba, &folder);
+    let _ = page.update(Event::SelectAll, true);
+    let _ = page.update(Event::ImportSelected, true);
+    assert_eq!(page.status, "Checking games...");
+    let _ = page.update(Event::Fullscreen(false), true);
+    let _ = page.update(Event::FetchArt(true), true);
+    assert!(page.fullscreen && !page.fetch_art);
+    settle(&mut page);
+    let shown = texts(&page, true);
+    assert!(
+        shown.iter().any(|text| text == "Fullscreen: on"),
+        "{shown:?}"
+    );
+    assert!(shown.iter().any(|text| text == "Art: none"), "{shown:?}");
+    assert!(
+        page.review.as_ref().unwrap().ready[0]
+            .target
+            .args
+            .contains(&"-f".to_owned())
+    );
+}
+
+#[test]
 fn a_home_path_or_a_single_game_file_lists_its_games() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);
