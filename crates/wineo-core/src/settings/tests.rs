@@ -1686,3 +1686,44 @@ fn settings_write_through_a_symlinked_config() {
     }
     .check();
 }
+
+#[test]
+fn a_legacy_global_config_with_retroarch_is_read_and_a_no_op_set_leaves_it_alone() {
+    let (_root, paths) = setup();
+    let original = "# mine\n[retroarch]\nquit_with_game   =   false # off\n";
+    write_global(&paths, original);
+    let path = paths.global_config();
+    let before = modified(&path);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let global = GlobalConfig::load(&paths).unwrap();
+    assert_eq!(global.schema_version, 0);
+    assert!(!global.retroarch.quit_with_game());
+    update(
+        &paths,
+        ConfigFile::Global,
+        &[("retroarch.quit_with_game", "false")],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(modified(&path), before);
+
+    update(
+        &paths,
+        ConfigFile::Global,
+        &[("retroarch.quit_with_game", "true")],
+        &[],
+    )
+    .unwrap();
+    assert!(
+        GlobalConfig::load(&paths)
+            .unwrap()
+            .retroarch
+            .quit_with_game()
+    );
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("quit_with_game   =   true # off")
+    );
+}

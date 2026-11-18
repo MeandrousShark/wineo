@@ -1470,3 +1470,39 @@ fn a_legacy_emulated_config_loads_and_is_left_alone() {
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
 }
+
+#[test]
+fn retroarch_quit_with_game_defaults_on_and_reads_either_way() {
+    assert!(global("").unwrap().retroarch.quit_with_game());
+    assert_eq!(global("").unwrap().retroarch.quit_with_game, None);
+    assert!(global("[retroarch]\n").unwrap().retroarch.quit_with_game());
+    assert!(
+        global("[retroarch]\nquit_with_game = true\n")
+            .unwrap()
+            .retroarch
+            .quit_with_game()
+    );
+    assert!(
+        !global("[retroarch]\nquit_with_game = false\n")
+            .unwrap()
+            .retroarch
+            .quit_with_game()
+    );
+    assert!(matches!(
+        global("[retroarch]\nquit_with_game = \"no\"\n"),
+        Err(Error::ConfigSyntax { .. })
+    ));
+}
+
+#[test]
+fn unknown_retroarch_keys_are_refused() {
+    for text in [
+        "[retroarch]\nquit_with_gam = true\n",
+        "[retroarch]\ncore = \"snes9x\"\n",
+    ] {
+        assert!(
+            matches!(global(text), Err(Error::ConfigUnknownKey { .. })),
+            "{text}"
+        );
+    }
+}
