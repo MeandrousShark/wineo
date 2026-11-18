@@ -200,11 +200,33 @@ expect_exit "an empty existing folder" 0 "$tmp/empty/"
 if [[ -f $tmp/empty/config/library.toml && -d $tmp/empty/games ]]; then pass; else fail "the empty folder was not filled"; fi
 no_leftovers "success" "$tmp"
 
-# Fixed dates: two runs write the same bytes.
-if diff -r "$tmp/one" "$tmp/empty" >/dev/null; then
+# Fixed dates: two runs write the same bytes. The one file that names its
+# folder is the imported emulated game, whose ROM argument must be absolute,
+# so it's compared with the folder as DIR.
+tekken=host/config/wineo/environments/tekken-3.toml
+placeheld() {
+    local dir text
+    dir=$(realpath -- "$1")
+    text=$(<"$1/$tekken")
+    printf '%s\n' "${text//"$dir"/DIR}"
+}
+if diff -r --exclude=tekken-3.toml "$tmp/one" "$tmp/empty" >/dev/null &&
+    diff <(placeheld "$tmp/one") <(placeheld "$tmp/empty") >/dev/null; then
     pass
 else
     fail "two runs wrote different libraries"
+fi
+named=$(grep -rlF "$(realpath -- "$tmp/one")" "$tmp/one" || true)
+if [[ $named == "$tmp/one/$tekken" ]] && placeheld "$tmp/one" | grep -qF '"DIR/host/roms/'; then
+    pass
+else
+    fail "files other than $tekken name the folder: $named"
+fi
+# Its rom is stored with home as `~`, as an import writes it.
+if grep -qxF 'rom = "~/roms/duckstation/Tekken 3 (USA).chd"' "$tmp/one/$tekken"; then
+    pass
+else
+    fail "$tekken doesn't store its rom under ~"
 fi
 
 # A relative path works from another folder and lands there.

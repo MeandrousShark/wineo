@@ -32,7 +32,7 @@
 #   prefixes/adopt-me               a prefix with no environment, for New to adopt
 #   host/                           a throwaway HOME for Add emulated games (below)
 # Every path inside a config is relative to DIR, so the folder can move,
-# except under host/, whose paths are absolute.
+# except one ROM argument under host/ (below).
 #
 # Add emulated games refuses a portable folder, so its fakes live in DIR/host,
 # a throwaway HOME with its own XDG folders, opened without
@@ -41,10 +41,12 @@
 #   host/config/retroarch/cores/    two fake RetroArch cores that both play .sfc
 #   host/config/wineo/environments/ one game already imported from host/roms
 #   host/roms/                      the ROM folders, one per emulator
-# Its paths are absolute, so DIR/host can't be moved after it's written. The
-# fakes come first on PATH, so they're the ones that run, but real emulators
-# later on PATH, Flatpaks, and the distro cores in /usr/lib*/libretro show up
-# beside them too. The SteamGridDB key still comes from the real keyring.
+# The imported game's ROM argument is absolute, so DIR/host can't be moved
+# after it's written. The fakes come first on PATH, and wineo takes the first
+# match, so a real emulator with the same command name is hidden behind its
+# fake. Real emulators under other command names, system-wide Flatpaks, and
+# the distro cores in /usr/lib*/libretro still show up beside them. The
+# SteamGridDB key still comes from the real keyring.
 #
 # Each game below has a `# source:` comment saying what it covers, and the
 # summary table printed at the end is built from those comments, so the two
@@ -776,8 +778,9 @@ add cf-badge-poster title="Badges On A Poster" tags=cf-test favorite added=2026-
 add cf-badge-card title="Badges On A Name Card" tags=cf-test favorite added=2026-11-10T09:24:00Z
 
 # Add emulated games (plan 0068 step 6). Imports refuse a portable folder, so
-# these live in DIR/host, a throwaway HOME, under the absolute path DIR will
-# have after the final rename. Each ROM below says which case it covers.
+# these live in DIR/host, a throwaway HOME. The one absolute path, the
+# imported game's ROM argument, is where DIR will be after the final rename.
+# Each ROM below says which case it covers.
 host=$root/host
 final_host=$(realpath -- "$parent")/$base/host
 [[ $final_host != *[\"\\]* ]] || die "the folder's path can't hold a quote or backslash"
@@ -785,11 +788,12 @@ mkdir -p "$host/bin" "$host/config/retroarch/cores" "$host/config/wineo/environm
     "$host/data" "$host/state" "$host/cache"
 
 # The fake emulators log what they were given and stay up for a minute, so
-# Play shows a running game and its playtime, then exit by themselves.
+# Play shows a running game and its playtime, then exit by themselves. They
+# find their log beside their own folder, so nothing in them names DIR.
 for fake in dolphin-emu duckstation-qt retroarch; do
-    cat >"$host/bin/$fake" <<FAKE
+    cat >"$host/bin/$fake" <<'FAKE'
 #!/bin/sh
-printf '%s\n' "$fake \$*" >>"$final_host/emulators.log"
+printf '%s\n' "${0##*/} $*" >>"$(dirname -- "$0")/../emulators.log"
 sleep 60
 FAKE
     chmod +x "$host/bin/$fake"
@@ -846,7 +850,8 @@ rom "snes/Super Metroid (Japan, USA).sfc"
 # rom: the second SNES game
 rom "snes/Chrono Trigger (USA).sfc"
 
-# The already-imported game, as an import would have written it.
+# The already-imported game, as an import would have written it: `rom` with
+# home as `~`, and the argument absolute, since launches don't expand `~`.
 cat >"$host/config/wineo/environments/tekken-3.toml" <<TEKKEN
 schema_version = 1
 kind = "native"
@@ -856,7 +861,7 @@ tags = ["ps1"]
 [emulation]
 emulator = "duckstation"
 system = "ps1"
-rom = "$final_host/roms/duckstation/Tekken 3 (USA).chd"
+rom = "~/roms/duckstation/Tekken 3 (USA).chd"
 
 [targets.tekken-3]
 exe = "duckstation-qt"
