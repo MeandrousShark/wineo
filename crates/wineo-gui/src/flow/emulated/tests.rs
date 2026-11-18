@@ -1239,6 +1239,26 @@ fn back_from_other_or_custom_before_next_lands_on_its_row() {
 }
 
 #[test]
+fn the_custom_page_refuses_a_windows_program_as_the_import_does() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let mut page = open(&paths, &host);
+    let _ = page.update(Event::Custom, false);
+    for exe in ["~/Games/setup.exe", r"C:\Games\eden.EXE", "eden.bat"] {
+        let _ = page.update(Event::CustomExe(exe.into()), false);
+        let _ = page.update(Event::CustomArgs("{rom}".into()), false);
+        let _ = page.update(Event::CustomExtensions("nsp".into()), false);
+        let _ = page.update(Event::Next, false);
+        assert_eq!(page.step, Step::Custom);
+        assert_eq!(
+            page.error,
+            Some(format!("`{exe}` is a Windows program, not a native one.")),
+        );
+    }
+}
+
+#[test]
 fn a_home_path_or_a_single_game_file_lists_its_games() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);

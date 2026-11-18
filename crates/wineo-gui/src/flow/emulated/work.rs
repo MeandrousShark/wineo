@@ -219,11 +219,8 @@ pub(super) fn custom(
     extensions: &str,
     system: &str,
 ) -> Result<Chosen, String> {
+    rom_import::check_custom_command(paths, exe, &host.path_var).map_err(|e| format!("{e:#}"))?;
     let exe = exe.trim();
-    if exe.is_empty() {
-        return Err("The emulator's command is empty.".to_owned());
-    }
-    launch::resolve_native_exe(paths, exe, exe, &host.path_var).map_err(|e| e.to_string())?;
     emulator::custom_target(exe, args, Path::new("/game")).map_err(|e| e.to_string())?;
     let extensions: Vec<String> = extensions
         .split(|c: char| c == ',' || c.is_whitespace())
