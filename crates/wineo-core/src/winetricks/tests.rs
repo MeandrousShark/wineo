@@ -357,7 +357,12 @@ fn token_cancels_from_another_thread_and_cleans_partial_work() {
         &std::env::var_os("PATH").unwrap_or_default(),
     )))
     .unwrap();
-    let output = Command::new(std::env::current_exe().unwrap())
+    // A shell can't trap a signal it started with ignored, and a test run
+    // launched with `&` from a script ignores SIGINT. `env` puts it back to
+    // the default before the child test starts the fake.
+    let output = Command::new("env")
+        .arg("--default-signal=INT")
+        .arg(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "winetricks::tests::token_cancel_child",
@@ -398,11 +403,7 @@ fn token_cancel_child() {
         &prefix,
         &BTreeMap::new(),
         &["-q".to_owned(), "corefonts".to_owned()],
-        // The script's trap only runs once its `sleep` returns, which can
-        // take over a second on a loaded machine. A force-kill before then
-        // would leave `partial` behind; the run still ends as soon as the
-        // script exits.
-        10,
+        1,
         &token,
         Output::Log(&prefix.join("output.log")),
         |event| events.push(event),
