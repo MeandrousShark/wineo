@@ -198,6 +198,17 @@ owning. Games you own but haven't installed import too, with a Steam Web API
 key, and `wineo install` installs them through Steam. See
 [Steam games](steam.md) and its [owned games](steam.md#owned-games) section.
 
+## Import emulated games
+
+```sh
+wineo import roms ~/Games/roms/gamecube --emulator dolphin --list
+wineo import roms ~/Games/roms/snes --emulator retroarch --core snes9x --all
+wineo import roms --emulators
+```
+
+Games from a folder of ROMs, or one game's file, import as native
+environments that run the emulator. See [Emulated games](emulators.md).
+
 ## Import a manually added Heroic game
 
 ```sh

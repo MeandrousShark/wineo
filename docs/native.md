@@ -175,7 +175,9 @@ args = ["-b", "-e", "/home/me/Games/roms/gamecube/Metroid Prime (USA).rvz"]
 default = true
 ```
 
-The target is what runs. Nothing builds the command from `[emulation]`, so
+`wineo import roms` creates these from a folder of ROMs; see
+[Emulated games](emulators.md). The target is what runs. Nothing builds
+the command from `[emulation]`, so
 if the two drift apart, the target wins. Launching, stopping, playtime,
 hooks, and desktop entries work as for any native game.
 
@@ -242,7 +244,7 @@ own cores folder:
 ```toml
 [targets.chrono-trigger]
 exe = "retroarch"
-args = ["--appendconfig", "/home/me/.local/share/wineo/retroarch-quit.cfg", "-L", "/usr/lib64/libretro/snes9x_libretro.so", "/home/me/roms/snes/Chrono Trigger (USA).sfc"]
+args = ["--appendconfig", "/home/me/.local/share/wineo/retroarch-quit.cfg", "-f", "-L", "/usr/lib64/libretro/snes9x_libretro.so", "/home/me/roms/snes/Chrono Trigger (USA).sfc"]
 default = true
 ```
 
