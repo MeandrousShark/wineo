@@ -783,7 +783,9 @@ add cf-badge-card title="Badges On A Name Card" tags=cf-test favorite added=2026
 # Each ROM below says which case it covers.
 host=$root/host
 final_host=$(realpath -- "$parent")/$base/host
-[[ $final_host != *[\"\\]* ]] || die "the folder's path can't hold a quote or backslash"
+# tekken-3.toml holds the path in a TOML string, which none of these can be in.
+[[ $final_host != *[\"\\[:cntrl:]]* ]] ||
+    die "the folder's path can't hold a quote, backslash, or control character"
 mkdir -p "$host/bin" "$host/config/retroarch/cores" "$host/config/wineo/environments" \
     "$host/data" "$host/state" "$host/cache"
 

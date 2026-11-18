@@ -154,6 +154,19 @@ expect_exit "dot" 1 .
 expect_exit "dot dot" 1 ..
 expect_exit "root" 1 /
 
+# A path the imported emulated game's TOML string can't hold is refused
+# and leaves nothing behind.
+for name in 'quote"d' 'back\slash' $'new\nline' $'tab\there'; do
+    expect_exit "unquotable folder name ${name@Q}" 1 "$tmp/$name"
+    if grep -q "can't hold a quote, backslash, or control character" "$tmp/err"; then
+        pass
+    else
+        fail "${name@Q}: refusal doesn't say why"
+    fi
+    if [[ -e $tmp/$name ]]; then fail "${name@Q}: the folder was made"; else pass; fi
+    no_leftovers "unquotable folder name ${name@Q}" "$tmp"
+done
+
 # A race, reproduced by an exported `ls` that changes DIR right after the
 # listing, which is the moment the early check can no longer be trusted. The
 # rename still refuses, and the new content in DIR and what a swapped-in
