@@ -1269,6 +1269,30 @@ fn list_and_dry_run_in_a_terminal_name_the_missing_flag() {
     let (status, output) = pty.finish();
     assert_eq!(status.code(), Some(1), "{output}");
     assert!(!output.contains("needs a terminal"), "{output}");
+    let mut pty = r.pty(&[
+        &folder,
+        "--emulator",
+        "dolphin",
+        "--system",
+        "gamecube",
+        "--dry-run",
+    ]);
+    pty.expect("--dry-run needs --game NAME or --all");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(!output.contains("or --list"), "{output}");
+}
+
+#[test]
+fn no_folder_without_a_terminal_says_to_pass_one() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    let output = r.run(&["--emulator", "dolphin"]);
+    failed_with(
+        &output,
+        1,
+        "guided ROM import needs a terminal; pass a folder or file of games",
+    );
 }
 
 #[test]

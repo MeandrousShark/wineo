@@ -90,7 +90,7 @@ pub struct Args {
     /// With --custom, its games' file types, like nsp,xci
     #[arg(long, value_name = "EXT", requires = "custom", value_delimiter = ',')]
     pub ext: Vec<String>,
-    /// RetroArch's core, by id, name, or file name
+    /// RetroArch's core, by id, name, file name, or path
     #[arg(
         long,
         value_name = "CORE",
@@ -107,7 +107,7 @@ pub struct Args {
     /// List the games without importing
     #[arg(long, conflicts_with_all = ["game", "all", "yes", "art", "dry_run"])]
     pub list: bool,
-    /// Import one game, by its title or file name
+    /// Import one game, by its title, file name, or path
     #[arg(long, value_name = "NAME")]
     pub game: Option<String>,
     /// Import every game not imported yet
@@ -857,7 +857,12 @@ impl Flow<'_> {
     /// The game to import. Like the other imports' pickers, having nothing
     /// to pick is an error.
     fn ask_game(&mut self, listing: &Listing, folder: &str) -> anyhow::Result<Reply<Picked>> {
-        let what = "--game NAME, --all, or --list";
+        // --list can't be combined with --dry-run, so don't suggest it there.
+        let what = if self.args.dry_run {
+            "--game NAME or --all"
+        } else {
+            "--game NAME, --all, or --list"
+        };
         self.ask(what)?;
         let new: Vec<&Entry> = listing
             .entries
