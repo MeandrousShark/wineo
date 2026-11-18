@@ -357,6 +357,10 @@ impl Page {
                     if !review.ready.is_empty() {
                         let source = self.chosen.as_ref().map(Chosen::source).unwrap_or_default();
                         summary = summary.push(text(format!("Source: {source}")));
+                        let tags = super::tags(&review.ready);
+                        if !tags.is_empty() {
+                            summary = summary.push(text(format!("Tags: {}", tags.join(", "))));
+                        }
                         summary =
                             summary.push(text(format!("Emulator: {}", self.emulator_label())));
                         if self.chosen.as_ref().is_some_and(Chosen::has_fullscreen) {

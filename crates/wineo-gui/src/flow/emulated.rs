@@ -925,6 +925,17 @@ impl Page {
     }
 }
 
+/// The distinct system tags of the games, in the order they come.
+fn tags(ready: &[wineo_core::rom_import::Plan]) -> Vec<&str> {
+    let mut tags: Vec<&str> = Vec::new();
+    for system in ready.iter().filter_map(|plan| plan.system.as_deref()) {
+        if !tags.contains(&system) {
+            tags.push(system);
+        }
+    }
+    tags
+}
+
 /// A ROM's key among the picks: its path's bytes in hex, so names that
 /// aren't UTF-8 stay apart.
 fn rom_key(rom: &std::path::Path) -> String {

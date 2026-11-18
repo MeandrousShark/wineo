@@ -1423,3 +1423,59 @@ fn cancel_while_importing_finishes_with_what_was_done() {
     );
 }
 
+#[test]
+fn review_lists_the_games_system_tags_once_each() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(
+        temp.path(),
+        &["A Link.gb", "B Oracle.gbc", "C Minish.gba", "D Fusion.gba"],
+    );
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::Mgba, &folder);
+    let _ = page.update(Event::SelectAll, false);
+    let _ = page.update(Event::ImportSelected, false);
+    settle(&mut page);
+    let shown = texts(&page, false);
+    let tags: Vec<&String> = shown
+        .iter()
+        .filter(|text| text.starts_with("Tags"))
+        .collect();
+    assert_eq!(tags, ["Tags: gb, gbc, gba"], "{shown:?}");
+    // Steam's order: Source, then Tags.
+    let source = shown
+        .iter()
+        .position(|text| text == "Source: mGBA")
+        .unwrap();
+    assert_eq!(shown[source + 1], "Tags: gb, gbc, gba");
+
+    // A custom emulator with no system tags nothing.
+    let exe = temp.path().join("apps/eden");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    write_script(&exe, "#!/bin/sh\nexit 0\n");
+    let nsp = roms(&temp.path().join("switch"), &["Hollow Knight.nsp"]);
+    let mut page = open(&paths, &host);
+    let _ = page.update(Event::Custom, false);
+    let _ = page.update(Event::CustomExe(exe.display().to_string()), false);
+    let _ = page.update(Event::CustomArgs("{rom}".into()), false);
+    let _ = page.update(Event::CustomExtensions("nsp".into()), false);
+    let _ = page.update(Event::Next, false);
+    let _ = page.update(Event::Folder(nsp.display().to_string()), false);
+    let _ = page.update(Event::Next, false);
+    settle(&mut page);
+    let _ = page.update(Event::SelectAll, false);
+    let _ = page.update(Event::ImportSelected, false);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Review, "{:?}", page.error);
+    let shown = texts(&page, false);
+    assert!(
+        shown.iter().any(|text| text.starts_with("Source")),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.starts_with("Tags")),
+        "{shown:?}"
+    );
+}
+
