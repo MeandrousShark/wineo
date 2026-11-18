@@ -3,8 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use clap_complete::CompletionCandidate;
+
+use crate::commands::import_roms;
 use wineo_core::components::{Builds, Component};
 use wineo_core::config::GlobalConfig;
+use wineo_core::emulator::Emulator;
 use wineo_core::environment::{self, Environment};
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
@@ -291,6 +294,103 @@ pub fn snapshots(current: &OsStr) -> Vec<CompletionCandidate> {
         .into_iter()
         .filter(|item| item.label.starts_with(prefix))
         .map(|item| CompletionCandidate::new(item.label))
+        .collect()
+}
+
+/// The value a flag of `import roms` was given, as `--flag VALUE` or
+/// `--flag=VALUE`, or None when the words aren't `import roms`.
+fn roms_flag<'a>(words: &'a [String], flag: &str) -> Option<Option<&'a str>> {
+    let Some(("import", args)) = command_args(words) else {
+        return None;
+    };
+    if args.first().map(String::as_str) != Some("roms") {
+        return None;
+    }
+    let mut value = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg == flag {
+            value = args.next().map(String::as_str);
+        } else if let Some(rest) = arg
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            value = Some(rest);
+        }
+    }
+    Some(value)
+}
+
+/// Completes `import roms --emulator` with the built-in emulators' ids.
+pub fn emulators(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    Emulator::BUILT_IN
+        .into_iter()
+        .filter(|emulator| emulator.id().starts_with(prefix))
+        .map(|emulator| CompletionCandidate::new(emulator.id()).help(Some(emulator.name().into())))
+        .collect()
+}
+
+/// Completes `import roms --system`: the systems the named emulator chooses
+/// between, or every built-in system when none is named or it's custom.
+pub fn systems(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(Completing { prefix, words, .. }) = Completing::new(current) else {
+        return Vec::new();
+    };
+    let Some(named) = roms_flag(&words, "--emulator") else {
+        return Vec::new();
+    };
+    let mut systems: Vec<&str> = match named.and_then(|id| import_roms::emulator_by_id(id).ok()) {
+        Some(emulator) => emulator.systems().to_vec(),
+        None => Emulator::BUILT_IN
+            .into_iter()
+            .flat_map(|emulator| emulator.systems().iter().copied())
+            .collect(),
+    };
+    systems.sort_unstable();
+    systems.dedup();
+    systems
+        .into_iter()
+        .filter(|system| system.starts_with(prefix))
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
+/// Completes `import roms --core` with the cores of the RetroArch the
+/// command would use: `--exe`'s, else the first one found.
+pub fn cores(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(Completing {
+        prefix,
+        words,
+        paths,
+    }) = Completing::new(current)
+    else {
+        return Vec::new();
+    };
+    match roms_flag(&words, "--emulator") {
+        Some(None | Some("retroarch")) => {}
+        _ => return Vec::new(),
+    }
+    let Ok(global) = GlobalConfig::load(&paths) else {
+        return Vec::new();
+    };
+    let host = import_roms::Host::new(&paths, &global);
+    let install = match roms_flag(&words, "--exe").flatten() {
+        Some(exe) => host.pick_file(&paths, Emulator::RetroArch, exe).ok(),
+        None => host.installs(Emulator::RetroArch).into_iter().next(),
+    };
+    let Some(install) = install else {
+        return Vec::new();
+    };
+    host.cores(&paths, &install)
+        .iter()
+        .filter(|core| core.id().starts_with(prefix))
+        .map(|core| CompletionCandidate::new(core.id()).help(Some(core.name().to_owned().into())))
         .collect()
 }
 
