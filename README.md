@@ -80,7 +80,7 @@ sudo zypper refresh
 sudo zypper install wineo
 ```
 
-For Leap, use `16.0` or `15.6` in place of `openSUSE_Tumbleweed`. openSUSE's
+For Leap, use `16.1`, `16.0`, or `15.6` in place of `openSUSE_Tumbleweed`. openSUSE's
 repositories don't have `umu-launcher`, so Proton environments need it
 from elsewhere.
 

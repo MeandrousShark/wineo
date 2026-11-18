@@ -8,7 +8,7 @@
 # TARGET is one of:
 #   jammy noble resolute stonking              Debian recipe (Ubuntu PPA)
 #   fedora43 fedora44 fedora45                 rpm spec (COPR)
-#   tumbleweed leap16.0 leap15.6               rpm spec (OBS)
+#   tumbleweed leap16.1 leap16.0 leap15.6      rpm spec (OBS)
 #
 # WORKDIR must not exist yet and should be on a real disk, since a cargo
 # build outgrows tmpfs. It keeps the source, the build, and the packages
@@ -35,7 +35,7 @@ set -euo pipefail
 usage() {
     echo "usage: ${0##*/} TARGET WORKDIR" >&2
     echo "TARGET: jammy noble resolute stonking fedora43 fedora44 fedora45" >&2
-    echo "        tumbleweed leap16.0 leap15.6" >&2
+    echo "        tumbleweed leap16.1 leap16.0 leap15.6" >&2
     exit 2
 }
 
@@ -53,6 +53,7 @@ case $target in
     fedora44) kind=fedora image=registry.fedoraproject.org/fedora:44 ;;
     fedora45) kind=fedora image=registry.fedoraproject.org/fedora:45 ;;
     tumbleweed) kind=suse image=registry.opensuse.org/opensuse/tumbleweed:latest ;;
+    leap16.1) kind=suse image=registry.opensuse.org/opensuse/leap:16.1 ;;
     leap16.0) kind=suse image=registry.opensuse.org/opensuse/leap:16.0 ;;
     leap15.6) kind=suse image=registry.opensuse.org/opensuse/leap:15.6 ;;
     *) usage ;;
