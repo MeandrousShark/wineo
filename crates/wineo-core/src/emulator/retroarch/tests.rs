@@ -592,6 +592,13 @@ fn an_info_file_with_a_bom_and_comments_after_values_is_read() {
 }
 
 #[test]
+fn an_info_value_with_no_closing_quote_keeps_the_rest_of_the_line() {
+    let parsed = parse_info("display_name = \"Snes9x\nsystemid = \"super_nes\"\n");
+    assert_eq!(parsed.display_name.as_deref(), Some("Snes9x"));
+    assert_eq!(parsed.systemid.as_deref(), Some("super_nes"));
+}
+
+#[test]
 fn database_names_map_to_wineos_systems() {
     for (name, system) in [
         (
