@@ -1179,6 +1179,48 @@ fn a_late_pick_lands_nowhere_after_back_next_or_typing() {
 }
 
 #[test]
+fn a_folder_pick_that_answers_after_back_leaves_other_and_custom_alone() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let app = temp.path().join("apps/emulator");
+    fs::create_dir_all(app.parent().unwrap()).unwrap();
+    write_script(&app, "#!/bin/sh\nexit 0\n");
+    let typed = app.display().to_string();
+    for page_event in [Event::Other, Event::Custom] {
+        let mut page = open(&paths, &host);
+        let _ = page.update(page_event.clone(), false);
+        let opened = page.step;
+        if opened == Step::Other {
+            let _ = page.update(
+                Event::OtherEmulator(EmulatorChoice(Emulator::Dolphin)),
+                false,
+            );
+            let _ = page.update(Event::OtherFile(typed.clone()), false);
+        } else {
+            let _ = page.update(Event::CustomExe(typed.clone()), false);
+            let _ = page.update(Event::CustomArgs("{rom}".into()), false);
+            let _ = page.update(Event::CustomExtensions("nsp".into()), false);
+        }
+        let _ = page.update(Event::Next, false);
+        assert_eq!(page.step, Step::Folder, "{:?}", page.error);
+        let _ = page.update(Event::BrowseFolder, false);
+        let browsing = page.picker_sequence;
+        let _ = page.update(Event::Back, false);
+        assert_eq!(page.step, opened);
+        let _ = page.update(
+            Event::Picked(browsing, Ok(Some(PathBuf::from("/picked/roms")))),
+            false,
+        );
+        let kept = match opened {
+            Step::Other => &page.other_file,
+            _ => &page.custom.exe,
+        };
+        assert_eq!(kept, &typed, "{opened:?}");
+    }
+}
+
+#[test]
 fn editing_the_folder_while_it_is_looked_at_drops_the_lookup() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);
