@@ -32,13 +32,7 @@ pub fn core_folders(paths: &Paths, install: &Install, system_root: &Path) -> Cor
                 .expect("RetroArch has a Flatpak");
             let info = "current/active/files/share/libretro/info";
             CoreFolders {
-                cores: vec![
-                    paths
-                        .home()
-                        .join(".var/app")
-                        .join(app)
-                        .join("config/retroarch/cores"),
-                ],
+                cores: vec![flatpak_cores_dir(paths)],
                 info: vec![
                     system("var/lib/flatpak/app").join(app).join(info),
                     paths.xdg_data().join("flatpak/app").join(app).join(info),
@@ -62,6 +56,18 @@ pub fn core_folders(paths: &Paths, install: &Install, system_root: &Path) -> Cor
             }
         }
     }
+}
+
+/// Where the RetroArch Flatpak keeps the cores it downloads.
+pub fn flatpak_cores_dir(paths: &Paths) -> PathBuf {
+    let app = Emulator::RetroArch
+        .flatpak_id()
+        .expect("RetroArch has a Flatpak");
+    paths
+        .home()
+        .join(".var/app")
+        .join(app)
+        .join("config/retroarch/cores")
 }
 
 /// One installed core.
@@ -131,12 +137,20 @@ impl Core {
         }
     }
 
-    /// The system of a game with `extension`. A core that plays several
-    /// systems places a file by its extension and leaves one it can't
-    /// place without; a core of one system gives that one.
+    /// The system of a game with `extension`. A core whose databases name
+    /// more than one of wineo's systems places a file by its extension and
+    /// leaves one it can't place without; any other core gives its own
+    /// system, so an add-on like the Satellaview doesn't split the SNES.
     pub fn file_system(&self, extension: Option<&str>) -> Option<&'static str> {
         let info = self.info.as_ref()?;
-        if info.database.len() > 1 {
+        let mut systems: Vec<&str> = info
+            .database
+            .iter()
+            .filter_map(|name| system_for_database(name))
+            .collect();
+        systems.sort_unstable();
+        systems.dedup();
+        if systems.len() > 1 {
             return extension.and_then(system_for_extension);
         }
         self.system()
@@ -155,6 +169,7 @@ pub fn parse_info(text: &str) -> CoreInfo {
             .map(str::to_owned)
             .collect()
     };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('#') {
@@ -164,9 +179,13 @@ pub fn parse_info(text: &str) -> CoreInfo {
             continue;
         };
         let value = value.trim();
+        // A quoted value ends at its closing quote, so a comment after it
+        // is dropped; an unclosed one keeps the rest.
         let value = value
             .strip_prefix('"')
-            .map_or(value, |rest| rest.strip_suffix('"').unwrap_or(rest))
+            .map_or(value, |rest| {
+                rest.split_once('"').map_or(rest, |(inner, _)| inner)
+            })
             .trim();
         let text = (!value.is_empty()).then(|| value.to_owned());
         match key.trim() {
@@ -268,7 +287,7 @@ const SYSTEM_IDS: &[(&str, &str)] = &[
     ("playstation3", "ps3"),
     ("playstation_portable", "psp"),
     ("xbox", "xbox"),
-    ("master_system", "sms"),
+    ("master_system", "mastersystem"),
     ("game_gear", "gamegear"),
     ("mega_drive", "genesis"),
     ("sega_saturn", "saturn"),
@@ -277,23 +296,82 @@ const SYSTEM_IDS: &[(&str, &str)] = &[
     ("atari_2600", "atari2600"),
     ("atari_lynx", "lynx"),
     ("neo_geo_pocket", "ngp"),
+    ("neo_geo_pocket_color", "ngpc"),
     ("wonderswan", "wonderswan"),
+    ("wonderswan_color", "wonderswancolor"),
+];
+
+/// libretro's database names, which an info file's `database` key lists, to
+/// wineo's system ids. A name that isn't here, like an add-on or an arcade
+/// board, counts for nothing.
+const DATABASE_NAMES: &[(&str, &str)] = &[
+    ("Nintendo - Nintendo Entertainment System", "nes"),
+    ("Nintendo - Family Computer Disk System", "nes"),
+    ("Nintendo - Super Nintendo Entertainment System", "snes"),
+    ("Nintendo - Satellaview", "snes"),
+    ("Nintendo - Sufami Turbo", "snes"),
+    ("Nintendo - Nintendo 64", "n64"),
+    ("Nintendo - Nintendo 64DD", "n64"),
+    ("Nintendo - GameCube", "gamecube"),
+    ("Nintendo - Wii", "wii"),
+    ("Nintendo - Wii (Digital)", "wii"),
+    ("Nintendo - Wii U", "wiiu"),
+    ("Nintendo - Game Boy", "gb"),
+    ("Nintendo - Game Boy Color", "gbc"),
+    ("Nintendo - Game Boy Advance", "gba"),
+    ("Nintendo - Game Boy Advance (e-Cards)", "gba"),
+    ("Nintendo - Nintendo DS", "nds"),
+    ("Nintendo - Nintendo DS (Download Play)", "nds"),
+    ("Nintendo - Nintendo DSi", "nds"),
+    ("Nintendo - Nintendo DSi Decrypted", "nds"),
+    ("Nintendo - Nintendo DSi (Digital)", "nds"),
+    ("Nintendo - Nintendo 3DS", "3ds"),
+    ("Nintendo - Virtual Boy", "virtualboy"),
+    ("Sony - PlayStation", "ps1"),
+    ("Sony - PlayStation 2", "ps2"),
+    ("Sony - PlayStation 3", "ps3"),
+    ("Sony - PlayStation Portable", "psp"),
+    ("Microsoft - Xbox", "xbox"),
+    ("Sega - Master System - Mark III", "mastersystem"),
+    ("Sega - Game Gear", "gamegear"),
+    ("Sega - Mega Drive - Genesis", "genesis"),
+    ("Sega - Saturn", "saturn"),
+    ("Sega - Dreamcast", "dreamcast"),
+    ("NEC - PC Engine - TurboGrafx 16", "pcengine"),
+    // The PC Engine family is one system to wineo. Sega's Mega-CD and 32X
+    // have no id, so they count for nothing.
+    ("NEC - PC Engine SuperGrafx", "pcengine"),
+    ("NEC - PC Engine CD - TurboGrafx-CD", "pcengine"),
+    ("Atari - 2600", "atari2600"),
+    ("Atari - Lynx", "lynx"),
+    ("SNK - Neo Geo Pocket", "ngp"),
+    ("SNK - Neo Geo Pocket Color", "ngpc"),
+    ("Bandai - WonderSwan", "wonderswan"),
+    ("Bandai - WonderSwan Color", "wonderswancolor"),
 ];
 
 /// The extensions that tell a system on their own, for a core that plays
 /// several. Generic ones like `bin`, `iso`, and `cue` never do.
 const EXTENSION_SYSTEMS: &[(&str, &str)] = &[
     ("nes", "nes"),
+    ("fds", "nes"),
     ("sfc", "snes"),
     ("smc", "snes"),
+    ("swc", "snes"),
+    ("fig", "snes"),
+    ("bs", "snes"),
+    ("st", "snes"),
     ("n64", "n64"),
+    ("ndd", "n64"),
     ("v64", "n64"),
     ("z64", "n64"),
     ("gcm", "gamecube"),
     ("tgc", "gamecube"),
     ("wbfs", "wii"),
+    ("wad", "wii"),
     ("gb", "gb"),
     ("dmg", "gb"),
+    ("sgb", "gb"),
     ("gbc", "gbc"),
     ("cgb", "gbc"),
     ("gba", "gba"),
@@ -301,15 +379,21 @@ const EXTENSION_SYSTEMS: &[(&str, &str)] = &[
     ("nds", "nds"),
     ("dsi", "nds"),
     ("ids", "nds"),
+    ("srl", "nds"),
     ("3ds", "3ds"),
     ("md", "genesis"),
     ("gen", "genesis"),
     ("smd", "genesis"),
-    ("sms", "sms"),
+    ("sms", "mastersystem"),
     ("gg", "gamegear"),
+    ("cdi", "dreamcast"),
+    ("gdi", "dreamcast"),
     ("pce", "pcengine"),
+    ("ngp", "ngp"),
+    ("ngc", "ngpc"),
+    ("ngpc", "ngpc"),
     ("ws", "wonderswan"),
-    ("wsc", "wonderswan"),
+    ("wsc", "wonderswancolor"),
 ];
 
 /// wineo's system id for a libretro `systemid`, if it's in the table.
@@ -317,6 +401,14 @@ pub fn system_for_id(systemid: &str) -> Option<&'static str> {
     SYSTEM_IDS
         .iter()
         .find(|(id, _)| *id == systemid)
+        .map(|(_, system)| *system)
+}
+
+/// wineo's system id for a libretro database name, if it's in the table.
+pub fn system_for_database(name: &str) -> Option<&'static str> {
+    DATABASE_NAMES
+        .iter()
+        .find(|(known, _)| *known == name)
         .map(|(_, system)| *system)
 }
 

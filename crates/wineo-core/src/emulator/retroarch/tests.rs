@@ -270,7 +270,11 @@ fn systemids_map_to_wineos_systems_and_others_to_none() {
         ("nds", "nds"),
         ("3ds", "3ds"),
         ("xbox", "xbox"),
-        ("master_system", "sms"),
+        ("master_system", "mastersystem"),
+        ("neo_geo_pocket", "ngp"),
+        ("neo_geo_pocket_color", "ngpc"),
+        ("wonderswan", "wonderswan"),
+        ("wonderswan_color", "wonderswancolor"),
     ] {
         assert_eq!(system_for_id(systemid), Some(system), "{systemid}");
     }
@@ -278,7 +282,11 @@ fn systemids_map_to_wineos_systems_and_others_to_none() {
         assert_eq!(system_for_id(unknown), None, "{unknown}");
     }
     // Every system the table gives is a tag-safe id.
-    for (_, system) in SYSTEM_IDS.iter().chain(EXTENSION_SYSTEMS) {
+    for (_, system) in SYSTEM_IDS
+        .iter()
+        .chain(EXTENSION_SYSTEMS)
+        .chain(DATABASE_NAMES)
+    {
         assert_eq!(crate::name::from_title(system), *system);
     }
 }
@@ -328,7 +336,7 @@ fn a_core_of_several_systems_tags_each_file_by_its_extension() {
         (&gpgx, "md", Some("genesis")),
         (&gpgx, "gen", Some("genesis")),
         (&gpgx, "smd", Some("genesis")),
-        (&gpgx, "sms", Some("sms")),
+        (&gpgx, "sms", Some("mastersystem")),
         (&gpgx, "gg", Some("gamegear")),
         // Too generic to place.
         (&gpgx, "bin", None),
@@ -447,6 +455,7 @@ fn a_flatpak_target_shares_the_roms_folder_and_loads_the_core_by_file_name() {
         strings(&[
             "run",
             "--filesystem=/games/snes",
+            "--filesystem=/home/me/.local/share/wineo:ro",
             "org.libretro.RetroArch",
             "--appendconfig",
             QUIT,
@@ -568,4 +577,284 @@ fn a_targets_core_is_read_from_l_or_libretro() {
     );
     assert_eq!(target_core(&args(&["-f", "/r"])), None);
     assert_eq!(target_core(&args(&["-L"])), None);
+}
+
+#[test]
+fn an_info_file_with_a_bom_and_comments_after_values_is_read() {
+    let parsed = parse_info(concat!(
+        "\u{feff}display_name = \"Snes9x\" # the name\n",
+        "systemid = \"super_nes\"# no space\n",
+        "supported_extensions = \"smc|sfc\" # \"quoted\" note\n",
+    ));
+    assert_eq!(parsed.display_name.as_deref(), Some("Snes9x"));
+    assert_eq!(parsed.systemid.as_deref(), Some("super_nes"));
+    assert_eq!(parsed.extensions, ["smc", "sfc"]);
+}
+
+#[test]
+fn database_names_map_to_wineos_systems() {
+    for (name, system) in [
+        (
+            "Nintendo - Super Nintendo Entertainment System",
+            Some("snes"),
+        ),
+        ("Nintendo - Satellaview", Some("snes")),
+        ("Nintendo - Family Computer Disk System", Some("nes")),
+        ("Nintendo - Game Boy Color", Some("gbc")),
+        ("Nintendo - Wii (Digital)", Some("wii")),
+        ("Sega - Master System - Mark III", Some("mastersystem")),
+        ("NEC - PC Engine SuperGrafx", Some("pcengine")),
+        ("NEC - PC Engine CD - TurboGrafx-CD", Some("pcengine")),
+        ("SNK - Neo Geo Pocket Color", Some("ngpc")),
+        ("Bandai - WonderSwan Color", Some("wonderswancolor")),
+        ("Sega - Mega-CD - Sega CD", None),
+        ("Sega - 32X", None),
+        ("Sega - Naomi", None),
+        ("Atomiswave", None),
+        ("MAME", None),
+        ("nintendo - game boy", None),
+    ] {
+        assert_eq!(system_for_database(name), system, "{name}");
+    }
+}
+
+#[test]
+fn a_core_is_multi_system_only_when_its_databases_name_two_of_wineos() {
+    let core = |systemid: &str, extensions: &str, database: &str| Core {
+        path: PathBuf::from("/cores/x_libretro.so"),
+        info: Some(parse_info(&info("X", systemid, extensions, database))),
+    };
+    let snes9x = core(
+        "super_nes",
+        "smc|sfc|swc|fig|bs|st",
+        "Nintendo - Super Nintendo Entertainment System|Nintendo - Sufami Turbo|Nintendo - Satellaview",
+    );
+    let fceumm = core(
+        "nes",
+        "fds|nes|unif|unf",
+        "Nintendo - Nintendo Entertainment System|Nintendo - Family Computer Disk System",
+    );
+    let flycast = core(
+        "dreamcast",
+        "chd|cdi|bin|cue|gdi|zip",
+        "Sega - Dreamcast|Sega - Naomi|Sega - Naomi 2|Atomiswave",
+    );
+    let pce = core(
+        "pc_engine",
+        "pce|sgx|cue|ccd|chd",
+        "NEC - PC Engine SuperGrafx|NEC - PC Engine - TurboGrafx 16|NEC - PC Engine CD - TurboGrafx-CD",
+    );
+    let ngp = core(
+        "neo_geo_pocket",
+        "ngp|ngc|ngpc|npc",
+        "SNK - Neo Geo Pocket|SNK - Neo Geo Pocket Color",
+    );
+    let wswan = core(
+        "wonderswan",
+        "ws|wsc|pc2|pcv2",
+        "Bandai - WonderSwan|Bandai - WonderSwan Color",
+    );
+    let picodrive = core(
+        "mega_drive",
+        "bin|gen|smd|md|32x|cue|sms|gg",
+        "Sega - Master System - Mark III|Sega - Game Gear|Sega - Mega-CD - Sega CD|Sega - Mega Drive - Genesis|Sega - 32X",
+    );
+    for (core, extension, system) in [
+        // One system to wineo, so every file is it.
+        (&snes9x, "bs", Some("snes")),
+        (&snes9x, "st", Some("snes")),
+        (&snes9x, "swc", Some("snes")),
+        (&fceumm, "unif", Some("nes")),
+        (&fceumm, "fds", Some("nes")),
+        (&flycast, "bin", Some("dreamcast")),
+        (&flycast, "zip", Some("dreamcast")),
+        (&pce, "cue", Some("pcengine")),
+        (&pce, "sgx", Some("pcengine")),
+        // Several, so by extension.
+        (&ngp, "ngp", Some("ngp")),
+        (&ngp, "ngc", Some("ngpc")),
+        (&ngp, "ngpc", Some("ngpc")),
+        (&ngp, "npc", None),
+        (&wswan, "ws", Some("wonderswan")),
+        (&wswan, "wsc", Some("wonderswancolor")),
+        (&wswan, "pc2", None),
+        (&picodrive, "md", Some("genesis")),
+        (&picodrive, "sms", Some("mastersystem")),
+        (&picodrive, "gg", Some("gamegear")),
+        (&picodrive, "32x", None),
+        (&picodrive, "cue", None),
+    ] {
+        assert_eq!(
+            core.file_system(Some(extension)),
+            system,
+            "{:?} {extension}",
+            core.info.as_ref().unwrap().database
+        );
+    }
+}
+
+#[test]
+fn extensions_that_name_one_system_place_files() {
+    for (extension, system) in [
+        ("swc", "snes"),
+        ("fig", "snes"),
+        ("bs", "snes"),
+        ("st", "snes"),
+        ("fds", "nes"),
+        ("ndd", "n64"),
+        ("cdi", "dreamcast"),
+        ("gdi", "dreamcast"),
+        ("ngp", "ngp"),
+        ("ngc", "ngpc"),
+        ("ws", "wonderswan"),
+        ("wsc", "wonderswancolor"),
+        ("sgb", "gb"),
+        ("srl", "nds"),
+        ("wad", "wii"),
+        ("sms", "mastersystem"),
+    ] {
+        assert_eq!(system_for_extension(extension), Some(system), "{extension}");
+    }
+    for generic in ["bin", "iso", "cue", "chd", "zip", "32x", "SFC"] {
+        assert_eq!(system_for_extension(generic), None, "{generic}");
+    }
+}
+
+#[test]
+fn a_core_path_that_isnt_utf8_is_named_in_the_error() {
+    use std::os::unix::ffi::OsStrExt;
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/cores/sn\xffes_libretro.so"));
+    let core = Core { path, info: None };
+    let native = Install::Path {
+        name: "retroarch",
+        found: PathBuf::from("/usr/bin/retroarch"),
+    };
+    let flatpak = Install::Flatpak {
+        script: PathBuf::from("/var/lib/flatpak/exports/bin/org.libretro.RetroArch"),
+    };
+    for install in [native, flatpak] {
+        let error = retroarch_target(&install, &core, Path::new(ROM), true, Path::new(QUIT))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Core path `/cores/sn\u{fffd}es_libretro.so` isn't valid UTF-8."
+        );
+    }
+}
+
+#[test]
+fn a_quit_file_path_that_isnt_utf8_is_left_out() {
+    use std::os::unix::ffi::OsStrExt;
+    let quit = Path::new(std::ffi::OsStr::from_bytes(
+        b"/home/m\xffe/.local/share/wineo/retroarch-quit.cfg",
+    ));
+    let core = snes9x("/usr/lib/libretro/snes9x_libretro.so");
+    let native = Install::Path {
+        name: "retroarch",
+        found: PathBuf::from("/usr/bin/retroarch"),
+    };
+    let command = retroarch_target(&native, &core, Path::new(ROM), true, quit).unwrap();
+    assert_eq!(
+        command.args,
+        strings(&["-f", "-L", "/usr/lib/libretro/snes9x_libretro.so", ROM])
+    );
+    let flatpak = Install::Flatpak {
+        script: PathBuf::from("/var/lib/flatpak/exports/bin/org.libretro.RetroArch"),
+    };
+    let command = retroarch_target(&flatpak, &core, Path::new(ROM), false, quit).unwrap();
+    assert_eq!(
+        command.args,
+        strings(&[
+            "run",
+            "--filesystem=/games/snes",
+            "org.libretro.RetroArch",
+            "-L",
+            "snes9x_libretro.so",
+            ROM
+        ])
+    );
+}
+
+#[test]
+fn the_flatpak_shares_the_quit_files_folder_read_only_and_escaped() {
+    let core = snes9x("/c/snes9x_libretro.so");
+    let flatpak = Install::Flatpak {
+        script: PathBuf::from("/var/lib/flatpak/exports/bin/org.libretro.RetroArch"),
+    };
+    let quit = "/home/a:b\\c/wineo/retroarch-quit.cfg";
+    let command =
+        retroarch_target(&flatpak, &core, Path::new(ROM), false, Path::new(quit)).unwrap();
+    assert_eq!(
+        command.args,
+        strings(&[
+            "run",
+            "--filesystem=/games/snes",
+            "--filesystem=/home/a\\:b\\\\c/wineo:ro",
+            "org.libretro.RetroArch",
+            "--appendconfig",
+            quit,
+            "-L",
+            "snes9x_libretro.so",
+            ROM
+        ])
+    );
+    // A native RetroArch reads it without a share.
+    let native = Install::Path {
+        name: "retroarch",
+        found: PathBuf::from("/usr/bin/retroarch"),
+    };
+    let command = retroarch_target(&native, &core, Path::new(ROM), false, Path::new(quit)).unwrap();
+    assert!(
+        !command
+            .args
+            .iter()
+            .any(|arg| arg.starts_with("--filesystem"))
+    );
+    assert_eq!(command.args[..2], strings(&["--appendconfig", quit]));
+}
+
+#[test]
+fn a_quit_file_folder_flatpak_would_refuse_leaves_appendconfig_out() {
+    let core = snes9x("/c/snes9x_libretro.so");
+    let flatpak = Install::Flatpak {
+        script: PathBuf::from("/var/lib/flatpak/exports/bin/org.libretro.RetroArch"),
+    };
+    for quit in [
+        "/retroarch-quit.cfg",
+        "/home/me/../me/wineo/retroarch-quit.cfg",
+        "wineo/retroarch-quit.cfg",
+    ] {
+        let command =
+            retroarch_target(&flatpak, &core, Path::new(ROM), false, Path::new(quit)).unwrap();
+        assert_eq!(
+            command.args,
+            strings(&[
+                "run",
+                "--filesystem=/games/snes",
+                "org.libretro.RetroArch",
+                "-L",
+                "snes9x_libretro.so",
+                ROM
+            ]),
+            "{quit}"
+        );
+    }
+    // A native RetroArch still gets them, since nothing is shared.
+    let native = Install::Path {
+        name: "retroarch",
+        found: PathBuf::from("/usr/bin/retroarch"),
+    };
+    let command = retroarch_target(
+        &native,
+        &core,
+        Path::new(ROM),
+        false,
+        Path::new("/retroarch-quit.cfg"),
+    )
+    .unwrap();
+    assert_eq!(
+        command.args[..2],
+        strings(&["--appendconfig", "/retroarch-quit.cfg"])
+    );
 }

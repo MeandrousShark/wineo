@@ -12,8 +12,9 @@ use crate::paths::Paths;
 pub use build::{TargetCommand, build_target, custom_target, retroarch_target};
 pub use install::{Install, installs, pick_file};
 pub use retroarch::{
-    Core, CoreFolders, CoreInfo, core_folders, cores, parse_info, quit_file, quit_file_contents,
-    refresh_quit_file, system_for_extension, system_for_id, target_core, write_quit_file,
+    Core, CoreFolders, CoreInfo, core_folders, cores, flatpak_cores_dir, parse_info, quit_file,
+    quit_file_contents, refresh_quit_file, system_for_database, system_for_extension,
+    system_for_id, target_core, write_quit_file,
 };
 pub use table::{ExtSystem, FolderGame};
 
