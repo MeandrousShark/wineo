@@ -231,11 +231,8 @@ pub(crate) mod fixture {
         }
     }
 
-    /// A base URL nothing listens on.
-    pub fn refused() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        format!("http://{}", listener.local_addr().unwrap())
-    }
+    // Holds its port while alive, so no other test's server can take it.
+    pub use wineo_gog::fake::refused;
 }
 
 #[cfg(test)]
