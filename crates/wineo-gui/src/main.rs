@@ -1558,8 +1558,12 @@ impl App {
             Message::LaunchProgress(name, status) => self.launch_progress(name, status),
             Message::InstallPhase(name, installing) => self.install_phase(name, installing),
             Message::LaunchNote(name, note) => {
+                // A start clears the note, so these pile up for one launch only.
                 if self.selected.as_deref() == Some(&name) {
-                    self.panel_note = Some(note);
+                    self.panel_note = Some(match self.panel_note.take() {
+                        Some(earlier) => format!("{earlier}\n{note}"),
+                        None => note,
+                    });
                 }
                 Task::none()
             }
