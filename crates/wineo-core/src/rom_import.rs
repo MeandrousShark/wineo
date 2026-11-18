@@ -4,6 +4,7 @@
 //! `plan_batch` and `apply_batch`.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use toml_edit::{Array, Item, Table, Value, value};
@@ -83,6 +84,23 @@ pub struct Listing {
     pub entries: Vec<Entry>,
     /// Subfolders that couldn't be read, which were left out.
     pub skipped: Vec<PathBuf>,
+}
+
+/// Refuses a custom emulator's command that can't run, the way a native
+/// target's exe is checked: a bare name must be on `path_var`, and a path
+/// must be absolute (`~/` counts) and an executable file, not a Windows
+/// program.
+pub fn check_custom_command(paths: &Paths, exe: &str, path_var: &OsStr) -> anyhow::Result<()> {
+    let exe = exe.trim();
+    if exe.is_empty() {
+        anyhow::bail!("The emulator's command is empty.");
+    }
+    let lower = exe.to_ascii_lowercase();
+    if winpath::is_windows_path(exe) || WINDOWS_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
+        anyhow::bail!("`{exe}` is a Windows program, not a native one.");
+    }
+    launch::resolve_native_exe(paths, exe, exe, path_var)?;
+    Ok(())
 }
 
 /// A custom emulator's system as a tag-safe id. Empty means none.
@@ -461,27 +479,14 @@ impl Emulating {
         }
     }
 
-    /// Refuses a custom emulator's command that can't run, the way a native
-    /// target's exe is checked: a bare name must be on PATH, and a path must
-    /// be absolute (`~/` counts) and an executable file, not a Windows
-    /// program.
+    /// Refuses a custom emulator's command that can't run, with a bare name
+    /// looked for on the global PATH.
     fn check(&self, paths: &Paths, global: &GlobalConfig) -> anyhow::Result<()> {
         let Self::Custom { exe, .. } = self else {
             return Ok(());
         };
-        let exe = exe.trim();
-        if exe.is_empty() {
-            anyhow::bail!("The emulator's command is empty.");
-        }
-        let lower = exe.to_ascii_lowercase();
-        if winpath::is_windows_path(exe)
-            || WINDOWS_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
-        {
-            anyhow::bail!("`{exe}` is a Windows program, not a native one.");
-        }
         let path_var = launch::path_or_inherited(global.env.get("PATH"));
-        launch::resolve_native_exe(paths, exe, exe, &path_var)?;
-        Ok(())
+        check_custom_command(paths, exe, &path_var)
     }
 
     fn target(&self, paths: &Paths, rom: &Path) -> anyhow::Result<TargetCommand> {

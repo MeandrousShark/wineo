@@ -585,6 +585,7 @@ fn global_controls_stay_locked_through_the_save_reload() {
         Event::GlobalField(global::Field::StopTimeout, "15".into()),
         Event::GlobalField(global::Field::LogLimitMb, "80".into()),
         Event::GlobalArt(ArtFetch::Icon),
+        Event::GlobalRetroArchQuit(false),
         Event::EnvKey(0, "B".into()),
         Event::EnvValue(0, "2".into()),
         Event::EnvRemove(0),
@@ -3893,3 +3894,35 @@ mod controller;
 mod remap;
 
 mod narrow_rows;
+
+#[test]
+fn retroarch_quit_switch_defaults_on_and_saves_through_set() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    assert_eq!(global_editor(&page).form.draft.retroarch_quit, None);
+    assert!(
+        GlobalConfig::load(&paths)
+            .unwrap()
+            .retroarch
+            .quit_with_game()
+    );
+    let _ = page.update(&paths, Event::GlobalRetroArchQuit(false));
+    assert_eq!(page.changes(), 1);
+    let report = load::save_global(&paths, &global_editor(&page).form.edits()).unwrap();
+    assert!(report.failed.is_none());
+    assert!(
+        !GlobalConfig::load(&paths)
+            .unwrap()
+            .retroarch
+            .quit_with_game()
+    );
+
+    let mut page = global_page(&paths);
+    assert_eq!(global_editor(&page).form.draft.retroarch_quit, Some(false));
+    let _ = page.update(&paths, Event::GlobalRetroArchQuit(true));
+    load::save_global(&paths, &global_editor(&page).form.edits()).unwrap();
+    assert_eq!(
+        GlobalConfig::load(&paths).unwrap().retroarch.quit_with_game,
+        Some(true)
+    );
+}

@@ -2676,3 +2676,22 @@ fn a_touch_or_a_key_release_rechecks_toast_focus_but_a_move_does_not() {
         .is_some()
     );
 }
+
+#[test]
+fn a_launchs_notes_pile_up_instead_of_replacing_each_other() {
+    let mut app = app();
+    app.selected = Some("snes".into());
+    for note in [
+        "Warning: Can't write RetroArch's quit file: denied.",
+        "No Wayland session is available",
+    ] {
+        let _ = app.update(Message::LaunchNote("snes".into(), note.into()));
+    }
+    let _ = app.update(Message::LaunchNote("other".into(), "not this one".into()));
+    assert_eq!(
+        app.panel_note.as_deref(),
+        Some(
+            "Warning: Can't write RetroArch's quit file: denied.\nNo Wayland session is available"
+        )
+    );
+}

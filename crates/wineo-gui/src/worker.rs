@@ -86,10 +86,10 @@ pub(crate) fn start(
                                         status,
                                     ));
                                 }
-                                if matches!(event, launch::LaunchEvent::NoWaylandSession) {
+                                if let Some(note) = launch_note(&event) {
                                     let _ = sender.unbounded_send(Message::LaunchNote(
                                         progress_name.clone(),
-                                        "No Wayland session is available".to_owned(),
+                                        note,
                                     ));
                                 }
                                 // LogStarted comes after install.log was emptied, so
@@ -142,6 +142,15 @@ pub(crate) fn start(
         move |result| Message::StartFinished(finish_name, result),
     );
     Task::batch([Task::run(receiver, |message| message), work])
+}
+
+/// What the panel says about a launch event that doesn't stop the launch.
+fn launch_note(event: &launch::LaunchEvent) -> Option<String> {
+    match event {
+        launch::LaunchEvent::NoWaylandSession => Some("No Wayland session is available".to_owned()),
+        launch::LaunchEvent::Warning(warning) => Some(format!("Warning: {warning}")),
+        _ => None,
+    }
 }
 
 pub(crate) fn stop(paths: Paths, name: String, force: bool) -> Task<Message> {

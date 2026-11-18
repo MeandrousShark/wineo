@@ -211,6 +211,13 @@ impl Page {
                 }
                 Step::none()
             }
+            Event::GlobalRetroArchQuit(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.set_retroarch_quit(on);
+                }
+                Step::none()
+            }
             // Importing needs Steam and refuses a portable folder, so the
             // switch would do nothing.
             Event::GlobalAutoImport(_)
@@ -466,6 +473,7 @@ impl Page {
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
+                    | Event::GlobalRetroArchQuit(_)
                     | Event::GlobalAutoImport(_)
                     | Event::GlobalCoverflowFullscreen(_)
                     | Event::GlobalTray(_)
@@ -495,6 +503,7 @@ impl Page {
                     | Event::GlobalArt(_)
                     | Event::GlobalArtKind(_, _)
                     | Event::GlobalExternalRunners(_)
+                    | Event::GlobalRetroArchQuit(_)
                     | Event::GlobalAutoImport(_)
                     | Event::GlobalCoverflowFullscreen(_)
                     | Event::GlobalTray(_)

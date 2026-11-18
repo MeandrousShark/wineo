@@ -87,6 +87,8 @@ pub(crate) enum Event {
     GlobalArt(ArtFetch),
     GlobalArtKind(wineo_core::art::Kind, bool),
     GlobalExternalRunners(bool),
+    /// RetroArch's Quit RetroArch when its game closes.
+    GlobalRetroArchQuit(bool),
     GlobalAutoImport(bool),
     /// Coverflow's Open coverflow in full screen.
     GlobalCoverflowFullscreen(bool),
@@ -321,6 +323,7 @@ impl Event {
                 | Event::GlobalArt(_)
                 | Event::GlobalArtKind(_, _)
                 | Event::GlobalExternalRunners(_)
+                | Event::GlobalRetroArchQuit(_)
                 | Event::GlobalAutoImport(_)
                 | Event::GlobalCoverflowFullscreen(_)
                 | Event::GlobalTray(_)

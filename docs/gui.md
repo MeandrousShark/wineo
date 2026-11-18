@@ -544,7 +544,9 @@ install log, labeled **Install log**; once the game runs, **Log** shows its
 **Game output** instead. **Cancel** stops the start cleanly, and pressing it again as
 **Force stop** kills it right away, like pressing Ctrl+C twice in the CLI.
 Creation and imports work the same way: **Force stop** replaces **Cancel**
-only after you cancel.
+only after you cancel. A problem the start can work around, like
+RetroArch's quit settings that couldn't be written, shows as a `Warning:`
+line in the panel, one per problem, until the next start.
 
 A [Steam game](steam.md) starts through Steam, so the panel says
 **Waiting for Steam...** until the game appears, with **Stop** available.
@@ -902,7 +904,8 @@ Clone) in a strip pinned at the bottom, so both stay reachable in a short
 window while the content scrolls between them.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
-**Import from Heroic**, **Import from Steam**, or **Import from GOG**, keeping the library visible behind it. The same
+**Import from Heroic**, **Import from Steam**, **Import from GOG**, or
+**Add emulated games**, keeping the library visible behind it. The same
 choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
@@ -1035,6 +1038,23 @@ prompt, Cancel, and closing the window during work behave like Heroic
 import; a cancel after the move keeps it and skips what's left of the
 playtime and art. In a portable folder the page says GOG games live in the
 host library.
+
+**Add emulated games** imports games that run in an emulator, like `wineo
+import roms` (see [Emulated games](emulators.md)). It lists the emulators
+wineo found, then **Other...** for one wineo knows that runs from a file,
+like an AppImage, and **Custom** for any other emulator, with its command,
+arguments, file types, and an optional system. A Windows program is refused
+there as it is in the CLI. Next comes the folder of games, or a single
+game's file. For RetroArch, the core page lists the installed cores that
+play the files, and is skipped when only one does. When some files could
+belong to more than one system, a page asks which. The games then show as a
+grid with the same selection controls as Heroic import, already imported
+ones dimmed, with **Start in fullscreen** when the emulator has it and the
+SteamGridDB art checkbox. The review lists the Source, the system `Tags`,
+the emulator, and the fullscreen, desktop, and art choices, and the finish
+page counts the results like the CLI. Back from the finish page selects the
+game's card when you imported one game. In a portable folder it refuses:
+`Emulated games can't be imported into a portable folder.`
 
 New environment has no art step. With a SteamGridDB key and at least one
 kind on under **Art to fetch**, Details shows **Fetch art using the top
@@ -1178,6 +1198,9 @@ both. Each tab remembers how far it's scrolled while the page is open.
   the default locations for the current XDG or portable setup.
 - **Runs:** how long `stop` waits before killing a game, and how big a log
   gets.
+- **RetroArch:** **Quit RetroArch when its game closes** (on by default),
+  so a RetroArch game's playtime ends when you close the game. See
+  [Quitting with the game](native.md#quitting-with-the-game) for the trade-off.
 - **Desktop:** **Show a tray icon** (on by default), **Closing the
   window** (**Quit**, the default, or **Keep running in the tray**), **When
   something starts** (**Keep the window open**, the default, or **Hide to
@@ -1361,9 +1384,10 @@ Heroic and GOG lists, and the version picker:
 | Tab, Shift+Tab | Walk through the rows with the dialog's other controls |
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
-The first row has focus when a list appears, and **Add**'s and New's 1 to 5
-keys still work with a row focused. On New's choice page, Ctrl+Enter opens
-the focused row, since the page has nothing else to submit, and coming back
+The first row has focus when a list appears, and **Add**'s 1 to 6 and New's
+1 to 5 keys still work with a row focused. On New's choice page and the
+emulated import's emulator, core, and system pages, Ctrl+Enter opens the
+focused row, since those pages have nothing else to submit, and coming back
 from Details lands on the row you picked. Holding a number key, Esc, or
 Ctrl+Enter in Add or an import flow acts once, so it can't run on through
 the following pages. The version picker has nothing to submit, so Ctrl+Enter
@@ -1392,7 +1416,7 @@ In an Add, import, or clone flow:
 | Key | Does |
 |---|---|
 | Ctrl+Enter | Activate the page's primary action |
-| 1 to 5 (Add choices) | Choose New, prefix import, Heroic, Steam, or GOG import |
+| 1 to 6 (Add choices) | Choose New, prefix import, Heroic, Steam, GOG, or emulated games import |
 | Arrow keys, Space (Heroic games) | Move between posters and toggle one |
 | Ctrl+A, Enter (Heroic games) | Select every eligible game, import the selection |
 | Tab, Shift+Tab | Move between controls |

@@ -394,3 +394,54 @@ fn capture_load_failure_defers_to_launch() {
         .is_err()
     );
 }
+
+#[test]
+fn a_launch_warning_and_a_missing_wayland_session_become_panel_notes() {
+    assert_eq!(
+        launch_note(&launch::LaunchEvent::Warning(
+            "Can't write RetroArch's quit file: denied.".to_owned()
+        ))
+        .as_deref(),
+        Some("Warning: Can't write RetroArch's quit file: denied.")
+    );
+    assert_eq!(
+        launch_note(&launch::LaunchEvent::NoWaylandSession).as_deref(),
+        Some("No Wayland session is available")
+    );
+    assert_eq!(launch_note(&launch::LaunchEvent::Starting), None);
+}
+
+#[test]
+fn a_retroarch_quit_file_that_cant_be_written_reaches_the_panel_as_a_note() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    let config = paths.environment_config("snes");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        "schema_version = 1\nkind = 'native'\n[emulation]\nemulator = 'retroarch'\nrom = '/roms/a.sfc'\n[targets.snes]\nexe = '/bin/sh'\n",
+    )
+    .unwrap();
+    // A folder where the file goes can't be replaced by it.
+    std::fs::create_dir_all(wineo_core::emulator::quit_file(&paths)).unwrap();
+    let mut notes = Vec::new();
+    launch::prepare(
+        &paths,
+        "snes",
+        &Overrides {
+            target: Some("snes".into()),
+            ..Overrides::default()
+        },
+        &Token::new(),
+        wineo_core::hooks::Output::Inherit,
+        |event| notes.extend(launch_note(&event)),
+    )
+    .unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].starts_with("Warning: Can't write RetroArch's quit file:"),
+        "{notes:?}"
+    );
+}
