@@ -44,9 +44,13 @@ impl Roms {
 
     /// A RetroArch core with its info file in the distro folders.
     fn core(&self, id: &str, display: &str, extensions: &str) {
-        let cores = self.sys.join("usr/lib/libretro");
+        self.core_in(&self.sys.join("usr/lib/libretro"), id, display, extensions);
+    }
+
+    /// A core in `cores`, with its info file in the distro folders.
+    fn core_in(&self, cores: &Path, id: &str, display: &str, extensions: &str) {
         let info = self.sys.join("usr/share/libretro/info");
-        fs::create_dir_all(&cores).unwrap();
+        fs::create_dir_all(cores).unwrap();
         fs::create_dir_all(&info).unwrap();
         fs::write(cores.join(format!("{id}_libretro.so")), "").unwrap();
         fs::write(
@@ -86,6 +90,12 @@ impl Roms {
             .args(args)
             .output()
             .unwrap()
+    }
+
+    fn pty(&self, args: &[&str]) -> Pty {
+        let mut command = self.command();
+        command.args(["import", "roms"]).args(args);
+        Pty::spawn(command)
     }
 
     fn config(&self, name: &str) -> String {
@@ -882,4 +892,545 @@ fn completion_offers_emulators_systems_and_cores() {
         )
         .is_empty()
     );
+}
+
+/// Two snes9x cores: the distro's, and one RetroArch downloaded into the
+/// user's cores folder. The user's sorts first, by its path.
+fn twin_cores(r: &Roms) -> (PathBuf, PathBuf) {
+    r.emulator("retroarch");
+    r.core("snes9x", "Nintendo - SNES / SFC (Snes9x)", "smc|sfc");
+    let user = r.root().join("config/retroarch/cores");
+    r.core_in(&user, "snes9x", "Nintendo - SNES / SFC (Snes9x)", "smc|sfc");
+    (
+        user.join("snes9x_libretro.so"),
+        r.sys.join("usr/lib/libretro/snes9x_libretro.so"),
+    )
+}
+
+#[test]
+fn going_back_to_the_emulator_forgets_the_system_chosen_for_it() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    r.emulator("mgba");
+    let folder = r.folder("roms/mixed", &["Metroid Prime (USA).rvz", "Tetris.gb"]);
+    let mut pty = r.pty(&[]);
+    pty.expect("Emulator: ");
+    pty.send("1");
+    pty.expect("Folder or file of games");
+    pty.send(&folder);
+    pty.expect("System: ");
+    pty.send("2");
+    pty.expect("Game: ");
+    pty.esc();
+    pty.expect("System");
+    pty.esc();
+    pty.expect("Folder or file of games");
+    pty.esc();
+    pty.expect("Emulator: ");
+    pty.send("2");
+    pty.expect("Folder or file of games");
+    pty.send("");
+    pty.expect("Which game?");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Import it?");
+    pty.send("");
+    pty.expect("Imported tetris.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(r.config("tetris").contains("tags = [\"gb\"]"));
+}
+
+#[test]
+fn a_quoted_tilde_path_is_one_game() {
+    let r = Roms::new();
+    r.emulator("mgba");
+    r.folder("roms/gb", &["Tetris.gb", "Other.gb"]);
+    let output = r.run(&["~/roms/gb/Tetris.gb", "--emulator", "mgba"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Imported tetris."),
+        "{}",
+        stdout(&output)
+    );
+
+    r.emulator("ppsspp");
+    r.folder("roms/psp/Loco Roco", &["EBOOT.PBP"]);
+    let output = r.run(&["~/roms/psp/Loco Roco", "--emulator", "ppsspp"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Imported loco-roco."),
+        "{}",
+        stdout(&output)
+    );
+}
+
+fn non_utf8_file(dir: &str, name: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    fs::write(Path::new(dir).join(std::ffi::OsStr::from_bytes(name)), "").unwrap();
+}
+
+#[test]
+fn list_json_reads_a_file_name_that_isnt_utf8() {
+    let r = Roms::new();
+    let folder = gamecube(&r);
+    non_utf8_file(&folder, b"Bad\xff.gcm");
+    let output = r.run(&[&folder, "--emulator", "dolphin", "--list", "--json"]);
+    assert_success(&output);
+    let json: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let bad = &json["games"][0];
+    assert_eq!(bad["state"], "unusable", "{json}");
+    assert!(
+        bad["rom"].as_str().unwrap().ends_with("Bad\u{fffd}.gcm"),
+        "{json}"
+    );
+}
+
+#[test]
+fn twin_cores_need_a_path_without_a_terminal() {
+    let r = Roms::new();
+    let (user, distro) = twin_cores(&r);
+    let folder = r.folder("roms/snes", &["Super Metroid.sfc"]);
+    let output = r.run(&[
+        &folder,
+        "--emulator",
+        "retroarch",
+        "--core",
+        "snes9x",
+        "--all",
+        "--yes",
+    ]);
+    failed_with(
+        &output,
+        1,
+        &format!(
+            "`snes9x` matches more than one RetroArch core: {}, {}. Pass --core with its path.",
+            user.display(),
+            distro.display()
+        ),
+    );
+    let output = r.run(&[&folder, "--emulator", "retroarch", "--all", "--yes"]);
+    failed_with(
+        &output,
+        1,
+        &format!(
+            "pass --core with one of: {}, {}",
+            user.display(),
+            distro.display()
+        ),
+    );
+    let output = r.run(&[
+        &folder,
+        "--emulator",
+        "retroarch",
+        "--core",
+        distro.to_str().unwrap(),
+        "--all",
+        "--yes",
+    ]);
+    assert_success(&output);
+    let config = r.config("super-metroid");
+    assert!(config.contains(&distro.display().to_string()), "{config}");
+    let output = r.run(&[
+        &folder,
+        "--emulator",
+        "retroarch",
+        "--core",
+        "~/config/retroarch/cores/snes9x_libretro.so",
+        "--list",
+        "--json",
+    ]);
+    assert_success(&output);
+}
+
+#[test]
+fn twin_cores_are_asked_for_by_folder_in_a_terminal() {
+    let r = Roms::new();
+    let (user, distro) = twin_cores(&r);
+    let folder = r.folder("roms/snes", &["Super Metroid.sfc"]);
+    let rom = Path::new(&folder).join("Super Metroid.sfc");
+    let mut pty = r.pty(&[
+        rom.to_str().unwrap(),
+        "--emulator",
+        "retroarch",
+        "--core",
+        "snes9x",
+    ]);
+    pty.expect("Which core?");
+    pty.expect(&format!("in {}", user.parent().unwrap().display()));
+    pty.expect(&format!("in {}", distro.parent().unwrap().display()));
+    pty.expect("Core: ");
+    pty.send("2");
+    pty.expect("Import it?");
+    pty.send("");
+    pty.expect("Imported super-metroid.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(
+        r.config("super-metroid")
+            .contains(&distro.display().to_string())
+    );
+}
+
+#[test]
+fn emulators_shows_the_folder_of_twin_cores() {
+    let r = Roms::new();
+    let (user, distro) = twin_cores(&r);
+    let output = r.run(&["--emulators"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(out.contains("FOLDER"), "{out}");
+    assert!(
+        out.contains(&user.parent().unwrap().display().to_string()),
+        "{out}"
+    );
+    assert!(
+        out.contains(&distro.parent().unwrap().display().to_string()),
+        "{out}"
+    );
+}
+
+#[test]
+fn retroarch_asks_which_core_in_a_terminal() {
+    let r = Roms::new();
+    r.emulator("retroarch");
+    r.core("snes9x", "Nintendo - SNES / SFC (Snes9x)", "smc|sfc");
+    r.core("bsnes", "Nintendo - SNES / SFC (bsnes)", "sfc");
+    let folder = r.folder("roms/snes", &["Super Metroid.sfc"]);
+    let mut pty = r.pty(&[&folder, "--emulator", "retroarch", "--all"]);
+    pty.expect("Which core?");
+    pty.expect("1) Nintendo - SNES / SFC (bsnes) (bsnes)");
+    pty.expect("Core: ");
+    pty.send("1");
+    pty.expect("Import 1 game?");
+    pty.send("");
+    pty.expect("Imported super-metroid.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(r.config("super-metroid").contains("bsnes_libretro.so"));
+}
+
+#[test]
+fn yes_skips_the_confirmation_after_questions() {
+    let r = Roms::new();
+    r.emulator("mgba");
+    let folder = r.folder("roms/gb", &["Tetris.gb"]);
+    let mut pty = r.pty(&["--yes"]);
+    pty.expect("Emulator: ");
+    pty.send("1");
+    pty.expect("Folder or file of games");
+    pty.send(&folder);
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Imported tetris.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(!output.contains("Import it?"), "{output}");
+}
+
+#[test]
+fn list_checks_system_against_the_emulator() {
+    let r = Roms::new();
+    r.emulator("mgba");
+    let folder = r.folder("roms/gb", &["Tetris.gb"]);
+    let output = r.run(&[&folder, "--emulator", "mgba", "--list", "--system", "wii"]);
+    failed_with(&output, 1, "`wii` isn't a system mGBA plays: gb, gbc, gba.");
+    r.emulator("retroarch");
+    r.core("snes9x", "Nintendo - SNES / SFC (Snes9x)", "smc|sfc");
+    let snes = r.folder("roms/snes", &["Super Metroid.sfc"]);
+    let output = r.run(&[
+        &snes,
+        "--emulator",
+        "retroarch",
+        "--list",
+        "--system",
+        "snes",
+    ]);
+    failed_with(&output, 1, "RetroArch has no system to choose.");
+}
+
+#[test]
+fn game_takes_a_path_and_names_paths_when_several_match() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    let folder = r.folder("roms/gc", &[]);
+    r.folder("roms/gc/a", &["Zelda (Europe).gcm"]);
+    r.folder("roms/gc/b", &["Zelda (USA).gcm"]);
+    let output = r.run(&[&folder, "--emulator", "dolphin", "--game", "Zelda"]);
+    failed_with(
+        &output,
+        1,
+        "`Zelda` matches more than one game: a/Zelda (Europe).gcm, b/Zelda (USA).gcm. Pass one of those paths.",
+    );
+    let output = r.run(&[
+        &folder,
+        "--emulator",
+        "dolphin",
+        "--game",
+        "a/Zelda (Europe).gcm",
+    ]);
+    assert_success(&output);
+    assert!(r.config("zelda").contains("a/Zelda (Europe).gcm"));
+    let full = Path::new(&folder).join("b/Zelda (USA).gcm");
+    let output = r.run(&[
+        &folder,
+        "--emulator",
+        "dolphin",
+        "--game",
+        full.to_str().unwrap(),
+    ]);
+    assert_success(&output);
+    assert!(r.config("zelda-gamecube").contains("b/Zelda (USA).gcm"));
+}
+
+#[test]
+fn a_single_file_refuses_all_and_another_game() {
+    let r = Roms::new();
+    r.emulator("mgba");
+    let folder = r.folder("roms/gb", &["Tetris.gb"]);
+    let rom = Path::new(&folder).join("Tetris.gb");
+    let rom = rom.to_str().unwrap();
+    let output = r.run(&[rom, "--emulator", "mgba", "--all", "--yes"]);
+    failed_with(&output, 1, "--all needs a folder of games, not one game.");
+    let output = r.run(&[rom, "--emulator", "mgba", "--game", "Mario"]);
+    failed_with(&output, 1, &format!("--game `Mario` doesn't match {rom}."));
+    let output = r.run(&[rom, "--emulator", "mgba", "--game", "Tetris"]);
+    assert_success(&output);
+}
+
+#[test]
+fn core_with_a_guided_emulator_offers_only_retroarch() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    let output = r.run(&["--core", "snes9x"]);
+    failed_with(
+        &output,
+        1,
+        "--core is only for RetroArch, and wineo found no RetroArch.",
+    );
+    r.emulator("retroarch");
+    let mut pty = r.pty(&["--core", "snes9x"]);
+    pty.expect("Which emulator?");
+    pty.expect("1) RetroArch (retroarch)");
+    pty.expect("Emulator: ");
+    pty.esc();
+    pty.expect("Import canceled.");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{output}");
+    assert!(!output.contains("Dolphin"), "{output}");
+}
+
+#[test]
+fn the_review_says_whether_art_will_be_fetched_and_quotes_the_command() {
+    let r = Roms::new();
+    let folder = gamecube(&r);
+    let rom = Path::new(&folder).join("Zelda [!].gcm");
+    let rom = rom.to_str().unwrap();
+    let output = r.run(&[rom, "--emulator", "dolphin", "--art", "--dry-run"]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(out.contains("  art       none\n"), "{out}");
+    assert!(
+        out.contains(&format!("  command   dolphin-emu -b -e '{rom}'\n")),
+        "{out}"
+    );
+    let output = r
+        .command()
+        .env("WINEO_STEAMGRIDDB_KEY", "fake")
+        .args([
+            "import",
+            "roms",
+            rom,
+            "--emulator",
+            "dolphin",
+            "--art",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("  art       SteamGridDB, top match\n"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn list_and_dry_run_in_a_terminal_name_the_missing_flag() {
+    let r = Roms::new();
+    let folder = gamecube(&r);
+    let mut pty = r.pty(&[&folder, "--list"]);
+    pty.expect("--list needs --emulator ID or --custom EXE");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    let mut pty = r.pty(&[&folder, "--emulator", "dolphin", "--dry-run"]);
+    pty.expect("--dry-run needs --system gamecube or --system wii");
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    assert!(!output.contains("needs a terminal"), "{output}");
+}
+
+#[test]
+fn nothing_to_pick_is_an_error_that_says_what_is_there() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    let folder = r.folder("roms/gc", &["Zelda.gcm"]);
+    non_utf8_file(&folder, b"Bad\xff.gcm");
+    assert_success(&r.run(&[&folder, "--emulator", "dolphin", "--game", "Zelda"]));
+    let output = r.run(&[&folder, "--emulator", "dolphin"]);
+    failed_with(
+        &output,
+        1,
+        "guided ROM import needs a terminal; pass --game NAME, --all, or --list",
+    );
+    let mut pty = r.pty(&[&folder, "--emulator", "dolphin"]);
+    pty.expect(&format!(
+        "No games to import in {folder}: 1 already imported, 1 can't be imported."
+    ));
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+    let empty = r.folder("roms/empty", &[]);
+    let mut pty = r.pty(&[&empty, "--emulator", "dolphin"]);
+    pty.expect(&format!("No games found in {empty}."));
+    let (status, output) = pty.finish();
+    assert_eq!(status.code(), Some(1), "{output}");
+}
+
+#[test]
+fn a_path_install_comes_before_the_flatpak() {
+    let r = Roms::new();
+    r.emulator("pcsx2-qt");
+    let exports = r.sys.join("var/lib/flatpak/exports/bin");
+    fs::create_dir_all(&exports).unwrap();
+    write_script(exports.join("net.pcsx2.PCSX2"), FAKE_EMULATOR);
+    let folder = r.folder("roms/ps2", &["Okami.iso"]);
+    let output = r.run(&["--emulators", "--json"]);
+    let json: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let installs = json["emulators"][0]["installs"].as_array().unwrap();
+    assert_eq!(installs.len(), 2, "{json}");
+    assert_eq!(installs[1]["kind"], "flatpak");
+    assert_success(&r.run(&[&folder, "--emulator", "pcsx2", "--all", "--yes"]));
+    let config = r.config("okami");
+    assert!(config.contains("exe = \"pcsx2-qt\""), "{config}");
+}
+
+#[test]
+fn no_emulators_found_says_how_to_name_one() {
+    let r = Roms::new();
+    let output = r.run(&[]);
+    failed_with(
+        &output,
+        1,
+        "wineo found no emulators; pass --emulator ID --exe PATH or --custom EXE",
+    );
+}
+
+#[test]
+fn a_retroarch_dry_run_writes_no_quit_file() {
+    let r = Roms::new();
+    r.emulator("retroarch");
+    r.core("snes9x", "Nintendo - SNES / SFC (Snes9x)", "smc|sfc");
+    let folder = r.folder("roms/snes", &["Super Metroid.sfc"]);
+    let rom = Path::new(&folder).join("Super Metroid.sfc");
+    let output = r.run(&[
+        rom.to_str().unwrap(),
+        "--emulator",
+        "retroarch",
+        "--dry-run",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("--appendconfig"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(!r.root().join("data/wineo/retroarch-quit.cfg").exists());
+    assert!(r.environments().is_empty());
+}
+
+#[test]
+fn list_json_names_a_subfolder_it_couldnt_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Roms::new();
+    let folder = gamecube(&r);
+    let locked = Path::new(&folder).join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("Hidden.gcm"), "").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = r.run(&[&folder, "--emulator", "dolphin", "--list", "--json"]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_success(&output);
+    let json: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(
+        json["skipped"],
+        serde_json::json!([locked.display().to_string()])
+    );
+}
+
+#[test]
+fn completion_offers_twin_cores_once() {
+    let r = Roms::new();
+    twin_cores(&r);
+    assert_eq!(
+        complete(&r, &["wineo", "import", "roms", "--core", ""]),
+        ["snes9x"]
+    );
+}
+
+#[test]
+fn going_back_past_a_given_folder_forgets_the_system_too() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    r.emulator("mgba");
+    let folder = r.folder("roms/mixed", &["Metroid Prime (USA).rvz", "Tetris.gb"]);
+    // The folder is given, so the emulator is the only question before the system.
+    let mut pty = r.pty(&[&folder]);
+    pty.expect("Emulator: ");
+    pty.send("1");
+    pty.expect("System: ");
+    pty.send("2");
+    pty.expect("Game: ");
+    pty.esc();
+    pty.expect("System");
+    pty.esc();
+    pty.expect("Emulator: ");
+    pty.send("2");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Import it?");
+    pty.send("");
+    pty.expect("Imported tetris.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+}
+
+#[test]
+fn a_new_folder_asks_the_system_afresh() {
+    let r = Roms::new();
+    r.emulator("dolphin-emu");
+    let first = r.folder("roms/one", &["Metroid Prime (USA).rvz"]);
+    let second = r.folder("roms/two", &["Pikmin (USA).rvz"]);
+    let mut pty = r.pty(&["--emulator", "dolphin"]);
+    pty.expect("Folder or file of games");
+    pty.send(&first);
+    pty.expect("System: ");
+    pty.send("2");
+    pty.expect("Game: ");
+    pty.esc();
+    pty.expect("System");
+    pty.esc();
+    pty.expect("Folder or file of games");
+    pty.send(&second);
+    // No default left over from the first folder's answer.
+    pty.expect("System: ");
+    pty.send("1");
+    pty.expect("Game: ");
+    pty.send("1");
+    pty.expect("Import it?");
+    pty.send("");
+    pty.expect("Imported pikmin.");
+    let (status, output) = pty.finish();
+    assert!(status.success(), "{output}");
+    assert!(r.config("pikmin").contains("tags = [\"gamecube\"]"));
 }
