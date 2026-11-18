@@ -162,6 +162,14 @@ null video, input, and audio drivers, a throwaway HOME, its own
 - A stub main config is rewritten in full on startup, so checks like these
   need a complete config seeded by an earlier run.
 
+From RetroArch's source (master and v1.22.2): saved overrides compare
+against the main config plus `--appendconfig`, so appended keys never land
+in them. Every normal quit, including the first SIGTERM and closing the
+window, honors `config_save_on_exit`. "Save Current Configuration" doesn't:
+it writes all live settings, appended ones included, into the main config
+(RetroArch's man page says so too). `quit_on_close_content` and its `2`
+value came in 1.9.1 (2021, PR #11464).
+
 Earlier notes, from the binary's strings and help text:
 
 - The config key `quit_on_close_content` exists ("Quit on Close Content"
