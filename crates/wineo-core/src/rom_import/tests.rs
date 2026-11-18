@@ -1544,3 +1544,64 @@ fn cores_are_matched_against_every_file_in_the_folder_as_listed() {
         .collect();
     assert_eq!(offered, ["bin", "odd"]);
 }
+
+#[test]
+fn a_custom_command_is_checked_like_a_native_exe() {
+    let home = tempdir().unwrap();
+    let paths = paths(home.path());
+    let bin = home.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(home.path().join("apps")).unwrap();
+    write_script(bin.join("eden"), "#!/bin/sh\nexit 0\n");
+    write(&home.path().join("apps/plain"), "not a program\n");
+    let path_var = bin.as_os_str();
+    let refusal = |exe: &str| {
+        check_custom_command(&paths, exe, path_var)
+            .unwrap_err()
+            .to_string()
+    };
+
+    for empty in ["", "  "] {
+        assert_eq!(refusal(empty), "The emulator's command is empty.");
+    }
+    for windows in [
+        "~/Games/setup.exe",
+        r"C:\Games\eden",
+        "eden.BAT",
+        " eden.msi ",
+    ] {
+        assert_eq!(
+            refusal(windows),
+            format!(
+                "`{}` is a Windows program, not a native one.",
+                windows.trim()
+            ),
+        );
+    }
+    let missing = check_custom_command(&paths, "dolphin-emu", path_var).unwrap_err();
+    assert!(
+        matches!(
+            missing.downcast_ref::<crate::Error>(),
+            Some(crate::Error::NotOnPath(name)) if name == "dolphin-emu"
+        ),
+        "{missing:#}"
+    );
+    let plain = check_custom_command(&paths, "~/apps/plain", path_var).unwrap_err();
+    assert!(
+        matches!(
+            plain.downcast_ref::<crate::Error>(),
+            Some(crate::Error::NotExecutable(_))
+        ),
+        "{plain:#}"
+    );
+
+    // A bare name on PATH, a path from home, and an absolute path all pass.
+    write_script(home.path().join("apps/eden"), "#!/bin/sh\nexit 0\n");
+    for good in [
+        "eden",
+        "~/apps/eden",
+        &home.path().join("apps/eden").display().to_string(),
+    ] {
+        check_custom_command(&paths, good, path_var).unwrap();
+    }
+}
