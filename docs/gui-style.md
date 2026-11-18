@@ -116,7 +116,9 @@ picker (plan 0056): the first row has focus when a list appears, or the row
 that opened the next page when you come back to it, Up and Down move between rows and stop at the ends, Enter or Space
 chooses, and Ctrl+Enter still submits the dialog without choosing the row,
 except on a page that has no forward action, like New's choice page, where
-it opens the focused row.
+it opens the focused row. Add's choice page is the exception: Ctrl+Enter
+there opens New whichever row has focus, as a shortcut to the most common
+choice (maintainer, 2026-11-18).
 A runner offer's No and Yes leave Ctrl+Enter alone the same way, but this
 isn't every control's default: left uncaptured outside a flow, Ctrl+Enter
 reaches the Library's Enter binding. When a list changes, focus stays on the same row if it is still there and
