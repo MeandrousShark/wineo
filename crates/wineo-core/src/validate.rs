@@ -538,7 +538,7 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
     check_templates(paths, &global, &mut report)?;
     let names = environment::names(paths)?;
     let entries = listed_entries(paths)?;
-    let exports = emulator::flatpak_exports(paths);
+    let exports = emulator::flatpak_exports(paths, Path::new("/"));
     for name in &names {
         if !pending.contains(name) {
             check_one(paths, &global, name, &entries, &exports, &mut report)?;
@@ -597,7 +597,7 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
     // only displays problems and changes nothing, so defaults are enough.
     let global = GlobalConfig::load(paths).unwrap_or_default();
     let entries = listed_entries(paths)?;
-    let exports = emulator::flatpak_exports(paths);
+    let exports = emulator::flatpak_exports(paths, Path::new("/"));
     check_one(paths, &global, name, &entries, &exports, &mut report)?;
     let names = environment::names(paths)?;
     check_nesting(paths, Some(name), &names, &mut report);
