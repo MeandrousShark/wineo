@@ -1002,6 +1002,81 @@ fn every_step_sits_inside_the_dialog_padding() {
     }
 }
 
+/// Lays out the page, focuses the row `id`, presses Ctrl+Enter, and hands
+/// the page what that sent.
+fn ctrl_enter_on(page: &mut Page, id: Option<&str>) {
+    use crate::layout_probe::relay_out;
+    let size = iced::Size::new(900.0, 720.0);
+    let mut laid = lay_out(page.view(crate::theme::Palette::DARK, 900.0, false), size);
+    if let Some(id) = id {
+        laid.run(Box::new(
+            iced::advanced::widget::operation::focusable::focus::<()>(iced::widget::Id::from(
+                id.to_owned(),
+            )),
+        ));
+        assert_eq!(laid.focused(), [iced::widget::Id::from(id.to_owned())]);
+    }
+    let tree = laid.into_tree();
+    let task = page.submit(false);
+    let mut laid = relay_out(
+        page.view(crate::theme::Palette::DARK, 900.0, false),
+        tree,
+        size,
+    );
+    let sent = drive(Some(&mut laid), task);
+    drop(laid);
+    for event in sent {
+        let _ = page.update(event, false);
+    }
+}
+
+#[test]
+fn ctrl_enter_opens_the_focused_row_on_the_emulator_core_and_system_pages() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let cores = user_cores(temp.path());
+    core(&cores, "snes9x", "Snes9x", "super_nes", "sfc");
+    core(&cores, "bsnes", "bsnes", "super_nes", "sfc");
+    let folder = roms(temp.path(), &["Super Metroid.sfc", "Zelda.rvz"]);
+
+    let mut page = open(&paths, &host);
+    ctrl_enter_on(&mut page, None);
+    assert_eq!(page.step, Step::Emulator, "no row focused, nothing opens");
+    let ids = page.rows().unwrap().ids;
+    ctrl_enter_on(&mut page, Some(&ids[1]));
+    assert_eq!(page.step, Step::Folder);
+    assert!(matches!(
+        page.chosen,
+        Some(Chosen::BuiltIn(Emulator::RetroArch, _))
+    ));
+    let _ = page.update(Event::Back, false);
+    ctrl_enter_on(&mut page, Some(CUSTOM_ROW));
+    assert_eq!(page.step, Step::Custom);
+    let _ = page.update(Event::Back, false);
+
+    let _ = page.update(
+        Event::Install(install_row(&page, Emulator::RetroArch)),
+        false,
+    );
+    let _ = page.update(Event::Folder(folder.display().to_string()), false);
+    let _ = page.update(Event::Next, false);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Core);
+    let ids = page.rows().unwrap().ids;
+    ctrl_enter_on(&mut page, Some(&ids[1]));
+    settle(&mut page);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.core.as_ref().unwrap().id(), "snes9x");
+
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::Dolphin, &folder);
+    assert_eq!(page.step, Step::System);
+    ctrl_enter_on(&mut page, Some("emulated-system:wii"));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.system.as_deref(), Some("wii"));
+}
+
 /// Presses Tab, or Shift+Tab, as the flow's keys do, and says where focus
 /// went.
 fn tab(laid: &mut Laid<'_, Event>, shift: bool) -> Option<usize> {

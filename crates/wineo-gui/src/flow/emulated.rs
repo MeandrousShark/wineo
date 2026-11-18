@@ -231,8 +231,38 @@ impl Page {
             Step::Games => self.import_selected(key_available),
             Step::Review => self.start_import(),
             Step::Finished => self.update(Event::BackToLibrary, key_available),
-            Step::Emulator | Step::Core | Step::System | Step::Working => Task::none(),
+            Step::Emulator | Step::Core | Step::System => self.open_focused(),
+            Step::Working => Task::none(),
         }
+    }
+
+    /// Ctrl+Enter on a page with no forward action opens its focused row.
+    fn open_focused(&self) -> Task<Event> {
+        use iced::advanced::widget::{operate, operation::focusable::find_focused};
+        let Some(rows) = self.rows() else {
+            return Task::none();
+        };
+        let count = rows.ids.len();
+        let events: Vec<Event> = match self.step {
+            Step::Emulator => (0..count.saturating_sub(2))
+                .map(Event::Install)
+                .chain([Event::Other, Event::Custom])
+                .collect(),
+            Step::Core => (0..count).map(Event::Core).collect(),
+            Step::System => (0..count).map(Event::System).collect(),
+            _ => return Task::none(),
+        };
+        let rows: Vec<(iced::widget::Id, Event)> = rows
+            .ids
+            .into_iter()
+            .map(iced::widget::Id::from)
+            .zip(events)
+            .collect();
+        operate(find_focused()).then(move |id| {
+            rows.iter()
+                .find(|(row, _)| *row == id)
+                .map_or_else(Task::none, |(_, event)| Task::done(event.clone()))
+        })
     }
 
     /// Whether the core page was shown, which only happens with a choice.
