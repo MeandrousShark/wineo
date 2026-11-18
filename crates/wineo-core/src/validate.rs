@@ -1452,6 +1452,9 @@ fn check_emulation(
         ));
     }
     let retroarch = emulation.emulator == emulator::Emulator::RetroArch.id();
+    let retroarch_app = emulator::Emulator::RetroArch
+        .flatpak_id()
+        .expect("RetroArch has a Flatpak");
     for (target_name, target) in &environment.config.targets {
         if let Some(app) = emulator::flatpak_app(&target.exe, &target.args) {
             if !emulator::flatpak_installed(exports, app) {
@@ -1461,6 +1464,28 @@ fn check_emulation(
                     format!("target {target_name}: Flatpak app {app} not found"),
                     None,
                 ));
+            } else if retroarch
+                && app == retroarch_app
+                && let Some(core) = emulator::target_core(&target.args)
+                && !core.contains('/')
+                && !core.is_empty()
+            {
+                // RetroArch reads a bare core name from its own cores
+                // folder. Only a folder that says the core isn't there
+                // warns; one that can't be read says nothing.
+                let path = emulator::flatpak_cores_dir(paths).join(core);
+                if fs::metadata(&path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    report.push(Problem::new(
+                        Code::EmulatedEmulatorMissing,
+                        Some(name),
+                        format!(
+                            "target {target_name}: RetroArch core {core} not found in the Flatpak's cores folder"
+                        ),
+                        None,
+                    ));
+                }
             }
             continue;
         }
