@@ -10,7 +10,7 @@ publish = false
 # Lets other crates' tests point a client at a plain HTTP fake server in
 # release builds too, and use the fake servers in `fake`. Only ever enabled
 # from dev-dependencies.
-test-server = []
+test-server = ["rustix/net"]
 
 [dependencies]
 flate2.workspace = true
@@ -23,6 +23,8 @@ sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# `fake::refused` holds a port with a socket that never listens.
+rustix = { workspace = true, features = ["net"] }
 tempfile.workspace = true
 # For a test's name resolver that blocks the way the system's does.
 tokio = { version = "1", features = ["rt"] }

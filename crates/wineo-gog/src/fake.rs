@@ -4,12 +4,15 @@
 pub mod content;
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+use std::ops::Deref;
+use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::Url;
+use rustix::net;
 
 use crate::client::{Client, Endpoints};
 
@@ -304,8 +307,36 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<Request> {
     })
 }
 
-/// A base URL nothing listens on.
-pub fn refused() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    format!("http://{}", listener.local_addr().unwrap())
+/// A base URL nothing listens on, held for as long as it lives.
+pub struct Refused {
+    // Bound but never listening, so connecting is refused, and no other
+    // test's server can be given the same port meanwhile.
+    _socket: OwnedFd,
+    url: String,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.url)
+    }
+}
+
+impl Deref for Refused {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.url
+    }
+}
+
+pub fn refused() -> Refused {
+    let socket = net::socket(net::AddressFamily::INET, net::SocketType::STREAM, None).unwrap();
+    net::bind(&socket, &SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = SocketAddrV4::try_from(net::getsockname(&socket).unwrap())
+        .unwrap()
+        .port();
+    Refused {
+        _socket: socket,
+        url: format!("http://127.0.0.1:{port}"),
+    }
 }
