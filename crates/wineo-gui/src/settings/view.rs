@@ -575,6 +575,11 @@ pub(super) fn global_view<'a>(
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
         section(
+            "RetroArch",
+            retroarch_rows(draft.retroarch_quit.unwrap_or(true), locked, palette),
+            palette
+        ),
+        section(
             "Desktop",
             desktop_rows(draft.desktop, locked, palette),
             palette
@@ -859,6 +864,29 @@ fn coverflow_rows<'a>(on: bool, locked: bool, palette: Palette) -> Element<'a, M
         text("Leaving coverflow leaves full screen too. F11 toggles it in any layout.")
             .size(13)
             .color(palette.muted),
+    ]
+    .spacing(12)
+    .into()
+}
+
+pub(super) const RETROARCH_QUIT_NOTE: &str = "While it's on, settings changed from RetroArch's \
+     menu during these games aren't saved when it quits. Save Current Configuration in its menu \
+     also saves wineo's quit settings into RetroArch's own config.";
+
+/// The switch that makes RetroArch quit with the game wineo started, so
+/// its playtime ends there.
+fn retroarch_rows<'a>(on: bool, locked: bool, palette: Palette) -> Element<'a, Message> {
+    column![
+        switch_row(
+            "Quit RetroArch when its game closes",
+            on,
+            None,
+            |on| send(Event::GlobalRetroArchQuit(on)),
+            None,
+            locked,
+            palette,
+        ),
+        text(RETROARCH_QUIT_NOTE).size(13).color(palette.muted),
     ]
     .spacing(12)
     .into()
