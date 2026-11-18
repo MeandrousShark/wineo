@@ -1175,6 +1175,28 @@ fn fullscreen_and_art_hold_still_while_the_games_are_checked() {
 }
 
 #[test]
+fn a_one_core_folder_keeps_its_picks_through_back_and_next() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let cores = user_cores(temp.path());
+    core(&cores, "mgba", "mGBA", "game_boy_advance", "gba");
+    let folder = roms(temp.path(), &["Metroid Fusion.gba", "Zelda.gba"]);
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::RetroArch, &folder);
+    assert_eq!(page.step, Step::Games);
+    let _ = page.update(Event::Toggle(1), false);
+    let picked = page.grid.chosen.clone();
+    assert_eq!(picked.len(), 1);
+    let _ = page.update(Event::Back, false);
+    assert_eq!(page.step, Step::Folder);
+    let _ = page.update(Event::Next, false);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.grid.chosen, picked);
+}
+
+#[test]
 fn a_home_path_or_a_single_game_file_lists_its_games() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);

@@ -669,7 +669,7 @@ impl Page {
                     Ok(cores) => {
                         let kept = self
                             .core
-                            .take()
+                            .clone()
                             .filter(|core| cores.iter().any(|each| each == core));
                         self.cores = Some(cores.clone());
                         match (cores.as_slice(), kept) {
