@@ -662,6 +662,17 @@ fn ambiguous_system(
         }
         return Ok(None);
     };
+    check_system(emulating, chosen)?;
+    Ok(Some(chosen.to_owned()))
+}
+
+/// Refuses `chosen` as the system for games whose files could be either,
+/// unless it's one `emulating` plays.
+pub fn check_system(emulating: &Emulating, chosen: &str) -> anyhow::Result<()> {
+    let systems = match emulating {
+        Emulating::BuiltIn { emulator, .. } => emulator.systems(),
+        Emulating::RetroArch { .. } | Emulating::Custom { .. } => &[],
+    };
     if !systems.contains(&chosen) {
         let name = match emulating {
             Emulating::BuiltIn { emulator, .. } => emulator.name(),
@@ -676,7 +687,7 @@ fn ambiguous_system(
             systems.join(", ")
         );
     }
-    Ok(Some(chosen.to_owned()))
+    Ok(())
 }
 
 /// The name a title makes, or `game` when it has nothing a name can use.

@@ -102,9 +102,10 @@ impl Emulator {
 }
 
 /// Where Flatpak puts the scripts that run its apps, system-wide first.
-pub fn flatpak_exports(paths: &Paths) -> Vec<PathBuf> {
+/// `system_root` is `/` outside tests: the system-wide folder hangs off it.
+pub fn flatpak_exports(paths: &Paths, system_root: &Path) -> Vec<PathBuf> {
     vec![
-        PathBuf::from("/var/lib/flatpak/exports/bin"),
+        system_root.join("var/lib/flatpak/exports/bin"),
         paths.xdg_data().join("flatpak/exports/bin"),
     ]
 }

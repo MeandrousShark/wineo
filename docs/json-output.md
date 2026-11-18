@@ -1,7 +1,8 @@
 # JSON output
 
-`status`, `list`, `validate`, `stats`, `tag`, `import gog --list`, and
-`update --check` accept `--json` for scripting:
+`status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
+`import roms --list`, `import roms --emulators`, and `update --check`
+accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -11,6 +12,8 @@ wineo validate --json
 wineo stats --json
 wineo tag add co-op hades celeste --json
 wineo import gog --list --json
+wineo import roms ~/Games/roms/gamecube --emulator dolphin --list --json
+wineo import roms --emulators --json
 wineo update --check --json
 ```
 
@@ -302,6 +305,77 @@ newest first. `version` is GOG's name for the build, or `null`;
 update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
+
+## Emulated games
+
+`wineo import roms PATH --list --json` lists the games an
+[emulated games import](emulators.md) would find:
+
+```json
+{
+  "emulator": "dolphin",
+  "core": null,
+  "games": [
+    {
+      "title": "Metroid Prime",
+      "file": "Metroid Prime (USA).rvz",
+      "rom": "/home/me/Games/roms/gamecube/Metroid Prime (USA).rvz",
+      "system": "gamecube",
+      "ambiguous": true,
+      "state": "imported",
+      "environment": "metroid-prime",
+      "reason": null
+    }
+  ],
+  "skipped": []
+}
+```
+
+`emulator` is the emulator's id, or `custom` with `--custom`. `core` is the
+RetroArch core's id, otherwise `null`. `file` is the game's file or folder
+name, and `rom` its full path. `system` is `null` when it isn't known;
+`ambiguous` is `true` when the file type doesn't say which system the game
+is for, and then `system` is what `--system` gave, or `null`. `state` is
+`new`, `imported` (with `environment`), or `unusable` (with `reason`, like
+a file name that isn't valid UTF-8). `skipped` lists the subfolders that
+couldn't be read.
+
+`wineo import roms --emulators --json` lists the emulators wineo found:
+
+```json
+{
+  "emulators": [
+    {
+      "id": "retroarch",
+      "name": "RetroArch",
+      "installs": [
+        {
+          "kind": "path",
+          "exe": "retroarch",
+          "path": "/usr/bin/retroarch",
+          "app": null,
+          "cores": [
+            {
+              "id": "snes9x",
+              "name": "Nintendo - SNES / SFC (Snes9x)",
+              "file": "/usr/lib/libretro/snes9x_libretro.so",
+              "system": "snes",
+              "extensions": ["smc", "sfc", "swc", "fig", "bs", "st"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Only emulators wineo found are listed. `kind` is `path` or `flatpak`;
+`exe` is the program name for a `path` install, and `app` the Flatpak's
+id for a `flatpak` one, each `null` otherwise. `path` is the program or
+the Flatpak's export script. Only RetroArch's installs have `cores`. A
+core's `system` is `null` when wineo doesn't know it, and `extensions` is
+`null` for a core without an `.info` file, which takes any file.
 
 ## Validate
 

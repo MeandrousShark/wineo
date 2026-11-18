@@ -14,6 +14,7 @@ mod gog_support;
 pub mod import;
 pub mod import_gog;
 pub mod import_heroic;
+pub mod import_roms;
 pub mod import_steam;
 pub mod install;
 mod json;

@@ -5673,6 +5673,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "shlex",
  "signal-hook",
  "tempfile",
  "unicode-width",

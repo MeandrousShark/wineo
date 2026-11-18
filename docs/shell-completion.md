@@ -48,6 +48,15 @@ environment only:
 wineo run hades --target <Tab>
 ```
 
+`import roms` offers emulator ids for `--emulator`, the systems of the
+emulator given (or every system wineo knows) for `--system`, and for
+`--core` the cores of the RetroArch it would use (`--exe`'s, or the first
+one found), each id once:
+
+```sh
+wineo import roms ~/Games/roms/snes --emulator retroarch --core <Tab>
+```
+
 Wineo reads configuration to build candidates. It does not launch Wine or
 modify files. If configuration cannot be read, completion quietly returns no
 candidates. A broken environment config can still be completed by name, but
