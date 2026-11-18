@@ -585,6 +585,7 @@ fn global_controls_stay_locked_through_the_save_reload() {
         Event::GlobalField(global::Field::StopTimeout, "15".into()),
         Event::GlobalField(global::Field::LogLimitMb, "80".into()),
         Event::GlobalArt(ArtFetch::Icon),
+        Event::GlobalRetroArchQuit(false),
         Event::EnvKey(0, "B".into()),
         Event::EnvValue(0, "2".into()),
         Event::EnvRemove(0),

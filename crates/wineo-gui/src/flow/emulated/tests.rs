@@ -5,8 +5,10 @@ use std::sync::Mutex;
 
 use tempfile::TempDir;
 use wineo_core::emulator::Install;
+use wineo_core::rom_import::Scan;
 
 use super::*;
+use crate::layout_probe::{Laid, lay_out};
 use crate::test_script::write_script;
 
 fn paths(root: &Path, portable: bool) -> Paths {
@@ -122,6 +124,87 @@ fn to_folder(page: &mut Page, emulator: Emulator, folder: &Path) {
     let _ = page.update(Event::Folder(folder.display().to_string()), false);
     let _ = page.update(Event::Next, false);
     settle(page);
+}
+
+/// Runs `task` to its end as the runtime would, answering its widget
+/// operations on `laid` when given, and returns what it sent.
+fn drive(laid: Option<&mut Laid<'_, Event>>, task: Task<Event>) -> Vec<Event> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut laid = laid;
+    let mut sent = Vec::new();
+    runtime.block_on(async {
+        // Generous, since the import's work runs on the blocking pool.
+        while let Ok(Some(action)) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), stream.next()).await
+        {
+            match action {
+                iced_runtime::Action::Output(event) => sent.push(event),
+                iced_runtime::Action::Widget(operation) => {
+                    laid.as_mut().expect("a laid out page").run(operation)
+                }
+                _ => {}
+            }
+        }
+    });
+    sent
+}
+
+/// Each text the page shows, in tree order.
+fn texts(page: &Page, key_available: bool) -> Vec<String> {
+    use iced::advanced::widget::Operation;
+    struct Texts(Arc<Mutex<Vec<String>>>);
+    impl Operation for Texts {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn text(&mut self, _id: Option<&iced::widget::Id>, _bounds: iced::Rectangle, text: &str) {
+            self.0.lock().unwrap().push(text.to_owned());
+        }
+    }
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let mut laid = lay_out(
+        page.view(crate::theme::Palette::DARK, 900.0, key_available),
+        iced::Size::new(900.0, 720.0),
+    );
+    laid.run(Box::new(Texts(found.clone())));
+    found.lock().unwrap().clone()
+}
+
+/// Which focusable has focus, by its place among them all, and how many
+/// there are.
+fn focus_place(laid: &mut Laid<'_, Event>) -> (Option<usize>, usize) {
+    use iced::advanced::widget::Operation;
+    use iced::advanced::widget::operation::Focusable;
+    struct Place(Arc<Mutex<(Option<usize>, usize)>>);
+    impl Operation for Place {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            _id: Option<&iced::widget::Id>,
+            _bounds: iced::Rectangle,
+            state: &mut dyn Focusable,
+        ) {
+            let mut place = self.0.lock().unwrap();
+            if state.is_focused() {
+                place.0 = Some(place.1);
+            }
+            place.1 += 1;
+        }
+    }
+    let found = Arc::new(Mutex::new((None, 0)));
+    laid.run(Box::new(Place(found.clone())));
+    *found.lock().unwrap()
 }
 
 fn titles(page: &Page) -> Vec<&str> {
@@ -529,6 +612,19 @@ fn the_fullscreen_option_is_absent_for_dolphin_and_drops_the_flag_when_off() {
     let mut page = open(&paths, &host);
     to_folder(&mut page, Emulator::Dolphin, &folder);
     assert!(!page.chosen.as_ref().unwrap().has_fullscreen());
+    let _ = page.update(Event::SelectAll, false);
+    let _ = page.update(Event::ImportSelected, false);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Review);
+    let shown = texts(&page, false);
+    assert!(
+        shown.iter().any(|text| text == "Source: Dolphin"),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.starts_with("Fullscreen")),
+        "{shown:?}"
+    );
 
     let mut page = open(&paths, &host);
     to_folder(&mut page, Emulator::Mgba, &folder);
@@ -537,12 +633,22 @@ fn the_fullscreen_option_is_absent_for_dolphin_and_drops_the_flag_when_off() {
     let _ = page.update(Event::SelectAll, false);
     let _ = page.update(Event::ImportSelected, false);
     settle(&mut page);
+    assert!(
+        texts(&page, false)
+            .iter()
+            .any(|text| text == "Fullscreen: on")
+    );
     let on = page.review.as_ref().unwrap().ready[0].target.args.clone();
     let _ = page.update(Event::Back, false);
     let _ = page.update(Event::Fullscreen(false), false);
     let _ = page.update(Event::ImportSelected, false);
     settle(&mut page);
     let off = page.review.as_ref().unwrap().ready[0].target.args.clone();
+    assert!(
+        texts(&page, false)
+            .iter()
+            .any(|text| text == "Fullscreen: off")
+    );
     assert_eq!(on.len(), off.len() + 1, "{on:?} {off:?}");
     assert!(on.contains(&"-f".to_owned()) && !off.contains(&"-f".to_owned()));
 }
@@ -593,16 +699,17 @@ fn a_finished_import_adds_play_cards_with_the_emulator_as_source_and_their_art()
             .push((name.to_owned(), title.to_owned()));
         Ok(vec!["No artwork match".to_owned()])
     });
-    page.fetcher = Some(fetcher.clone());
-    let _ = page.update(Event::Import, true);
+    page.fetcher = Some(fetcher);
+    let task = page.update(Event::Import, true);
     assert_eq!(page.step, Step::Working);
     assert!(page.busy());
-    let generation = page.generation;
-    let review = page.review.clone().unwrap();
     let mut progress = Vec::new();
-    let result = work::run_import(&paths, review, &Token::new(), Some(&fetcher), |line| {
-        progress.push(line)
-    });
+    for event in drive(None, task) {
+        if let Event::Progress(_, line) = &event {
+            progress.push(line.clone());
+        }
+        let _ = page.update(event, true);
+    }
     assert_eq!(
         progress,
         [
@@ -610,7 +717,6 @@ fn a_finished_import_adds_play_cards_with_the_emulator_as_source_and_their_art()
             "(2 of 2) Importing Zelda..."
         ]
     );
-    let _ = page.update(Event::Finished(generation, result), true);
     assert_eq!(page.step, Step::Finished);
     assert!(!page.busy());
     let report = page.report.as_ref().unwrap();
@@ -895,3 +1001,142 @@ fn every_step_sits_inside_the_dialog_padding() {
         }
     }
 }
+
+/// Presses Tab, or Shift+Tab, as the flow's keys do, and says where focus
+/// went.
+fn tab(laid: &mut Laid<'_, Event>, shift: bool) -> Option<usize> {
+    let walk = if shift {
+        iced::widget::operation::focus_previous::<Event>()
+    } else {
+        iced::widget::operation::focus_next::<Event>()
+    };
+    crate::focus_button::run_task(laid, walk);
+    focus_place(laid).0
+}
+
+#[test]
+fn tab_and_shift_tab_walk_the_other_custom_and_folder_pages() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    // Only the fields take Tab: the buttons and the dropdown don't, as on
+    // the other flows' pages.
+    for (step, count) in [(Step::Other, 1), (Step::Custom, 4), (Step::Folder, 1)] {
+        let mut page = open(&paths, &host);
+        match step {
+            Step::Other => {
+                let _ = page.update(Event::Other, false);
+            }
+            Step::Custom => {
+                let _ = page.update(Event::Custom, false);
+            }
+            _ => {
+                let _ = page.update(Event::Install(0), false);
+            }
+        }
+        assert_eq!(page.step, step);
+        let mut laid = lay_out(
+            page.view(crate::theme::Palette::DARK, 900.0, false),
+            iced::Size::new(900.0, 720.0),
+        );
+        assert_eq!(focus_place(&mut laid), (None, count), "{step:?}");
+        for place in 0..count {
+            assert_eq!(tab(&mut laid, false), Some(place), "{step:?}");
+        }
+        assert_eq!(tab(&mut laid, false), None, "{step:?}: Tab lets go");
+        for place in (0..count).rev() {
+            assert_eq!(tab(&mut laid, true), Some(place), "{step:?}");
+        }
+    }
+}
+
+#[test]
+fn a_home_path_or_a_single_game_file_lists_its_games() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(
+        &temp.path().join("home"),
+        &["Metroid Fusion.gba", "Zelda.gba"],
+    );
+    let mut page = open(&paths, &host);
+    let _ = page.update(Event::Install(install_row(&page, Emulator::Mgba)), false);
+    let _ = page.update(Event::Folder("~/roms".into()), false);
+    let _ = page.update(Event::Next, false);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Games, "{:?}", page.error);
+    assert_eq!(page.listed_folder.as_deref(), Some(folder.as_path()));
+    assert_eq!(titles(&page), ["Metroid Fusion", "Zelda"]);
+
+    let _ = page.update(Event::Back, false);
+    let _ = page.update(Event::Folder("~/roms/Zelda.gba".into()), false);
+    let _ = page.update(Event::Next, false);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Games, "{:?}", page.error);
+    assert_eq!(titles(&page), ["Zelda"]);
+}
+
+#[test]
+fn a_late_listing_or_plan_after_back_lands_nowhere() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(temp.path(), &["Metroid Fusion.gba"]);
+    let mut page = open(&paths, &host);
+    let _ = page.update(Event::Install(install_row(&page, Emulator::Mgba)), false);
+    let _ = page.update(Event::Folder(folder.display().to_string()), false);
+    let _ = page.update(Event::Next, false);
+    let generation = page.generation;
+    let listing = work::listing(&paths, &Scan::BuiltIn(Emulator::Mgba), &folder);
+    let _ = page.update(Event::Back, false);
+    assert_eq!(page.step, Step::Emulator);
+    let _ = page.update(Event::Listed(generation, listing), false);
+    assert_eq!(page.step, Step::Emulator);
+    assert!(page.listing.is_none());
+
+    to_folder(&mut page, Emulator::Mgba, &folder);
+    let _ = page.update(Event::SelectAll, false);
+    let _ = page.update(Event::ImportSelected, false);
+    let generation = page.generation;
+    let (emulating, entries, system) = page.plan_inputs().unwrap();
+    let planned = work::plan(&paths, &emulating, entries, system.as_deref());
+    let _ = page.update(Event::Back, false);
+    assert_eq!(page.step, Step::Folder);
+    let _ = page.update(Event::Planned(generation, planned), false);
+    assert_eq!(page.step, Step::Folder);
+    assert!(page.review.is_none());
+}
+
+#[test]
+fn cancel_while_importing_finishes_with_what_was_done() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(temp.path(), &["Metroid Fusion.gba", "Zelda.gba"]);
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::Mgba, &folder);
+    let _ = page.update(Event::SelectAll, false);
+    let _ = page.update(Event::ImportSelected, false);
+    settle(&mut page);
+    let task = page.update(Event::Import, false);
+    assert_eq!(page.step, Step::Working);
+    let _ = page.update(Event::Cancel, false);
+    assert_eq!(page.status, "Canceling...");
+    assert!(page.token.as_ref().unwrap().is_canceled());
+    for event in drive(None, task) {
+        let _ = page.update(event, false);
+    }
+    assert_eq!(page.step, Step::Finished);
+    assert!(!page.busy() && !page.waiting());
+    let report = page.report.as_ref().unwrap();
+    assert!(report.canceled, "{report:?}");
+    assert!(report.done.is_empty(), "{report:?}");
+    let shown = texts(&page, false);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "Completed imports remain after canceling."),
+        "{shown:?}"
+    );
+}
+
