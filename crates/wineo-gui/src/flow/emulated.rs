@@ -311,10 +311,7 @@ impl Page {
             Step::Review => Step::Games,
             Step::Working => Step::Working,
             Step::Finished => {
-                self.action = Some(Action::Library {
-                    name: None,
-                    launch: false,
-                });
+                self.action = Some(self.to_library());
                 Step::Finished
             }
         };
@@ -812,10 +809,7 @@ impl Page {
                 Task::none()
             }
             Event::BackToLibrary if self.step == Step::Finished => {
-                self.action = Some(Action::Library {
-                    name: None,
-                    launch: false,
-                });
+                self.action = Some(self.to_library());
                 Task::none()
             }
             _ => Task::none(),
@@ -905,6 +899,18 @@ impl Page {
                 focus: self.system.as_deref().map(Self::system_id),
             }),
             _ => None,
+        }
+    }
+
+    /// Back to the Library, on the game's card when the import added just one.
+    fn to_library(&self) -> Action {
+        let name = match self.report.as_ref().map(|report| report.done.as_slice()) {
+            Some([one]) => Some(one.clone()),
+            _ => None,
+        };
+        Action::Library {
+            name,
+            launch: false,
         }
     }
 

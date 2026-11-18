@@ -1479,3 +1479,41 @@ fn review_lists_the_games_system_tags_once_each() {
     );
 }
 
+#[test]
+fn back_to_the_library_after_one_game_selects_its_card() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(temp.path(), &["Metroid Fusion.gba", "Zelda.gba"]);
+    for leave in [Event::BackToLibrary, Event::Back] {
+        let mut page = open(&paths, &host);
+        to_folder(&mut page, Emulator::Mgba, &folder);
+        let Some(row) = page
+            .listing
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|entry| entry.state == EntryState::New)
+        else {
+            panic!("a game to import");
+        };
+        let _ = page.update(Event::Toggle(row), false);
+        let _ = page.update(Event::ImportSelected, false);
+        settle(&mut page);
+        let task = page.update(Event::Import, false);
+        for event in drive(None, task) {
+            let _ = page.update(event, false);
+        }
+        let done = page.report.as_ref().unwrap().done.clone();
+        assert_eq!(done.len(), 1);
+        let _ = page.update(leave.clone(), false);
+        assert!(
+            matches!(
+                page.take_action(),
+                Some(Action::Library { name: Some(name), launch: false }) if name == done[0]
+            ),
+            "{leave:?}"
+        );
+    }
+}
