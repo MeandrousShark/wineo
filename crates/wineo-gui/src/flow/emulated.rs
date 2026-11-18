@@ -256,6 +256,7 @@ impl Page {
             return Task::none();
         }
         self.generation = self.generation.wrapping_add(1);
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
         if self.step != Step::Emulator || self.found.is_some() {
             self.status.clear();
         }
@@ -313,6 +314,7 @@ impl Page {
         self.chosen = Some(chosen);
         self.via = Some(via);
         self.error = None;
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
         self.step = Step::Folder;
     }
 
@@ -321,6 +323,7 @@ impl Page {
             return Task::none();
         };
         self.error = None;
+        self.picker_sequence = self.picker_sequence.wrapping_add(1);
         match self.step {
             Step::Other => {
                 let Some(emulator) = self.other_emulator else {
@@ -597,10 +600,12 @@ impl Page {
                 Task::none()
             }
             Event::OtherFile(value) => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
                 self.other_file = value;
                 Task::none()
             }
             Event::CustomExe(value) => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
                 self.custom.exe = value;
                 Task::none()
             }
@@ -617,6 +622,12 @@ impl Page {
                 Task::none()
             }
             Event::Folder(value) => {
+                self.picker_sequence = self.picker_sequence.wrapping_add(1);
+                // A lookup of the folder as it was can't land.
+                if self.step == Step::Folder && self.waiting() {
+                    self.generation = self.generation.wrapping_add(1);
+                    self.status.clear();
+                }
                 self.folder = value;
                 Task::none()
             }

@@ -1051,6 +1051,101 @@ fn tab_and_shift_tab_walk_the_other_custom_and_folder_pages() {
 }
 
 #[test]
+fn a_late_pick_lands_nowhere_after_back_next_or_typing() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let picked = || Ok(Some(PathBuf::from("/picked")));
+    let mut page = open(&paths, &host);
+
+    // Browse on Other, Back, then the folder page opens before it answers.
+    let _ = page.update(Event::Other, false);
+    let _ = page.update(Event::BrowseOtherFile, false);
+    let browsing = page.picker_sequence;
+    let _ = page.update(Event::Back, false);
+    let _ = page.update(Event::Install(0), false);
+    let _ = page.update(Event::Picked(browsing, picked()), false);
+    assert_eq!(page.folder, "", "Back");
+
+    // Browse on the folder page, then Next.
+    let _ = page.update(Event::BrowseFolder, false);
+    let browsing = page.picker_sequence;
+    let _ = page.update(Event::Next, false);
+    let _ = page.update(Event::Picked(browsing, picked()), false);
+    assert_eq!(page.folder, "", "Next");
+
+    // Browse, then type.
+    for (step, typed) in [
+        (Step::Folder, Event::Folder("~/typed".into())),
+        (Step::Other, Event::OtherFile("~/typed".into())),
+        (Step::Custom, Event::CustomExe("~/typed".into())),
+    ] {
+        page.step = step;
+        let browse = match step {
+            Step::Folder => Event::BrowseFile,
+            Step::Other => Event::BrowseOtherFile,
+            _ => Event::BrowseCustomExe,
+        };
+        let _ = page.update(browse, false);
+        let browsing = page.picker_sequence;
+        let _ = page.update(typed, false);
+        let _ = page.update(Event::Picked(browsing, picked()), false);
+        let shown = match step {
+            Step::Folder => &page.folder,
+            Step::Other => &page.other_file,
+            _ => &page.custom.exe,
+        };
+        assert_eq!(shown, "~/typed", "{step:?}");
+    }
+    // A pick that's still current lands.
+    let _ = page.update(Event::BrowseCustomExe, false);
+    let _ = page.update(Event::Picked(page.picker_sequence, picked()), false);
+    assert_eq!(page.custom.exe, "/picked");
+}
+
+#[test]
+fn editing_the_folder_while_it_is_looked_at_drops_the_lookup() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let cores = user_cores(temp.path());
+    core(&cores, "mgba", "mGBA", "game_boy_advance", "gba");
+    let folder = roms(temp.path(), &["Metroid Fusion.gba"]);
+    for emulator in [Emulator::Mgba, Emulator::RetroArch] {
+        let mut page = open(&paths, &host);
+        let _ = page.update(Event::Install(install_row(&page, emulator)), false);
+        let _ = page.update(Event::Folder(folder.display().to_string()), false);
+        let _ = page.update(Event::Next, false);
+        assert!(page.waiting());
+        let generation = page.generation;
+        let _ = page.update(Event::Folder("~/elsewhere".into()), false);
+        assert!(!page.waiting(), "{emulator:?}");
+        let late = match emulator {
+            Emulator::RetroArch => Event::Cores(
+                generation,
+                work::matching_cores(
+                    &paths,
+                    &host,
+                    page.chosen.as_ref().unwrap().retroarch().unwrap(),
+                    &folder,
+                ),
+            ),
+            _ => Event::Listed(
+                generation,
+                work::listing(&paths, &Scan::BuiltIn(emulator), &folder),
+            ),
+        };
+        let _ = page.update(late, false);
+        assert_eq!(page.step, Step::Folder, "{emulator:?}");
+        assert!(
+            page.listing.is_none() && page.cores.is_none(),
+            "{emulator:?}"
+        );
+        assert!(!page.waiting(), "{emulator:?}");
+    }
+}
+
+#[test]
 fn a_home_path_or_a_single_game_file_lists_its_games() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);
