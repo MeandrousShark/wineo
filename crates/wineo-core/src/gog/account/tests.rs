@@ -235,7 +235,8 @@ fn temporary_failures_keep_the_login() {
     let (_root, paths) = setup();
     let keyring = FakeKeyring::default();
     seed(&paths, &keyring, "R1", USER);
-    let unreachable = wineo_gog::Client::with_base("wineo-test", &refused()).unwrap();
+    let base = refused();
+    let unreachable = wineo_gog::Client::with_base("wineo-test", &base).unwrap();
     let mut session = Session::open(&paths, &keyring, unreachable)
         .unwrap()
         .unwrap();

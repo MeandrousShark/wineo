@@ -132,10 +132,11 @@ fn the_key_check_passes_only_with_a_game_count() {
 
 #[test]
 fn failures_never_show_the_key() {
+    let refused = refused();
     let cases = [
         Server::start(vec![reply(401, "x")]).base,
         Server::start(vec![reply(200, "{")]).base,
-        refused(),
+        refused.to_string(),
     ];
     for base in cases {
         let api = SteamApi::with_base(&base).unwrap();

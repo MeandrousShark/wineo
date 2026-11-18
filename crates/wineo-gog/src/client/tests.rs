@@ -173,7 +173,8 @@ fn token_failures_are_classified() {
 
 #[test]
 fn a_refused_connection_is_temporary() {
-    let client = Client::with_base("wineo-test/1", &refused()).unwrap();
+    let base = refused();
+    let client = Client::with_base("wineo-test/1", &base).unwrap();
     let error = client.refresh(REFRESH).unwrap_err();
     assert_eq!(
         (error.kind(), error.class()),
@@ -751,7 +752,8 @@ fn no_build_list_error_shows_the_password_or_the_query() {
             .windows_builds(5, Some(ACCESS), Some(&password))
             .unwrap_err(),
     );
-    let refused = Client::with_base("wineo-test/1", &refused()).unwrap();
+    let base = refused();
+    let refused = Client::with_base("wineo-test/1", &base).unwrap();
     errors.push(
         refused
             .windows_builds(5, Some(ACCESS), Some(&password))
@@ -886,7 +888,8 @@ fn playtime_failures_are_classified_and_name_no_secret() {
         assert_clean(&error);
         assert!(!format!("{error:?}").contains(&USER.to_string()));
     }
-    let client = Client::with_base("wineo-test/1", &refused()).unwrap();
+    let base = refused();
+    let client = Client::with_base("wineo-test/1", &base).unwrap();
     let error = sessions(&client).unwrap_err();
     assert_eq!(error.class(), Class::Temporary);
     assert_clean(&error);
@@ -973,7 +976,8 @@ fn profile_errors_are_classified_like_the_other_endpoints() {
         assert_eq!(error.endpoint(), Endpoint::Profile);
         assert_clean(&error);
     }
-    let error = Client::with_base("wineo-test/1", &refused())
+    let base = refused();
+    let error = Client::with_base("wineo-test/1", &base)
         .unwrap()
         .username(UserId::new(1))
         .unwrap_err();
