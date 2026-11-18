@@ -222,6 +222,86 @@ skips anything else rather than guess. A missing native emulator is
 `list --json` and `status --json` add an `emulation` object. See
 [JSON output](json-output.md).
 
+### RetroArch
+
+A RetroArch game runs with a core, the part of RetroArch that emulates
+its system. wineo finds a native RetroArch's cores in the distro folders
+(`/usr/lib/libretro`, `/usr/lib64/libretro`,
+`/usr/lib/x86_64-linux-gnu/libretro`) and in `~/.config/retroarch/cores`,
+and the Flatpak's in its own cores folder. A native RetroArch is never
+offered a Flatpak core, or the reverse. A core counts when its
+`*_libretro.so` file is there; an `.info` file alone doesn't. The core's
+`.info` file, beside it or in RetroArch's info folders, gives its name,
+the file types it takes, and its system. A core without one is offered by
+file name and takes any file.
+
+The target names the core with `-L`: a native RetroArch gets its full
+path, and the Flatpak gets its file name, which RetroArch looks up in its
+own cores folder:
+
+```toml
+[targets.chrono-trigger]
+exe = "retroarch"
+args = ["--appendconfig", "/home/me/.local/share/wineo/retroarch-quit.cfg", "-L", "/usr/lib64/libretro/snes9x_libretro.so", "/home/me/roms/snes/Chrono Trigger (USA).sfc"]
+default = true
+```
+
+`validate` warns `emulated_emulator_missing` when a target's core file is
+gone: a native target's `-L` path, or a Flatpak target's `-L` file name in
+the Flatpak's cores folder.
+
+A game gets its system from its core. A core that covers one system tags
+every game with it; a core that covers several, like Genesis Plus GX or
+mGBA, tags each game by its file type, and leaves a file that could be
+for more than one system (like a `.cue` disc) without a tag. The systems
+wineo knows are `nes`, `snes`, `n64`, `gamecube`, `wii`, `wiiu`, `gb`,
+`gbc`, `gba`, `nds`, `3ds`, `virtualboy`, `ps1`, `ps2`, `ps3`, `psp`,
+`xbox`, `mastersystem`, `gamegear`, `genesis`, `saturn`, `dreamcast`,
+`pcengine` (SuperGrafx and CD games included), `atari2600`, `lynx`,
+`ngp`, `ngpc`, `wonderswan`, and `wonderswancolor`.
+
+#### Quitting with the game
+
+On its own, RetroArch goes back to its menu when a game closes, so wineo
+would keep counting playtime until RetroArch itself quits. So by default,
+wineo has RetroArch quit when the game closes. Every RetroArch target
+appends wineo's `retroarch-quit.cfg` (in wineo's data folder) to
+RetroArch's config, and wineo writes that file each time it launches a
+RetroArch game:
+
+```
+quit_on_close_content = "2"
+config_save_on_exit = "false"
+```
+
+The second line stops RetroArch from saving these settings into its own
+config when it quits, so it keeps behaving normally when you start it
+yourself. It also means menu changes made during a game started by wineo
+aren't saved on the way out. Save them with Save Current Configuration,
+or with an override, which keeps them for that core or game. Save Current
+Configuration also saves wineo's two lines into RetroArch's own config;
+to undo that, set `config_save_on_exit = "true"` and
+`quit_on_close_content = "0"` in `~/.config/retroarch/retroarch.cfg`.
+
+To turn it off, set `quit_with_game` in the global config:
+
+```toml
+# ~/.config/wineo/config.toml
+[retroarch]
+quit_with_game = false # default true
+```
+
+or run `wineo set --global retroarch.quit_with_game=false`. wineo then
+writes the file empty, so RetroArch behaves as it does on its own. The
+setting covers every RetroArch game at once and never changes a target.
+It needs RetroArch 1.9.1 or newer; older versions ignore it.
+
+The Flatpak gets read-only access to wineo's data folder so it can read
+the file. If wineo's data folder path contains a `|`, which RetroArch
+reads as a separator, or can't be shared with the Flatpak, the target
+leaves `--appendconfig` out, and playtime runs until RetroArch is quit.
+If wineo can't write the file, the game still launches, with a warning.
+
 ## Heroic
 
 Native games sideloaded into Heroic import as native environments. See

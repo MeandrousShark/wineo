@@ -13,16 +13,18 @@ use crate::paths::resolve;
 pub(super) struct Rules<'a> {
     /// Lowercase, without the dot.
     pub extensions: &'a [String],
+    /// Every file is a game, as for a RetroArch core without info.
+    pub any_file: bool,
     pub folder: Option<FolderGame>,
 }
 
 impl Rules<'_> {
     fn lists(&self, extension: &str) -> bool {
-        self.extensions.iter().any(|known| known == extension)
+        self.any_file || self.extensions.iter().any(|known| known == extension)
     }
 
     fn matches(&self, path: &Path) -> bool {
-        extension(path).is_some_and(|extension| self.lists(&extension))
+        self.any_file || extension(path).is_some_and(|extension| self.lists(&extension))
     }
 }
 
@@ -82,6 +84,24 @@ pub(super) fn cemu_title_type(xml: &str) -> Option<u8> {
 /// itself. Links are followed, each real folder is read once, so a link
 /// back up can't loop, and a folder game is never looked inside.
 pub(super) fn scan(root: &Path, rules: &Rules<'_>) -> Scanned {
+    let mut scanned = walk(root, rules);
+    hide_covered(&mut scanned.games, rules);
+    scanned
+}
+
+/// Every file under `root`, a folder that can be read, as found: nothing a
+/// sheet names is hidden.
+pub(super) fn all_files(root: &Path) -> Vec<PathBuf> {
+    let rules = Rules {
+        extensions: &[],
+        any_file: true,
+        folder: None,
+    };
+    walk(root, &rules).games
+}
+
+/// What `scan` finds before sheets hide anything.
+fn walk(root: &Path, rules: &Rules<'_>) -> Scanned {
     let mut scanned = Scanned::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut folders = vec![root.to_owned()];
@@ -129,7 +149,6 @@ pub(super) fn scan(root: &Path, rules: &Rules<'_>) -> Scanned {
     scanned.games.sort();
     let mut real: HashSet<PathBuf> = HashSet::new();
     scanned.games.retain(|game| real.insert(resolve(game)));
-    hide_covered(&mut scanned.games, rules);
     scanned
 }
 

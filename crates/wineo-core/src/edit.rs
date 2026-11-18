@@ -241,6 +241,12 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(root, key, Value::from(parse_bool(key, raw)?));
             Ok(())
         }
+        "retroarch.quit_with_game" => {
+            let value = Value::from(parse_bool(key, raw)?);
+            let table = ensure_table(root, "retroarch", "retroarch", false)?;
+            store_value(table, "quit_with_game", value);
+            Ok(())
+        }
         "defaults.prefix_root"
         | "defaults.runner_root"
         | "defaults.dxvk_root"
@@ -598,6 +604,7 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.games_root" => unset_field(root, "defaults", "defaults", "games_root"),
         "gog.language" => unset_field(root, "gog", "gog", "language"),
         "art.fetch" => unset_field(root, "art", "art", "fetch"),
+        "retroarch.quit_with_game" => unset_field(root, "retroarch", "retroarch", "quit_with_game"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;

@@ -850,3 +850,47 @@ fn unset_takes_the_table_or_its_system_only() {
     assert!(!unset(&mut doc, Scope::Environment, "emulation").unwrap());
     assert!(!unset(&mut doc, Scope::Environment, "emulation.system").unwrap());
 }
+
+#[test]
+fn global_retroarch_quit_with_game_sets_and_unsets_without_losing_comments() {
+    let mut doc = parse("# mine\n[retroarch]\nquit_with_game = true # wanted\n");
+    set(&mut doc, Scope::Global, "retroarch.quit_with_game", "false").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "# mine\n[retroarch]\nquit_with_game = false # wanted\n"
+    );
+    let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+    assert!(!config.retroarch.quit_with_game());
+    for bad in ["no", "", "2"] {
+        let before = doc.to_string();
+        assert!(matches!(
+            set(&mut doc, Scope::Global, "retroarch.quit_with_game", bad),
+            Err(EditError::InvalidValue { key, .. }) if key == "retroarch.quit_with_game"
+        ));
+        assert_eq!(doc.to_string(), before);
+    }
+    assert!(unset(&mut doc, Scope::Global, "retroarch.quit_with_game").unwrap());
+    // The emptied table goes, as for the other global tables.
+    assert!(!doc.to_string().contains("retroarch"));
+    assert!(!unset(&mut doc, Scope::Global, "retroarch.quit_with_game").unwrap());
+
+    let mut doc = parse("stop_timeout = 3\n");
+    set(&mut doc, Scope::Global, "retroarch.quit_with_game", "true").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "stop_timeout = 3\n\n[retroarch]\nquit_with_game = true\n"
+    );
+    assert!(matches!(
+        set(&mut doc, Scope::Global, "retroarch.core", "x"),
+        Err(EditError::UnknownKey(key)) if key == "retroarch.core"
+    ));
+    assert!(matches!(
+        set(
+            &mut doc,
+            Scope::Environment,
+            "retroarch.quit_with_game",
+            "true"
+        ),
+        Err(EditError::UnknownKey(_))
+    ));
+}

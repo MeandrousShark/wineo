@@ -4,7 +4,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::{Emulator, Install};
+use super::{Core, Emulator, Install};
 use crate::error::{Error, Result};
 
 /// A target's `exe` and `args`, as a native `Target` holds them.
@@ -72,7 +72,7 @@ fn emulator_args(emulator: Emulator, rom: &str, fullscreen: bool) -> Result<Vec<
             .chain(["-dvd_path", rom])
             .collect(),
         Emulator::RetroArch => {
-            return Err(invalid("RetroArch games aren't supported yet.".to_owned()));
+            return Err(invalid("RetroArch needs a core.".to_owned()));
         }
         Emulator::Other => {
             return Err(invalid(
@@ -128,6 +128,17 @@ pub fn build_target(
 ) -> Result<TargetCommand> {
     let rom_str = absolute_rom(rom)?;
     let emulator_args = emulator_args(emulator, rom_str, fullscreen)?;
+    wrap(emulator, install, rom, emulator_args)
+}
+
+/// The target that runs `emulator_args` with `emulator` as `install` finds
+/// it: the exe itself, or `flatpak run` with the ROM's folders shared.
+fn wrap(
+    emulator: Emulator,
+    install: &Install,
+    rom: &Path,
+    emulator_args: Vec<String>,
+) -> Result<TargetCommand> {
     match install {
         Install::Path { name, .. } => Ok(TargetCommand {
             exe: (*name).to_owned(),
@@ -153,6 +164,79 @@ pub fn build_target(
             })
         }
     }
+}
+
+/// The target that runs `rom` in RetroArch with `core`. `quit_file` is
+/// appended to RetroArch's config, unless its path can't be: RetroArch
+/// splits `--appendconfig` on `|`, and the Flatpak needs the file's folder
+/// shared, which Flatpak refuses for some folders. A native RetroArch gets
+/// the core's full path; the Flatpak gets its file name, which RetroArch
+/// finds in its own cores folder, since a host path may not be the same
+/// inside the sandbox.
+pub fn retroarch_target(
+    install: &Install,
+    core: &Core,
+    rom: &Path,
+    fullscreen: bool,
+    quit_file: &Path,
+) -> Result<TargetCommand> {
+    let rom_str = absolute_rom(rom)?;
+    let flatpak = matches!(install, Install::Flatpak { .. });
+    let core_path = core.path.to_str().ok_or_else(|| {
+        invalid(format!(
+            "Core path `{}` isn't valid UTF-8.",
+            core.path.display()
+        ))
+    })?;
+    let core_arg = if flatpak { core.file_name() } else { core_path };
+    if core_arg.is_empty() {
+        return Err(invalid("RetroArch needs a core.".to_owned()));
+    }
+    let quit_file = quit_file.to_str().filter(|path| !path.contains('|'));
+    // The sandbox can only read the quit file with its folder shared.
+    let quit_share = if flatpak {
+        quit_file.and_then(|path| quit_folder_share(Path::new(path)))
+    } else {
+        None
+    };
+    let quit_file = if flatpak && quit_share.is_none() {
+        None
+    } else {
+        quit_file
+    };
+    let mut retroarch_args = Vec::new();
+    if let Some(quit_file) = quit_file {
+        retroarch_args.extend(["--appendconfig".to_owned(), quit_file.to_owned()]);
+    }
+    if fullscreen {
+        retroarch_args.push("-f".to_owned());
+    }
+    retroarch_args.extend(["-L".to_owned(), core_arg.to_owned(), rom_str.to_owned()]);
+    let mut command = wrap(Emulator::RetroArch, install, rom, retroarch_args)?;
+    if let Some(share) = quit_share {
+        // After the ROM's folders, before the app id.
+        let app = command
+            .args
+            .iter()
+            .position(|arg| !arg.starts_with("--filesystem=") && arg != "run")
+            .expect("a Flatpak target names its app");
+        command.args.insert(app, format!("--filesystem={share}"));
+    }
+    Ok(command)
+}
+
+/// `--filesystem`'s value sharing `quit_file`'s folder read-only, or None
+/// where Flatpak would refuse the folder: one that isn't absolute, has a
+/// `..`, or is `/` itself.
+fn quit_folder_share(quit_file: &Path) -> Option<String> {
+    let dir = quit_file.parent()?;
+    if !dir.is_absolute()
+        || dir.parent().is_none()
+        || dir.components().any(|part| part == Component::ParentDir)
+    {
+        return None;
+    }
+    Some(format!("{}:ro", escape_filesystem(dir.to_str()?)))
 }
 
 /// The target for a custom emulator: `exe` (a path or a bare PATH name) and

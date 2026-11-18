@@ -10,7 +10,7 @@ use toml_edit::{Array, Item, Table, Value, value};
 
 use crate::cancel::Token;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
-use crate::emulator::{self, Emulator, ExtSystem, Install, TargetCommand};
+use crate::emulator::{self, Core, Emulator, ExtSystem, Install, TargetCommand};
 use crate::environment::{self, Environment};
 use crate::launch::{self, WINDOWS_EXTENSIONS};
 use crate::name;
@@ -25,6 +25,9 @@ mod title;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scan {
     BuiltIn(Emulator),
+    /// RetroArch with one core: the files its info lists, or every file for
+    /// a core without info.
+    RetroArch(Core),
     /// A custom emulator: its file extensions, with or without the dot and
     /// in any case, and the system the person gave it, if any.
     Custom {
@@ -118,11 +121,14 @@ enum Systems {
     BuiltIn(Emulator),
     /// The one the person gave a custom emulator, if any.
     Custom(Option<String>),
+    /// A RetroArch core's, by its info and the file's extension.
+    Core(Core),
 }
 
 /// The scan's rules and the system each file gets.
 struct Rules {
     extensions: Vec<String>,
+    any_file: bool,
     folder: Option<emulator::FolderGame>,
     systems: Systems,
 }
@@ -136,11 +142,22 @@ impl Rules {
                     .iter()
                     .map(|(extension, _)| (*extension).to_owned())
                     .collect(),
+                any_file: false,
                 folder: emulator.folder_game(),
                 systems: Systems::BuiltIn(*emulator),
             },
+            Scan::RetroArch(core) => Self {
+                extensions: core
+                    .extensions()
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default(),
+                any_file: core.extensions().is_none(),
+                folder: None,
+                systems: Systems::Core(core.clone()),
+            },
             Scan::Custom { extensions, system } => Self {
                 extensions: custom_extensions(extensions)?,
+                any_file: false,
                 folder: None,
                 systems: Systems::Custom(match system {
                     Some(raw) => custom_system(raw)?,
@@ -160,6 +177,13 @@ impl Rules {
                     .clone()
                     .map_or(EntrySystem::Unknown, EntrySystem::Known);
             }
+            Systems::Core(core) => {
+                return core
+                    .file_system(scan::extension(path).as_deref())
+                    .map_or(EntrySystem::Unknown, |system| {
+                        EntrySystem::Known(system.to_owned())
+                    });
+            }
         };
         let found = if folder_game {
             emulator
@@ -177,12 +201,14 @@ impl Rules {
     }
 
     fn lists(&self, path: &Path) -> bool {
-        scan::extension(path).is_some_and(|extension| self.extensions.contains(&extension))
+        self.any_file
+            || scan::extension(path).is_some_and(|extension| self.extensions.contains(&extension))
     }
 
     fn scan_rules(&self) -> scan::Rules<'_> {
         scan::Rules {
             extensions: &self.extensions,
+            any_file: self.any_file,
             folder: self.folder,
         }
     }
@@ -333,6 +359,9 @@ pub fn listing(paths: &Paths, scan: &Scan, path: &Path) -> anyhow::Result<Listin
                 root.display(),
                 emulator.name()
             ),
+            Scan::RetroArch(core) => {
+                anyhow::bail!("`{}` isn't a file {} plays.", root.display(), core.name())
+            }
             Scan::Custom { .. } => {
                 anyhow::bail!("`{}` isn't one of the file types given.", root.display())
             }
@@ -373,6 +402,35 @@ pub fn listing(paths: &Paths, scan: &Scan, path: &Path) -> anyhow::Result<Listin
     Ok(Listing { entries, skipped })
 }
 
+/// The cores in `cores` that play something at `path`, a folder or one
+/// file, in the order given. The folder comes first, then its cores: a core
+/// is offered when its info lists the extension of a file there, and a
+/// core without info whenever there is a file at all.
+pub fn matching_cores(paths: &Paths, cores: &[Core], path: &Path) -> anyhow::Result<Vec<Core>> {
+    check_portable(paths)?;
+    let root = absolute(paths, path)?;
+    let metadata = std::fs::metadata(&root)
+        .map_err(|error| anyhow::anyhow!("Can't read {}: {error}.", root.display()))?;
+    let files = if metadata.is_dir() {
+        std::fs::read_dir(&root)
+            .map_err(|error| anyhow::anyhow!("Can't read {}: {error}.", root.display()))?;
+        scan::all_files(&root)
+    } else {
+        vec![root]
+    };
+    let extensions: HashSet<Option<String>> =
+        files.iter().map(|file| scan::extension(file)).collect();
+    Ok(cores
+        .iter()
+        .filter(|core| {
+            extensions
+                .iter()
+                .any(|extension| core.plays(extension.as_deref()))
+        })
+        .cloned()
+        .collect())
+}
+
 /// What runs the games.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Emulating {
@@ -380,6 +438,12 @@ pub enum Emulating {
         emulator: Emulator,
         install: Install,
         /// Ignored for an emulator with no fullscreen flag.
+        fullscreen: bool,
+    },
+    /// RetroArch with the core that plays the games.
+    RetroArch {
+        install: Install,
+        core: Core,
         fullscreen: bool,
     },
     /// A custom emulator: its command, a path or a bare name on PATH, and
@@ -392,6 +456,7 @@ impl Emulating {
     fn id(&self) -> &str {
         match self {
             Self::BuiltIn { emulator, .. } => emulator.id(),
+            Self::RetroArch { .. } => Emulator::RetroArch.id(),
             Self::Custom { .. } => emulator::CUSTOM,
         }
     }
@@ -427,6 +492,23 @@ impl Emulating {
                 fullscreen,
             } => {
                 let mut command = emulator::build_target(*emulator, install, rom, *fullscreen)?;
+                if let Install::File(path) = install {
+                    command.exe = paths.store(path)?;
+                }
+                command
+            }
+            Self::RetroArch {
+                install,
+                core,
+                fullscreen,
+            } => {
+                let mut command = emulator::retroarch_target(
+                    install,
+                    core,
+                    rom,
+                    *fullscreen,
+                    &emulator::quit_file(paths),
+                )?;
                 if let Install::File(path) = install {
                     command.exe = paths.store(path)?;
                 }
@@ -569,7 +651,7 @@ fn ambiguous_system(
         .any(|entry| entry.state == EntryState::New && entry.system == EntrySystem::Ambiguous);
     let systems = match emulating {
         Emulating::BuiltIn { emulator, .. } => emulator.systems(),
-        Emulating::Custom { .. } => &[],
+        Emulating::RetroArch { .. } | Emulating::Custom { .. } => &[],
     };
     let Some(chosen) = chosen else {
         if needed {
@@ -583,6 +665,7 @@ fn ambiguous_system(
     if !systems.contains(&chosen) {
         let name = match emulating {
             Emulating::BuiltIn { emulator, .. } => emulator.name(),
+            Emulating::RetroArch { .. } => Emulator::RetroArch.name(),
             Emulating::Custom { .. } => "A custom emulator",
         };
         if systems.is_empty() {
@@ -674,7 +757,32 @@ fn config_text(paths: &Paths, plan: &Plan, name: &str) -> anyhow::Result<String>
 /// the way planning picks one.
 pub fn apply(paths: &Paths, plan: &Plan, cancel: &Token) -> anyhow::Result<ApplyOutcome> {
     check_portable(paths)?;
-    apply_with(paths, plan, cancel, &mut Imported::default())
+    let mut outcome = apply_with(paths, plan, cancel, &mut Imported::default())?;
+    if let ApplyOutcome::Imported(applied) = &mut outcome {
+        applied
+            .warnings
+            .extend(retroarch_quit_file(paths, std::iter::once(plan)));
+    }
+    Ok(outcome)
+}
+
+/// Writes RetroArch's quit file for the global setting when `plans` has a
+/// RetroArch game, so its target's `--appendconfig` finds it. A failure is
+/// a warning, since the games import and run either way.
+fn retroarch_quit_file<'a>(
+    paths: &Paths,
+    mut plans: impl Iterator<Item = &'a Plan>,
+) -> Option<String> {
+    if !plans.any(|plan| plan.emulator == Emulator::RetroArch.id()) {
+        return None;
+    }
+    match GlobalConfig::load(paths) {
+        Ok(global) => emulator::refresh_quit_file(paths, global.retroarch.quit_with_game()),
+        Err(error) => Some(format!(
+            "Can't write RetroArch's quit file: {}.",
+            crate::error::chain(&error)
+        )),
+    }
 }
 
 /// `apply` with what is known to be imported so far, which it brings up to
@@ -759,6 +867,9 @@ pub fn apply_batch(
         total: ready.len(),
         ..batch.into()
     };
+    report
+        .warnings
+        .extend(retroarch_quit_file(paths, ready.iter()));
     for plan in ready {
         if cancel.is_canceled() {
             report.canceled = true;

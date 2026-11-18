@@ -84,6 +84,8 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub gog: GogConfig,
     #[serde(default)]
+    pub retroarch: RetroArchConfig,
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// The deprecated keys the file used, moved to their new names.
     #[serde(skip)]
@@ -97,6 +99,21 @@ pub struct GogConfig {
     /// A BCP 47 locale tag, like `en-US`. Unset means
     /// `gog::language::DEFAULT`.
     pub language: Option<String>,
+}
+
+/// RetroArch settings for the games wineo runs in it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetroArchConfig {
+    /// Whether closing a game quits RetroArch, so its run ends with the
+    /// game. Unset means on.
+    pub quit_with_game: Option<bool>,
+}
+
+impl RetroArchConfig {
+    pub fn quit_with_game(&self) -> bool {
+        self.quit_with_game.unwrap_or(true)
+    }
 }
 
 /// Art fetched while `new` and `import` create an environment.
@@ -776,6 +793,7 @@ impl Default for GlobalConfig {
             defaults: Defaults::default(),
             art: ArtConfig::default(),
             gog: GogConfig::default(),
+            retroarch: RetroArchConfig::default(),
             env: BTreeMap::new(),
             deprecated: Vec::new(),
         }
