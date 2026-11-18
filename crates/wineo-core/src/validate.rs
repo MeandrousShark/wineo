@@ -1426,10 +1426,10 @@ fn check_wine(
     }
 }
 
-/// An emulated game's ROM, and the Flatpak each of its targets runs. A
-/// target's `exe = "flatpak"` is always found, so an uninstalled emulator
-/// only shows as its export script being gone. `exports` are the folders
-/// that hold those scripts.
+/// An emulated game's ROM, the Flatpak each of its targets runs, and the
+/// core a native RetroArch target loads. A target's `exe = "flatpak"` is
+/// always found, so an uninstalled emulator only shows as its export script
+/// being gone. `exports` are the folders that hold those scripts.
 fn check_emulation(
     paths: &Paths,
     environment: &Environment,
@@ -1451,14 +1451,30 @@ fn check_emulation(
             None,
         ));
     }
+    let retroarch = emulation.emulator == emulator::Emulator::RetroArch.id();
     for (target_name, target) in &environment.config.targets {
-        if let Some(app) = emulator::flatpak_app(&target.exe, &target.args)
-            && !emulator::flatpak_installed(exports, app)
+        if let Some(app) = emulator::flatpak_app(&target.exe, &target.args) {
+            if !emulator::flatpak_installed(exports, app) {
+                report.push(Problem::new(
+                    Code::EmulatedEmulatorMissing,
+                    Some(name),
+                    format!("target {target_name}: Flatpak app {app} not found"),
+                    None,
+                ));
+            }
+            continue;
+        }
+        // Only a full path can be checked: RetroArch looks a bare file name
+        // up in its own cores folder.
+        if retroarch
+            && let Some(core) = emulator::target_core(&target.args)
+            && Path::new(core).is_absolute()
+            && !Path::new(core).is_file()
         {
             report.push(Problem::new(
                 Code::EmulatedEmulatorMissing,
                 Some(name),
-                format!("target {target_name}: Flatpak app {app} not found"),
+                format!("target {target_name}: RetroArch core {core} not found"),
                 None,
             ));
         }

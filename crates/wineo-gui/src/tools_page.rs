@@ -831,7 +831,7 @@ fn launch_status(event: &LaunchEvent) -> Option<String> {
         LaunchEvent::Desktop(_) => Some("Updating desktop entries...".into()),
         LaunchEvent::Winetricks(_) => Some("Preparing winetricks...".into()),
         LaunchEvent::Starting | LaunchEvent::Started => Some("Starting...".into()),
-        LaunchEvent::NoWaylandSession | LaunchEvent::AfterHook(_) => None,
+        LaunchEvent::NoWaylandSession | LaunchEvent::AfterHook(_) | LaunchEvent::Warning(_) => None,
     }
 }
 

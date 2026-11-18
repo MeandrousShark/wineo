@@ -666,7 +666,7 @@ mod emulation_table {
     }
 
     #[test]
-    fn retroarch_is_refused_for_now_native_or_flatpak() {
+    fn retroarch_without_a_core_is_refused_native_or_flatpak() {
         for install in [native(Emulator::RetroArch), flatpak()] {
             let error = message(build_target(
                 Emulator::RetroArch,
@@ -674,7 +674,7 @@ mod emulation_table {
                 Path::new(ROM),
                 true,
             ));
-            assert_eq!(error, "RetroArch games aren't supported yet.");
+            assert_eq!(error, "RetroArch needs a core.");
         }
     }
 

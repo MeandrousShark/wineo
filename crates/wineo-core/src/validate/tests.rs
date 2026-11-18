@@ -873,6 +873,69 @@ fn an_uninstalled_flatpak_emulator_is_a_warning() {
 }
 
 #[test]
+fn a_native_retroarch_targets_missing_core_is_a_warning() {
+    let f = Fixture::new();
+    let rom = f.root.join("Game.gba");
+    fs::write(&rom, b"").unwrap();
+    let core = f.root.join("cores/mgba_libretro.so");
+    let config = |emulator: &str, core: &str| {
+        format!(
+            "[emulation]\nemulator = '{emulator}'\nrom = '{}'\n\
+             [targets.game]\nexe = '/bin/true'\ndefault = true\n\
+             args = ['--appendconfig', '/x.cfg', '-f', '-L', '{core}', '{}']\n\
+             [targets.alt]\nexe = '/bin/true'\nargs = ['--libretro={core}', '{}']\n",
+            rom.display(),
+            rom.display(),
+            rom.display(),
+        )
+    };
+    let check = |text: &str| {
+        f.native("gba", text);
+        let environment = Environment::load(&f.paths, "gba").unwrap();
+        let mut report = Report::default();
+        check_emulation(&f.paths, &environment, &[], &mut report);
+        report
+            .problems
+            .iter()
+            .map(|problem| {
+                (
+                    problem.code,
+                    problem.level,
+                    problem.area,
+                    problem.message.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let shown = core.display();
+    assert_eq!(
+        check(&config("retroarch", &shown.to_string())),
+        [
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                format!("target alt: RetroArch core {shown} not found")
+            ),
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                format!("target game: RetroArch core {shown} not found")
+            ),
+        ]
+    );
+    fs::create_dir_all(core.parent().unwrap()).unwrap();
+    fs::write(&core, b"").unwrap();
+    assert!(check(&config("retroarch", &shown.to_string())).is_empty());
+    // A bare file name is RetroArch's to find, and only RetroArch games are
+    // checked.
+    assert!(check(&config("retroarch", "gone_libretro.so")).is_empty());
+    fs::remove_file(&core).unwrap();
+    assert!(check(&config("mgba", &shown.to_string())).is_empty());
+}
+
+#[test]
 fn several_targets_without_a_default_is_a_warning() {
     let f = Fixture::new();
     let two = "[targets.a]\nexe = 'notepad'\n[targets.b]\nexe = 'notepad'\n";

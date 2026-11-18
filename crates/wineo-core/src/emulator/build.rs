@@ -4,7 +4,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::{Emulator, Install};
+use super::{Core, Emulator, Install};
 use crate::error::{Error, Result};
 
 /// A target's `exe` and `args`, as a native `Target` holds them.
@@ -72,7 +72,7 @@ fn emulator_args(emulator: Emulator, rom: &str, fullscreen: bool) -> Result<Vec<
             .chain(["-dvd_path", rom])
             .collect(),
         Emulator::RetroArch => {
-            return Err(invalid("RetroArch games aren't supported yet.".to_owned()));
+            return Err(invalid("RetroArch needs a core.".to_owned()));
         }
         Emulator::Other => {
             return Err(invalid(
@@ -128,6 +128,17 @@ pub fn build_target(
 ) -> Result<TargetCommand> {
     let rom_str = absolute_rom(rom)?;
     let emulator_args = emulator_args(emulator, rom_str, fullscreen)?;
+    wrap(emulator, install, rom, emulator_args)
+}
+
+/// The target that runs `emulator_args` with `emulator` as `install` finds
+/// it: the exe itself, or `flatpak run` with the ROM's folders shared.
+fn wrap(
+    emulator: Emulator,
+    install: &Install,
+    rom: &Path,
+    emulator_args: Vec<String>,
+) -> Result<TargetCommand> {
     match install {
         Install::Path { name, .. } => Ok(TargetCommand {
             exe: (*name).to_owned(),
@@ -153,6 +164,39 @@ pub fn build_target(
             })
         }
     }
+}
+
+/// The target that runs `rom` in RetroArch with `core`. `quit_file` is
+/// appended to RetroArch's config, unless its path can't be: RetroArch
+/// splits `--appendconfig` on `|`. A native RetroArch gets the core's full
+/// path; the Flatpak gets its file name, which RetroArch finds in its own
+/// cores folder, since a host path may not be the same inside the sandbox.
+pub fn retroarch_target(
+    install: &Install,
+    core: &Core,
+    rom: &Path,
+    fullscreen: bool,
+    quit_file: &Path,
+) -> Result<TargetCommand> {
+    let rom_str = absolute_rom(rom)?;
+    let core_arg = match install {
+        Install::Flatpak { .. } => core.file_name().to_owned(),
+        Install::Path { .. } | Install::File(_) => utf8(&core.path)?.to_owned(),
+    };
+    if core_arg.is_empty() {
+        return Err(invalid("RetroArch needs a core.".to_owned()));
+    }
+    let mut retroarch_args = Vec::new();
+    if let Some(quit_file) = quit_file.to_str()
+        && !quit_file.contains('|')
+    {
+        retroarch_args.extend(["--appendconfig".to_owned(), quit_file.to_owned()]);
+    }
+    if fullscreen {
+        retroarch_args.push("-f".to_owned());
+    }
+    retroarch_args.extend(["-L".to_owned(), core_arg, rom_str.to_owned()]);
+    wrap(Emulator::RetroArch, install, rom, retroarch_args)
 }
 
 /// The target for a custom emulator: `exe` (a path or a bare PATH name) and

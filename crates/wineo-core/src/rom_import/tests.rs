@@ -629,7 +629,7 @@ fn a_failed_game_is_reported_and_the_rest_go_on() {
 }
 
 #[test]
-fn retroarch_is_refused_per_game_until_it_is_supported() {
+fn retroarch_without_a_core_is_refused_per_game() {
     let (home, paths, roms) = home();
     touch(&roms.join("A.gba"));
     let listing = list(&paths, Emulator::Mgba, &roms);
@@ -643,10 +643,7 @@ fn retroarch_is_refused_per_game_until_it_is_supported() {
     )
     .unwrap();
     assert!(batch.ready.is_empty());
-    assert_eq!(
-        batch.failures[0].reason,
-        "RetroArch games aren't supported yet."
-    );
+    assert_eq!(batch.failures[0].reason, "RetroArch needs a core.");
 }
 
 #[test]
@@ -1115,4 +1112,410 @@ fn catching_up_on_imports_loads_only_new_environments() {
     fs::remove_file(&config).unwrap();
     imported.refresh(&paths).unwrap();
     assert_eq!(imported.get(&roms.join("A.gba")), None);
+}
+
+fn core(path: &Path, info: Option<&str>) -> Core {
+    touch(path);
+    Core {
+        path: path.to_owned(),
+        info: info.map(emulator::parse_info),
+    }
+}
+
+const MGBA_INFO: &str = "display_name = \"mGBA\"\nsystemid = \"game_boy_advance\"\n\
+    supported_extensions = \"gb|gbc|gba\"\n\
+    database = \"Nintendo - Game Boy|Nintendo - Game Boy Color|Nintendo - Game Boy Advance\"\n";
+const PSX_INFO: &str = "display_name = \"Beetle PSX\"\nsystemid = \"playstation\"\n\
+    supported_extensions = \"cue|m3u|bin\"\ndatabase = \"Sony - PlayStation\"\n";
+const SNES_INFO: &str = "display_name = \"Snes9x\"\nsystemid = \"super_nes\"\n\
+    supported_extensions = \"sfc|smc\"\ndatabase = \"Nintendo - SNES|Nintendo - Satellaview\"\n";
+
+fn retroarch_scan(paths: &Paths, core: &Core, path: &Path) -> Listing {
+    listing(paths, &Scan::RetroArch(core.clone()), path).unwrap()
+}
+
+fn systems(listing: &Listing) -> Vec<(&str, &EntrySystem)> {
+    listing
+        .entries
+        .iter()
+        .map(|entry| (entry.file_name.as_str(), &entry.system))
+        .collect()
+}
+
+fn known(system: &str) -> EntrySystem {
+    EntrySystem::Known(system.to_owned())
+}
+
+#[test]
+fn a_retroarch_scan_lists_the_cores_files_tagged_per_file() {
+    let (home, paths, roms) = home();
+    let mgba = core(&home.path().join("cores/mgba_libretro.so"), Some(MGBA_INFO));
+    touch(&roms.join("Tetris (World) [!].gb"));
+    touch(&roms.join("sub/Pokemon Crystal (USA).GBC"));
+    touch(&roms.join("Metroid Fusion (USA).gba"));
+    touch(&roms.join("Super Metroid.sfc"));
+    touch(&roms.join("notes.txt"));
+    let listing = retroarch_scan(&paths, &mgba, &roms);
+    assert_eq!(
+        systems(&listing),
+        [
+            ("Metroid Fusion (USA).gba", &known("gba")),
+            ("Pokemon Crystal (USA).GBC", &known("gbc")),
+            ("Tetris (World) [!].gb", &known("gb")),
+        ]
+    );
+    assert_eq!(listing.entries[2].title, "Tetris");
+
+    // A core of one system tags everything with it, and the cue and m3u
+    // rules hold as for any emulator.
+    let psx = core(&home.path().join("cores/psx_libretro.so"), Some(PSX_INFO));
+    let ps1 = roms.join("ps1");
+    write(
+        &ps1.join("Game (Disc 1).cue"),
+        "FILE \"Game (Disc 1).bin\" BINARY\n",
+    );
+    touch(&ps1.join("Game (Disc 1).bin"));
+    write(
+        &ps1.join("Game (Disc 2).cue"),
+        "FILE \"Game (Disc 2).bin\" BINARY\n",
+    );
+    touch(&ps1.join("Game (Disc 2).bin"));
+    write(
+        &ps1.join("Game.m3u"),
+        "Game (Disc 1).cue\nGame (Disc 2).cue\n",
+    );
+    touch(&ps1.join("Loose.bin"));
+    let listing = retroarch_scan(&paths, &psx, &ps1);
+    assert_eq!(
+        systems(&listing),
+        [("Game.m3u", &known("ps1")), ("Loose.bin", &known("ps1"))]
+    );
+
+    // A core whose files it can't place leaves them untagged.
+    let snes = core(&home.path().join("cores/snes_libretro.so"), Some(SNES_INFO));
+    touch(&roms.join("snes/Game.smc"));
+    let listing = retroarch_scan(&paths, &snes, &roms.join("snes"));
+    assert_eq!(systems(&listing), [("Game.smc", &known("snes"))]);
+    let odd = core(
+        &home.path().join("cores/odd_libretro.so"),
+        Some("systemid = \"arcade\"\nsupported_extensions = \"zip\"\n"),
+    );
+    touch(&roms.join("arcade/pacman.zip"));
+    let listing = retroarch_scan(&paths, &odd, &roms.join("arcade"));
+    assert_eq!(systems(&listing), [("pacman.zip", &EntrySystem::Unknown)]);
+
+    // A single file the core doesn't play is refused.
+    let error = super::listing(
+        &paths,
+        &Scan::RetroArch(mgba.clone()),
+        &roms.join("notes.txt"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        format!(
+            "`{}` isn't a file mGBA plays.",
+            roms.join("notes.txt").display()
+        )
+    );
+}
+
+#[test]
+fn a_retroarch_core_without_info_lists_every_file() {
+    let (home, paths, roms) = home();
+    let bare = core(&home.path().join("cores/bare_libretro.so"), None);
+    touch(&roms.join("A.gba"));
+    touch(&roms.join("B.weird"));
+    touch(&roms.join("sub/README"));
+    write(&roms.join("Disc.cue"), "FILE \"Disc.bin\" BINARY\n");
+    touch(&roms.join("Disc.bin"));
+    let listing = retroarch_scan(&paths, &bare, &roms);
+    assert_eq!(
+        systems(&listing),
+        [
+            ("A.gba", &EntrySystem::Unknown),
+            ("B.weird", &EntrySystem::Unknown),
+            ("Disc.cue", &EntrySystem::Unknown),
+            ("README", &EntrySystem::Unknown),
+        ]
+    );
+    assert_eq!(
+        retroarch_scan(&paths, &bare, &roms.join("B.weird"))
+            .entries
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn the_cores_offered_are_the_ones_that_play_the_folders_files() {
+    let (home, paths, roms) = home();
+    let cores_dir = home.path().join("cores");
+    let cores = [
+        core(&cores_dir.join("bare_libretro.so"), None),
+        core(&cores_dir.join("mgba_libretro.so"), Some(MGBA_INFO)),
+        core(&cores_dir.join("psx_libretro.so"), Some(PSX_INFO)),
+        core(&cores_dir.join("snes_libretro.so"), Some(SNES_INFO)),
+        core(
+            &cores_dir.join("2048_libretro.so"),
+            Some("display_name = \"2048\"\nsystemid = \"2048\"\n"),
+        ),
+    ];
+    let offered = |path: &Path| -> Vec<String> {
+        matching_cores(&paths, &cores, path)
+            .unwrap()
+            .iter()
+            .map(|core| core.id().to_owned())
+            .collect()
+    };
+    fs::create_dir_all(roms.join("empty")).unwrap();
+    assert!(offered(&roms.join("empty")).is_empty());
+    touch(&roms.join("gba/deep/Game.GBA"));
+    assert_eq!(offered(&roms.join("gba")), ["bare", "mgba"]);
+    touch(&roms.join("mixed/Game.sfc"));
+    touch(&roms.join("mixed/Game.gb"));
+    assert_eq!(offered(&roms.join("mixed")), ["bare", "mgba", "snes"]);
+    assert_eq!(offered(&roms.join("mixed/Game.sfc")), ["bare", "snes"]);
+    touch(&roms.join("other/notes"));
+    assert_eq!(offered(&roms.join("other")), ["bare"]);
+    assert!(matching_cores(&paths, &cores, &roms.join("missing")).is_err());
+
+    let portable = portable_paths(home.path());
+    assert_eq!(
+        matching_cores(&portable, &cores, &roms.join("gba"))
+            .unwrap_err()
+            .to_string(),
+        "Emulated games can't be imported into a portable folder."
+    );
+}
+
+fn retroarch(home: &Path, core: Core) -> Emulating {
+    let exe = home.join("Apps/retroarch");
+    if !exe.exists() {
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        write_script(&exe, "#!/bin/sh\n");
+    }
+    Emulating::RetroArch {
+        install: Install::File(exe),
+        core,
+        fullscreen: true,
+    }
+}
+
+const QUIT_ON: &str = "quit_on_close_content = \"2\"\nconfig_save_on_exit = \"false\"\n";
+
+#[test]
+fn a_retroarch_import_writes_its_target_and_the_quit_file() {
+    let (home, paths, roms) = home();
+    let mgba = core(&home.path().join("cores/mgba_libretro.so"), Some(MGBA_INFO));
+    let rom = roms.join("Metroid Fusion (USA).gba");
+    touch(&rom);
+    touch(&roms.join("Tetris.gb"));
+    let emulating = retroarch(home.path(), mgba.clone());
+    let quit = emulator::quit_file(&paths);
+    let listing = retroarch_scan(&paths, &mgba, &roms);
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &emulating,
+        listing.entries,
+        None,
+    )
+    .unwrap();
+    assert!(batch.failures.is_empty(), "{:?}", batch.failures);
+    // Planning writes nothing.
+    assert!(!quit.exists());
+    let report = apply_batch(&paths, batch, &Token::new(), |_| Ok(())).unwrap();
+    assert_eq!(report.done, ["metroid-fusion", "tetris"]);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(fs::read_to_string(&quit).unwrap(), QUIT_ON);
+
+    let config = Environment::load(&paths, "metroid-fusion").unwrap().config;
+    assert_eq!(config.tags, ["gba"]);
+    let emulation = config.emulation.unwrap();
+    assert_eq!(emulation.emulator, "retroarch");
+    assert_eq!(emulation.system.as_deref(), Some("gba"));
+    let target = &config.targets["metroid-fusion"];
+    assert_eq!(target.exe, "~/Apps/retroarch");
+    assert_eq!(
+        target.args,
+        [
+            "--appendconfig",
+            quit.to_str().unwrap(),
+            "-f",
+            "-L",
+            mgba.path.to_str().unwrap(),
+            rom.to_str().unwrap(),
+        ]
+    );
+    assert_eq!(
+        Environment::load(&paths, "tetris").unwrap().config.tags,
+        ["gb"]
+    );
+
+    // The setting turned off empties it at the next import, and the same
+    // ROM counts as imported whichever core found it.
+    write(
+        &paths.global_config(),
+        "[retroarch]\nquit_with_game = false\n",
+    );
+    touch(&roms.join("New.gba"));
+    let report = import_all(&paths, &emulating, retroarch_scan(&paths, &mgba, &roms));
+    assert_eq!(report.done, ["new"]);
+    assert_eq!(fs::read_to_string(&quit).unwrap(), "");
+    let bare = core(&home.path().join("cores/bare_libretro.so"), None);
+    let again = retroarch_scan(&paths, &bare, &roms);
+    assert!(
+        again
+            .entries
+            .iter()
+            .all(|entry| matches!(entry.state, EntryState::AlreadyImported(_)))
+    );
+
+    // A single apply writes it too, and a failed write is only a warning.
+    fs::remove_file(&quit).unwrap();
+    touch(&roms.join("Single.gba"));
+    let listing = retroarch_scan(&paths, &mgba, &roms.join("Single.gba"));
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &emulating,
+        listing.entries,
+        None,
+    )
+    .unwrap();
+    let ApplyOutcome::Imported(applied) = apply(&paths, &batch.ready[0], &Token::new()).unwrap()
+    else {
+        panic!("not imported");
+    };
+    assert!(applied.warnings.is_empty(), "{:?}", applied.warnings);
+    assert_eq!(fs::read_to_string(&quit).unwrap(), "");
+    fs::remove_file(&quit).unwrap();
+    fs::create_dir(&quit).unwrap();
+    touch(&roms.join("Blocked.gba"));
+    let report = import_all(
+        &paths,
+        &emulating,
+        retroarch_scan(&paths, &mgba, &roms.join("Blocked.gba")),
+    );
+    assert_eq!(report.done, ["blocked"]);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(
+        report.warnings[0].starts_with("Can't write RetroArch's quit file: "),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn other_emulators_imports_dont_write_the_quit_file() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("Game.gba"));
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let report = import_all(&paths, &mgba, list(&paths, Emulator::Mgba, &roms));
+    assert_eq!(report.done, ["game"]);
+    assert!(!emulator::quit_file(&paths).exists());
+}
+
+/// Prepares `name`'s launch as `wineo run` does, runs its command to the
+/// end, and returns the events it sent.
+fn launch_to_end(paths: &Paths, name: &str) -> Vec<String> {
+    let mut events = Vec::new();
+    let prepared = crate::launch::prepare(
+        paths,
+        name,
+        &Overrides::default(),
+        &Token::new(),
+        crate::hooks::Output::Inherit,
+        |event| events.push(format!("{event:?}")),
+    )
+    .unwrap();
+    let mut child = KillOnDrop::new(prepared.launch.command().spawn().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the emulator never ended");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success());
+    events
+}
+
+#[test]
+fn launching_a_retroarch_game_writes_the_quit_file_and_others_dont() {
+    let (home, paths, roms) = home();
+    let rom = roms.join("Game.gba");
+    touch(&rom);
+    touch(&roms.join("mgba/Other.gba"));
+    let ran = home.path().join("ran");
+    let exe = home.path().join("Apps/retroarch");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    write_script(
+        &exe,
+        format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '{}'\n",
+            ran.display()
+        ),
+    );
+    let mgba_core = core(&home.path().join("cores/mgba_libretro.so"), Some(MGBA_INFO));
+    let emulating = retroarch(home.path(), mgba_core.clone());
+    let report = import_all(&paths, &emulating, retroarch_scan(&paths, &mgba_core, &rom));
+    assert_eq!(report.done, ["game"]);
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let report = import_all(
+        &paths,
+        &mgba,
+        list(&paths, Emulator::Mgba, &roms.join("mgba")),
+    );
+    assert_eq!(report.done, ["other"]);
+
+    let quit = emulator::quit_file(&paths);
+    fs::remove_file(&quit).unwrap();
+    let events = launch_to_end(&paths, "other");
+    assert!(!quit.exists(), "{events:?}");
+
+    let events = launch_to_end(&paths, "game");
+    assert!(
+        !events.iter().any(|event| event.starts_with("Warning")),
+        "{events:?}"
+    );
+    assert_eq!(fs::read_to_string(&quit).unwrap(), QUIT_ON);
+    assert_eq!(
+        fs::read_to_string(&ran).unwrap(),
+        format!(
+            "--appendconfig\n{}\n-f\n-L\n{}\n{}\n",
+            quit.display(),
+            mgba_core.path.display(),
+            rom.display()
+        )
+    );
+
+    // The setting reaches the next launch without touching the target.
+    let before = fs::read_to_string(paths.environment_config("game")).unwrap();
+    write(
+        &paths.global_config(),
+        "[retroarch]\nquit_with_game = false\n",
+    );
+    launch_to_end(&paths, "game");
+    assert_eq!(fs::read_to_string(&quit).unwrap(), "");
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("game")).unwrap(),
+        before
+    );
+
+    // A file that can't be written is a warning, and the game still runs.
+    fs::remove_file(&quit).unwrap();
+    fs::create_dir(&quit).unwrap();
+    fs::remove_file(&ran).unwrap();
+    let events = launch_to_end(&paths, "game");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("Warning(\"Can't write RetroArch's quit file: ")),
+        "{events:?}"
+    );
+    assert!(ran.exists());
 }

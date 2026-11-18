@@ -13,16 +13,18 @@ use crate::paths::resolve;
 pub(super) struct Rules<'a> {
     /// Lowercase, without the dot.
     pub extensions: &'a [String],
+    /// Every file is a game, as for a RetroArch core without info.
+    pub any_file: bool,
     pub folder: Option<FolderGame>,
 }
 
 impl Rules<'_> {
     fn lists(&self, extension: &str) -> bool {
-        self.extensions.iter().any(|known| known == extension)
+        self.any_file || self.extensions.iter().any(|known| known == extension)
     }
 
     fn matches(&self, path: &Path) -> bool {
-        extension(path).is_some_and(|extension| self.lists(&extension))
+        self.any_file || extension(path).is_some_and(|extension| self.lists(&extension))
     }
 }
 
