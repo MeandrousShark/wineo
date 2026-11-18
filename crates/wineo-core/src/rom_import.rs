@@ -414,12 +414,7 @@ pub fn matching_cores(paths: &Paths, cores: &[Core], path: &Path) -> anyhow::Res
     let files = if metadata.is_dir() {
         std::fs::read_dir(&root)
             .map_err(|error| anyhow::anyhow!("Can't read {}: {error}.", root.display()))?;
-        let rules = scan::Rules {
-            extensions: &[],
-            any_file: true,
-            folder: None,
-        };
-        scan::scan(&root, &rules).games
+        scan::all_files(&root)
     } else {
         vec![root]
     };

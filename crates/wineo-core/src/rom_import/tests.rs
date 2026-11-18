@@ -1519,3 +1519,28 @@ fn launching_a_retroarch_game_writes_the_quit_file_and_others_dont() {
     );
     assert!(ran.exists());
 }
+
+#[test]
+fn cores_are_matched_against_every_file_in_the_folder_as_listed() {
+    let (home, paths, roms) = home();
+    let cores_dir = home.path().join("cores");
+    // Plays only what a cue sheet would hide, or a type no emulator lists.
+    let bin_only = core(
+        &cores_dir.join("bin_libretro.so"),
+        Some("display_name = \"Bin\"\nsupported_extensions = \"bin\"\n"),
+    );
+    let odd = core(
+        &cores_dir.join("odd_libretro.so"),
+        Some("display_name = \"Odd\"\nsupported_extensions = \"xyz\"\n"),
+    );
+    let cores = [bin_only, odd];
+    write(&roms.join("Disc.cue"), "FILE \"Disc.bin\" BINARY\n");
+    touch(&roms.join("Disc.bin"));
+    touch(&roms.join("deep/Thing.XYZ"));
+    let offered: Vec<String> = matching_cores(&paths, &cores, &roms)
+        .unwrap()
+        .iter()
+        .map(|core| core.id().to_owned())
+        .collect();
+    assert_eq!(offered, ["bin", "odd"]);
+}
