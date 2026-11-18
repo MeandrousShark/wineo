@@ -809,7 +809,8 @@ impl App {
         if let Some(flow) = &self.flow {
             let palette = self.palette;
             let generation = self.flow_generation;
-            // Fits all four Add choices; smaller windows scroll them.
+            // Fits all six Add choices (about 500 px at the widest, 560 when
+            // their details wrap); smaller windows scroll them.
             let height = if matches!(flow, crate::flow::Page::Choose(_)) {
                 560.0
             } else {

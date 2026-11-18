@@ -67,6 +67,7 @@ impl App {
                         "3" => flow::Event::Heroic,
                         "4" => flow::Event::Steam,
                         "5" => flow::Event::Gog,
+                        "6" => flow::Event::Emulated,
                         _ => return ControlFlow::Break(Task::none()),
                     };
                     self.flow_update(self.flow_generation, event)
