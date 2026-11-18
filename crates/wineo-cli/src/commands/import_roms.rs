@@ -1,6 +1,7 @@
 //! `wineo import roms`: emulated games from a folder of ROMs, or one file,
 //! each its own native environment.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +12,7 @@ use serde_json::{Value, json};
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::emulator::{self, Core, Emulator, Install};
+use wineo_core::launch;
 use wineo_core::paths::Paths;
 use wineo_core::rom_import::{
     self, Applying, Batch, BatchReport, Emulating, Entry, EntryState, EntrySystem, Listing, Plan,
@@ -173,29 +175,12 @@ pub(crate) struct Host {
     system_root: PathBuf,
 }
 
-/// The default system Flatpak exports folder, which a test root replaces.
-const SYSTEM_EXPORTS: &str = "/var/lib/flatpak/exports/bin";
-
 impl Host {
     pub(crate) fn new(paths: &Paths, global: &GlobalConfig) -> Self {
-        // As launch resolves a native exe: the global PATH, else wineo's own.
-        let path_var = global
-            .env
-            .get("PATH")
-            .map(OsString::from)
-            .unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
-        let system_root =
-            test_system_root(|var| std::env::var_os(var)).unwrap_or_else(|| PathBuf::from("/"));
-        let exports = emulator::flatpak_exports(paths)
-            .into_iter()
-            .map(|dir| match dir.strip_prefix("/") {
-                Ok(rest) if dir == Path::new(SYSTEM_EXPORTS) => system_root.join(rest),
-                _ => dir,
-            })
-            .collect();
+        let system_root = test_system_root().unwrap_or_else(|| PathBuf::from("/"));
         Self {
-            path_var,
-            exports,
+            path_var: launch::native_path_var(&global.env),
+            exports: emulator::flatpak_exports(paths, &system_root),
             system_root,
         }
     }
@@ -221,13 +206,12 @@ impl Host {
 /// Debug builds look for system folders under `WINEO_TEST_SYSTEM_ROOT`, so
 /// CLI tests never read the host's emulators or cores. Release builds never
 /// look at the variable.
-fn test_system_root(lookup: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    if !cfg!(debug_assertions) {
-        return None;
+fn test_system_root() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os("WINEO_TEST_SYSTEM_ROOT").filter(|root| !root.is_empty()) {
+        return Some(PathBuf::from(root));
     }
-    lookup("WINEO_TEST_SYSTEM_ROOT")
-        .filter(|root| !root.is_empty())
-        .map(PathBuf::from)
+    None
 }
 
 /// A built-in emulator by its id. Unlike `[emulation]`, an id this wineo
@@ -243,12 +227,57 @@ pub(crate) fn emulator_by_id(id: &str) -> anyhow::Result<Emulator> {
 }
 
 /// Whether `query` names `core` by its id, display name, or file name,
-/// without regard to case.
-pub(crate) fn core_matches(core: &Core, query: &str) -> bool {
-    let query = wineo_core::name::fold_case(query.trim());
+/// without regard to case, or is the path to its file.
+fn core_matches(paths: &Paths, core: &Core, query: &str) -> bool {
+    let query = query.trim();
+    let folded = wineo_core::name::fold_case(query);
+    // Display names can hold a `/`, so only something else is a path.
     [core.id(), core.name(), core.file_name()]
         .iter()
-        .any(|name| wineo_core::name::fold_case(name) == query)
+        .any(|name| wineo_core::name::fold_case(name) == folded)
+        || (query.contains('/') && same_path(&paths.expand(query), &core.path))
+}
+
+/// Whether two paths name the same file, also through links. A relative
+/// path is read from the working directory.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    absolute(a) == absolute(b)
+        || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The ids that more than one of `cores` has, like a distro snes9x and
+/// one RetroArch downloaded.
+fn shared_ids(cores: &[Core]) -> HashSet<&str> {
+    let mut seen = HashSet::new();
+    cores
+        .iter()
+        .map(Core::id)
+        .filter(|id| !seen.insert(*id))
+        .collect()
+}
+
+fn core_folder(core: &Core) -> String {
+    core.path
+        .parent()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default()
+}
+
+/// How `--core` names each of `cores`: its id, or its path when another
+/// has the same id.
+fn core_flags(cores: &[Core]) -> Vec<String> {
+    let shared = shared_ids(cores);
+    cores
+        .iter()
+        .map(|core| {
+            if shared.contains(core.id()) {
+                core.path.display().to_string()
+            } else {
+                core.id().to_owned()
+            }
+        })
+        .collect()
 }
 
 fn install_label(emulator: Emulator, install: &Install) -> String {
@@ -291,7 +320,7 @@ fn emulators(paths: &Paths, host: &Host, json: bool) -> anyhow::Result<ExitCode>
                                 Install::Path { name, .. } => Some(*name),
                                 _ => None,
                             },
-                            "path": install_path(install),
+                            "path": install_path(install).to_string_lossy(),
                             "app": match install {
                                 Install::Flatpak { .. } => emulator.flatpak_id(),
                                 _ => None,
@@ -344,15 +373,27 @@ fn emulators(paths: &Paths, host: &Host, json: bool) -> anyhow::Result<ExitCode>
                 println!("  none found");
                 continue;
             }
-            let mut rows = vec![["CORE", "NAME", "SYSTEM"].map(str::to_owned)];
-            rows.extend(cores.iter().map(|core| {
+            let row = |core: &Core| {
                 [
                     core.id().to_owned(),
                     core.name().to_owned(),
                     core.system().unwrap_or("-").to_owned(),
                 ]
-            }));
-            for line in render_columns(&rows) {
+            };
+            // The folder tells apart cores with one id.
+            let lines = if shared_ids(&cores).is_empty() {
+                let mut rows = vec![["CORE", "NAME", "SYSTEM"].map(str::to_owned)];
+                rows.extend(cores.iter().map(row));
+                render_columns(&rows)
+            } else {
+                let mut rows = vec![["CORE", "NAME", "SYSTEM", "FOLDER"].map(str::to_owned)];
+                rows.extend(cores.iter().map(|core| {
+                    let [id, name, system] = row(core);
+                    [id, name, system, core_folder(core)]
+                }));
+                render_columns(&rows)
+            };
+            for line in lines {
                 println!("  {line}");
             }
         }
@@ -364,7 +405,7 @@ fn core_json(core: &Core) -> Value {
     json!({
         "id": core.id(),
         "name": core.name(),
-        "file": core.path,
+        "file": core.path.to_string_lossy(),
         "system": core.system(),
         "extensions": core.extensions(),
     })
@@ -434,11 +475,20 @@ impl Flow<'_> {
         !self.args.dry_run && !self.args.list && prompt::interactive()
     }
 
-    /// The terminal, opened on the first question. `hint` says which flags
-    /// answer it instead.
-    fn ask(&mut self, hint: &str) -> anyhow::Result<&mut Ask> {
+    /// The terminal, opened on the first question. `what` names the flags
+    /// that answer it instead.
+    fn ask(&mut self, what: &str) -> anyhow::Result<&mut Ask> {
         if !self.interactive() {
-            anyhow::bail!("{NEEDS_TERMINAL}; {hint}");
+            // These never ask, so a terminal wouldn't help.
+            if prompt::interactive() && (self.args.list || self.args.dry_run) {
+                let flag = if self.args.list {
+                    "--list"
+                } else {
+                    "--dry-run"
+                };
+                anyhow::bail!("{flag} needs {what}");
+            }
+            anyhow::bail!("{NEEDS_TERMINAL}; pass {what}");
         }
         if self.prompt.is_none() {
             self.prompt = Some(
@@ -477,6 +527,7 @@ impl Flow<'_> {
                         Reply::Value(value) => {
                             chosen = Some(value);
                             core = None;
+                            system = args.system.clone();
                             Reply::Value(())
                         }
                         Reply::Back => Reply::Back,
@@ -491,6 +542,7 @@ impl Flow<'_> {
                         Reply::Value(value) => {
                             folder = Some(value);
                             core = None;
+                            system = args.system.clone();
                             Reply::Value(())
                         }
                         Reply::Back => Reply::Back,
@@ -502,51 +554,61 @@ impl Flow<'_> {
                     let Some(install) = chosen.retroarch() else {
                         anyhow::ensure!(args.core.is_none(), "--core is only for RetroArch.");
                         listing = self.listing(chosen, None, folder)?;
-                        single = is_single(folder, &listing);
+                        single = is_single(self.paths, folder, &listing);
                         step = Step::System;
                         continue;
                     };
                     let cores = self.host.cores(self.paths, install);
-                    let fixed = match &args.core {
-                        Some(query) => Some(named_core(&cores, query)?),
+                    let candidates = match &args.core {
+                        Some(query) => {
+                            let found = named_cores(self.paths, &cores, query)?;
+                            if found.len() > 1 && !self.interactive() {
+                                anyhow::bail!(
+                                    "`{query}` matches more than one RetroArch core: {}. Pass --core with its path.",
+                                    found
+                                        .iter()
+                                        .map(|core| core.path.display().to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                );
+                            }
+                            found
+                        }
                         None => {
                             let matching =
                                 rom_import::matching_cores(self.paths, &cores, Path::new(folder))?;
-                            match matching.as_slice() {
-                                [] if cores.is_empty() => {
-                                    anyhow::bail!("No RetroArch cores were found.")
+                            if matching.is_empty() {
+                                if cores.is_empty() {
+                                    anyhow::bail!("No RetroArch cores were found.");
                                 }
-                                [] => anyhow::bail!(
+                                anyhow::bail!(
                                     "No installed RetroArch core plays the files in {folder}."
-                                ),
-                                [one] => Some(one.clone()),
-                                many => {
-                                    let ids: Vec<&str> = many.iter().map(Core::id).collect();
-                                    let hint =
-                                        format!("pass --core with one of: {}", ids.join(", "));
-                                    let choices = numbered(
-                                        many.iter().map(|core| (core_label(core), core.clone())),
-                                    );
-                                    let prompt = self.ask(&hint)?;
-                                    match prompt.choose(
-                                        "Which core?",
-                                        "Core",
-                                        &choices,
-                                        None,
-                                        true,
-                                    )? {
-                                        Reply::Value(value) => {
-                                            core = Some(value);
-                                            None
-                                        }
-                                        Reply::Back => {
-                                            match asked.pop() {
-                                                Some(previous) => step = previous,
-                                                None => return Err(self.leave()),
-                                            }
-                                            continue;
-                                        }
+                                );
+                            }
+                            matching
+                        }
+                    };
+                    let fixed = match candidates.as_slice() {
+                        [one] => Some(one.clone()),
+                        many => {
+                            let what =
+                                format!("--core with one of: {}", core_flags(many).join(", "));
+                            let shared = shared_ids(many);
+                            let choices = numbered(many.iter().map(|core| {
+                                (core_label(core, shared.contains(core.id())), core.clone())
+                            }));
+                            let prompt = self.ask(&what)?;
+                            match prompt.choose("Which core?", "Core", &choices, None, true)? {
+                                Reply::Value(value) => {
+                                    core = Some(value);
+                                    None
+                                }
+                                Reply::Back => {
+                                    match asked.pop() {
+                                        Some(previous) => step = previous,
+                                        None => return Err(self.leave()),
                                     }
+                                    continue;
                                 }
                             }
                         }
@@ -556,7 +618,7 @@ impl Flow<'_> {
                         core = Some(fixed);
                     }
                     listing = self.listing(chosen, core.as_ref(), folder)?;
-                    single = is_single(folder, &listing);
+                    single = is_single(self.paths, folder, &listing);
                     if asked_core {
                         Reply::Value(())
                     } else {
@@ -569,11 +631,12 @@ impl Flow<'_> {
                     let systems = chosen.systems();
                     let custom = matches!(chosen, Chosen::Custom { .. });
                     // Only the games that would be imported can need it.
+                    let root = root(self.paths, folder.as_deref().expect("asked first"));
                     let relevant: Vec<&Entry> = match (&args.game, single) {
                         (Some(query), false) => listing
                             .entries
                             .iter()
-                            .filter(|entry| entry.matches(query))
+                            .filter(|entry| game_matches(self.paths, &root, entry, query))
                             .collect(),
                         _ => listing.entries.iter().collect(),
                     };
@@ -585,8 +648,8 @@ impl Flow<'_> {
                         step = Step::Game;
                         continue;
                     }
-                    let hint = format!(
-                        "pass --system {} for the games whose files could be either",
+                    let what = format!(
+                        "--system {} for the games whose files could be either",
                         systems.join(" or --system ")
                     );
                     let choices = numbered(
@@ -598,7 +661,7 @@ impl Flow<'_> {
                         .as_deref()
                         .and_then(|current| systems.iter().position(|id| *id == current))
                         .map(|index| (index + 1).to_string());
-                    let prompt = self.ask(&hint)?;
+                    let prompt = self.ask(&what)?;
                     match prompt.choose(
                         "Which system are the games whose files could be either?",
                         "System",
@@ -624,12 +687,23 @@ impl Flow<'_> {
                             system.as_deref(),
                         );
                     }
+                    let root = root(self.paths, folder);
                     let fixed = if single {
-                        Some(Picked::One(listing.entries[0].clone()))
+                        let entry = &listing.entries[0];
+                        anyhow::ensure!(!args.all, "--all needs a folder of games, not one game.");
+                        if let Some(query) = &args.game {
+                            anyhow::ensure!(
+                                game_matches(self.paths, &root, entry, query),
+                                "--game `{query}` doesn't match {folder}."
+                            );
+                        }
+                        Some(Picked::One(entry.clone()))
                     } else if args.all {
                         Some(Picked::All)
                     } else if let Some(query) = &args.game {
-                        Some(Picked::One(find_game(&listing, query, folder)?))
+                        Some(Picked::One(find_game(
+                            self.paths, &root, &listing, query, folder,
+                        )?))
                     } else {
                         None
                     };
@@ -639,12 +713,11 @@ impl Flow<'_> {
                         continue;
                     }
                     match self.ask_game(&listing, folder)? {
-                        Some(Reply::Value(value)) => {
+                        Reply::Value(value) => {
                             picked = Some(value);
                             Reply::Value(())
                         }
-                        Some(Reply::Back) => Reply::Back,
-                        None => return Ok(ExitCode::SUCCESS),
+                        Reply::Back => Reply::Back,
                     }
                 }
                 Step::Confirm => {
@@ -719,8 +792,11 @@ impl Flow<'_> {
     }
 
     fn ask_emulator(&mut self) -> anyhow::Result<Reply<Chosen>> {
+        // --core only means something to RetroArch.
+        let retroarch_only = self.args.core.is_some();
         let found: Vec<(String, Chosen)> = Emulator::BUILT_IN
             .into_iter()
+            .filter(|emulator| !retroarch_only || *emulator == Emulator::RetroArch)
             .flat_map(|emulator| {
                 self.host
                     .installs(emulator)
@@ -733,19 +809,22 @@ impl Flow<'_> {
                     })
             })
             .collect();
+        if found.is_empty() && retroarch_only {
+            anyhow::bail!("--core is only for RetroArch, and wineo found no RetroArch.");
+        }
         if found.is_empty() {
             anyhow::bail!(
                 "wineo found no emulators; pass --emulator ID --exe PATH or --custom EXE"
             );
         }
         let choices = numbered(found);
-        let prompt = self.ask("pass --emulator ID or --custom EXE")?;
+        let prompt = self.ask("--emulator ID or --custom EXE")?;
         prompt.choose("Which emulator?", "Emulator", &choices, None, true)
     }
 
     fn ask_folder(&mut self, current: Option<&str>) -> anyhow::Result<Reply<String>> {
         let paths = self.paths;
-        let prompt = self.ask("pass a folder or file of games")?;
+        let prompt = self.ask("a folder or file of games")?;
         prompt.text("Folder or file of games", current, |text| {
             let path = paths
                 .absolute(&picker::clean_path(text))
@@ -775,12 +854,11 @@ impl Flow<'_> {
         rom_import::listing(self.paths, &scan, Path::new(folder))
     }
 
-    /// The game to import, or None when there is nothing new to pick.
-    fn ask_game(
-        &mut self,
-        listing: &Listing,
-        folder: &str,
-    ) -> anyhow::Result<Option<Reply<Picked>>> {
+    /// The game to import. Like the other imports' pickers, having nothing
+    /// to pick is an error.
+    fn ask_game(&mut self, listing: &Listing, folder: &str) -> anyhow::Result<Reply<Picked>> {
+        let what = "--game NAME, --all, or --list";
+        self.ask(what)?;
         let new: Vec<&Entry> = listing
             .entries
             .iter()
@@ -789,11 +867,22 @@ impl Flow<'_> {
         if new.is_empty() {
             print_skipped(listing);
             if listing.entries.is_empty() {
-                println!("No games found in {folder}.");
-            } else {
-                println!("Every game in {folder} is already imported.");
+                anyhow::bail!("No games found in {folder}.");
             }
-            return Ok(None);
+            let imported = listing
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry.state, EntryState::AlreadyImported(_)))
+                .count();
+            let unusable = listing.entries.len() - imported;
+            let mut parts = Vec::new();
+            if imported > 0 {
+                parts.push(format!("{imported} already imported"));
+            }
+            if unusable > 0 {
+                parts.push(format!("{unusable} can't be imported"));
+            }
+            anyhow::bail!("No games to import in {folder}: {}.", parts.join(", "));
         }
         let mut choices: Vec<Choice<Picked>> = numbered(
             new.iter()
@@ -804,14 +893,8 @@ impl Flow<'_> {
             format!("All {}", text::counted(new.len(), "game", "games")),
             Picked::All,
         ));
-        let prompt = self.ask("pass --game NAME, --all, or --list")?;
-        Ok(Some(prompt.choose(
-            "Which game?",
-            "Game",
-            &choices,
-            None,
-            true,
-        )?))
+        let prompt = self.ask(what)?;
+        prompt.choose("Which game?", "Game", &choices, None, true)
     }
 
     fn list(
@@ -827,6 +910,10 @@ impl Flow<'_> {
             _ => emulator::CUSTOM,
         };
         let systems = chosen.map(Chosen::systems).unwrap_or_default();
+        // A custom emulator's system is its games' tag, not a choice.
+        if let (Some(chosen @ Chosen::BuiltIn(..)), Some(system)) = (chosen, system) {
+            rom_import::check_system(&self.emulating(chosen, core), system)?;
+        }
         // --system answers the files that could be either, as the import would.
         let entry_system = |entry: &Entry| -> Option<String> {
             match &entry.system {
@@ -848,7 +935,7 @@ impl Flow<'_> {
                     json!({
                         "title": entry.title,
                         "file": entry.file_name,
-                        "rom": entry.rom,
+                        "rom": entry.rom.to_string_lossy(),
                         "system": entry_system(entry),
                         "ambiguous": entry.system == EntrySystem::Ambiguous,
                         "state": state,
@@ -861,7 +948,11 @@ impl Flow<'_> {
                 "emulator": emulator,
                 "core": core.map(Core::id),
                 "games": games,
-                "skipped": listing.skipped,
+                "skipped": listing
+                    .skipped
+                    .iter()
+                    .map(|dir| dir.to_string_lossy())
+                    .collect::<Vec<_>>(),
             }))?;
             return Ok(ExitCode::SUCCESS);
         }
@@ -897,6 +988,26 @@ impl Flow<'_> {
         Ok(ExitCode::SUCCESS)
     }
 
+    fn emulating(&self, chosen: &Chosen, core: Option<&Core>) -> Emulating {
+        let fullscreen = !self.args.no_fullscreen;
+        match (chosen, core) {
+            (Chosen::BuiltIn(Emulator::RetroArch, install), Some(core)) => Emulating::RetroArch {
+                install: install.clone(),
+                core: core.clone(),
+                fullscreen,
+            },
+            (Chosen::BuiltIn(emulator, install), _) => Emulating::BuiltIn {
+                emulator: *emulator,
+                install: install.clone(),
+                fullscreen,
+            },
+            (Chosen::Custom { exe, args, .. }, _) => Emulating::Custom {
+                exe: exe.clone(),
+                args: args.clone(),
+            },
+        }
+    }
+
     /// Plans, reviews, and imports the picked games. None goes back to the
     /// game question.
     fn confirm(
@@ -918,23 +1029,7 @@ impl Flow<'_> {
             anyhow::bail!("bulk ROM import needs a terminal; pass --yes to skip the confirmation");
         }
         let custom = matches!(chosen, Chosen::Custom { .. });
-        let fullscreen = !args.no_fullscreen;
-        let emulating = match (chosen, core) {
-            (Chosen::BuiltIn(Emulator::RetroArch, install), Some(core)) => Emulating::RetroArch {
-                install: install.clone(),
-                core: core.clone(),
-                fullscreen,
-            },
-            (Chosen::BuiltIn(emulator, install), _) => Emulating::BuiltIn {
-                emulator: *emulator,
-                install: install.clone(),
-                fullscreen,
-            },
-            (Chosen::Custom { exe, args, .. }, _) => Emulating::Custom {
-                exe: exe.clone(),
-                args: args.clone(),
-            },
-        };
+        let emulating = self.emulating(chosen, core);
         let ambiguous = if custom { None } else { system };
         let batch =
             rom_import::plan_batch(self.paths, self.global, &emulating, entries, ambiguous)?;
@@ -951,11 +1046,16 @@ impl Flow<'_> {
             }
         }
         print_skipped(listing);
-        let art = args.art && !args.dry_run;
+        // Checked before the review, so it says what will happen.
+        let key = if args.art {
+            art_key(self.paths, self.global)
+        } else {
+            None
+        };
         if all {
-            review_batch(&batch, chosen, core);
+            review_batch(&batch, chosen, core, key.is_some());
         } else if let Some(plan) = batch.ready.first() {
-            review(self.paths, plan, chosen, core, args.art);
+            review(self.paths, plan, chosen, core, key.is_some());
         }
         if args.dry_run {
             for failure in &batch.failures {
@@ -969,13 +1069,13 @@ impl Flow<'_> {
             }));
         }
         let count = batch.ready.len();
-        if count > 0 && (guided || (all && !args.yes)) {
+        if count > 0 && !args.yes && (guided || all) {
             let label = if all {
                 format!("Import {}?", text::counted(count, "game", "games"))
             } else {
                 "Import it?".to_owned()
             };
-            let prompt = self.ask("pass --yes to skip the confirmation")?;
+            let prompt = self.ask("--yes to skip the confirmation")?;
             prompt.confirm_hint(guided)?;
             match prompt.confirm(&label, true)? {
                 Reply::Value(true) => {}
@@ -984,11 +1084,6 @@ impl Flow<'_> {
                 Reply::Back => return Err(Canceled.into()),
             }
         }
-        let key = if art {
-            art_key(self.paths, self.global)
-        } else {
-            None
-        };
         let report = apply(self.paths, self.global, batch, key.as_ref())?;
         Ok(Some(finish(&report, all)))
     }
@@ -1004,44 +1099,57 @@ fn next(step: Step) -> Step {
     }
 }
 
+/// The folder or file the games were listed from, as `listing` reads it:
+/// `~` expanded and absolute.
+fn root(paths: &Paths, folder: &str) -> PathBuf {
+    let expanded = paths.expand(folder);
+    std::path::absolute(&expanded).unwrap_or(expanded)
+}
+
 /// Whether `folder` is one game: a file, or a folder game such as a Cemu
 /// title folder.
-fn is_single(folder: &str, listing: &Listing) -> bool {
+fn is_single(paths: &Paths, folder: &str, listing: &Listing) -> bool {
     let [entry] = listing.entries.as_slice() else {
         return false;
     };
-    let given = Path::new(folder);
-    if std::fs::metadata(given).is_ok_and(|metadata| metadata.is_file()) {
+    let given = root(paths, folder);
+    if std::fs::metadata(&given).is_ok_and(|metadata| metadata.is_file()) {
         return true;
     }
-    match (entry.rom.canonicalize(), given.canonicalize()) {
-        (Ok(rom), Ok(given)) => rom == given,
-        _ => false,
-    }
+    same_path(&entry.rom, &given)
 }
 
-fn named_core(cores: &[Core], query: &str) -> anyhow::Result<Core> {
+/// Every core `query` names. Several cores can share an id.
+fn named_cores(paths: &Paths, cores: &[Core], query: &str) -> anyhow::Result<Vec<Core>> {
     if cores.is_empty() {
         anyhow::bail!("No RetroArch cores were found.");
     }
-    cores
+    let found: Vec<Core> = cores
         .iter()
-        .find(|core| core_matches(core, query))
+        .filter(|core| core_matches(paths, core, query))
         .cloned()
-        .ok_or_else(|| {
-            let ids: Vec<&str> = cores.iter().map(Core::id).collect();
-            anyhow::anyhow!(
-                "No RetroArch core named `{query}`. Installed: {}.",
-                ids.join(", ")
-            )
-        })
+        .collect();
+    if found.is_empty() {
+        anyhow::bail!(
+            "No RetroArch core named `{query}`. Installed: {}.",
+            core_flags(cores).join(", ")
+        );
+    }
+    Ok(found)
 }
 
-fn core_label(core: &Core) -> String {
-    if core.name() == core.file_name() {
+/// A core as the "Which core?" menu shows it, with its folder when another
+/// core has the same id.
+fn core_label(core: &Core, shared: bool) -> String {
+    let label = if core.name() == core.file_name() {
         core.name().to_owned()
     } else {
         format!("{} ({})", core.name(), core.id())
+    };
+    if shared {
+        format!("{label} in {}", core_folder(core))
+    } else {
+        label
     }
 }
 
@@ -1052,19 +1160,48 @@ fn entry_label(entry: &Entry) -> String {
     }
 }
 
-fn find_game(listing: &Listing, query: &str, folder: &str) -> anyhow::Result<Entry> {
+/// A game's path under the folder it was listed from, which `--game` takes.
+fn relative(root: &Path, entry: &Entry) -> String {
+    let real = root.canonicalize().ok();
+    entry
+        .rom
+        .strip_prefix(root)
+        .ok()
+        .or_else(|| {
+            real.as_deref()
+                .and_then(|real| entry.rom.strip_prefix(real).ok())
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| entry.file_name.clone())
+}
+
+/// Whether `query` names the game: its title or file name, its path under
+/// the folder, or its full path.
+fn game_matches(paths: &Paths, root: &Path, entry: &Entry, query: &str) -> bool {
+    entry.matches(query)
+        || relative(root, entry) == query
+        || (query.contains('/') && same_path(&paths.expand(query), &entry.rom))
+}
+
+fn find_game(
+    paths: &Paths,
+    root: &Path,
+    listing: &Listing,
+    query: &str,
+    folder: &str,
+) -> anyhow::Result<Entry> {
     let found: Vec<&Entry> = listing
         .entries
         .iter()
-        .filter(|entry| entry.matches(query))
+        .filter(|entry| game_matches(paths, root, entry, query))
         .collect();
     match found.as_slice() {
         [] => anyhow::bail!("No game in {folder} matches `{query}`."),
         [one] => Ok((*one).clone()),
         many => {
-            let files: Vec<&str> = many.iter().map(|entry| entry.file_name.as_str()).collect();
+            let files: Vec<String> = many.iter().map(|entry| relative(root, entry)).collect();
             anyhow::bail!(
-                "`{query}` matches more than one game: {}. Pass the file name.",
+                "`{query}` matches more than one game: {}. Pass one of those paths.",
                 files.join(", ")
             )
         }
@@ -1095,14 +1232,16 @@ fn emulator_label(chosen: &Chosen, core: Option<&Core>) -> String {
 }
 
 fn review(paths: &Paths, plan: &Plan, chosen: &Chosen, core: Option<&Core>, art: bool) {
-    let command: Vec<&str> = std::iter::once(plan.target.exe.as_str())
+    let words: Vec<&str> = std::iter::once(plan.target.exe.as_str())
         .chain(plan.target.args.iter().map(String::as_str))
         .collect();
+    // Quoted as a shell would need it, so a path with spaces reads as one.
+    let command = shlex::try_join(words.iter().copied()).unwrap_or_else(|_| words.join(" "));
     println!("Ready to import {}:", plan.name);
     println!("  game      {}", plan.title);
     println!("  rom       {}", style::path(paths, &plan.rom));
     println!("  emulator  {}", emulator_label(chosen, core));
-    println!("  command   {}", command.join(" "));
+    println!("  command   {command}");
     println!("  tags      {}", plan.system.as_deref().unwrap_or("none"));
     println!("  desktop   off");
     println!(
@@ -1115,8 +1254,11 @@ fn review(paths: &Paths, plan: &Plan, chosen: &Chosen, core: Option<&Core>, art:
     );
 }
 
-fn review_batch(batch: &Batch, chosen: &Chosen, core: Option<&Core>) {
+fn review_batch(batch: &Batch, chosen: &Chosen, core: Option<&Core>, art: bool) {
     println!("Emulator: {}", emulator_label(chosen, core));
+    if art {
+        println!("Art: SteamGridDB, top match");
+    }
     if !batch.ready.is_empty() {
         let mut rows = vec![["NAME", "TITLE", "SYSTEM", "FILE"].map(str::to_owned)];
         rows.extend(batch.ready.iter().map(|plan| {
@@ -1244,18 +1386,5 @@ fn finish(report: &BatchReport, all: bool) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_debug_builds_read_the_test_system_root() {
-        let lookup = |var: &str| (var == "WINEO_TEST_SYSTEM_ROOT").then(|| OsString::from("/x"));
-        let expected = cfg!(debug_assertions).then(|| PathBuf::from("/x"));
-        assert_eq!(test_system_root(lookup), expected);
-        assert_eq!(test_system_root(|_| Some(OsString::new())), None);
     }
 }

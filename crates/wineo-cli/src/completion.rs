@@ -387,9 +387,11 @@ pub fn cores(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(install) = install else {
         return Vec::new();
     };
+    let mut seen = std::collections::HashSet::new();
+    // A distro core and a downloaded one can share an id; it's offered once.
     host.cores(&paths, &install)
         .iter()
-        .filter(|core| core.id().starts_with(prefix))
+        .filter(|core| core.id().starts_with(prefix) && seen.insert(core.id().to_owned()))
         .map(|core| CompletionCandidate::new(core.id()).help(Some(core.name().to_owned().into())))
         .collect()
 }
