@@ -587,11 +587,13 @@ impl Page {
             }
             Event::Other if self.step == Step::Emulator && self.found.is_some() => {
                 self.error = None;
+                self.via = Some(Via::Other);
                 self.step = Step::Other;
                 Task::none()
             }
             Event::Custom if self.step == Step::Emulator && self.found.is_some() => {
                 self.error = None;
+                self.via = Some(Via::Custom);
                 self.step = Step::Custom;
                 Task::none()
             }

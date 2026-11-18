@@ -1225,6 +1225,20 @@ fn two_names_that_arent_utf8_are_picked_apart() {
 }
 
 #[test]
+fn back_from_other_or_custom_before_next_lands_on_its_row() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    for (open_page, row) in [(Event::Other, OTHER_ROW), (Event::Custom, CUSTOM_ROW)] {
+        let mut page = open(&paths, &host);
+        let _ = page.update(open_page, false);
+        let _ = page.update(Event::Back, false);
+        assert_eq!(page.step, Step::Emulator);
+        assert_eq!(page.rows().unwrap().focus.as_deref(), Some(row));
+    }
+}
+
+#[test]
 fn a_home_path_or_a_single_game_file_lists_its_games() {
     let temp = TempDir::new().unwrap();
     let paths = paths(temp.path(), false);
