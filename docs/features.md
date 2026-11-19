@@ -19,8 +19,10 @@ come up, and the rows below have the details.
 1. Resizable list columns (plan 0067).
 2. Emulated games: add and launch games from emulators like Dolphin,
    RetroArch, and Cemu (plan 0068).
-3. Settings in tabs: split the desktop app's settings into more tabs and
-   hide advanced settings unless they're turned on (plan 0069, after 0068).
+3. Not so fuzzy search: find a game by the way people say its name,
+   like "gta" or "civ 6", in the desktop app and `wineo list` (plan 0069).
+4. Settings in tabs: split the desktop app's settings into more tabs and
+   hide advanced settings unless they're turned on (plan 0070, after 0069).
 
 Store imports come after.
 
@@ -52,7 +54,7 @@ the first 1.x releases from 1.0 on:
 | Feature | Category | Priority | Depends on | Why | Notes |
 |---|---|---:|---|---|---|
 | Edit hooks in GUI Settings | UX | **2** | 0046 | Set a game's hooks without editing TOML or using `wineo set` | Left out of plan 0046 by the maintainer (2026-10-06). The GUI already runs hooks. |
-| Not so fuzzy search | UX | **2** | 0054 | Find a game by how people say it: "gta" for Grand Theft Auto IV, "civ 6" for Sid Meier's Civilization VI | From the maintainer during 0061 acceptance (2026-11-02). Today search is a plain substring of the title, environment name, or tags (`order.rs`). Proposed rules, each a yes or no, since search filters and the grid keeps its chosen sort: initials of a run of title words ("gta"), every query word matching the start of some title word in any order ("civ", "auto gr"), and numbers matching Roman numerals ("6" and "VI"). True fuzzy matching is out, since without ranking it floods the grid. Open: whether the CLI shares the matcher through core, how far numerals go, and a minimum length for initials. A tag like `gta` works as a manual alias today. |
+| Not so fuzzy search | UX | **2** | 0054 | Find a game by how people say it: "gta" for Grand Theft Auto IV, "civ 6" for Sid Meier's Civilization VI | From the maintainer during 0061 acceptance (2026-11-02). Today search is a plain substring of the title, environment name, or tags (`order.rs`). Proposed rules, each a yes or no, since search filters and the grid keeps its chosen sort: initials of a run of title words ("gta"), every query word matching the start of some title word in any order ("civ", "auto gr"), and numbers matching Roman numerals ("6" and "VI"). True fuzzy matching is out, since without ranking it floods the grid. Planned as 0069. A tag like `gta` works as a manual alias today. |
 | Embedded GOG login window | UX | **2** | 0049 | Log in to GOG without copying the success address back | From 0049 acceptance (2026-10-12). GOG's login only redirects to `embed.gog.com/on_login_success`, so today you copy that address from the browser and paste it into wineo. Heroic and Minigalaxy open the login page in their own browser window and catch the redirect there. iced can't show web pages, so this needs a WebKitGTK webview (for example `wry`) in a small helper window: a large GTK dependency for a one-time login, and more to bring to a macOS port. Watching the clipboard for the address was turned down for privacy. Needs a plan. |
 | Completion status and notes | UX | **2** | | Track where you are with each game, like Playnite's Playing, Beaten, Completed, Abandoned, and Plan to play | A status and free-form notes per environment, shown in the panel and filterable once library views can filter. From the Playnite comparison (2026-10-14). If plan 0053 question 8 goes as recommended, it lives in `library.toml` beside favorites, so it can land in any 1.x. |
 | "Started" hook and launch variables | Core | **2** | 0046 | Run something once the game is up, and write paths in targets that work anywhere | A third hook beside `before` and `after` that runs once the target has started (the place a companion like GOG's comet would go), and variables like `{install_dir}` or `{prefix}` in a target's `exe`, `args`, and `cwd`. From the Playnite comparison (2026-10-14). Variables change what an existing value means, so under plan 0053's version rule they'd be the first `schema_version = 2`: only files that use them get stamped, and v2 needs an escape for literal braces (like `{{` and `}}`) from the start. |

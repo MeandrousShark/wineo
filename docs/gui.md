@@ -340,8 +340,9 @@ the install bar, the state's dot, and the dim for a hidden or not installed
 game. Text that doesn't fit ends in an ellipsis.
 
 Click **Title**, **Playtime**, **Last played**, **Source**, or **Tags** in
-the header to sort by it, the same as picking it in the Sort menu, and click
-it again to flip the direction. Date added stays in the Sort menu. As the window or the panel
+the header to sort by it, the same as picking it in the Sort menu. Click
+it again to flip the direction, and a third time to go back to sorting by
+title. Date added stays in the Sort menu. As the window or the panel
 narrows the list, columns leave from the right: Tags, then Source, Last
 played, and Playtime. Title and State always stay.
 
