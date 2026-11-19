@@ -58,6 +58,7 @@ fn word_starts_in_any_order_with_numerals_by_value() {
         ("Звёздный архив", "зв арх", true),
         ("Звёздный архив", "zvezdny", false),
         ("Sid Meier's Civilization VI", "civilisation", false),
+        ("Grand Theft Auto", "rand auto", false),
     ]);
 }
 
@@ -97,9 +98,13 @@ fn near_misses() {
         ("Sid Meier's Civilization VI", "CIV6", false),
         ("Grand Theft Auto IV", "atg", false),
         ("Grand Theft", "gta", false),
+        ("Grand Theft Big Auto", "gta", false),
+        ("Grand Theft Auto IV", "gta 5", false),
+        ("Grand Theft Auto IV", "gta 4 4", false),
         ("Fallout 4", "foiv", false),
         ("Strip 5 of 8", "v", false),
         ("Fallout vi", "fallout 6", false),
+        ("Grand Theft Auto vi", "gta vi", false),
         ("Final Fantasy X", "ffx", true),
         ("Final Fantasy XXX", "ffx", true),
         ("Final Fantasy V", "ffv", true),
@@ -114,6 +119,7 @@ fn only_canonical_uppercase_roman_and_digits_are_numerals() {
     check(&[
         ("Civ", "104", false),
         ("Mix", "1009", false),
+        ("Xiv", "14", false),
         ("XXXI", "31", false),
         ("IIII", "4", false),
         ("XXX", "30", true),
@@ -156,6 +162,8 @@ fn empty_space_and_punctuation_searches() {
         ("Halo", "   ", true),
         ("Halo", "-", false),
         ("Half-Life", "-", true),
+        // Only the folded half of rule 1 finds it.
+        ("Half-Life", "-'", true),
         ("Baldur's Gate", "'", true),
         ("Baldurs Gate", "'", false),
         ("Halo", "!?", false),
