@@ -167,6 +167,14 @@ fn initials_need_two_letters_or_digits() {
     assert!(Search::new("g").initials.is_none());
     assert!(Search::new("g -").initials.is_none());
     assert!(Search::new("gta rpg").initials.is_none());
+    check(&[
+        ("Super Smash", "\u{df}", false),
+        ("Age Empires", "\u{e6}", false),
+        ("Super Smash", "ss", true),
+        ("Grand IV", "g4", true),
+    ]);
+    assert!(Search::new("\u{df}").initials.is_none());
+    assert!(Search::new("\u{e6}").initials.is_none());
 }
 
 #[test]

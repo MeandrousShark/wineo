@@ -330,7 +330,10 @@ impl Search {
             });
             start += piece.len();
         }
-        let initials = if joined.chars().count() >= 2 {
+        // The minimum is what the user typed, so a lone `ß` that folds to
+        // `ss` is still one letter.
+        let typed = lower.chars().filter(|c| c.is_alphanumeric()).count();
+        let initials = if typed >= 2 {
             let mut groups = folded.split(char::is_whitespace).filter_map(|group| {
                 let group: String = group.chars().filter(|c| c.is_alphanumeric()).collect();
                 (!group.is_empty()).then_some(group)
