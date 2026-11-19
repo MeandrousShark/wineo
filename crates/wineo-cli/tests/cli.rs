@@ -794,6 +794,139 @@ fn list_filters_tags_with_and_and_reports_no_match() {
     assert_eq!(json["errors"], serde_json::json!([]));
 }
 
+fn listed_names(root: &Path, args: &[&str]) -> Vec<String> {
+    let listed = output(wineo(root).args(["list", "--json"]).args(args));
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    parsed_json(&listed)["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|environment| environment["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn list_searches_titles_names_and_tags_like_the_library() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(
+        root.path(),
+        "liberty",
+        "kind = 'native'\ntitle = 'Grand Theft Auto IV'\ntags = ['rpg']\n",
+    );
+    write_environment(
+        root.path(),
+        "vice",
+        "kind = 'native'\ntitle = 'Grand Theft Auto: Vice City'\ntags = ['action']\n",
+    );
+    write_environment(
+        root.path(),
+        "armada",
+        "prefix = '/p'\nrunner = 'wine'\narch = 'win64'\n[targets.app]\nexe = 'app'\ndefault = true\ndesktop = true\nname = 'Grand Tidal Armada'\n",
+    );
+    write_environment(
+        root.path(),
+        "civ",
+        "kind = 'native'\ntitle = \"Sid Meier's Civilization VI\"\ntags = ['rpg']\n",
+    );
+    write_environment(root.path(), "gta-tools", "kind = 'native'\n");
+    write_environment(root.path(), "solo", "kind = 'native'\ntags = ['gta']\n");
+    write_environment(root.path(), "work", "kind = 'native'\ntags = ['work']\n");
+
+    // Title by initials, desktop-entry name, environment name, and tag.
+    assert_eq!(
+        listed_names(root.path(), &["gta"]),
+        ["armada", "gta-tools", "liberty", "solo", "vice"]
+    );
+    assert_eq!(listed_names(root.path(), &["civ", "6"]), ["civ"]);
+    assert_eq!(listed_names(root.path(), &["civ 6"]), ["civ"]);
+    assert_eq!(
+        listed_names(root.path(), &["--tag", "rpg", "gta"]),
+        ["liberty"]
+    );
+    // A word after the search is still a flag, and a word starting with `-`
+    // needs `--`.
+    let json = output(wineo(root.path()).args(["list", "auto", "iv", "--json"]));
+    assert!(json.status.success(), "{}", stderr(&json));
+    let value = parsed_json(&json);
+    assert_eq!(value["errors"], serde_json::json!([]));
+    assert_eq!(value["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(value["environments"][0]["name"], "liberty");
+    assert_eq!(value["environments"][0]["tags"], serde_json::json!(["rpg"]));
+    assert_eq!(listed_names(root.path(), &["--", "-tools"]), ["gta-tools"]);
+    assert!(
+        !output(wineo(root.path()).args(["list", "-tools"]))
+            .status
+            .success()
+    );
+
+    let table = output(wineo(root.path()).args(["list", "--tag", "rpg", "gta"]));
+    assert!(table.status.success(), "{}", stderr(&table));
+    let text = stdout(&table);
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.starts_with("liberty"), "{text}");
+}
+
+#[test]
+fn list_search_reports_no_match_on_stdout() {
+    let root = tempfile::tempdir().unwrap();
+    // An empty library with a search gets the no-match line, not the hint.
+    let empty = output(wineo(root.path()).args(["list", "civ", "6"]));
+    assert!(empty.status.success(), "{}", stderr(&empty));
+    assert_eq!(stdout(&empty), "No environments match \"civ 6\".\n");
+    assert!(stderr(&empty).is_empty(), "{}", stderr(&empty));
+
+    write_environment(
+        root.path(),
+        "liberty",
+        "kind = 'native'\ntitle = 'Grand Theft Auto IV'\ntags = ['rpg', 'action']\n",
+    );
+    let none = output(wineo(root.path()).args(["list", "civ 6"]));
+    assert!(none.status.success(), "{}", stderr(&none));
+    assert_eq!(stdout(&none), "No environments match \"civ 6\".\n");
+    let tagged = output(wineo(root.path()).args(["list", "--tag", "rpg", "civ", "6"]));
+    assert!(tagged.status.success(), "{}", stderr(&tagged));
+    assert_eq!(
+        stdout(&tagged),
+        "No environments tagged rpg match \"civ 6\".\n"
+    );
+    let both =
+        output(wineo(root.path()).args(["list", "--tag", "rpg", "--tag", "action", "civ", "6"]));
+    assert!(both.status.success(), "{}", stderr(&both));
+    assert_eq!(
+        stdout(&both),
+        "No environments tagged rpg and action match \"civ 6\".\n"
+    );
+    let json = output(wineo(root.path()).args(["list", "civ", "6", "--json"]));
+    assert!(json.status.success(), "{}", stderr(&json));
+    assert_eq!(parsed_json(&json)["environments"], serde_json::json!([]));
+}
+
+#[test]
+fn list_search_matches_a_broken_config_by_name_and_keeps_errors() {
+    let root = tempfile::tempdir().unwrap();
+    write_environment(root.path(), "broken-gta", "not valid toml");
+    write_environment(root.path(), "notepad", &env_toml("notepad"));
+    write_environment(root.path(), "zzz", &env_toml("zzz"));
+
+    assert_eq!(listed_names(root.path(), &["gta"]), ["broken-gta"]);
+    assert_eq!(listed_names(root.path(), &["brok"]), ["broken-gta"]);
+    assert!(listed_names(root.path(), &["valid"]).is_empty());
+
+    // A broken state for an environment the search leaves out still fails.
+    let dir = root.path().join("state/wineo/notepad");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("state.toml"), "not valid toml").unwrap();
+    let result = output(wineo(root.path()).args(["list", "zzz"]));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("error:"), "{}", stderr(&result));
+    assert!(stdout(&result).starts_with("zzz"), "{}", stdout(&result));
+    let json = output(wineo(root.path()).args(["list", "zzz", "--json"]));
+    assert!(!json.status.success());
+    let value = parsed_json(&json);
+    assert_eq!(value["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(value["errors"][0]["name"], "notepad");
+}
+
 #[test]
 fn tag_filter_reports_broken_configs_but_unfiltered_list_keeps_them() {
     let root = tempfile::tempdir().unwrap();
