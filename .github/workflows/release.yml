@@ -12,6 +12,14 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# The Gitea mirror can deliver a tag push twice, starting two runs for the
+# same tag. The newer one cancels the older, so only one reaches publish and
+# it's the highest-id run, the one scripts/publish-packages.sh waits on. The
+# event name keeps a manual dry run from cancelling a tag's run.
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
