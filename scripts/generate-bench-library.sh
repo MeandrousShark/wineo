@@ -128,6 +128,7 @@ nouns=(harbor kingdom signal garden empire orchard citadel voyage engine
     meridian frontier archive lantern horizon outpost sanctum circuit
     harvest tundra odyssey reactor bastion carnival lagoon foundry)
 tag_pool=(rpg strategy co-op action puzzle indie retro sim)
+romans=(I II III IV V VI VII)
 
 # Exact fields of an environment config: see docs/environment.toml.example.
 RANDOM=$SEED
@@ -138,7 +139,15 @@ for ((i = 0; i < count; i++)); do
     adjective=${adjectives[RANDOM % ${#adjectives[@]}]}
     noun=${nouns[(RANDOM + i) % ${#nouns[@]}]}
     name=$(printf '%s-%s-%03d' "$adjective" "$noun" "$i")
-    title="${adjective^} ${noun^} $((i % 7 + 1))"
+    # Digits, Roman numerals, camelCase, and hyphens, so every search rule
+    # has words to cut and numerals to read.
+    number=$((i % 7 + 1))
+    case $((i % 4)) in
+        0) title="${adjective^} ${noun^} $number" ;;
+        1) title="${adjective^} ${noun^} ${romans[number - 1]}" ;;
+        2) title="${adjective^}${noun^} ${romans[number - 1]}" ;;
+        3) title="${adjective^}-${noun^} $number" ;;
+    esac
     tag=${tag_pool[RANDOM % ${#tag_pool[@]}]}
     kind=wine
     ((i % 6 == 0)) && kind=native
