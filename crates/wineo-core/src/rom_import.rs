@@ -660,10 +660,7 @@ fn ambiguous_system(
     };
     let Some(chosen) = chosen else {
         if needed {
-            anyhow::bail!(
-                "Choose {} for the games whose files could be either.",
-                systems.join(" or ")
-            );
+            anyhow::bail!("Some games could be {}; choose one.", systems.join(" or "));
         }
         return Ok(None);
     };

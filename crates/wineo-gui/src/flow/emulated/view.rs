@@ -296,10 +296,11 @@ impl Page {
                 }
             }
             Step::System => {
-                body = body.push(text(
-                    "Which system are the games whose files could be either?",
-                ));
                 let systems = self.chosen.as_ref().map(Chosen::systems).unwrap_or(&[]);
+                body = body.push(text(format!(
+                    "Some games could be {}. Which are they?",
+                    systems.join(" or ")
+                )));
                 body = body.push(list_group(
                     SYSTEM_LIST,
                     systems.iter().enumerate().map(|(index, system)| {

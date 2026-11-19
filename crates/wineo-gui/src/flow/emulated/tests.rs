@@ -278,6 +278,13 @@ fn back_walks_the_pages_in_order_and_lands_on_the_row_it_came_from() {
     to_folder(&mut page, Emulator::Dolphin, &folder);
     // An .rvz could be either system, so the system page asks.
     assert_eq!(page.step, Step::System);
+    let shown = texts(&page, false);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "Some games could be gamecube or wii. Which are they?"),
+        "{shown:?}"
+    );
     let rows = page.rows().unwrap();
     assert_eq!(rows.list, SYSTEM_LIST);
     assert_eq!(

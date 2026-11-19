@@ -552,7 +552,7 @@ fn a_game_whose_file_could_be_either_needs_a_system() {
     failed_with(
         &output,
         1,
-        "pass --system gamecube or --system wii for the games whose files could be either",
+        "pass --system gamecube or --system wii, since some games could be either",
     );
     assert!(r.environments().is_empty());
 }
@@ -743,7 +743,7 @@ fn bare_import_roms_asks_emulator_folder_system_and_game() {
     pty.send("1");
     pty.expect("Folder or file of games");
     pty.send(&folder);
-    pty.expect("Which system are the games whose files could be either?");
+    pty.expect("Some games could be gamecube or wii. Which are they?");
     pty.expect("System: ");
     pty.send("2");
     pty.expect("Which game?");
