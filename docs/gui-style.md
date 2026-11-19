@@ -470,15 +470,23 @@ Plan 0062 added these.
   menu covers the keyboard.
 - Each column but Title has a resize handle on its left edge: an 8 px hit
   area centered on the 4 px gap between header buttons. Nothing shows at
-  rest. On hover the cursor becomes the horizontal resize cursor and a
-  1 px muted line shows on the gap's third pixel, the header's height;
-  while dragging the line is primary. The handle takes its presses, so
-  the buttons beside it never sort, show hover or press, or let the press
-  close the panel. A drag resizes the column to the handle's right and
+  rest. With the pointer anywhere on the header, every handle shows a 1 px
+  line on its gap's third pixel, the header's height: muted at half
+  strength, fading in from transparent over the top and bottom quarters.
+  Over a handle the cursor becomes the horizontal resize cursor, and the
+  label of the column it resizes takes the header's hover tint (its
+  background only; the text stays muted). While dragging, the dragged
+  line is primary with the same fades, the others stay faint, and the
+  tint stays, even with the pointer off the header. The handle takes its
+  presses, so the buttons beside it never sort, show their own hover or
+  press, or let the press close the panel. A drag resizes the column to the handle's right and
   Title takes up the change, so the divider stays under the pointer.
   Widening stops when Title reaches its minimum; narrowing never does.
   The columns showing don't change during a drag, and a dropped one that
-  now fits comes back on release. A double-click puts the column back to
+  now fits comes back on release. When only Title and State fit, a State
+  wider than leaves Title its minimum is drawn narrower, never under its
+  default width, and its saved width is kept; only then does Title go
+  under its minimum. A double-click puts the column back to
   its default, or as near as Title's minimum allows.
 - A column drag and a zoom slider drag both end, saving where they were,
   when the release may never arrive: the window loses focus, closes, or
