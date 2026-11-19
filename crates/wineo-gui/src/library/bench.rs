@@ -425,6 +425,15 @@ fn filtered_search_change() {
     }
     black_box(matched);
     report("reorder() per search", samples, "us", 1e6);
+
+    // What new or edited cards add: their search fields and sort titles
+    // made again, as a rescan that changed them or a tag edit does.
+    app.search = "gta".to_owned();
+    let samples = time(iterations / 10, || {
+        app.order.cards_edited();
+        app.reorder();
+    });
+    report("reorder() after cards_edited", samples, "us", 1e6);
 }
 
 /// What a sort change costs: the order rebuilt after a new key or
