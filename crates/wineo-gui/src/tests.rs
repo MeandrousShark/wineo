@@ -982,16 +982,113 @@ fn search_changes_and_a_quiet_rescan_prepare_no_fields() {
             ("env-b", "Sky-Runner", &[]),
         ],
     );
-    let prepared = app.order.preparations;
+    // Nothing is searched yet, so nothing needs the fields.
+    assert_eq!(app.order.prepared_cards, 0);
     let _ = app.search_changed("g".into());
+    assert_eq!(app.order.prepared_cards, 2);
     let _ = app.search_changed("gta".into());
     assert_eq!(found(&app), ["env-a"]);
     // The same cards read again, as a quiet rescan has them.
     app.merge(app.cards.clone());
     let _ = app.search_changed("skyrunner".into());
     assert_eq!(found(&app), ["env-b"]);
-    assert_eq!(app.order.preparations, prepared);
+    assert_eq!(app.order.prepared_cards, 2);
     assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn flag_toggles_and_a_playtime_rescan_prepare_no_fields() {
+    use crate::library_actions::Flag;
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+        ],
+    );
+    let _ = app.search_changed("gta".into());
+    let prepared = app.order.prepared_cards;
+    let _ = app.toggle_flag("env-b", Flag::Favorite);
+    let _ = app.toggle_flag("env-a", Flag::Hidden);
+    assert_eq!(
+        app.empty_state(),
+        Some(crate::library_states::Empty::NoMatches { hidden_matching: 1 })
+    );
+    app.marked.insert("env-b".to_owned());
+    let _ = app.flag_marked(Flag::Favorite, false);
+    let mut played = app.cards.clone();
+    for card in &mut played {
+        card.seconds += 600;
+    }
+    app.merge(played);
+    assert_eq!(app.cards[0].seconds, 600);
+    let _ = app.search_changed("skyrunner".into());
+    assert_eq!(found(&app), ["env-b"]);
+    assert_eq!(app.order.prepared_cards, prepared);
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn a_rescan_prepares_only_the_cards_whose_title_name_or_tags_changed() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+            ("env-c", "StarForge II", &["rpg"]),
+        ],
+    );
+    let _ = app.search_changed("gta".into());
+    let prepared = app.order.prepared_cards;
+    // A new card ahead of the rest moves every index, and env-b's title
+    // changes.
+    searchable(
+        &mut app,
+        &[
+            ("aaa", "Aardvark Adventure", &[]),
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Golden Tower Arena", &[]),
+            ("env-c", "StarForge II", &["rpg"]),
+        ],
+    );
+    assert_eq!(app.order.prepared_cards, prepared + 2);
+    assert_eq!(found(&app), ["env-b", "env-a"]);
+    // A tag change counts too, and the old tag stops matching.
+    searchable(
+        &mut app,
+        &[
+            ("aaa", "Aardvark Adventure", &[]),
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Golden Tower Arena", &[]),
+            ("env-c", "StarForge II", &["strategy"]),
+        ],
+    );
+    assert_eq!(app.order.prepared_cards, prepared + 3);
+    let _ = app.search_changed("rpg".into());
+    assert!(found(&app).is_empty());
+    let _ = app.search_changed("sf2".into());
+    assert_eq!(found(&app), ["env-c"]);
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn an_order_with_no_search_prepares_no_fields() {
+    let mut app = app();
+    app.cards = vec![
+        card("env-a", State::Inactive, 0),
+        card("env-b", State::Inactive, 0),
+    ];
+    assert_eq!(
+        order::Order::sorted(app.order_inputs(), None).prepared_cards(),
+        0
+    );
+    app.search = "env".into();
+    assert_eq!(
+        order::Order::sorted(app.order_inputs(), None).prepared_cards(),
+        2
+    );
 }
 
 #[test]

@@ -166,6 +166,7 @@ impl App {
     fn merge_cards(&mut self, mut cards: Vec<Card>) -> Task<Message> {
         self.flag_writes.reconcile(&mut cards);
         self.tag_writes.reconcile(&mut cards);
+        self.order.carry(&self.cards, &cards);
         // A rescan that changed nothing the order reads keeps the order.
         let new_order = (self.cards.len() != cards.len()
             || !self
@@ -183,7 +184,7 @@ impl App {
                     group: self.group,
                     collapsed: &self.collapsed,
                 },
-                None,
+                self.order.prepared(),
             )
         });
         let layout_changed = new_order.as_ref().is_some_and(|built| {

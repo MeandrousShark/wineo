@@ -475,10 +475,12 @@ impl App {
                 changed = true;
             }
         }
-        if changed {
-            self.cards_edited(&before)
-        } else {
+        if !changed {
             Task::none()
+        } else if matches!(change, Change::Flag(_)) {
+            self.flags_edited(&before)
+        } else {
+            self.cards_edited(&before)
         }
     }
 }

@@ -399,7 +399,7 @@ impl App {
             return Task::none();
         }
         flag.set(card, value);
-        self.cards_edited(&before)
+        self.flags_edited(&before)
     }
 
     /// The slots shown now, in order, for `cards_edited`. A tag edit can
@@ -412,8 +412,19 @@ impl App {
     /// them from now on and the order is rebuilt. When that moved anything
     /// from `before`, cards snap and the selection stays in view.
     pub(crate) fn cards_edited(&mut self, before: &[crate::slot::SlotId]) -> Task<Message> {
-        self.shown.show_library(Ok(self.cards.clone()));
         self.order.cards_edited();
+        self.edited(before)
+    }
+
+    /// `cards_edited` for a favorite or hidden change, which leaves the
+    /// cards' search fields as they were.
+    pub(crate) fn flags_edited(&mut self, before: &[crate::slot::SlotId]) -> Task<Message> {
+        self.order.flags_edited();
+        self.edited(before)
+    }
+
+    fn edited(&mut self, before: &[crate::slot::SlotId]) -> Task<Message> {
+        self.shown.show_library(Ok(self.cards.clone()));
         self.reorder();
         let moved = self.grid_places().ids != before;
         if !moved {
