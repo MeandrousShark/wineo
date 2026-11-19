@@ -13,15 +13,13 @@ with Bulk tagging, shipped in 1.3.0 and 1.4.0 (plan 0062), and GUI
 accessibility settings with Tray icon and hide on launch in 1.5.0 (plan
 0063). The new environment flow (plan 0064), publishing to the repositories
 in parallel (plan 0065), and Coverflow with controller navigation, library
-views part 5 (plan 0066), shipped in 1.6.0. The rest get a plan when they
-come up, and the rows below have the details.
+views part 5 (plan 0066), shipped in 1.6.0, and Resizable list columns
+(plan 0067) with Emulated games (plan 0068) in 1.7.0. The rest get a plan
+when they come up, and the rows below have the details.
 
-1. Resizable list columns (plan 0067).
-2. Emulated games: add and launch games from emulators like Dolphin,
-   RetroArch, and Cemu (plan 0068).
-3. Not so fuzzy search: find a game by the way people say its name,
+1. Not so fuzzy search: find a game by the way people say its name,
    like "gta" or "civ 6", in the desktop app and `wineo list` (plan 0069).
-4. Settings in tabs: split the desktop app's settings into more tabs and
+2. Settings in tabs: split the desktop app's settings into more tabs and
    hide advanced settings unless they're turned on (plan 0070, after 0069).
 
 Store imports come after.
@@ -73,7 +71,6 @@ the first 1.x releases from 1.0 on:
 | Copy a portable environment back home | Portability/Data | **3** | 0019 | Bring an environment made or changed in a portable folder back into the host library | Found in the review of plan 0054 (2026-10-17): `portable` copies only into a portable folder, and refuses a portable source (`portable.rs:102`, `610`), so there's no way back. A return copy needs conflict rules for a name that exists at home, and would carry the environment's `library.toml` entry (favorite, hidden, added) home with it. Priority set by the primary session; the maintainer may move it. |
 | Interruptible GOG requests | UX | **3** | 0049 | Make a cancel stop a GOG or SteamGridDB request already in flight | Left out of plan 0049 ("Where canceling stops"). A cancel is honored at checkpoints, so a request already sent waits for its answer: up to 30 s in the worst case, the GOG client's request timeout in `crates/wineo-gog/src/client.rs`. Canceling the blocking request itself, or running it on a thread the cancel can abandon, would make Cancel and Ctrl+C feel instant on a slow network. |
 | Move a prefix | UX | **3** | | Relocate an environment's prefix in one command | From removing Heroic (2026-10-12): Disco Elysium's prefix, adopted in place by GOG migration, still lived in Heroic's folder, and moving it took a manual `mv` plus `wineo set prefix=`. A command could check the environment is idle, rename on one filesystem or copy across, update the config, and refuse when snapshots or other environments depend on the old path. |
-| Emulated games | UX | **3** | 0026 | Add and launch games from emulators like Dolphin, RetroArch, and Cemu, with playtime, art, and desktop entries | A native environment can launch one by hand today; this adds a guided flow, a RetroArch core picker, and ROM folder imports. Needs a plan. Details in the [sketch](sketches/emulated-games.md). |
 | Playtime tracking by folder or process name | Core | **3** | | Keep counting playtime when a launcher hands off to a game process it doesn't wait for | Playnite tracks the launched process, any process running from the install folder, or a process by name. wineo follows the process group, plus its handoff check for native launchers. Matters most for future store launchers like Epic's. From the Playnite comparison (2026-10-14). |
 | Game metadata from the stores | UX | **3** | | Show a description, genres, developer, publisher, release date, and links in the panel | GOG's and Steam's APIs, which wineo already calls, have most of it; IGDB would cover the rest. From the Playnite comparison (2026-10-14). |
 | Publish to the AUR | Distribution | **3** | 0059 | Install on Arch with an AUR helper instead of building from the repo | Left out of 0059: AUR registration has been closed to new accounts since 2026-10-30, with no reopening date. The maintainer checks once a week. The recipes are ready, `wineo` and `wineo-bin` in `packaging/aur` and `wineo-git` as the root `PKGBUILD`, and the publish script already covers them. |

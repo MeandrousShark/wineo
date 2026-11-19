@@ -1,0 +1,70 @@
+version = 1
+id = "20261119T201917Z-54c7c00f"
+name = "doomed"
+removed_at = "2026-11-19T20:19:17.383775717Z"
+include_prefix = false
+prefix_present = true
+prefix_reference = "prefixes/doomed"
+phase = "trashed"
+
+[entry_identity]
+device = 54
+inode = 87715561
+mount = 57
+birth = [
+    1795119557,
+    380207778,
+]
+fsid = 6632707880272169117
+
+[prefix_identity]
+device = 54
+inode = 87715545
+mount = 57
+birth = [
+    1795119557,
+    366874392,
+]
+fsid = 6632707880272169117
+
+[[payloads]]
+kind = "config"
+original = "config/environments/doomed.toml"
+retained = "data/trash/20261119T201917Z-54c7c00f/config.toml"
+digest = "v2:78dfb323c0ced8fc46c8c4fccb349b40172c2f2c258a0703b49d888b6d7367dd"
+step = "retained"
+
+[payloads.identity]
+device = 54
+inode = 87715555
+mount = 57
+birth = [
+    1795119557,
+    372977200,
+]
+fsid = 6632707880272169117
+
+[payloads.source_parent]
+device = 54
+inode = 87715449
+mount = 57
+birth = [
+    1795119553,
+    912458759,
+]
+fsid = 6632707880272169117
+
+[payloads.destination_parent]
+device = 54
+inode = 87715561
+mount = 57
+birth = [
+    1795119557,
+    380207778,
+]
+fsid = 6632707880272169117
+
+[library]
+favorite = false
+hidden = false
+added = "2026-11-19T20:19:17.375908602Z"

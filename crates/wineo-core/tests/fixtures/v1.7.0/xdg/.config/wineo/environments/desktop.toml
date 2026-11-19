@@ -1,0 +1,10 @@
+schema_version = 1
+prefix = "~/prefixes/desktop"
+runner = "wine"
+arch = "win64"
+
+[targets.main]
+exe = 'C:\Games\Desktop\Desktop.exe'
+default = true
+desktop = true
+name = "Desktop Game"

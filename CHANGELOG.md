@@ -4,6 +4,26 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.7.0 - 2026-11-19
+
+Emulated games and resizable list columns (plans 0067 and 0068, done).
+
+New in this release:
+
+- **Emulated games**: games from Dolphin, RetroArch, PCSX2, DuckStation, Cemu, and six more emulators join the library with art, playtime, tags, and desktop entries.
+  - **Add emulated games** in the desktop app and `wineo import roms` in the terminal import a folder or a single ROM.
+  - wineo finds installed emulators, on `PATH` or as Flatpaks, and RetroArch's cores.
+  - **Quit RetroArch when its game closes**, a new global setting (`[retroarch] quit_with_game`), is on by default.
+  - Native environments have a new `[emulation]` table, shown in `status`, `--json`, and Source.
+- List view columns can be dragged wider or narrower; the widths are saved in `library.toml` under `[view.list_columns]`.
+- Clicking a list header a third time goes back to sorting by title.
+- openSUSE Leap 16.1 packages are published alongside 16.0.
+
+Fixes:
+
+- A refused top-level `desktop` setting now says to set it on a target instead.
+- `docs/native.md` lists all nine Wine-only keys a native environment refuses.
+
 ## 1.6.1 - 2026-11-17
 
 A fix for Steam games after Steam's November client update.
