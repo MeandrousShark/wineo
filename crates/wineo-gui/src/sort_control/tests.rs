@@ -662,6 +662,29 @@ fn a_rescan_or_another_writer_never_changes_the_open_view() {
 }
 
 #[test]
+fn a_cleared_header_sort_is_saved() {
+    let (_root, mut app) = loaded();
+    let paths = app.paths.clone();
+    let _ = app.update(Message::Sort(Event::Header(SortKey::Playtime)));
+    finish_write(&mut app, sort_write);
+    let _ = app.update(Message::Sort(Event::Header(SortKey::Playtime)));
+    finish_write(&mut app, descending_write);
+    let saved = wineo_core::library::load(&paths);
+    assert_eq!(
+        (saved.view.sort, saved.view.descending),
+        (SortKey::Playtime, false)
+    );
+    let _ = app.update(Message::Sort(Event::Header(SortKey::Playtime)));
+    assert_eq!(app.view_writes.sort, Some((SortKey::Name, false)));
+    finish_write(&mut app, sort_write);
+    let saved = wineo_core::library::load(&paths);
+    assert_eq!(
+        (saved.view.sort, saved.view.descending),
+        (SortKey::Name, false)
+    );
+}
+
+#[test]
 fn each_control_writes_only_its_field() {
     let (_root, mut app) = loaded();
     let paths = app.paths.clone();
