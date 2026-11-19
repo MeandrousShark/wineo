@@ -159,6 +159,14 @@ impl Field {
             // walks both strings in step.
             let count = character.to_lowercase().count();
             if dropped(character) {
+                // A combining mark makes the letter before it something
+                // else, so `I\u{301}` is no more a numeral than `Í` is.
+                if !matches!(character, '\'' | '\u{2019}')
+                    && let Some((_, digits, roman)) = open.as_mut()
+                {
+                    *digits = false;
+                    *roman = false;
+                }
                 for lowered_character in lowered.by_ref().take(count) {
                     push_folded(lowered_character, &mut folded, &mut joined);
                 }
