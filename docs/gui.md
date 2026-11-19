@@ -119,7 +119,20 @@ The library refreshes every 2 seconds, so a game started or stopped from
 the CLI shows up without doing anything.
 
 Type in the search field to filter by card title, environment name, or
-tag, so `rpg` finds games tagged `rpg`.
+tag, so `rpg` finds games tagged `rpg`. Search also finds a game the way
+people say its name:
+
+- Initials of a run of title words: `gta` finds Grand Theft Auto, and
+  `sf2` finds StarForge II.
+- The starts of title words, in any order: `auto gr` and `civ 6` work.
+- Numbers by value, as digits or Roman numerals: `4` and `iv` both find
+  Fallout 4 and Grand Theft Auto IV.
+- Case, accents, and punctuation don't matter: `eclair` finds Éclair
+  Tactics, and `skyrunner` finds Sky-Runner.
+
+Anything that matched before still matches. Search only filters, so the
+cards keep the sort you picked; there's no best match first, and a typo
+or letters out of order find nothing.
 
 When the window is too narrow for the whole toolbar, like at a bigger
 interface size, the controls at its right end move into a **More** menu
