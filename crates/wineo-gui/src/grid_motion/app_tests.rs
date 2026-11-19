@@ -251,7 +251,7 @@ fn a_rescan_mid_transition_settles_it_first() {
 fn waiting_on_a_fade() -> (tempfile::TempDir, App) {
     let names: Vec<String> = (0..120).map(|index| format!("game-{index:03}")).collect();
     let (root, mut app) = fixture(&names);
-    let _ = search(&mut app, "game-1");
+    let _ = search(&mut app, "me-1");
     assert_eq!(shown(&app).len(), 20);
     assert!(app.grid_motion.active());
     app.selected = Some("game-119".into());
