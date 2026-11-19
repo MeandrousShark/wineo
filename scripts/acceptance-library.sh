@@ -669,6 +669,9 @@ add wine-search-hyphen tags=game title="Sky-Runner" added=2026-09-17T10:00:00Z
 # source: Windows; tags: one; search: camelCase words and a Roman numeral (sf2 and starforge 2 find it)
 add wine-search-camel tags=game title="StarForge II" added=2026-09-17T11:00:00Z
 
+# source: Windows; tags: one; hidden; search: initials only it matches (qyp, quill, yonder, and pavilion find nothing shown), so the "hidden games match" note shows
+add wine-search-hidden tags=game title="Quill Yonder Pavilion" hidden added=2026-09-17T12:00:00Z
+
 # Tray and hide on launch (plan 0063). These all play after every game above,
 # so with Hide to the tray off nothing else can reach the tray's Play rows.
 # The tray lists the three newest played games that aren't hidden, trashed, or

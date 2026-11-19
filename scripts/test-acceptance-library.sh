@@ -71,11 +71,12 @@ done
 
 # The search games (plan 0069): each title is there, and the file holding it
 # has a name that doesn't give the searches away, so a hit comes from the
-# title. Grand Tidal Armada IV carries strategy for the --tag check.
-for title in 'Grand Tidal Armada IV' 'Sky-Runner' 'StarForge II'; do
+# title. Grand Tidal Armada IV carries strategy for the --tag check, and
+# Quill Yonder Pavilion is hidden, for the hidden match note.
+for title in 'Grand Tidal Armada IV' 'Sky-Runner' 'StarForge II' 'Quill Yonder Pavilion'; do
     file=$(grep -lxF "title = \"$title\"" "$tmp"/one/config/environments/*.toml || true)
     name=$(basename -- "$file" .toml)
-    if [[ $(wc -l <<<"$file") -eq 1 && -n $file ]] && ! grep -qiE 'gta|tidal|armada|sky|runner|star|forge' <<<"$name"; then
+    if [[ $(wc -l <<<"$file") -eq 1 && -n $file ]] && ! grep -qiE 'gta|tidal|armada|sky|runner|star|forge|qyp|quill|yonder|pavilion' <<<"$name"; then
         pass
     else
         fail "no single game titled $title with a name that doesn't spell it: ${file:-none}"
@@ -85,6 +86,12 @@ if grep -qxF 'tags = ["game", "strategy"]' "$tmp/one/config/environments/wine-se
     pass
 else
     fail "Grand Tidal Armada IV isn't tagged strategy"
+fi
+if awk '/^\[environments\.wine-search-hidden\]$/{t=1; next} /^\[/{t=0} t && /^hidden = true$/{found=1} END{exit !found}' \
+    "$tmp/one/config/library.toml"; then
+    pass
+else
+    fail "Quill Yonder Pavilion isn't hidden"
 fi
 
 # no_leftovers LABEL PARENT: a refusal must not leave its work folder behind.
