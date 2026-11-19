@@ -147,6 +147,20 @@ fn digit_runs_too_long_for_u32_have_no_value() {
 }
 
 #[test]
+fn many_numeral_words_spell_in_polynomial_time() {
+    let ones = ["1"; 48].join(" ");
+    let twos = ["II"; 48].join(" ");
+    let ones_then_x = format!("{}x", "1".repeat(47));
+    let is_then_z = format!("{}z", "i".repeat(47));
+    let digit_twos = "2".repeat(48);
+    check(&[
+        (&ones, &ones_then_x, false),
+        (&twos, &is_then_z, false),
+        (&twos, &digit_twos, true),
+    ]);
+}
+
+#[test]
 fn initials_need_two_letters_or_digits() {
     assert!(Search::new("g 4").initials.is_some());
     assert!(Search::new("g4").initials.is_some());

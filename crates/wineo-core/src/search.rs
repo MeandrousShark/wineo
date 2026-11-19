@@ -15,6 +15,7 @@ pub struct Field {
     folded: String,
     joined: String,
     words: Vec<Word>,
+    numerals: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +53,24 @@ struct Initials {
 struct Numeral {
     text: String,
     value: Option<u32>,
+}
+
+/// Each numeral word can stand in up to three ways, so spelling backtracks
+/// exponentially in the numerals. Up to this many it stays small enough
+/// without a memo, which keeps ordinary fields allocation-free.
+const UNMEMOIZED_NUMERALS: usize = 3;
+
+/// The spelling states known to fail, by word index and the length of the
+/// rest of the initials, which is always a suffix of them.
+struct Failed {
+    states: Vec<bool>,
+    stride: usize,
+}
+
+impl Failed {
+    fn at(&self, index: usize, rest: &str) -> usize {
+        index * self.stride + rest.len()
+    }
 }
 
 /// Apostrophes vanish instead of splitting a word, and combining accents
@@ -196,11 +215,13 @@ impl Field {
             }
         }
         close(&mut open, &joined, &mut words);
+        let numerals = words.iter().filter(|word| word.numeral).count();
         Self {
             lower,
             folded,
             joined,
             words,
+            numerals,
         }
     }
 
@@ -211,32 +232,58 @@ impl Field {
     /// Whether `rest` can be spelled by words from `index` on, each giving
     /// its first letter or, for a numeral, its whole text or its value, and
     /// the numerals after the spelling follow it word for word.
-    fn spells(&self, index: usize, rest: &str, numerals: &[Numeral]) -> bool {
+    fn spells(
+        &self,
+        index: usize,
+        rest: &str,
+        numerals: &[Numeral],
+        mut failed: Option<&mut Failed>,
+    ) -> bool {
         if rest.is_empty() {
             return self.numerals_follow(index, numerals);
         }
         let Some(word) = self.words.get(index) else {
             return false;
         };
-        let text = self.word(index);
-        if let Some(first) = text.chars().next()
-            && rest.starts_with(first)
-            && self.spells(index + 1, &rest[first.len_utf8()..], numerals)
+        if failed
+            .as_ref()
+            .is_some_and(|failed| failed.states[failed.at(index, rest)])
         {
-            return true;
-        }
-        if !word.numeral {
             return false;
         }
-        if text.len() > 1
-            && rest.starts_with(text)
-            && self.spells(index + 1, &rest[text.len()..], numerals)
-        {
-            return true;
+        let text = self.word(index);
+        let first = text
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .filter(|&length| rest.starts_with(&text[..length]));
+        let (whole, value) = if word.numeral {
+            (
+                (text.len() > 1 && rest.starts_with(text)).then_some(text.len()),
+                word.value.and_then(|value| starts_with_value(rest, value)),
+            )
+        } else {
+            (None, None)
+        };
+        // Every stand-in is a prefix of `rest`, so two of the same length
+        // are the same branch; `1` is its own first letter and value.
+        let mut tried = [None; 3];
+        for (slot, length) in [first, whole, value].into_iter().enumerate() {
+            if length.is_none() || tried[..slot].contains(&length) {
+                continue;
+            }
+            tried[slot] = length;
+            if let Some(length) = length
+                && self.spells(index + 1, &rest[length..], numerals, failed.as_deref_mut())
+            {
+                return true;
+            }
         }
-        word.value
-            .and_then(|value| starts_with_value(rest, value))
-            .is_some_and(|length| self.spells(index + 1, &rest[length..], numerals))
+        if let Some(failed) = failed {
+            let at = failed.at(index, rest);
+            failed.states[at] = true;
+        }
+        false
     }
 
     fn numerals_follow(&self, index: usize, numerals: &[Numeral]) -> bool {
@@ -350,7 +397,17 @@ impl Search {
         let Some(initials) = &self.initials else {
             return false;
         };
-        (0..field.words.len()).any(|start| field.spells(start, &initials.first, &initials.numerals))
+        // Whether a state fails doesn't depend on where the run started, so
+        // one memo serves every start.
+        let mut failed = (field.numerals > UNMEMOIZED_NUMERALS).then(|| {
+            let stride = initials.first.len() + 1;
+            Failed {
+                states: vec![false; field.words.len() * stride],
+                stride,
+            }
+        });
+        (0..field.words.len())
+            .any(|start| field.spells(start, &initials.first, &initials.numerals, failed.as_mut()))
     }
 }
 
