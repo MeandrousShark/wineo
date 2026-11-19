@@ -34,6 +34,14 @@ kind = "native"
 # whose GOG state is missing, can't be launched. Default: unset.
 # gog_id = "1094900565"
 
+# Where an emulated game came from. The target below is what actually runs;
+# nothing builds the command from this table. emulator and rom are required.
+# See docs/native.md. Default: none.
+# [emulation]
+# emulator = "dolphin"  # A built-in emulator's id, or "custom".
+# system = "gamecube"  # Optional.
+# rom = "~/Games/roms/gamecube/Metroid Prime (USA).rvz"
+
 # Run every target under gamescope. Every field is optional, and an empty
 # table runs plain `gamescope --`. A target's own [targets.<name>.gamescope]
 # replaces this whole table. Default: off.

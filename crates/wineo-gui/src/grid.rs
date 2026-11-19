@@ -190,7 +190,7 @@ impl App {
         });
         let list = self.layout == crate::grid_motion::ViewLayout::List;
         let row_width = self.slot_width();
-        let row_columns = crate::list_view::columns(row_width);
+        let row_columns = self.list_columns();
         let cards = filtered
             .into_iter()
             .zip(&places.ids)
@@ -235,17 +235,18 @@ impl App {
             .filter_map(|leaving| {
                 let card = by_name.get(leaving.id.name())?;
                 // A layout switch snaps, ending every fade, so what leaves
-                // left from the layout shown.
+                // left from the layout shown. A leaving row fits its own
+                // width rather than holding a drag's columns.
                 if list {
                     return Some(crate::grid_motion::Outgoing {
                         id: leaving.id.clone(),
                         bounds: leaving.bounds,
-                        card: self.row_drawn(
+                        card: self.row_leaving(
                             &leaving.id,
                             card,
                             leaving.opacity,
                             leaving.bounds.width,
-                            crate::list_view::columns(leaving.bounds.width),
+                            crate::list_view::columns(leaving.bounds.width, &self.list_widths),
                         ),
                         details: None,
                     });
@@ -808,7 +809,8 @@ impl App {
         if let Some(flow) = &self.flow {
             let palette = self.palette;
             let generation = self.flow_generation;
-            // Fits all four Add choices; smaller windows scroll them.
+            // Fits all six Add choices (about 500 px at the widest, 560 when
+            // their details wrap); smaller windows scroll them.
             let height = if matches!(flow, crate::flow::Page::Choose(_)) {
                 560.0
             } else {

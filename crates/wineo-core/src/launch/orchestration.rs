@@ -6,6 +6,7 @@ use anyhow::{Context, anyhow};
 use crate::cancel::Token;
 use crate::config::{GlobalConfig, Kind};
 use crate::desktop;
+use crate::emulator::Emulator;
 use crate::environment::Environment;
 use crate::error::Error;
 use crate::gog::folder::{FolderError, InUseGuard};
@@ -128,6 +129,8 @@ pub enum LaunchEvent {
     /// Launcher-side cleanup uses a fresh token, even after a canceled before.
     AfterHook(Token),
     Started,
+    /// Something went wrong that doesn't stop the launch.
+    Warning(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,6 +394,7 @@ pub fn prepare(
         runtime.check_resolved(name)?;
         folders = protect(paths, &environment, &launch, token)?;
         reconcile(paths, &global, &environment, &launch, &mut events)?;
+        retroarch_quit_file(paths, &global, &environment, &mut events);
         Ok::<_, anyhow::Error>(launch)
     })();
     let launch = match result {
@@ -429,6 +433,30 @@ pub fn prepare(
         _reservation: reservation,
         folders,
     })
+}
+
+/// Writes RetroArch's quit file from the global setting before a RetroArch
+/// game runs, so flipping the setting reaches every game without editing a
+/// target. The command isn't touched. A failure is only a warning.
+fn retroarch_quit_file(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    mut events: impl FnMut(LaunchEvent),
+) {
+    let retroarch = environment
+        .config
+        .emulation
+        .as_ref()
+        .is_some_and(|emulation| emulation.emulator == Emulator::RetroArch.id());
+    if !retroarch {
+        return;
+    }
+    if let Some(warning) =
+        crate::emulator::refresh_quit_file(paths, global.retroarch.quit_with_game())
+    {
+        events(LaunchEvent::Warning(warning));
+    }
 }
 
 /// Refuses a launch `protect` would refuse, before any hook runs or a

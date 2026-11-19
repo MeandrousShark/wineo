@@ -143,6 +143,9 @@ environment.
 | Target | `mangohud` on, but `mangohud` (or `mangoapp` under gamescope) isn't installed | error | |
 | Target | `wayland` on, but the runner has no Wayland support | error | |
 | Native target | Exe missing, not executable, or a Windows path | error | |
+| Emulated game | `[emulation] rom` doesn't exist | warning | |
+| Emulated game | A target's Flatpak emulator isn't installed | warning | |
+| Emulated game | A RetroArch target's core file is gone | warning | |
 | Environment | Several targets and no default, so `start` needs `--target` | warning | |
 | Runtime | Lost run | warning | clean it up, like `wineo stop` |
 | Runtime | Unfinished installer | warning | clean it up, like `wineo stop` |

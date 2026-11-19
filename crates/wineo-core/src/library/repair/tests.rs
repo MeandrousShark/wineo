@@ -1903,3 +1903,210 @@ fn the_report_says_how_much_of_input_came_back() {
             .contains("Controller settings could not be recovered.")
     );
 }
+
+const BREAK: &str = "[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n";
+
+fn widths(fixture: &Fixture) -> std::collections::BTreeMap<crate::library::ListColumn, u16> {
+    load(&fixture.paths).view.list_columns
+}
+
+fn width_map(
+    pairs: &[(crate::library::ListColumn, u16)],
+) -> std::collections::BTreeMap<crate::library::ListColumn, u16> {
+    pairs.iter().copied().collect()
+}
+
+#[test]
+fn repair_keeps_good_list_columns_and_reports_bad_ones_before_the_break() {
+    use crate::library::ListColumn::State;
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[view]\nzoom = 90\n[view.list_columns]\nstate = 96\nplaytime = 9\ntags = \"wide\"\nfuture = 7\n{BREAK}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert!(!report.complete(), "{report}");
+    let text = fixture.read();
+    assert!(text.contains("[view.list_columns]"), "{text}");
+    assert!(text.contains("future = 7"), "{text}");
+    assert!(!text.contains("playtime"), "{text}");
+    assert!(!text.contains("tags"), "{text}");
+    assert_eq!(widths(&fixture), width_map(&[(State, 96)]), "{text}");
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+}
+
+#[test]
+fn repair_keeps_list_columns_after_the_broken_line() {
+    use crate::library::ListColumn::{State, Tags};
+    // The header comes after the break, so only the line scan can see it.
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[view]\nzoom = 90\n{BREAK}[view.list_columns]\nstate = 96\nplaytime = 9\ntags = 104\n"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    let text = fixture.read();
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96), (Tags, 104)]),
+        "{text}"
+    );
+    assert!(!text.contains("playtime"), "{text}");
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+
+    // Dotted keys under [view] after the break.
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n{BREAK}[view]\nlist_columns.tags = 104\n[desktop]\ntray = false\n"
+    ));
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(Tags, 104)]),
+        "{}",
+        fixture.read()
+    );
+    assert!(!load(&fixture.paths).desktop.tray);
+}
+
+#[test]
+fn repair_continues_list_columns_past_a_broken_line_inside_them() {
+    use crate::library::ListColumn::{Playtime, Source, State, Tags};
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[view]\nzoom = 90\nthis is broken\nsort = \"playtime\"\n[view.list_columns]\nstate = 96\nalso broken\nplaytime = 100\ntags = 7\nsource = 120\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    let text = fixture.read();
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96), (Playtime, 100), (Source, 120)]),
+        "{text}"
+    );
+    assert!(!text.contains("tags"), "{text}");
+    // The lines under [view] stay in [view], not in the widths table.
+    let view = load(&fixture.paths).view;
+    assert_eq!((view.zoom, view.sort), (90, SortKey::Playtime), "{text}");
+    assert!(text.find("sort = ").unwrap() < text.find("[view.list_columns]").unwrap());
+
+    // The same break with the widths table last in the file.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[view.list_columns]\nstate = 96\nbroken\ntags = 104\nplaytime = 5\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96), (Tags, 104)]),
+        "{}",
+        fixture.read()
+    );
+}
+
+#[test]
+fn repair_drops_a_list_columns_that_is_not_a_table_and_keeps_the_rest_of_view() {
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[view]\nzoom = 90\nlist_columns = 3\n{BREAK}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert!(
+        !fixture.read().contains("list_columns"),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+
+    // Nothing good in it: no empty header is left behind.
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[view]\nzoom = 90\n[view.list_columns]\nstate = 1\n{BREAK}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert!(
+        !fixture.read().contains("list_columns"),
+        "{}",
+        fixture.read()
+    );
+}
+
+#[test]
+fn the_report_says_how_much_of_list_columns_came_back() {
+    let report = |text: &str| {
+        let fixture = Fixture::new();
+        fixture.write(&format!("schema_version = 1\n{text}{BREAK}"));
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap()
+    };
+    let whole = report("[view.list_columns]\nstate = 96\n");
+    assert_eq!(whole.view, ViewRecovery::Recovered);
+    assert!(whole.complete(), "{whole}");
+    let part = report("[view.list_columns]\nstate = 96\ntags = 1\n");
+    assert_eq!(part.view, ViewRecovery::Partly);
+    assert!(!part.complete());
+    let lost = report("[view.list_columns]\ntags = 1\n");
+    assert_eq!(lost.view, ViewRecovery::Lost);
+    assert!(!lost.complete());
+}
+
+#[test]
+fn list_columns_in_a_healthy_file_make_no_repair() {
+    let fixture = Fixture::new();
+    let text = "schema_version = 1\n[view]\nzoom = 90\n[view.list_columns]\nstate = 96\n";
+    fixture.write(text);
+    assert_eq!(repair_at(&fixture.paths, STAMP, sync_dir).unwrap(), None);
+    assert_eq!(fixture.read(), text);
+}
+
+#[test]
+fn repair_salvages_an_inline_list_columns_before_and_after_the_break() {
+    use crate::library::ListColumn::State;
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[view]\nzoom = 90\nlist_columns = {{ state = 96, tags = 1 }}\n{BREAK}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96)]),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n{BREAK}[view]\nzoom = 90\nlist_columns = {{ state = 96, tags = 1 }}\n"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96)]),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(load(&fixture.paths).view.zoom, 90);
+}
+
+#[test]
+fn repair_merges_a_repeated_list_columns_table_with_the_first_value_winning() {
+    use crate::library::ListColumn::{Source, State, Tags};
+    // The second header is what makes the file unparseable.
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n[view.list_columns]\nstate = 96\ntags = 104\n[view.list_columns]\nstate = 200\nsource = 120\n",
+    );
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert_eq!(
+        widths(&fixture),
+        width_map(&[(State, 96), (Tags, 104), (Source, 120)]),
+        "{}",
+        fixture.read()
+    );
+    assert_eq!(fixture.read().matches("[view.list_columns]").count(), 1);
+}

@@ -41,7 +41,7 @@ that command line. Items marked (unchecked) weren't confirmed.
 | melonDS | `melonDS`, `melonds` | `net.kuribo64.melonDS` | `FILE` | `-f` | no; closing the window exits |
 | mGBA | `mgba-qt`, `mgba` | `io.mgba.mGBA` | `FILE` | `-f` | no; closing the window exits |
 | xemu | `xemu` | `app.xemu.xemu` | `-dvd_path FILE` | `-full-screen` | no; closing the window exits |
-| Azahar (3DS) | `azahar` | `org.azahar_emu.Azahar` | `FILE` (last argument) | `-f` | no (unchecked) |
+| Azahar (3DS) | `azahar` | `org.azahar_emu.Azahar` | `FILE` (last argument) | `-f` | no; stopping the game returns to its list |
 
 Switch: upstream Ryujinx is discontinued. The Ryubing fork
 (`io.github.ryubing.Ryujinx`) and Eden (`dev.eden_emu.eden`, `-f -g FILE`)
@@ -57,6 +57,13 @@ Separate settings: Dolphin `-u DIR`; RetroArch `--config FILE` and
 `-gamecfg FILE`; PPSSPP `--config=FILE`; RPCS3 `--config PATH`; xemu
 `-config_path FILE`. DuckStation, melonDS, and mGBA have no flag for it.
 
+Ending options with `--` (checked 2026-11-17 in each parser): PCSX2 and
+DuckStation take it and treat the rest as the path. Dolphin's optparse
+takes it. PPSSPP treats it as an unknown option and shows an error. RPCS3
+passes everything after it to the game. Azahar ignores it. xemu,
+melonDS, mGBA, and Cemu are unchecked. wineo uses `--` only for PCSX2 and
+DuckStation; every ROM path is absolute, so it never starts with `-`.
+
 RPCS3 is single-instance: a second one exits with "Another instance of
 RPCS3 is running". No other emulator above was seen handing off to a
 running copy.
@@ -65,13 +72,23 @@ running copy.
 
 - Dolphin: gcm, iso, tgc, ciso, gcz, wbfs, wia, rvz, wad, elf, dol.
 - Cemu: wud, wux, wua, wuhb, or a title folder with `code/`, `content/`,
-  and `meta/` (the `.rpx` is in `code/`).
-- PCSX2: iso, bin, mdf, chd, cso, zso, gz.
-- DuckStation: cue, chd, iso, pbp, ecm, mds, ccd, m3u; a `.bin` or `.img`
-  beside a `.cue` isn't a game of its own.
-- PPSSPP: iso, cso, chd, pbp, or a folder holding `EBOOT.PBP`.
-- RPCS3: a disc folder with `PS3_GAME/USRDIR/EBOOT.BIN`, or an iso.
-- melonDS: nds, srl, dsi, ids. mGBA: gba, gb, gbc, agb (list unchecked).
+  and `meta/`. `-g` takes the title folder or the `.rpx` in its `code/`
+  (`TitleInfo::DetectFormat`), and Cemu exits with a game it was started
+  with.
+- PCSX2: iso, bin, img, mdf, chd, cso, zso, gz (`VMManager::IsDiscFileName`).
+  Not cue: its open dialog lists `.cue`, but nothing reads one
+  (`CDVD/InputIsoFile.cpp`; issue #4880 is still open).
+- DuckStation: cue, chd, iso, pbp, ecm, mds, ccd, m3u, bin, img
+  (`System::IsDiscPath`); a `.bin` or `.img` that a `.cue` names isn't a
+  game of its own.
+- PPSSPP: iso, cso, chd, pbp, or a folder holding `EBOOT.PBP`, passed as
+  the folder (`Identify_File` checks for `EBOOT.PBP` inside).
+- RPCS3: a disc folder with `PS3_GAME/USRDIR/EBOOT.BIN`, or an iso, passed
+  as the top folder (`GetElfPathFromDir` finds the `EBOOT.BIN`).
+- melonDS: nds, srl, dsi, ids.
+- mGBA: gb, gbc, sgb (Game Boy) and gba, agb, mb (GBA), from `romFilters()`
+  in its Qt `utils.cpp`. It also opens `.bin` and `.rom`, and `.zip`,
+  `.7z`, and `.elf` in some builds, which are too generic to scan for.
 - xemu: xiso images, usually `.iso`.
 - Azahar: cci, 3ds, cia, 3dsx, cxi, app, and the compressed zcci, zcia,
   z3dsx, zcxi.
@@ -124,8 +141,36 @@ The info files are MIT (`libretro/libretro-core-info`).
 
 ### Quitting with the game
 
-From the strings and help text of a RetroArch 1.22.2 binary, not from a
-run:
+Run on 2026-11-17 against RetroArch 1.22.2 (Gentoo) with the mGBA core, the
+null video, input, and audio drivers, a throwaway HOME, its own
+`--config`, and a blank GBA image (zeros, with `0xEA` at offset 3 and
+`0x96` at `0xB2` so mGBA accepts it). Content was closed with
+`CLOSE_CONTENT` over the network command interface:
+
+- `quit_on_close_content` is `0` (RetroArch stays open), `1` (it quits,
+  exit 0), or `2` (it quits when the content was started from the command
+  line, as a launcher starts it; exit 0).
+- A setting from `--appendconfig` is saved back into the main config: one
+  run with `quit_on_close_content = "1"` appended left a full, existing
+  main config at `"1"`, after closing the game or quitting.
+- Appending `config_save_on_exit = "false"` as well keeps the main config
+  byte-for-byte unchanged, and closing the game still quits.
+- A missing appended file is logged (`Failed to append config`) and
+  ignored.
+- A `|` anywhere in the appended file's path splits it, and the append
+  fails.
+- A stub main config is rewritten in full on startup, so checks like these
+  need a complete config seeded by an earlier run.
+
+From RetroArch's source (master and v1.22.2): saved overrides compare
+against the main config plus `--appendconfig`, so appended keys never land
+in them. Every normal quit, including the first SIGTERM and closing the
+window, honors `config_save_on_exit`. "Save Current Configuration" doesn't:
+it writes all live settings, appended ones included, into the main config
+(RetroArch's man page says so too). `quit_on_close_content` and its `2`
+value came in 1.9.1 (2021, PR #11464).
+
+Earlier notes, from the binary's strings and help text:
 
 - The config key `quit_on_close_content` exists ("Quit on Close Content"
   in the menu). Its values weren't confirmed.
@@ -141,6 +186,11 @@ run:
   the app exits, so waiting on it and its process group works (read from
   the source, not run). The exported `exports/bin/ID` script is the same
   thing.
+- `--filesystem=PATH` reads PATH up to the first unescaped `:`, and the
+  rest is the mode (`ro`, `rw`, `create`; anything else is ignored with a
+  warning). A `:` in the path is written `\:` and a `\` as `\\`, since
+  flatpak 0.11.4 (`flatpak-context.c`, `parse_filesystem_flags`). `..` and
+  `/` itself are refused.
 - What the sandbox can read differs: RetroArch and mGBA have the host
   (home, `/media`, `/run/media`, not `/mnt`); Dolphin, Cemu, PPSSPP, xemu,
   and Azahar have it read-only; melonDS only home; RPCS3 home read-only

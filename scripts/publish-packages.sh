@@ -154,6 +154,7 @@ copr fedora-43 1.99.1
 copr fedora-44 1.99.1
 copr fedora-45 1.99.1
 obs openSUSE_Tumbleweed 1.99.0
+obs 16.1 1.98.0
 obs 16.0 1.98.0
 obs 15.6 1.94.0
 '

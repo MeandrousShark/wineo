@@ -1,3 +1,4 @@
+use crate::config::Emulation;
 use crate::operation::Operation;
 use crate::report::{ComponentReport, EnvironmentReport, KindReport, Played};
 use crate::runtime::{RunMode, RunState, State, Status};
@@ -55,6 +56,9 @@ pub struct StatusOutput<'a> {
     /// Present for Steam games, and null unless an install has a percent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_progress: Option<Option<u8>>,
+    /// Present for an environment with `[emulation]`, as its config holds it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emulation: Option<&'a Emulation>,
 }
 
 impl<'a> StatusOutput<'a> {
@@ -95,6 +99,7 @@ impl<'a> StatusOutput<'a> {
             install: proxied.map(|(_, _, install)| install.state),
             install_problem: proxied.and_then(|(_, _, install)| install.problem.as_deref()),
             install_progress: proxied.map(|(_, _, install)| install.progress),
+            emulation: None,
         }
     }
 }
@@ -166,6 +171,7 @@ impl<'a> NamedOutput<'a> {
         Self {
             status: StatusOutput {
                 hooks: HooksOutput::presence(report.hooks.as_ref()),
+                emulation: report.emulation.as_ref(),
                 ..StatusOutput::new(
                     &report.name,
                     &report.status,

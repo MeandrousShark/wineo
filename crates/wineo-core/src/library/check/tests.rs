@@ -443,6 +443,23 @@ fn a_preset_may_group_by_recently_played() {
 }
 
 #[test]
+fn emulator_platform_ids_are_known_and_others_are_not() {
+    let inspection = inspect_text(
+        r#"[presets.Emulated]
+platforms = ["dolphin", "emulated"]
+not_platforms = ["custom", "eden", "azahar"]
+"#,
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            r#"library.toml: presets.Emulated.not_platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found "custom""#,
+            r#"library.toml: presets.Emulated.not_platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found "eden""#,
+        ]
+    );
+}
+
+#[test]
 fn bad_preset_values_name_the_preset_the_field_and_what_was_found() {
     let inspection = inspect_text(
         r#"[presets."Couch co-op"]
@@ -470,10 +487,10 @@ not_tags = 5
             r#"library.toml: presets."Couch co-op".group: expected one of none, recent, tag, source, state, found "genre""#,
             r#"library.toml: presets."Couch co-op".layout: expected one of grid, list, coverflow, found true"#,
             r#"library.toml: presets."Couch co-op".stores: expected a list of store ids: steam, gog, epic, amazon, found "steam""#,
-            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found "macos""#,
-            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, found 3"#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found "macos""#,
+            r#"library.toml: presets."Couch co-op".platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found 3"#,
             r#"library.toml: presets."Couch co-op".not_stores: expected a list of store ids: steam, gog, epic, amazon, found "Steam""#,
-            r#"library.toml: presets."Couch co-op".not_platforms: expected a list of platform ids: native, windows, found ["windows"]"#,
+            r#"library.toml: presets."Couch co-op".not_platforms: expected a list of platform ids: native, windows, dolphin, retroarch, cemu, pcsx2, duckstation, ppsspp, rpcs3, melonds, mgba, xemu, azahar, emulated, found ["windows"]"#,
             r#"library.toml: presets."Couch co-op".tags: expected a list of tag names, found 3"#,
             r#"library.toml: presets."Couch co-op".not_tags: expected a list of tag names, found 5"#,
         ]
@@ -753,4 +770,47 @@ fn two_actions_on_one_button_is_a_warning_that_says_how_it_resolved() {
     // A bad value is one finding, not a conflict on top of it.
     let inspection = inspect_text("[input.buttons]\nback = \"z\"\n");
     assert_eq!(messages(&inspection, FindingKind::FieldInvalid).len(), 1);
+}
+
+#[test]
+fn list_columns_with_good_widths_have_no_findings() {
+    let inspection = inspect_text(
+        "schema_version = 1\n[view]\nzoom = 100\n[view.list_columns]\nstate = 56\nplaytime = 96\nlast_played = 112\nsource = 480\ntags = 104\n",
+    );
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[view]\nlist_columns = { tags = 104 }\n");
+    assert_eq!(inspection.findings, []);
+}
+
+#[test]
+fn bad_list_column_widths_are_invalid_and_unknown_columns_are_unknown() {
+    let inspection = inspect_text(
+        "[view.list_columns]\nstate = 55\nplaytime = 481\nlast_played = \"112\"\nsource = 80.5\ntags = 104\ntitle = 300\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: view.list_columns.state: expected a whole number from 56 to 480, found 55",
+            "library.toml: view.list_columns.playtime: expected a whole number from 56 to 480, found 481",
+            "library.toml: view.list_columns.last_played: expected a whole number from 56 to 480, found \"112\"",
+            "library.toml: view.list_columns.source: expected a whole number from 56 to 480, found 80.5",
+        ]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        ["library.toml: view.list_columns.title: unknown key, ignored"]
+    );
+}
+
+#[test]
+fn list_columns_that_is_not_a_table_is_invalid() {
+    let inspection = inspect_text("[view]\nlist_columns = 4\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.list_columns: expected a table, found 4"]
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        [] as [String; 0]
+    );
 }

@@ -283,6 +283,39 @@ impl Fixture {
 }
 
 #[test]
+fn a_native_copy_lists_a_rom_outside_the_folder_and_keeps_emulation() {
+    let f = Fixture::new(true);
+    let config = f.from.environment_config("game");
+    let text = fs::read_to_string(&config).unwrap();
+    let usb = f.to.portable_root().unwrap().to_owned();
+    for (rom, listed) in [
+        ("~/roms/prime.rvz".to_owned(), true),
+        ("/mnt/roms/prime.rvz".to_owned(), true),
+        (usb.join("roms/prime.rvz").display().to_string(), false),
+    ] {
+        fs::write(
+            &config,
+            format!("{text}[emulation]\nemulator = 'dolphin'\nrom = '{rom}'\n"),
+        )
+        .unwrap();
+        let review = inspect_native(&f.from, &f.to, "game").unwrap();
+        let expected = format!("emulation.rom: {rom}");
+        assert_eq!(
+            review.external_target_paths.contains(&expected),
+            listed,
+            "{:?}",
+            review.external_target_paths
+        );
+    }
+    let review = inspect_native(&f.from, &f.to, "game").unwrap();
+    let copy = execute_native_with(&f.from, &f.to, &review, &Token::new(), |_| {}).unwrap();
+    assert_eq!(
+        copy.config.emulation.map(|emulation| emulation.emulator),
+        Some("dolphin".to_owned())
+    );
+}
+
+#[test]
 fn inspection_cancels_wine_and_native_without_destination_writes() {
     for native in [false, true] {
         let f = Fixture::new(native);

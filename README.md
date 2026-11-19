@@ -80,7 +80,7 @@ sudo zypper refresh
 sudo zypper install wineo
 ```
 
-For Leap, use `16.0` or `15.6` in place of `openSUSE_Tumbleweed`. openSUSE's
+For Leap, use `16.1`, `16.0`, or `15.6` in place of `openSUSE_Tumbleweed`. openSUSE's
 repositories don't have `umu-launcher`, so Proton environments need it
 from elsewhere.
 
@@ -249,6 +249,9 @@ wineo manpages ~/.local/share/man/man1
   installed or just owned, to tag, launch, stop, and track playtime, while
   Steam keeps managing them. Owned games can be installed through Steam
   from wineo.
+- **Emulated games.** [Import ROMs](docs/emulators.md) for Dolphin,
+  RetroArch, PCSX2, Cemu, and other emulators, or your own, with their
+  systems as tags.
 - **GOG games.** Log in and install the [GOG games](docs/gog.md) you own,
   native or Windows, or move the ones Heroic installed into wineo, then keep
   them and their DLC up to date. No GOG Galaxy client needed.
@@ -338,6 +341,7 @@ Every command has `--help`. The common ones:
 | Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
 | Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |
 | Import a prefix or Heroic games | `wineo import` |
+| Import emulated games | `wineo import roms ~/Games/roms/snes --emulator retroarch --all` |
 | Import installed Steam games | `wineo import steam --all` |
 | Preview `new` or `import` without changing anything | `wineo new -n hades --exe ~/Games/Hades/Hades.exe --dry-run`, `wineo import heroic --all --dry-run` |
 | Copy, snapshot, or go portable | `wineo clone`, `wineo snapshot`, `wineo portable` |
@@ -358,6 +362,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [Native Linux games](docs/native.md)
 - [Steam games](docs/steam.md)
 - [GOG games](docs/gog.md)
+- [Emulated games](docs/emulators.md)
 - [Launch options](docs/launch-options.md)
 - [Hooks](docs/hooks.md)
 - [Downloads and imports](docs/downloads-and-imports.md)

@@ -74,6 +74,7 @@ fn opened(app: &App) -> &'static str {
         Some(Page::Heroic(_)) => "heroic",
         Some(Page::Steam(_)) => "steam",
         Some(Page::Gog(_)) => "gog",
+        Some(Page::Emulated(_)) => "emulated",
         _ => "other",
     }
 }
@@ -131,9 +132,9 @@ fn tab_walks_the_choices_after_the_controls_it_walked_before() {
     (now, tree) = tab(&mut app, tree, true);
     assert!(now.is_empty());
     (now, tree) = tab(&mut app, tree, true);
-    assert_eq!(now, [Id::new(CHOICE_IDS[4])]);
+    assert_eq!(now, [Id::new(CHOICE_IDS[5])]);
     (now, _) = tab(&mut app, tree, true);
-    assert_eq!(now, [Id::new(CHOICE_IDS[3])]);
+    assert_eq!(now, [Id::new(CHOICE_IDS[4])]);
 }
 
 #[test]
@@ -144,6 +145,7 @@ fn the_number_keys_still_choose_with_a_row_focused() {
         ("3", "heroic"),
         ("4", "steam"),
         ("5", "gog"),
+        ("6", "emulated"),
     ] {
         // Focus on another choice than the one the key picks.
         let (mut app, tree) = add_at(2);

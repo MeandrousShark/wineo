@@ -747,12 +747,12 @@ obs_dir() { # DIR SPEC_RELEASE DIRTY CODE JOB_SRCMD5 JOB_CODE [REPO_STATE] [SRCM
     echo "<directory name=\"wineo\" rev=\"3\"$attribute/>" >"$dir/directory"
     {
         echo '<resultlist state="x">'
-        for target in openSUSE_Tumbleweed 16.0 15.6; do
+        for target in openSUSE_Tumbleweed 16.1 16.0 15.6; do
             echo "<result repository=\"$target\" arch=\"x86_64\" code=\"$repo_state\" state=\"$repo_state\" dirty=\"$3\"><status package=\"wineo\" code=\"$4\"/></result>"
         done
         echo '</resultlist>'
     } >"$dir/result"
-    for target in openSUSE_Tumbleweed 16.0 15.6; do
+    for target in openSUSE_Tumbleweed 16.1 16.0 15.6; do
         attribute=''
         [[ -z $5 ]] || attribute=" srcmd5=\"$5\""
         echo "<jobhistlist><jobhist package=\"wineo\" srcmd5=\"old\" code=\"failed\"/><jobhist package=\"wineo\"$attribute code=\"$6\"/></jobhistlist>" >"$dir/jobhistory-$target"
@@ -1512,7 +1512,7 @@ check "OBS published: exit $rc, not 0: $(tail -n 3 "$out")" test "$rc" -eq 0
 check "OBS published: not skipped" said "^  obs +already published \($version-1\)"
 check "OBS published: it read another endpoint" \
     called osc api '/build/home:meandrousshark/_result?package=wineo&arch=x86_64'
-for target in openSUSE_Tumbleweed 16.0 15.6; do
+for target in openSUSE_Tumbleweed 16.1 16.0 15.6; do
     check "OBS published: job history of $target wasn't read" \
         called osc api "/build/home:meandrousshark/$target/x86_64/_jobhistory?package=wineo&limit=5"
 done
@@ -1529,7 +1529,7 @@ new_scenario
 obs_dir "$STUB/obs" 1 false failed abc failed
 publish_real --only obs
 check "OBS failed: exit $rc, not 1" test "$rc" -eq 1
-check "OBS failed: the reason is missing" said "already failed to build on openSUSE_Tumbleweed 16.0 15.6"
+check "OBS failed: the reason is missing" said "already failed to build on openSUSE_Tumbleweed 16.1 16.0 15.6"
 if committed; then fail "OBS failed: it committed again"; else pass; fi
 
 # An older revision on the server: upload, wait, and the new one builds.
@@ -3253,7 +3253,7 @@ check "a floor of 1.98 refuses the wrong ones" \
     test "$(pure targets_below_floor 1.98 | awk '{print $2}' | tr '\n' ' ')" = "jammy noble resolute stonking 15.6 "
 check "the targets aren't all there" \
     test "$(pure targets_of ppa | tr '\n' ' ')$(pure targets_of copr | tr '\n' ' ')$(pure targets_of obs | tr '\n' ' ')" = \
-    "jammy noble resolute stonking fedora-43 fedora-44 fedora-45 openSUSE_Tumbleweed 16.0 15.6 "
+    "jammy noble resolute stonking fedora-43 fedora-44 fedora-45 openSUSE_Tumbleweed 16.1 16.0 15.6 "
 
 check "tag_run picks the wrong run" test "$(pure tag_run abc <<<'[
     {"databaseId":1,"headSha":"abc","conclusion":"failure"},

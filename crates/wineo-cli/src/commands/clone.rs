@@ -128,7 +128,7 @@ fn print_review(reviewed: &CloneInspection, verbose: bool) {
         println!("  source path in settings: {path} (check after cloning)");
     }
     for path in &reviewed.external_target_paths {
-        println!("  external target path: {path} (kept in place)");
+        println!("  external path: {path} (kept in place)");
     }
     transfer::print_external_links(
         "external",

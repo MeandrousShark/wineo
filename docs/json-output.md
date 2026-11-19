@@ -1,7 +1,8 @@
 # JSON output
 
-`status`, `list`, `validate`, `stats`, `tag`, `import gog --list`, and
-`update --check` accept `--json` for scripting:
+`status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
+`import roms --list`, `import roms --emulators`, and `update --check`
+accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -11,6 +12,8 @@ wineo validate --json
 wineo stats --json
 wineo tag add co-op hades celeste --json
 wineo import gog --list --json
+wineo import roms ~/Games/roms/gamecube --emulator dolphin --list --json
+wineo import roms --emulators --json
 wineo update --check --json
 ```
 
@@ -97,6 +100,20 @@ nullable `last_played`. See [Playtime](stats.md).
 A [native environment](native.md) has no runner or prefix, so `runner` and
 `prefix` are `null`, along with `gameid`, `store`, `dxvk`, and `vkd3d`.
 
+An [emulated game](native.md#emulated-games), a native environment with an
+`[emulation]` table, keeps `"kind": "native"` and adds `emulation`:
+
+```json
+"emulation": {
+  "emulator": "dolphin",
+  "system": "gamecube",
+  "rom": "~/Games/roms/gamecube/Metroid Prime (USA).rvz"
+}
+```
+
+`system` is `null` when the table has none, and `rom` is the path as the
+config holds it. Other environments leave `emulation` out.
+
 A [Steam game](steam.md) has `"kind": "proxied"` and more fields:
 `launcher` (`steam`), `app_id`, `install`, one of `installed`, `updating`,
 `installing`, `install_queued`, `uninstalling`, `not_installed`,
@@ -130,9 +147,9 @@ Nameless `status --json` and `list --json` return the same envelope:
 ```
 
 Each item in `environments` contains the common status fields shown above,
-including `hooks`, plus `kind`, which is `null` for a config that can't be read, and a Steam
+including `hooks`, plus `kind`, which is `null` for a config that can't be read, a Steam
 game's `launcher`, `app_id`, `install`, `install_progress`, `install_problem`,
-and `started_by`.
+and `started_by`, and an emulated game's `emulation`.
 `list` includes every environment whose runtime status can be read, and
 `list --tag` only those with every given tag. Nameless `status` includes
 running, busy, or unresolved environments. Both sort by environment name.
@@ -289,6 +306,77 @@ update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
 
+## Emulated games
+
+`wineo import roms PATH --list --json` lists the games an
+[emulated games import](emulators.md) would find:
+
+```json
+{
+  "emulator": "dolphin",
+  "core": null,
+  "games": [
+    {
+      "title": "Metroid Prime",
+      "file": "Metroid Prime (USA).rvz",
+      "rom": "/home/me/Games/roms/gamecube/Metroid Prime (USA).rvz",
+      "system": "gamecube",
+      "ambiguous": true,
+      "state": "imported",
+      "environment": "metroid-prime",
+      "reason": null
+    }
+  ],
+  "skipped": []
+}
+```
+
+`emulator` is the emulator's id, or `custom` with `--custom`. `core` is the
+RetroArch core's id, otherwise `null`. `file` is the game's file or folder
+name, and `rom` its full path. `system` is `null` when it isn't known;
+`ambiguous` is `true` when the file type doesn't say which system the game
+is for, and then `system` is what `--system` gave, or `null`. `state` is
+`new`, `imported` (with `environment`), or `unusable` (with `reason`, like
+a file name that isn't valid UTF-8). `skipped` lists the subfolders that
+couldn't be read.
+
+`wineo import roms --emulators --json` lists the emulators wineo found:
+
+```json
+{
+  "emulators": [
+    {
+      "id": "retroarch",
+      "name": "RetroArch",
+      "installs": [
+        {
+          "kind": "path",
+          "exe": "retroarch",
+          "path": "/usr/bin/retroarch",
+          "app": null,
+          "cores": [
+            {
+              "id": "snes9x",
+              "name": "Nintendo - SNES / SFC (Snes9x)",
+              "file": "/usr/lib/libretro/snes9x_libretro.so",
+              "system": "snes",
+              "extensions": ["smc", "sfc", "swc", "fig", "bs", "st"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Only emulators wineo found are listed. `kind` is `path` or `flatpak`;
+`exe` is the program name for a `path` install, and `app` the Flatpak's
+id for a `flatpak` one, each `null` otherwise. `path` is the program or
+the Flatpak's export script. Only RetroArch's installs have `cores`. A
+core's `system` is `null` when wineo doesn't know it, and `extensions` is
+`null` for a core without an `.info` file, which takes any file.
+
 ## Validate
 
 `wineo validate --json` reports every problem and never asks, even at a
@@ -349,7 +437,7 @@ The codes are stable:
 | `environment_config` | `environment_config_invalid`, `title_invalid` |
 | `wine` | `runner_missing`, `build_missing`, `prefix_missing`, `prefix_refused`, `prefix_nested`, `winetricks_missing`, `winetricks_unavailable` |
 | `target` | `exe_missing`, `cwd_missing`, `gamemode_missing`, `gamescope_missing`, `mangohud_missing`, `wayland_unsupported` |
-| `native_target` | `native_exe_invalid` |
+| `native_target` | `native_exe_invalid`, `emulated_rom_missing`, `emulated_emulator_missing` |
 | `environment` | `target_ambiguous` |
 | `runtime` | `lost_run`, `installer_unresolved`, `snapshot_restore_interrupted`, `state_dir_stray`, `stats_stray` |
 | `desktop` | `desktop_entry_stray`, `desktop_outdated`, `desktop_portable` |

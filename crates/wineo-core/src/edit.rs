@@ -46,6 +46,29 @@ pub fn set(doc: &mut DocumentMut, scope: Scope, key: &str, raw: &str) -> Result<
     }
 }
 
+/// Refuses emulation keys that would start an `[emulation]` table without
+/// both its emulator and rom, which is what the table needs to read back.
+pub fn check_new_emulation(doc: &DocumentMut, set: &[(&str, &str)]) -> Result<(), EditError> {
+    if doc.get("emulation").is_some() {
+        return Ok(());
+    }
+    let Some((first, _)) = set.iter().find(|(key, _)| key.starts_with("emulation.")) else {
+        return Ok(());
+    };
+    let missing: Vec<String> = ["emulator", "rom"]
+        .iter()
+        .map(|field| format!("emulation.{field}"))
+        .filter(|key| !set.iter().any(|(given, _)| given == key))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(EditError::Refused(format!(
+        "{first} needs {} in the same set.",
+        missing.join(" and ")
+    )))
+}
+
 /// Removes `key`. Returns Ok(false) if the key is valid but wasn't present.
 pub fn unset(doc: &mut DocumentMut, scope: Scope, key: &str) -> Result<bool, EditError> {
     let root = doc.as_table_mut();
@@ -133,12 +156,24 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
                 let table = ensure_hooks(root, key)?;
                 store_hooks_field(table, field, value);
                 Ok(())
+            } else if let Some(field) = key.strip_prefix("emulation.") {
+                if !EMULATION_FIELDS.contains(&field) {
+                    return Err(EditError::UnknownKey(key.to_owned()));
+                }
+                // Not checked against the built-ins, so an id from a newer
+                // wineo can still be set here.
+                let value = parse_string_value(key, raw)?;
+                let table = ensure_table(root, "emulation", "emulation", false)?;
+                store_value(table, field, value);
+                Ok(())
             } else {
                 Err(EditError::UnknownKey(key.to_string()))
             }
         }
     }
 }
+
+const EMULATION_FIELDS: [&str; 3] = ["emulator", "system", "rom"];
 
 fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
     match key {
@@ -204,6 +239,12 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
         }
         "gamemode" | "wayland" | "mangohud" | "external_runners" => {
             store_value(root, key, Value::from(parse_bool(key, raw)?));
+            Ok(())
+        }
+        "retroarch.quit_with_game" => {
+            let value = Value::from(parse_bool(key, raw)?);
+            let table = ensure_table(root, "retroarch", "retroarch", false)?;
+            store_value(table, "quit_with_game", value);
             Ok(())
         }
         "defaults.prefix_root"
@@ -527,7 +568,11 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
     match key {
         "prefix" | "runner" | "gamemode" | "wayland" | "mangohud" | "gamescope" | "hooks"
         | "gameid" | "tags" | "winetricks" | "store" | "dxvk" | "vkd3d" | "title" | "desktop"
-        | "gog_id" => Ok(root.remove(key).is_some()),
+        | "gog_id" | "emulation" => Ok(root.remove(key).is_some()),
+        "emulation.system" => unset_field(root, "emulation", "emulation", "system"),
+        "emulation.emulator" | "emulation.rom" => Err(EditError::Refused(format!(
+            "{key} can't be unset on its own, since [emulation] needs it. Unset emulation to remove the table."
+        ))),
         "arch" => Err(read_only_arch()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -559,6 +604,7 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.games_root" => unset_field(root, "defaults", "defaults", "games_root"),
         "gog.language" => unset_field(root, "gog", "gog", "language"),
         "art.fetch" => unset_field(root, "art", "art", "fetch"),
+        "retroarch.quit_with_game" => unset_field(root, "retroarch", "retroarch", "quit_with_game"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;

@@ -351,6 +351,32 @@ fn gamescope_and_mangohud_make_it_a_game() {
     }
 }
 
+#[test]
+fn an_emulated_game_is_a_game_and_other_native_programs_are_not() {
+    let fixture = Fixture::new();
+    let path = fixture.paths.environment_config("prime");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let entry = |emulation: &str| {
+        fs::write(
+            &path,
+            format!(
+                "kind = 'native'\n{emulation}[targets.prime]\nexe = '/bin/true'\ndesktop = true\n"
+            ),
+        )
+        .unwrap();
+        let environment = Environment::load(&fixture.paths, "prime").unwrap();
+        reconcile_native(&fixture.paths, &GlobalConfig::default(), &environment).unwrap();
+        fs::read_to_string(entry_path(&fixture.paths, "prime", "prime")).unwrap()
+    };
+    let plain = entry("");
+    assert!(
+        plain.contains("\nCategories=Utility;Software;\n"),
+        "{plain}"
+    );
+    let emulated = entry("[emulation]\nemulator = 'dolphin'\nrom = '/roms/prime.rvz'\n");
+    assert!(emulated.contains("\nCategories=Game;\n"), "{emulated}");
+}
+
 // One target with a bad exe must not stop the others, since reconciliation
 // runs on every launch and a launch of `good` has nothing to do with it.
 #[test]

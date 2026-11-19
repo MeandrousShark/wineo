@@ -25,11 +25,28 @@
 #   art/NAME/                       posters (grid.png and art.toml)
 #   prefixes/NAME                   minimal fake Wine prefixes
 #   games/NAME.sh                   native stubs
+#   roms/NAME.EXT                   empty fake ROMs for the emulated games
 #   runners/fake/bin/               a fake Wine runner named "fake"
 #   installers/setup.exe            a fake installer the fake runner runs
 #   import/legacy-app/              a standalone fake prefix for Import prefix
 #   prefixes/adopt-me               a prefix with no environment, for New to adopt
-# Every path inside a config is relative to DIR, so the folder can move.
+#   host/                           a throwaway HOME for Add emulated games (below)
+# Every path inside a config is relative to DIR, so the folder can move,
+# except one ROM argument under host/ (below).
+#
+# Add emulated games refuses a portable folder, so its fakes live in DIR/host,
+# a throwaway HOME with its own XDG folders, opened without
+# WINEO_PORTABLE_DIR (the command is printed at the end):
+#   host/bin/                       fake dolphin-emu, duckstation-qt, retroarch
+#   host/config/retroarch/cores/    two fake RetroArch cores that both play .sfc
+#   host/config/wineo/environments/ one game already imported from host/roms
+#   host/roms/                      the ROM folders, one per emulator
+# The imported game's ROM argument is absolute, so DIR/host can't be moved
+# after it's written. The fakes come first on PATH, and wineo takes the first
+# match, so a real emulator with the same command name is hidden behind its
+# fake. Real emulators under other command names, system-wide Flatpaks, and
+# the distro cores in /usr/lib*/libretro still show up beside them. The
+# SteamGridDB key still comes from the real keyring.
 #
 # Each game below has a `# source:` comment saying what it covers, and the
 # summary table printed at the end is built from those comments, so the two
@@ -69,6 +86,10 @@ must be an empty folder, and its parent must exist; nothing is deleted or
 overwritten. Then run:
 
   env WINEO_PORTABLE_DIR=DIR wineo-gui
+
+DIR/host is a throwaway HOME for Add emulated games, which refuses a portable
+folder. Open it with the command printed at the end, which sets HOME, the XDG
+folders, and PATH to DIR/host. DIR/host can't be moved afterwards.
 
 Options:
   -h, --help   show this help
@@ -238,6 +259,8 @@ daily() {
 #   art=0..7                 a poster from the embedded list
 #   noprefix                 leave a Wine game's prefix unbuilt
 #   run=sleep                a native stub that sleeps 600 s instead of exiting
+#   emulator=ID system=ID rom=FILE   an emulated native game's [emulation]
+#                            table; FILE is made empty under roms/
 #   target=TEXT              the default target's desktop entry name, which the
 #                            card shows when there's no title (no quote or backslash)
 add() {
@@ -245,6 +268,7 @@ add() {
     shift
     local kind=wine title='' tags='' gog_id='' heroic_id='' store='' app_id='' added=''
     local sessions='' imported='' art='' prefix=1 favorite=0 hidden=0 run='' target=''
+    local emulator='' system='' rom=''
     local arg tag first
     for arg in "$@"; do
         case $arg in
@@ -261,6 +285,9 @@ add() {
             art=*) art=${arg#art=} ;;
             run=*) run=${arg#run=} ;;
             target=*) target=${arg#target=} ;;
+            emulator=*) emulator=${arg#emulator=} ;;
+            system=*) system=${arg#system=} ;;
+            rom=*) rom=${arg#rom=} ;;
             noprefix) prefix=0 ;;
             favorite) favorite=1 ;;
             hidden) hidden=1 ;;
@@ -272,6 +299,9 @@ add() {
     [[ $title != *[\"\\]* ]] || die "bug: $name's title needs TOML escaping"
     [[ $target != *[\"\\]* ]] || die "bug: $name's target name needs TOML escaping"
     [[ -z $target || $kind != steam ]] || die "bug: $name is a Steam game, which has no targets"
+    [[ -z $emulator || $kind == native ]] || die "bug: $name is emulated, which only a native game can be"
+    [[ -z $emulator || -n $rom ]] || die "bug: $name is emulated but has no rom"
+    [[ $rom != *[\"\\/]* ]] || die "bug: $name's rom must be a plain file name"
     games=$((games + 1))
 
     {
@@ -311,6 +341,15 @@ add() {
         if [[ -n $store ]]; then
             echo "store = \"$store\""
         fi
+        if [[ -n $emulator ]]; then
+            echo
+            echo '[emulation]'
+            echo "emulator = \"$emulator\""
+            if [[ -n $system ]]; then
+                echo "system = \"$system\""
+            fi
+            echo "rom = \"roms/$rom\""
+        fi
         case $kind in
             wine)
                 echo
@@ -341,6 +380,11 @@ add() {
         printf 'WINE REGISTRY Version 2\n' >"$prefix_dir/userdef.reg"
         ln -s ../drive_c "$prefix_dir/dosdevices/c:"
         : >"$prefix_dir/drive_c/Games/$name/game.exe"
+    fi
+
+    if [[ -n $rom ]]; then
+        mkdir -p "$root/roms"
+        : >"$root/roms/$rom"
     fi
 
     if [[ $kind == native ]]; then
@@ -492,6 +536,28 @@ add native-stellar-odyssey kind=native favorite hidden added=2026-08-30T20:00:00
 # real HOME, nowhere else.
 add long-running-test kind=native tags=game title="Running Test (sleeps 10 min)" run=sleep \
     added=2026-11-05T23:00:00Z
+
+# Emulated games, written by hand as plan 0068 step 1 has no import yet. Each
+# is a native stub with an [emulation] table and an empty fake ROM, so none
+# needs a real emulator. They say Play without a game tag, and their system
+# is their only tag.
+
+# source: Dolphin (emulated); tags: one, the system (gamecube); says Play with no game tag; art
+add emu-metroid-prime kind=native emulator=dolphin system=gamecube rom="Metroid Prime (USA).rvz" \
+    title="Metroid Prime" tags=gamecube added=2026-11-12T18:00:00Z art=5 \
+    sessions="2026-11-12T19:00:00Z@3600"
+
+# source: Dolphin (emulated); tags: one, the system (wii); the second Dolphin game, so grouping by Source puts both together and grouping by tag splits them
+add emu-mario-galaxy kind=native emulator=dolphin system=wii rom="Super Mario Galaxy (USA).wbfs" \
+    title="Super Mario Galaxy" tags=wii added=2026-11-12T18:05:00Z
+
+# source: RetroArch (emulated); tags: one, the system (snes)
+add emu-super-metroid kind=native emulator=retroarch system=snes rom="Super Metroid (Japan, USA).sfc" \
+    title="Super Metroid" tags=snes added=2026-11-12T18:10:00Z
+
+# source: Emulated (an emulator id this wineo doesn't know, as a newer wineo or a hand edit writes); tags: one, the system (switch)
+add emu-unknown-emulator kind=native emulator=someday-emu system=switch rom="Hollow Knight.nsp" \
+    title="Hollow Knight (Unknown Emulator)" tags=switch added=2026-11-12T18:15:00Z
 
 # Plain Wine games (Windows).
 
@@ -711,6 +777,101 @@ add cf-badge-poster title="Badges On A Poster" tags=cf-test favorite added=2026-
 # source: Windows; favorite; coverflow: the favorite star badge on a name card (no poster), and a card to mark with Space
 add cf-badge-card title="Badges On A Name Card" tags=cf-test favorite added=2026-11-10T09:24:00Z
 
+# Add emulated games (plan 0068 step 6). Imports refuse a portable folder, so
+# these live in DIR/host, a throwaway HOME. The one absolute path, the
+# imported game's ROM argument, is where DIR will be after the final rename.
+# Each ROM below says which case it covers.
+host=$root/host
+final_host=$(realpath -- "$parent")/$base/host
+# tekken-3.toml holds the path in a TOML string, which none of these can be in.
+[[ $final_host != *[\"\\[:cntrl:]]* ]] ||
+    die "the folder's path can't hold a quote, backslash, or control character"
+mkdir -p "$host/bin" "$host/config/retroarch/cores" "$host/config/wineo/environments" \
+    "$host/data" "$host/state" "$host/cache"
+
+# The fake emulators log what they were given and stay up for a minute, so
+# Play shows a running game and its playtime, then exit by themselves. They
+# find their log beside their own folder, so nothing in them names DIR.
+for fake in dolphin-emu duckstation-qt retroarch; do
+    cat >"$host/bin/$fake" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "${0##*/} $*" >>"$(dirname -- "$0")/../emulators.log"
+sleep 60
+FAKE
+    chmod +x "$host/bin/$fake"
+done
+
+# Two cores that both play .sfc, so the core page asks. Their info files sit
+# beside them, where wineo looks first.
+for core in snes9x:Snes9x bsnes:bsnes; do
+    id=${core%%:*}
+    : >"$host/config/retroarch/cores/${id}_libretro.so"
+    printf 'display_name = "%s"\nsystemid = "super_nes"\nsupported_extensions = "smc|sfc"\n' \
+        "${core#*:}" >"$host/config/retroarch/cores/${id}_libretro.info"
+done
+
+rom() {
+    mkdir -p "$(dirname -- "$host/roms/$1")"
+    printf '%s' "${2:-}" >"$host/roms/$1"
+}
+
+# DuckStation's folder covers the scan rules.
+# rom: a cue with its bin: one tile, Final Fantasy VII; the bin isn't listed
+rom "duckstation/Final Fantasy VII (USA).cue" 'FILE "Final Fantasy VII (USA).bin" BINARY
+  TRACK 01 MODE2/2352
+    INDEX 01 00:00:00
+'
+rom "duckstation/Final Fantasy VII (USA).bin"
+# rom: an m3u with its discs in a subfolder: one tile, Metal Gear Solid; neither disc is listed
+rom "duckstation/Metal Gear Solid (USA).m3u" 'discs/Metal Gear Solid (USA) (Disc 1).chd
+discs/Metal Gear Solid (USA) (Disc 2).chd
+'
+rom "duckstation/discs/Metal Gear Solid (USA) (Disc 1).chd"
+rom "duckstation/discs/Metal Gear Solid (USA) (Disc 2).chd"
+# rom: bracketed notes dropped from the title: Crash Bandicoot
+rom "duckstation/Crash Bandicoot (USA) (Rev 1) [!].chd"
+# rom: two files that clean to one title: two Spyro tiles, each noting its file name
+rom "duckstation/Spyro the Dragon (USA).chd"
+rom "duckstation/Spyro the Dragon (Europe).chd"
+# rom: already imported as tekken-3 (below): dimmed, "Already imported as tekken-3"
+rom "duckstation/Tekken 3 (USA).chd"
+# rom: not a game DuckStation plays: not listed
+rom "duckstation/readme.txt" 'Not a game.'
+
+# Dolphin's folder: an .rvz could be GameCube or Wii, so the system page asks.
+# rom: system page, then tagged with the system picked
+rom "dolphin/Metroid Prime (USA).rvz"
+# rom: always gamecube, by its .gcm
+rom "dolphin/The Legend of Zelda - The Wind Waker (USA).gcm"
+# rom: always wii, by its .wbfs
+rom "dolphin/Super Mario Galaxy (USA).wbfs"
+
+# RetroArch's folder: both cores play it, so the core page asks.
+# rom: tagged snes, from the core's systemid
+rom "snes/Super Metroid (Japan, USA).sfc"
+# rom: the second SNES game
+rom "snes/Chrono Trigger (USA).sfc"
+
+# The already-imported game, as an import would have written it: `rom` with
+# home as `~`, and the argument absolute, since launches don't expand `~`.
+cat >"$host/config/wineo/environments/tekken-3.toml" <<TEKKEN
+schema_version = 1
+kind = "native"
+title = "Tekken 3"
+tags = ["ps1"]
+
+[emulation]
+emulator = "duckstation"
+system = "ps1"
+rom = "~/roms/duckstation/Tekken 3 (USA).chd"
+
+[targets.tekken-3]
+exe = "duckstation-qt"
+args = ["-batch", "-fullscreen", "--", "$final_host/roms/duckstation/Tekken 3 (USA).chd"]
+default = true
+name = "Tekken 3"
+TEKKEN
+
 # Summary: the table comes from the `# source:` comment above each add call.
 summary=$(awk '
     /^# source:/ { note = substr($0, 11); next }
@@ -816,3 +977,11 @@ echo "Name                         Covers"
 echo "$summary"
 echo
 printf 'Open it with: env WINEO_PORTABLE_DIR=%q wineo-gui\n' "$final"
+echo
+echo "Add emulated games refuses a portable folder. Try it in the throwaway HOME:"
+# $PATH is meant literally, for the shell the command is pasted into.
+# shellcheck disable=SC2016
+printf 'env HOME=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_STATE_HOME=%q XDG_CACHE_HOME=%q PATH=%q:"$PATH" wineo-gui\n' \
+    "$final/host" "$final/host/config" "$final/host/data" "$final/host/state" \
+    "$final/host/cache" "$final/host/bin"
+echo "Its ROM folders are in $final/host/roms."

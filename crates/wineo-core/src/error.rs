@@ -367,6 +367,10 @@ pub enum Error {
     #[error("{0}")]
     InvalidEnv(String),
 
+    /// Shown as is: why an emulator's command line couldn't be built.
+    #[error("{0}")]
+    Emulator(String),
+
     #[error("{0}")]
     NoPrefix(NoPrefix),
 

@@ -135,8 +135,9 @@ highlighted and its tooltip shows the text.
 the card), Last played, Playtime, Date added, Source, or Tags. Picking one
 starts it in its natural direction: Name, Source, and Tags A to Z, Last
 played most recent first, Playtime most played first, and Date added newest
-first. Source goes by the label a game's list row shows, like GOG, Steam, or
-Windows. Tags compares each game's tags in A to Z order, one by one, so
+first. Source goes by the label a game's list row shows, like GOG, Steam,
+Windows, or an [emulated game's](native.md#emulated-games) emulator, like
+Dolphin. Tags compares each game's tags in A to Z order, one by one, so
 `co-op, rpg` comes before `rpg`; untagged games come last either way, as do
 games with no source. The arrow button next to it
 flips the direction, and its tooltip names the order you have, like "Most
@@ -190,7 +191,8 @@ grouped the same way.
 ### Filters and hidden games
 
 **Filters** opens a popup with the stores your games came from (Steam,
-GOG, Epic, Amazon), the platforms they run on (Native, Windows), your
+GOG, Epic, Amazon), the platforms they run on (Native, Windows, and the
+emulators your emulated games use, with Emulated for a custom one), your
 tags, **Show hidden**, and **Clear filters**, listing only what's in your
 library. Within each group, a game has to match any of the checked
 entries, and with checks in more than one group, it has to match each of
@@ -343,6 +345,21 @@ it again to flip the direction, and a third time to go back to sorting by
 title. Date added stays in the Sort menu. As the window or the panel
 narrows the list, columns leave from the right: Tags, then Source, Last
 played, and Playtime. Title and State always stay.
+
+Drag the divider on the left of State, Playtime, Last played, Source, or
+Tags to make that column narrower or wider; Title takes up the
+difference. The dividers show while the pointer is on the header, and the
+column a divider resizes lights up as you point at it. A column can't widen once Title is down to its minimum, so a
+drag never pushes a column out, and narrowing can bring back a column the
+list had dropped when you let go. Double-click a divider to put its column
+back to its default width. When the list only has room for Title and
+State, a widened State is drawn narrower, down to its default width, so
+titles stay readable; it goes back to your width when there's room. The
+widths are kept in `library.toml`
+(`[view.list_columns]`), one setting for every preset, and read when wineo
+starts. A drag that gets cut short keeps the width it had reached: the
+window losing focus, closing, or hiding, a switch to another layout, or a
+dialog opening over the Library.
 
 Rows work like cards: click to select, double-click to play, right-click
 for the menu, the arrow keys to move, and the same marking, Tags bar,
@@ -511,8 +528,8 @@ out. Closing takes effect immediately, including stopping log follows.
 Switching cards while open changes the details without replaying the entrance.
 
 - **Play** or **Launch** starts the environment's default target. The label
-  is Play for the exact `game` tag and Launch otherwise, including native
-  applications and games. New environments from the built-in `gaming`
+  is Play for the exact `game` tag or an emulated game, and Launch otherwise,
+  including native applications and games. New environments from the built-in `gaming`
   template receive the tag; existing environments can add it in Settings.
   An environment with more than one target has a **Launch target:** dropdown.
 - **Stop** stops it, like `wineo stop`. If it's still running 3 seconds
@@ -532,7 +549,9 @@ install log, labeled **Install log**; once the game runs, **Log** shows its
 **Game output** instead. **Cancel** stops the start cleanly, and pressing it again as
 **Force stop** kills it right away, like pressing Ctrl+C twice in the CLI.
 Creation and imports work the same way: **Force stop** replaces **Cancel**
-only after you cancel.
+only after you cancel. A problem the start can work around, like
+RetroArch's quit settings that couldn't be written, shows as a `Warning:`
+line in the panel, one per problem, until the next start.
 
 A [Steam game](steam.md) starts through Steam, so the panel says
 **Waiting for Steam...** until the game appears, with **Stop** available.
@@ -890,7 +909,8 @@ Clone) in a strip pinned at the bottom, so both stay reachable in a short
 window while the content scrolls between them.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
-**Import from Heroic**, **Import from Steam**, or **Import from GOG**, keeping the library visible behind it. The same
+**Import from Heroic**, **Import from Steam**, **Import from GOG**, or
+**Add emulated games**, keeping the library visible behind it. The same
 choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
@@ -1023,6 +1043,23 @@ prompt, Cancel, and closing the window during work behave like Heroic
 import; a cancel after the move keeps it and skips what's left of the
 playtime and art. In a portable folder the page says GOG games live in the
 host library.
+
+**Add emulated games** imports games that run in an emulator, like `wineo
+import roms` (see [Emulated games](emulators.md)). It lists the emulators
+wineo found, then **Other...** for one wineo knows that runs from a file,
+like an AppImage, and **Custom** for any other emulator, with its command,
+arguments, file types, and an optional system. A Windows program is refused
+there as it is in the CLI. Next comes the folder of games, or a single
+game's file. For RetroArch, the core page lists the installed cores that
+play the files, and is skipped when only one does. When some files could
+belong to more than one system, a page asks which. The games then show as a
+grid with the same selection controls as Heroic import, already imported
+ones dimmed, with **Start in fullscreen** when the emulator has it and the
+SteamGridDB art checkbox. The review lists the Source, the system `Tags`,
+the emulator, and the fullscreen, desktop, and art choices, and the finish
+page counts the results like the CLI. Back from the finish page selects the
+game's card when you imported one game. In a portable folder it refuses:
+`Emulated games can't be imported into a portable folder.`
 
 New environment has no art step. With a SteamGridDB key and at least one
 kind on under **Art to fetch**, Details shows **Fetch art using the top
@@ -1166,6 +1203,9 @@ both. Each tab remembers how far it's scrolled while the page is open.
   the default locations for the current XDG or portable setup.
 - **Runs:** how long `stop` waits before killing a game, and how big a log
   gets.
+- **RetroArch:** **Quit RetroArch when its game closes** (on by default),
+  so a RetroArch game's playtime ends when you close the game. See
+  [Quitting with the game](native.md#quitting-with-the-game) for the trade-off.
 - **Desktop:** **Show a tray icon** (on by default), **Closing the
   window** (**Quit**, the default, or **Keep running in the tray**), **When
   something starts** (**Keep the window open**, the default, or **Hide to
@@ -1349,9 +1389,10 @@ Heroic and GOG lists, and the version picker:
 | Tab, Shift+Tab | Walk through the rows with the dialog's other controls |
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
-The first row has focus when a list appears, and **Add**'s and New's 1 to 5
-keys still work with a row focused. On New's choice page, Ctrl+Enter opens
-the focused row, since the page has nothing else to submit, and coming back
+The first row has focus when a list appears, and **Add**'s 1 to 6 and New's
+1 to 5 keys still work with a row focused. On New's choice page and the
+emulated import's emulator, core, and system pages, Ctrl+Enter opens the
+focused row, since those pages have nothing else to submit, and coming back
 from Details lands on the row you picked. Holding a number key, Esc, or
 Ctrl+Enter in Add or an import flow acts once, so it can't run on through
 the following pages. The version picker has nothing to submit, so Ctrl+Enter
@@ -1380,7 +1421,7 @@ In an Add, import, or clone flow:
 | Key | Does |
 |---|---|
 | Ctrl+Enter | Activate the page's primary action |
-| 1 to 5 (Add choices) | Choose New, prefix import, Heroic, Steam, or GOG import |
+| 1 to 6 (Add choices) | Choose New, prefix import, Heroic, Steam, GOG, or emulated games import |
 | Arrow keys, Space (Heroic games) | Move between posters and toggle one |
 | Ctrl+A, Enter (Heroic games) | Select every eligible game, import the selection |
 | Tab, Shift+Tab | Move between controls |

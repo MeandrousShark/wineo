@@ -358,6 +358,129 @@ fn status_shows_the_kind_in_place_of_runner_and_prefix() {
 }
 
 #[test]
+fn status_and_list_json_carry_emulation_as_the_config_holds_it() {
+    let f = Fixture::new();
+    let game = f.script("dolphin.sh", GAME);
+    f.native(
+        "prime",
+        &format!(
+            "[emulation]\nemulator = \"dolphin\"\nrom = \"~/roms/Metroid Prime.rvz\"\n{}",
+            target(&game)
+        ),
+    );
+    f.native(
+        "sunshine",
+        &format!(
+            "[emulation]\nemulator = \"eden\"\nsystem = \"switch\"\nrom = \"/mnt/roms/a.nsp\"\n{}",
+            target(&game)
+        ),
+    );
+    f.native("dusk", &target(&game));
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+
+    let prime = serde_json::json!({
+        "emulator": "dolphin",
+        "system": null,
+        "rom": "~/roms/Metroid Prime.rvz",
+    });
+    let sunshine = serde_json::json!({
+        "emulator": "eden",
+        "system": "switch",
+        "rom": "/mnt/roms/a.nsp",
+    });
+    let status = |name: &str| -> serde_json::Value {
+        let output = f.run(&["status", name, "--json"]);
+        assert_success(&output);
+        serde_json::from_str(&stdout(&output)).unwrap()
+    };
+    let json = status("prime");
+    assert_eq!(json["kind"], "native");
+    assert_eq!(json["emulation"], prime);
+    assert_eq!(status("sunshine")["emulation"], sunshine);
+    for other in ["dusk", "app"] {
+        assert!(status(other).get("emulation").is_none(), "{other}");
+    }
+
+    let output = f.run(&["list", "--json"]);
+    assert_success(&output);
+    let list: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let environment = |name: &str| {
+        list["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|environment| environment["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(environment("prime")["emulation"], prime);
+    assert_eq!(environment("sunshine")["emulation"], sunshine);
+    for other in ["dusk", "app"] {
+        assert!(environment(other).get("emulation").is_none(), "{other}");
+    }
+}
+
+#[test]
+fn set_takes_emulation_on_native_only() {
+    let f = Fixture::new();
+    let game = f.script("dolphin.sh", GAME);
+    f.native("prime", &target(&game));
+    f.environment("app", "[targets.app]\nexe = \"app\"\n");
+    let rom = f.root.path().join("roms/Metroid Prime.rvz");
+    let rom_arg = format!("emulation.rom={}", rom.display());
+    let set = f.run_at_home(&[
+        "set",
+        "prime",
+        "emulation.emulator=dolphin",
+        "emulation.system=gamecube",
+        &rom_arg,
+    ]);
+    assert_success(&set);
+    let config = fs::read_to_string(f.config_dir().join("environments/prime.toml")).unwrap();
+    assert!(
+        config.contains(
+            "[emulation]\nemulator = \"dolphin\"\nsystem = \"gamecube\"\nrom = \"~/roms/Metroid Prime.rvz\"\n"
+        ),
+        "{config}"
+    );
+    assert_success(&f.run(&["set", "prime", "--unset", "emulation.system"]));
+    let refused = f.run(&["set", "prime", "--unset", "emulation.rom"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("emulation.rom can't be unset on its own"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_success(&f.run(&["set", "prime", "--unset", "emulation"]));
+    let config = fs::read_to_string(f.config_dir().join("environments/prime.toml")).unwrap();
+    assert!(!config.contains("emulation"), "{config}");
+    let alone = f.run(&["set", "prime", "emulation.system=gamecube"]);
+    assert!(!alone.status.success());
+    assert!(
+        stderr(&alone).contains(
+            "emulation.system needs emulation.emulator and emulation.rom in the same set."
+        ),
+        "{}",
+        stderr(&alone)
+    );
+    let config = fs::read_to_string(f.config_dir().join("environments/prime.toml")).unwrap();
+    assert!(!config.contains("emulation"), "{config}");
+
+    let before = fs::read_to_string(f.config_dir().join("environments/app.toml")).unwrap();
+    let wine = f.run(&["set", "app", "emulation.emulator=dolphin"]);
+    assert!(!wine.status.success());
+    assert!(
+        stderr(&wine).contains("app isn't a native environment, so it can't set emulation."),
+        "{}",
+        stderr(&wine)
+    );
+    assert_eq!(
+        fs::read_to_string(f.config_dir().join("environments/app.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn set_refuses_what_a_native_environment_cant_have() {
     let f = Fixture::new();
     let game = f.script("game.sh", GAME);
@@ -785,7 +908,7 @@ fn portable_copy_takes_a_native_config_and_lists_host_paths() {
     );
     assert!(
         out.contains(&format!(
-            "  external target path: targets.game.exe: {} (kept in place)\n",
+            "  external path: targets.game.exe: {} (kept in place)\n",
             game.display()
         )),
         "{out}"

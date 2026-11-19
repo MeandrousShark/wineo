@@ -21,6 +21,7 @@ mod checkup_work;
 mod chips;
 mod clock;
 mod collapse;
+mod column_resize;
 mod coverflow;
 mod coverflow_widget;
 mod details_fade;
@@ -217,6 +218,11 @@ pub(crate) struct App {
     poster_only: bool,
     /// Posters in a grid, one row per game, or coverflow's strip.
     layout: grid_motion::ViewLayout,
+    /// The list's column widths, from the saved view at start. The open
+    /// window keeps its own, whatever is saved after.
+    list_widths: list_view::Widths,
+    /// A list column's handle being dragged.
+    column_drag: Option<column_resize::Drag>,
     /// Coverflow's place along its strip.
     strip: coverflow::Strip,
     /// Coverflow's art was asked for during this update, and is requested
@@ -672,6 +678,8 @@ pub(crate) enum Message {
     /// Favoriting and hiding a card.
     Mark(library_actions::Event),
     Zoom(zoom::Event),
+    /// The list header's column handles.
+    Columns(column_resize::Event),
     Random(random_pick::Event),
     Layout(layout_switch::Event),
     Strip(coverflow::Event),
@@ -743,6 +751,8 @@ impl App {
             zooming: zoom::Zoom::default(),
             poster_only: false,
             layout: grid_motion::ViewLayout::Grid,
+            list_widths: list_view::Widths::default(),
+            column_drag: None,
             strip: coverflow::Strip::default(),
             strip_art_due: false,
             display_scale: 1.0,
@@ -932,6 +942,7 @@ impl App {
         app.coverflow_fullscreen = saved.view.coverflow_fullscreen;
         app.fullscreen = app.fullscreen_at_start();
         app.group = saved.view.group;
+        app.list_widths = list_view::Widths::saved(&saved.view.list_columns);
         app.layout_thumb.snap_to(layout_switch::stop(app.layout));
         app.query = saved.view.into();
         // The banner shows from the first frame, before the cards arrive.
@@ -1421,7 +1432,8 @@ impl App {
                 || matches!(message, Message::More(event) if event.is_input())
                 || matches!(message, Message::Search(event) if event.is_input())
                 || matches!(message, Message::Tags(event) if event.is_input())
-                || matches!(message, Message::Zoom(event) if event.is_input()))
+                || matches!(message, Message::Zoom(event) if event.is_input())
+                || matches!(message, Message::Columns(event) if event.is_input()))
         {
             return true;
         }
@@ -1484,6 +1496,7 @@ impl App {
             Message::Filter(event) => filter_control::update(self, event),
             Message::Mark(event) => library_actions::update(self, event),
             Message::Zoom(event) => zoom::update(self, event),
+            Message::Columns(event) => column_resize::update(self, event),
             Message::Random(event) => random_pick::update(self, event),
             Message::Layout(event) => layout_switch::update(self, event),
             Message::Strip(event) => coverflow::update(self, event),
@@ -1545,8 +1558,12 @@ impl App {
             Message::LaunchProgress(name, status) => self.launch_progress(name, status),
             Message::InstallPhase(name, installing) => self.install_phase(name, installing),
             Message::LaunchNote(name, note) => {
+                // A start clears the note, so these pile up for one launch only.
                 if self.selected.as_deref() == Some(&name) {
-                    self.panel_note = Some(note);
+                    self.panel_note = Some(match self.panel_note.take() {
+                        Some(earlier) => format!("{earlier}\n{note}"),
+                        None => note,
+                    });
                 }
                 Task::none()
             }
@@ -1758,7 +1775,9 @@ impl App {
                 // can't be trusted to still be down.
                 self.modifiers = keyboard::Modifiers::empty();
                 self.zooming.modifiers_changed(self.modifiers);
-                Task::none()
+                // The release may never arrive, so a drag ends here.
+                let zoom = self.end_zoom_drag();
+                Task::batch([zoom, self.end_column_drag()])
             }
             Message::Window(..) => Task::none(),
             Message::ThemeChanged(mode) => {
@@ -1996,8 +2015,24 @@ impl App {
         // and with every motion snapped a waiting scroll has nothing to do.
         let task = if self.panel_hidden() {
             let stopped = self.stop_zoom();
+            let resized = self.end_column_drag();
             let _ = self.motion_ended(false);
-            task.chain(stopped)
+            task.chain(stopped).chain(resized)
+        } else {
+            task
+        };
+        // The stop dialog's scrim covers the header without hiding the
+        // panel, and takes the release, so a column drag ends here too.
+        let task = if self.hook_stop_confirm.is_some() && self.column_drag.is_some() {
+            let resized = self.end_column_drag();
+            task.chain(resized)
+        } else {
+            task
+        };
+        // The zoom slider's release goes to the scrim too.
+        let task = if self.hook_stop_confirm.is_some() && self.zooming.dragging() {
+            let zoomed = self.end_zoom_drag();
+            task.chain(zoomed)
         } else {
             task
         };

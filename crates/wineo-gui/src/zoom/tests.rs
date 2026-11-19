@@ -1052,6 +1052,36 @@ fn closing_waits_for_an_unsaved_zoom() {
 }
 
 #[test]
+fn the_stop_dialog_ends_a_drag_and_saves_where_it_was() {
+    let (_root, mut app) = library(4);
+    let _ = zoom(&mut app, Event::Drag(150.0));
+    app.hook_stop_confirm = Some(app.cards[0].name.clone());
+    // The dialog opens in an update like any other, which this stands in for.
+    let _ = zoom(&mut app, Event::PointerLeft);
+    assert!(!app.zooming.dragging());
+    assert_eq!(app.view_writes.zoom, Some(150));
+    finish_write(&mut app);
+    assert_eq!(app.view_writes.zoom, None);
+    assert_eq!(wineo_core::library::load(&app.paths).view.zoom, 150);
+}
+
+#[test]
+fn losing_focus_ends_a_drag_and_saves_where_it_was() {
+    let (_root, mut app) = library(4);
+    let _ = zoom(&mut app, Event::Drag(150.0));
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
+    assert!(!app.zooming.dragging());
+    assert_eq!(app.view_writes.zoom, Some(150));
+    finish_write(&mut app);
+    assert_eq!(app.view_writes.zoom, None);
+    assert_eq!(wineo_core::library::load(&app.paths).view.zoom, 150);
+    // With no drag, losing focus writes nothing.
+    let (_root, mut app) = library(4);
+    let _ = app.update(app.window_event(iced::window::Event::Unfocused));
+    assert_eq!(app.view_writes.zoom, None);
+}
+
+#[test]
 fn the_toggle_saves_poster_only_and_boot_reads_it() {
     let (root, mut app) = library(4);
     assert!(!app.poster_only);

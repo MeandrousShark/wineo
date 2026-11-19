@@ -42,7 +42,7 @@ has_line() { grep -qxF -- "$2" "$1"; }
 
 # The openSUSE package for each entry in the README's Fedora list. Their
 # library packages carry the soname in the name, so these were looked up in
-# Tumbleweed, Leap 16.0, and Leap 15.6 (see check-repo-build.sh).
+# Tumbleweed, Leap 16.1, Leap 16.0, and Leap 15.6 (see check-repo-build.sh).
 suse_name() {
     case $1 in
         libX11) echo libX11-6 ;;

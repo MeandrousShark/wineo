@@ -763,3 +763,134 @@ fn an_off_table_becomes_a_table_that_keeps_its_comment() {
         );
     }
 }
+
+#[test]
+fn emulation_fields_set_and_keep_formatting() {
+    let original = "kind = \"native\" # mine\n\n[emulation] # where it came from\nemulator = 'dolphin' # built in\nrom = \"/roms/a.rvz\"\n\n[targets.a]\nexe = \"/bin/true\"\n";
+    let mut doc = parse(original);
+    // The same value in other quotes is a no-op that rewrites nothing.
+    set(
+        &mut doc,
+        Scope::Environment,
+        "emulation.emulator",
+        "dolphin",
+    )
+    .unwrap();
+    assert_eq!(doc.to_string(), original);
+    set(&mut doc, Scope::Environment, "emulation.system", "wii").unwrap();
+    set(&mut doc, Scope::Environment, "emulation.rom", "/roms/b.rvz").unwrap();
+    // Not checked against the built-ins, so a newer wineo's id goes in.
+    set(&mut doc, Scope::Environment, "emulation.emulator", "eden").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "kind = \"native\" # mine\n\n[emulation] # where it came from\nemulator = \"eden\" # built in\nrom = \"/roms/b.rvz\"\nsystem = \"wii\"\n\n[targets.a]\nexe = \"/bin/true\"\n"
+    );
+    let config: crate::config::EnvironmentConfig =
+        crate::config::EnvironmentConfig::parse(std::path::Path::new("a.toml"), &doc.to_string())
+            .unwrap();
+    assert_eq!(
+        config.emulation.unwrap(),
+        crate::config::Emulation {
+            emulator: "eden".to_owned(),
+            system: Some("wii".to_owned()),
+            rom: "/roms/b.rvz".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn set_creates_the_emulation_table_and_refuses_unknown_fields() {
+    let mut doc = parse("kind = \"native\"\n");
+    set(&mut doc, Scope::Environment, "emulation.emulator", "cemu").unwrap();
+    set(&mut doc, Scope::Environment, "emulation.rom", "/roms/a.wua").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "kind = \"native\"\n\n[emulation]\nemulator = \"cemu\"\nrom = \"/roms/a.wua\"\n"
+    );
+    let before = doc.to_string();
+    for key in ["emulation.core", "emulation", "emulation.rom.x"] {
+        assert!(
+            matches!(
+                set(&mut doc, Scope::Environment, key, "x"),
+                Err(EditError::UnknownKey(found)) if found == key
+            ),
+            "{key}"
+        );
+    }
+    assert_eq!(doc.to_string(), before);
+}
+
+#[test]
+fn unset_takes_the_table_or_its_system_only() {
+    let original = "kind = \"native\"\n# keep\n[emulation]\nemulator = \"dolphin\"\nsystem = \"gamecube\" # gc\nrom = \"/roms/a.rvz\"\n";
+    let mut doc = parse(original);
+    for key in ["emulation.emulator", "emulation.rom"] {
+        let err = unset(&mut doc, Scope::Environment, key).unwrap_err();
+        assert!(matches!(err, EditError::Refused(_)), "{key}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{key} can't be unset on its own, since [emulation] needs it. Unset emulation to remove the table."
+            )
+        );
+    }
+    assert!(matches!(
+        unset(&mut doc, Scope::Environment, "emulation.core"),
+        Err(EditError::UnknownKey(_))
+    ));
+    assert_eq!(doc.to_string(), original);
+    assert!(unset(&mut doc, Scope::Environment, "emulation.system").unwrap());
+    assert_eq!(
+        doc.to_string(),
+        "kind = \"native\"\n# keep\n[emulation]\nemulator = \"dolphin\"\nrom = \"/roms/a.rvz\"\n"
+    );
+    assert!(!unset(&mut doc, Scope::Environment, "emulation.system").unwrap());
+    assert!(unset(&mut doc, Scope::Environment, "emulation").unwrap());
+    assert_eq!(doc.to_string(), "kind = \"native\"\n");
+    assert!(!unset(&mut doc, Scope::Environment, "emulation").unwrap());
+    assert!(!unset(&mut doc, Scope::Environment, "emulation.system").unwrap());
+}
+
+#[test]
+fn global_retroarch_quit_with_game_sets_and_unsets_without_losing_comments() {
+    let mut doc = parse("# mine\n[retroarch]\nquit_with_game = true # wanted\n");
+    set(&mut doc, Scope::Global, "retroarch.quit_with_game", "false").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "# mine\n[retroarch]\nquit_with_game = false # wanted\n"
+    );
+    let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+    assert!(!config.retroarch.quit_with_game());
+    for bad in ["no", "", "2"] {
+        let before = doc.to_string();
+        assert!(matches!(
+            set(&mut doc, Scope::Global, "retroarch.quit_with_game", bad),
+            Err(EditError::InvalidValue { key, .. }) if key == "retroarch.quit_with_game"
+        ));
+        assert_eq!(doc.to_string(), before);
+    }
+    assert!(unset(&mut doc, Scope::Global, "retroarch.quit_with_game").unwrap());
+    // The emptied table goes, as for the other global tables.
+    assert!(!doc.to_string().contains("retroarch"));
+    assert!(!unset(&mut doc, Scope::Global, "retroarch.quit_with_game").unwrap());
+
+    let mut doc = parse("stop_timeout = 3\n");
+    set(&mut doc, Scope::Global, "retroarch.quit_with_game", "true").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "stop_timeout = 3\n\n[retroarch]\nquit_with_game = true\n"
+    );
+    assert!(matches!(
+        set(&mut doc, Scope::Global, "retroarch.core", "x"),
+        Err(EditError::UnknownKey(key)) if key == "retroarch.core"
+    ));
+    assert!(matches!(
+        set(
+            &mut doc,
+            Scope::Environment,
+            "retroarch.quit_with_game",
+            "true"
+        ),
+        Err(EditError::UnknownKey(_))
+    ));
+}

@@ -784,6 +784,238 @@ fn native_targets_are_resolved_like_a_launch() {
 }
 
 #[test]
+fn an_emulated_rom_that_is_gone_is_a_warning() {
+    let f = Fixture::new();
+    let emulator = f.root.join("emulator");
+    executable(&emulator, "#!/bin/sh\n");
+    let config = |rom: &str| {
+        format!(
+            "[emulation]\nemulator = 'dolphin'\nrom = '{rom}'\n\
+             [targets.game]\nexe = '{}'\ndefault = true\n",
+            emulator.display()
+        )
+    };
+    f.native("prime", &config("~/roms/Metroid Prime.rvz"));
+    let problem = f.only(Code::EmulatedRomMissing);
+    assert_eq!(problem.level, Level::Warning);
+    assert_eq!(problem.area, Area::NativeTarget);
+    assert_eq!(problem.environment.as_deref(), Some("prime"));
+    assert_eq!(problem.message, "ROM ~/roms/Metroid Prime.rvz not found");
+
+    // `~` is the home folder, and a folder game is a ROM too.
+    fs::create_dir_all(f.root.join("roms")).unwrap();
+    fs::write(f.root.join("roms/Metroid Prime.rvz"), b"").unwrap();
+    assert_eq!(f.codes(), []);
+    fs::create_dir_all(f.root.join("roms/Game")).unwrap();
+    f.native("prime", &config("~/roms/Game"));
+    assert_eq!(f.codes(), []);
+}
+
+#[test]
+fn an_uninstalled_flatpak_emulator_is_a_warning() {
+    let f = Fixture::new();
+    let system = f.root.join("flatpak/system");
+    let user = f.root.join("flatpak/user");
+    fs::create_dir_all(&system).unwrap();
+    fs::create_dir_all(&user).unwrap();
+    let exports = [system.clone(), user.clone()];
+    let rom = f.root.join("a.iso");
+    fs::write(&rom, b"").unwrap();
+    let targets = concat!(
+        "[targets.game]\nexe = 'flatpak'\n",
+        "args = ['run', '--filesystem=/roms', 'net.pcsx2.PCSX2', '-batch', '--', '/roms/a.iso']\n",
+        "default = true\n",
+        "[targets.other]\nexe = '/usr/bin/flatpak'\nargs = ['run', 'org.DolphinEmu.dolphin-emu']\n",
+    );
+    let check = |emulation: &str| {
+        f.native("ps2", &format!("{emulation}{targets}"));
+        let environment = Environment::load(&f.paths, "ps2").unwrap();
+        let mut report = Report::default();
+        check_emulation(&f.paths, &environment, &exports, &mut report);
+        report.problems
+    };
+    let emulation = format!(
+        "[emulation]\nemulator = 'pcsx2'\nsystem = 'ps2'\nrom = '{}'\n",
+        rom.display()
+    );
+    let problems = check(&emulation);
+    assert_eq!(
+        problems
+            .iter()
+            .map(|problem| (
+                problem.code,
+                problem.level,
+                problem.area,
+                problem.message.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                "target game: Flatpak app net.pcsx2.PCSX2 not found"
+            ),
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                "target other: Flatpak app org.DolphinEmu.dolphin-emu not found"
+            ),
+        ]
+    );
+    fs::write(system.join("net.pcsx2.PCSX2"), b"").unwrap();
+    fs::write(user.join("org.DolphinEmu.dolphin-emu"), b"").unwrap();
+    assert!(check(&emulation).is_empty());
+    // Only an emulated game is checked.
+    fs::remove_file(system.join("net.pcsx2.PCSX2")).unwrap();
+    assert!(check("").is_empty());
+}
+
+#[test]
+fn a_native_retroarch_targets_missing_core_is_a_warning() {
+    let f = Fixture::new();
+    let rom = f.root.join("Game.gba");
+    fs::write(&rom, b"").unwrap();
+    let core = f.root.join("cores/mgba_libretro.so");
+    let config = |emulator: &str, core: &str| {
+        format!(
+            "[emulation]\nemulator = '{emulator}'\nrom = '{}'\n\
+             [targets.game]\nexe = '/bin/true'\ndefault = true\n\
+             args = ['--appendconfig', '/x.cfg', '-f', '-L', '{core}', '{}']\n\
+             [targets.alt]\nexe = '/bin/true'\nargs = ['--libretro={core}', '{}']\n",
+            rom.display(),
+            rom.display(),
+            rom.display(),
+        )
+    };
+    let check = |text: &str| {
+        f.native("gba", text);
+        let environment = Environment::load(&f.paths, "gba").unwrap();
+        let mut report = Report::default();
+        check_emulation(&f.paths, &environment, &[], &mut report);
+        report
+            .problems
+            .iter()
+            .map(|problem| {
+                (
+                    problem.code,
+                    problem.level,
+                    problem.area,
+                    problem.message.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let shown = core.display();
+    assert_eq!(
+        check(&config("retroarch", &shown.to_string())),
+        [
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                format!("target alt: RetroArch core {shown} not found")
+            ),
+            (
+                Code::EmulatedEmulatorMissing,
+                Level::Warning,
+                Area::NativeTarget,
+                format!("target game: RetroArch core {shown} not found")
+            ),
+        ]
+    );
+    fs::create_dir_all(core.parent().unwrap()).unwrap();
+    fs::write(&core, b"").unwrap();
+    assert!(check(&config("retroarch", &shown.to_string())).is_empty());
+    // A bare file name is RetroArch's to find, and only RetroArch games are
+    // checked.
+    assert!(check(&config("retroarch", "gone_libretro.so")).is_empty());
+    fs::remove_file(&core).unwrap();
+    assert!(check(&config("mgba", &shown.to_string())).is_empty());
+}
+
+#[test]
+fn a_flatpak_retroarch_targets_missing_core_is_a_warning_only_when_installed() {
+    let f = Fixture::new();
+    let exports = f.root.join("flatpak/exports");
+    fs::create_dir_all(&exports).unwrap();
+    let rom = f.root.join("Game.gba");
+    fs::write(&rom, b"").unwrap();
+    let config = |emulator: &str| {
+        format!(
+            "[emulation]\nemulator = '{emulator}'\nrom = '{}'\n\
+             [targets.game]\nexe = 'flatpak'\ndefault = true\n\
+             args = ['run', '--filesystem=/x', 'org.libretro.RetroArch', '-L', 'mgba_libretro.so', '{}']\n",
+            rom.display(),
+            rom.display(),
+        )
+    };
+    let check = |text: &str| {
+        f.native("gba", text);
+        let environment = Environment::load(&f.paths, "gba").unwrap();
+        let mut report = Report::default();
+        check_emulation(
+            &f.paths,
+            &environment,
+            std::slice::from_ref(&exports),
+            &mut report,
+        );
+        report
+            .problems
+            .iter()
+            .map(|problem| {
+                (
+                    problem.code,
+                    problem.level,
+                    problem.area,
+                    problem.message.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Not installed: only the app is reported.
+    assert_eq!(
+        check(&config("retroarch")),
+        [(
+            Code::EmulatedEmulatorMissing,
+            Level::Warning,
+            Area::NativeTarget,
+            "target game: Flatpak app org.libretro.RetroArch not found".to_owned()
+        )]
+    );
+    fs::write(exports.join("org.libretro.RetroArch"), b"").unwrap();
+    let missing = [(
+        Code::EmulatedEmulatorMissing,
+        Level::Warning,
+        Area::NativeTarget,
+        "target game: RetroArch core mgba_libretro.so not found in the Flatpak's cores folder"
+            .to_owned(),
+    )];
+    // Installed, with no cores folder yet.
+    assert_eq!(check(&config("retroarch")), missing);
+    let cores = f
+        .root
+        .join(".var/app/org.libretro.RetroArch/config/retroarch/cores");
+    fs::create_dir_all(&cores).unwrap();
+    assert_eq!(check(&config("retroarch")), missing);
+    fs::write(cores.join("mgba_libretro.so"), b"").unwrap();
+    assert!(check(&config("retroarch")).is_empty());
+    // Only RetroArch games are checked.
+    fs::remove_file(cores.join("mgba_libretro.so")).unwrap();
+    assert!(check(&config("mgba")).is_empty());
+    // A folder that can't be searched says nothing.
+    let mode = |mode: u32| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cores, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    mode(0o000);
+    let unreadable = check(&config("retroarch"));
+    mode(0o755);
+    assert!(unreadable.is_empty(), "{unreadable:?}");
+}
+
+#[test]
 fn several_targets_without_a_default_is_a_warning() {
     let f = Fixture::new();
     let two = "[targets.a]\nexe = 'notepad'\n[targets.b]\nexe = 'notepad'\n";
@@ -1616,7 +1848,7 @@ fn check_environment_reports_only_pairs_that_include_it() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 51] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 53] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1636,6 +1868,8 @@ fn check_environment_reports_only_pairs_that_include_it() {
         (Code::MangohudMissing, "mangohud_missing", "error", "target"),
         (Code::WaylandUnsupported, "wayland_unsupported", "error", "target"),
         (Code::NativeExeInvalid, "native_exe_invalid", "error", "native_target"),
+        (Code::EmulatedRomMissing, "emulated_rom_missing", "warning", "native_target"),
+        (Code::EmulatedEmulatorMissing, "emulated_emulator_missing", "warning", "native_target"),
         (Code::TargetAmbiguous, "target_ambiguous", "warning", "environment"),
         (Code::LostRun, "lost_run", "warning", "runtime"),
         (Code::InstallerUnresolved, "installer_unresolved", "warning", "runtime"),

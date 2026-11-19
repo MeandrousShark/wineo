@@ -457,3 +457,31 @@ fn a_prefix_change_after_review_is_refused_under_the_lock() {
     assert!(!destination.exists());
     assert!(!paths.environment_config("copy").exists());
 }
+
+#[test]
+fn a_native_clone_keeps_emulation_so_it_counts_as_the_same_rom() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    fs::create_dir_all(paths.environments_dir()).unwrap();
+    let emulation = "[emulation] # where it came from\nemulator = 'dolphin'\nsystem = 'gamecube'\nrom = '~/roms/prime.rvz'\n";
+    fs::write(
+        paths.environment_config("prime"),
+        format!(
+            "kind = 'native'\n{emulation}\n[targets.prime]\nexe = '/bin/true'\ndesktop = true\n"
+        ),
+    )
+    .unwrap();
+    let reviewed = inspect_native(&paths, "prime", "prime-copy").unwrap();
+    let copy = execute_native(&paths, &reviewed, |_| {}).unwrap();
+    let source = Environment::load(&paths, "prime").unwrap();
+    assert_eq!(copy.config.emulation, source.config.emulation);
+    assert_eq!(
+        copy.config
+            .emulation
+            .as_ref()
+            .map(|emulation| emulation.rom.as_str()),
+        Some("~/roms/prime.rvz")
+    );
+    let text = fs::read_to_string(paths.environment_config("prime-copy")).unwrap();
+    assert!(text.contains(emulation), "{text}");
+}

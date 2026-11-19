@@ -26,6 +26,7 @@ md-5.workspace = true
 rustix.workspace = true
 secret-service.workspace = true
 serde.workspace = true
+shlex.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true
 toml.workspace = true

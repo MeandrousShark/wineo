@@ -88,7 +88,7 @@ fn a_copy_carries_targets_and_snapshots_and_leaves_the_source_alone() {
     for expected in [
         "snapshots: one, two",
         "change: targets.game.desktop disabled",
-        "external target path: targets.external.exe: /opt/external/game.exe",
+        "external path: targets.external.exe: /opt/external/game.exe",
         "source path in settings: env.SOURCE_NOTE",
         "global config: copied",
         "templates: gaming",

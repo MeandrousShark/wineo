@@ -265,7 +265,7 @@ impl App {
     /// Closes the window and keeps running in the tray. The window's state
     /// stays, so it comes back where it was.
     pub(crate) fn hide_window(&mut self) -> Task<Message> {
-        let drag = self.end_zoom_drag();
+        let drag = Task::batch([self.end_zoom_drag(), self.end_column_drag()]);
         let Some(id) = self.main_window.take() else {
             return drag;
         };

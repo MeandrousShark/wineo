@@ -93,6 +93,8 @@ pub(crate) struct Values {
     pub(crate) env: Vec<EnvRow>,
     /// Unset until the offer is answered, which reads as off.
     pub(crate) external_runners: Option<bool>,
+    /// `[retroarch] quit_with_game`, which reads as on while unset.
+    pub(crate) retroarch_quit: Option<bool>,
     /// `[steam] auto_import` in `library.toml`, which isn't this form's file,
     /// so it's saved on its own rather than through `edits`.
     pub(crate) auto_import: bool,
@@ -128,6 +130,7 @@ impl Values {
             gog_language: config.gog.language.clone().unwrap_or_default(),
             art_fetch: config.art.fetch,
             external_runners: config.external_runners,
+            retroarch_quit: config.retroarch.quit_with_game,
             auto_import: false,
             desktop: wineo_core::library::Desktop::default(),
             coverflow_fullscreen: false,
@@ -277,6 +280,17 @@ impl Form {
             Some(true)
         } else if self.loaded.external_runners.is_some() {
             Some(false)
+        } else {
+            None
+        };
+    }
+    /// Turning it back on unsets the key again when it was unset, since
+    /// unset is on.
+    pub(crate) fn set_retroarch_quit(&mut self, on: bool) {
+        self.draft.retroarch_quit = if !on {
+            Some(false)
+        } else if self.loaded.retroarch_quit.is_some() {
+            Some(true)
         } else {
             None
         };
@@ -442,6 +456,14 @@ impl Form {
                 None => edits.unset.push("external_runners".to_owned()),
             }
         }
+        if before.retroarch_quit != after.retroarch_quit {
+            match after.retroarch_quit {
+                Some(on) => edits
+                    .pairs
+                    .push(("retroarch.quit_with_game".to_owned(), on.to_string())),
+                None => edits.unset.push("retroarch.quit_with_game".to_owned()),
+            }
+        }
         if before.art_fetch != after.art_fetch {
             edits
                 .pairs
@@ -568,6 +590,29 @@ mod tests {
         assert_eq!(
             form.edits().pairs,
             [("external_runners".to_owned(), "false".to_owned())]
+        );
+    }
+
+    #[test]
+    fn retroarch_quit_reads_unset_as_on_and_writes_the_change() {
+        let mut form = parsed_form("");
+        assert_eq!(form.draft.retroarch_quit, None);
+        form.set_retroarch_quit(true);
+        assert_eq!(form.changes(), 0);
+        form.set_retroarch_quit(false);
+        assert_eq!(
+            form.edits().pairs,
+            [("retroarch.quit_with_game".to_owned(), "false".to_owned())]
+        );
+        form.set_retroarch_quit(true);
+        assert_eq!(form.changes(), 0);
+
+        let mut form = parsed_form("[retroarch]\nquit_with_game = false\n");
+        assert_eq!(form.draft.retroarch_quit, Some(false));
+        form.set_retroarch_quit(true);
+        assert_eq!(
+            form.edits().pairs,
+            [("retroarch.quit_with_game".to_owned(), "true".to_owned())]
         );
     }
 

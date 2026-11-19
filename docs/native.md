@@ -139,17 +139,170 @@ leaves.
 | `set` | `gamemode`, `mangohud`, `gamescope.*`, `env.*`, and `targets.*` work. Wine-only keys, including `wayland` and `winetricks`, and `kind` are refused. |
 | `setup` | Skips the prefix and program scan. Adding a target goes straight to entering a path. |
 | `desktop`, `art` | Work. The icon comes from art only, and an entry with no art uses the theme's generic icon. |
-| `clone` | Copies the config and art under the new name, with desktop entries off |
-| `portable copy` | Copies the config and art. Absolute exe paths stay host paths and are listed in the review. |
+| `clone` | Copies the config and art under the new name, with desktop entries off. An `[emulation]` table comes along, so the copy counts as the same ROM. |
+| `portable copy` | Copies the config and art. Absolute exe paths and an `[emulation] rom` outside the folder stay host paths and are listed in the review as `external path:` lines. |
 | `rm` | Works and trashes config, art, and playtime. `--include-prefix` is refused because there is no prefix. |
 | `exec`, `winetricks`, `programs`, `snapshot` | Refused: `dusklight is a native environment, so it has no prefix` |
 | `templates`, `import` of a prefix | Wine only |
 
 Desktop entries get `Game;` as their category when gamemode, gamescope, or
-MangoHud is on, and `Utility;Software;` otherwise.
+MangoHud is on, or the environment is an [emulated game](#emulated-games),
+and `Utility;Software;` otherwise.
 
 `status --json` has `"kind": "native"`, with `runner` and `prefix` set to
 `null`. See [JSON output](json-output.md).
+
+## Emulated games
+
+A game that runs in an emulator is a native environment whose target runs
+the emulator with the game, plus an `[emulation]` table saying where it came
+from:
+
+```toml
+schema_version = 1
+kind = "native"
+title = "Metroid Prime"
+tags = ["gamecube"]
+
+[emulation]
+emulator = "dolphin"
+system = "gamecube"
+rom = "~/Games/roms/gamecube/Metroid Prime (USA).rvz"
+
+[targets.metroid-prime]
+exe = "dolphin-emu"
+args = ["-b", "-e", "/home/me/Games/roms/gamecube/Metroid Prime (USA).rvz"]
+default = true
+```
+
+`wineo import roms` creates these from a folder of ROMs; see
+[Emulated games](emulators.md). The target is what runs. Nothing builds
+the command from `[emulation]`, so
+if the two drift apart, the target wins. Launching, stopping, playtime,
+hooks, and desktop entries work as for any native game.
+
+| Key | Meaning |
+|---|---|
+| `emulator` | Required. One of `dolphin`, `retroarch`, `cemu`, `pcsx2`, `duckstation`, `ppsspp`, `rpcs3`, `melonds`, `mgba`, `xemu`, or `azahar`, or `custom` for anything else. An id wineo doesn't know is kept. |
+| `system` | Optional. The game's system, like `gamecube` or `snes`. |
+| `rom` | Required. The game's file or folder. `set` stores it absolute, with your home as `~`. |
+
+Only a native environment can have the table. A Wine environment refuses it
+with `dusklight isn't a native environment, so it can't set emulation.`, and
+a Steam game refuses it like its other Wine and native keys. `emulator` and
+`rom` can't be empty.
+
+`set` and `unset` take `emulation.*`. A new table needs its emulator and ROM
+in the same `set`:
+
+```
+$ wineo set prime emulation.emulator=dolphin emulation.rom=~/roms/prime.rvz
+$ wineo set prime emulation.system=gamecube
+```
+
+Setting `emulation.system` alone before the table exists is refused with
+`emulation.system needs emulation.emulator and emulation.rom in the same
+set.` `unset` takes `emulation`, which removes the table, and
+`emulation.system`. `emulation.emulator` and `emulation.rom` can't be unset
+on their own, since the table needs them.
+
+In the desktop app, an emulated game's Source is its emulator, like
+"Dolphin" or "RetroArch", so the list's Source column, sorting, grouping,
+and filter chips follow it. A game with a `gog_id` stays GOG. `custom` and
+ids wineo doesn't know show "Emulated". The filter offers a chip for each
+emulator the library has, and emulated games no longer match the Native
+chip. A [preset](gui.md#presets) names an emulator by its id, like `dolphin`, or
+`emulated`. The card's button says Play.
+
+`validate` warns `emulated_rom_missing` when the ROM is gone, and
+`emulated_emulator_missing` when a target runs `flatpak run ID` and that
+Flatpak isn't installed. The Flatpak check reads a target written as
+`flatpak [options] run [options] ID ...` with a reverse-DNS app id, and
+skips anything else rather than guess. A missing native emulator is
+`native_exe_invalid`, as for any native target.
+
+`list --json` and `status --json` add an `emulation` object. See
+[JSON output](json-output.md).
+
+### RetroArch
+
+A RetroArch game runs with a core, the part of RetroArch that emulates
+its system. wineo finds a native RetroArch's cores in the distro folders
+(`/usr/lib/libretro`, `/usr/lib64/libretro`,
+`/usr/lib/x86_64-linux-gnu/libretro`) and in `~/.config/retroarch/cores`,
+and the Flatpak's in its own cores folder. A native RetroArch is never
+offered a Flatpak core, or the reverse. A core counts when its
+`*_libretro.so` file is there; an `.info` file alone doesn't. The core's
+`.info` file, beside it or in RetroArch's info folders, gives its name,
+the file types it takes, and its system. A core without one is offered by
+file name and takes any file.
+
+The target names the core with `-L`: a native RetroArch gets its full
+path, and the Flatpak gets its file name, which RetroArch looks up in its
+own cores folder:
+
+```toml
+[targets.chrono-trigger]
+exe = "retroarch"
+args = ["--appendconfig", "/home/me/.local/share/wineo/retroarch-quit.cfg", "-f", "-L", "/usr/lib64/libretro/snes9x_libretro.so", "/home/me/roms/snes/Chrono Trigger (USA).sfc"]
+default = true
+```
+
+`validate` warns `emulated_emulator_missing` when a target's core file is
+gone: a native target's `-L` path, or a Flatpak target's `-L` file name in
+the Flatpak's cores folder.
+
+A game gets its system from its core. A core that covers one system tags
+every game with it; a core that covers several, like Genesis Plus GX or
+mGBA, tags each game by its file type, and leaves a file that could be
+for more than one system (like a `.cue` disc) without a tag. The systems
+wineo knows are `nes`, `snes`, `n64`, `gamecube`, `wii`, `wiiu`, `gb`,
+`gbc`, `gba`, `nds`, `3ds`, `virtualboy`, `ps1`, `ps2`, `ps3`, `psp`,
+`xbox`, `mastersystem`, `gamegear`, `genesis`, `saturn`, `dreamcast`,
+`pcengine` (SuperGrafx and CD games included), `atari2600`, `lynx`,
+`ngp`, `ngpc`, `wonderswan`, and `wonderswancolor`.
+
+#### Quitting with the game
+
+On its own, RetroArch goes back to its menu when a game closes, so wineo
+would keep counting playtime until RetroArch itself quits. So by default,
+wineo has RetroArch quit when the game closes. Every RetroArch target
+appends wineo's `retroarch-quit.cfg` (in wineo's data folder) to
+RetroArch's config, and wineo writes that file each time it launches a
+RetroArch game:
+
+```
+quit_on_close_content = "2"
+config_save_on_exit = "false"
+```
+
+The second line stops RetroArch from saving these settings into its own
+config when it quits, so it keeps behaving normally when you start it
+yourself. It also means menu changes made during a game started by wineo
+aren't saved on the way out. Save them with Save Current Configuration,
+or with an override, which keeps them for that core or game. Save Current
+Configuration also saves wineo's two lines into RetroArch's own config;
+to undo that, set `config_save_on_exit = "true"` and
+`quit_on_close_content = "0"` in `~/.config/retroarch/retroarch.cfg`.
+
+To turn it off, set `quit_with_game` in the global config:
+
+```toml
+# ~/.config/wineo/config.toml
+[retroarch]
+quit_with_game = false # default true
+```
+
+or run `wineo set --global retroarch.quit_with_game=false`. wineo then
+writes the file empty, so RetroArch behaves as it does on its own. The
+setting covers every RetroArch game at once and never changes a target.
+It needs RetroArch 1.9.1 or newer; older versions ignore it.
+
+The Flatpak gets read-only access to wineo's data folder so it can read
+the file. If wineo's data folder path contains a `|`, which RetroArch
+reads as a separator, or can't be shared with the Flatpak, the target
+leaves `--appendconfig` out, and playtime runs until RetroArch is quit.
+If wineo can't write the file, the game still launches, with a warning.
 
 ## Heroic
 

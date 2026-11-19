@@ -268,6 +268,52 @@ fn sources_run_a_to_z_by_store_else_platform_with_no_source_last() {
 }
 
 #[test]
+fn each_emulator_gets_a_source_section_and_a_store_still_wins() {
+    let emulated = |name: &str, emulator: &'static str, gog_id: Option<&'static str>| {
+        let mut card = card(name, State::Inactive, 0);
+        card.source = Source::new(Facts {
+            native: true,
+            emulator: Some(emulator),
+            gog_id,
+            ..Facts::default()
+        });
+        card
+    };
+    let mut balatro = card("balatro", State::Inactive, 0);
+    balatro.source = Source::new(Facts {
+        native: true,
+        ..Facts::default()
+    });
+    let cards = vec![
+        emulated("prime", "dolphin", None),
+        emulated("galaxy", "dolphin", None),
+        emulated("metroid", "retroarch", None),
+        emulated("sunshine", "custom", None),
+        emulated("future", "someday", None),
+        emulated("owned", "dolphin", Some("1")),
+        balatro,
+    ];
+    assert_eq!(
+        sections_of(
+            &cards,
+            GroupBy::Source,
+            Query::default(),
+            &Filters::default()
+        ),
+        [
+            (SectionKey::Source("Dolphin"), names(&["galaxy", "prime"])),
+            (
+                SectionKey::Source("Emulated"),
+                names(&["future", "sunshine"])
+            ),
+            (SectionKey::Source("GOG"), names(&["owned"])),
+            (SectionKey::Source("Native"), names(&["balatro"])),
+            (SectionKey::Source("RetroArch"), names(&["metroid"])),
+        ]
+    );
+}
+
+#[test]
 fn states_are_running_then_everything_else_then_not_installed() {
     // Plan 0062, question 11.
     let cards = vec![

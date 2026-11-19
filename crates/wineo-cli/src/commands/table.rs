@@ -20,6 +20,7 @@ pub struct Row {
     tags: Vec<String>,
     hooks: Option<wineo_core::view::HooksOutput>,
     kind: Option<KindReport>,
+    emulation: Option<wineo_core::config::Emulation>,
 }
 
 impl Row {
@@ -53,6 +54,7 @@ impl Row {
             tags: tags.to_vec(),
             hooks: None,
             kind: None,
+            emulation: None,
         }
     }
 }
@@ -80,6 +82,7 @@ impl Gathered {
                 .iter()
                 .map(|row| StatusOutput {
                     hooks: row.hooks.clone(),
+                    emulation: row.emulation.as_ref(),
                     ..StatusOutput::new(
                         &row.name,
                         &row.status,
@@ -111,6 +114,7 @@ pub fn format_overview(overview: Overview, now: Timestamp, tz: &dyn Zone) -> Gat
             );
             row.hooks = environment.hooks.clone();
             row.kind = environment.kind.clone();
+            row.emulation = environment.emulation.clone();
             if environment.busy.is_none()
                 && !environment.unresolved
                 && let Some(install) = row
@@ -353,6 +357,7 @@ mod tests {
                 tags: Vec::new(),
                 hooks: None,
                 kind: None,
+                emulation: None,
             },
             Row {
                 name: "photoshop".to_owned(),
@@ -369,6 +374,7 @@ mod tests {
                 tags: Vec::new(),
                 hooks: None,
                 kind: None,
+                emulation: None,
             },
             Row {
                 name: "winecfg".to_owned(),
@@ -385,6 +391,7 @@ mod tests {
                 tags: Vec::new(),
                 hooks: None,
                 kind: None,
+                emulation: None,
             },
         ];
         assert_eq!(

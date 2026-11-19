@@ -4,7 +4,7 @@
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Element, Fill, Point, Rectangle, Task, border};
-use wineo_core::library::{self, GroupBy, RandomPool, SortKey, ViewLayout};
+use wineo_core::library::{self, GroupBy, ListColumn, RandomPool, SortKey, ViewLayout};
 use wineo_core::paths::Paths;
 
 use crate::grid::{
@@ -78,6 +78,8 @@ pub(crate) enum Field {
     Random(RandomPool),
     Layout(ViewLayout),
     Group(GroupBy),
+    /// A list column's width, in whole pixels.
+    Column(ListColumn, u16),
 }
 
 /// The value each field's write in flight is writing. One write per field
@@ -92,6 +94,8 @@ pub(crate) struct Writes {
     pub(crate) random: Option<RandomPool>,
     pub(crate) layout: Option<ViewLayout>,
     pub(crate) group: Option<GroupBy>,
+    /// One write per list column, so dragging another column doesn't wait.
+    pub(crate) columns: std::collections::BTreeMap<ListColumn, u16>,
     /// Fields whose write in flight a preset overtook. Applying a preset
     /// writes nothing (plan 0062, decision 16), so when the write lands it
     /// doesn't follow up with the preset's value, unless a control changed
@@ -110,6 +114,7 @@ impl Writes {
             Field::Random(_) => self.random.is_some(),
             Field::Layout(_) => self.layout.is_some(),
             Field::Group(_) => self.group.is_some(),
+            Field::Column(column, _) => self.columns.contains_key(&column),
         }
     }
 
@@ -141,6 +146,9 @@ impl Writes {
             Field::Random(value) => self.random = Some(value),
             Field::Layout(value) => self.layout = Some(value),
             Field::Group(value) => self.group = Some(value),
+            Field::Column(column, width) => {
+                self.columns.insert(column, width);
+            }
         }
     }
 
@@ -154,6 +162,7 @@ impl Writes {
             || self.random.is_some()
             || self.layout.is_some()
             || self.group.is_some()
+            || !self.columns.is_empty()
     }
 
     fn finish(&mut self, field: Field) {
@@ -166,6 +175,9 @@ impl Writes {
             Field::Random(_) => self.random = None,
             Field::Layout(_) => self.layout = None,
             Field::Group(_) => self.group = None,
+            Field::Column(column, _) => {
+                self.columns.remove(&column);
+            }
         }
     }
 }
@@ -252,6 +264,7 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
         Field::Random(random) => library::set_random(paths, random),
         Field::Layout(layout) => library::set_layout(paths, layout),
         Field::Group(group) => library::set_group(paths, group),
+        Field::Column(column, width) => library::set_list_column(paths, column, Some(width)),
     };
     watch.refresh_library(paths);
     result
@@ -289,6 +302,7 @@ impl App {
             Field::Random(_) => Field::Random(self.random_pool),
             Field::Layout(_) => Field::Layout(self.layout),
             Field::Group(_) => Field::Group(self.group),
+            Field::Column(column, _) => Field::Column(column, self.list_widths.saved_width(column)),
         }
     }
 
@@ -430,7 +444,8 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     | Field::PosterOnly(_)
                     | Field::Random(_)
                     | Field::Layout(_)
-                    | Field::Group(_) => "view",
+                    | Field::Group(_)
+                    | Field::Column(..) => "view",
                     _ => "sort",
                 };
                 app.feature_notice = Some((
@@ -439,8 +454,15 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 ));
             }
             // A drag saves only where it lets go, so the values it passes
-            // through wait for its release.
-            if app.current(written) == written
+            // through wait for its release. A column's release writes
+            // whatever this one wrote, even where the drag started, since
+            // the drag may pass back through it before letting go.
+            if let Field::Column(column, _) = written
+                && app.column_dragged(column)
+            {
+                app.owe_column_write(column);
+                Task::none()
+            } else if app.current(written) == written
                 || overtaken
                 || (matches!(written, Field::Zoom(_)) && app.zooming.dragging())
             {

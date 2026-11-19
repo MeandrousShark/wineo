@@ -654,6 +654,7 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             layout: ViewLayout::Grid,
             group: GroupBy::None,
             coverflow_fullscreen: false,
+            list_columns: BTreeMap::new(),
         }
     );
 
@@ -1059,6 +1060,7 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             layout: ViewLayout::Grid,
             group: GroupBy::None,
             coverflow_fullscreen: false,
+            list_columns: BTreeMap::new(),
         }
     );
 }
@@ -2103,4 +2105,347 @@ fn an_input_edit_is_refused_on_a_broken_file() {
     };
     assert!(set_input(&fixture.paths, &off).is_err());
     assert_eq!(fixture.read(), "[input\ncontroller = false\n");
+}
+
+fn widths_of(fixture: &Fixture, text: &str) -> BTreeMap<ListColumn, u16> {
+    fixture.write(&format!("schema_version = 1\n\n[view]\n{text}\n"));
+    load(&fixture.paths).view.list_columns
+}
+
+#[test]
+fn list_columns_default_to_none_and_read_every_column() {
+    let fixture = Fixture::new();
+    assert!(load(&fixture.paths).view.list_columns.is_empty());
+    fixture.write("schema_version = 1\n\n[view]\nzoom = 90\n");
+    assert!(load(&fixture.paths).view.list_columns.is_empty());
+    let widths = widths_of(
+        &fixture,
+        "[view.list_columns]\nstate = 96\nplaytime = 56\nlast_played = 480\nsource = 100\ntags = 104",
+    );
+    assert_eq!(
+        widths,
+        BTreeMap::from([
+            (ListColumn::State, 96),
+            (ListColumn::Playtime, 56),
+            (ListColumn::LastPlayed, 480),
+            (ListColumn::Source, 100),
+            (ListColumn::Tags, 104),
+        ])
+    );
+    // Dotted and inline forms read the same.
+    for text in ["list_columns.tags = 104", "list_columns = { tags = 104 }"] {
+        assert_eq!(
+            widths_of(&fixture, text),
+            BTreeMap::from([(ListColumn::Tags, 104)]),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        ListColumn::ALL.map(ListColumn::as_str),
+        ["state", "playtime", "last_played", "source", "tags"]
+    );
+    assert_eq!(
+        ListColumn::ALL.map(ListColumn::default_width),
+        [128, 96, 112, 80, 176]
+    );
+}
+
+#[test]
+fn a_bad_list_column_width_counts_as_unset_for_that_column_only() {
+    let fixture = Fixture::new();
+    for bad in [
+        "55",
+        "481",
+        "0",
+        "-96",
+        "70000",
+        "96.5",
+        "\"96\"",
+        "true",
+        "[96]",
+        "{ a = 1 }",
+    ] {
+        let widths = widths_of(
+            &fixture,
+            &format!("[view.list_columns]\nstate = {bad}\ntags = 104"),
+        );
+        assert_eq!(widths, BTreeMap::from([(ListColumn::Tags, 104)]), "{bad}");
+    }
+    // The bounds themselves are good.
+    assert_eq!(
+        widths_of(&fixture, "[view.list_columns]\nstate = 56\ntags = 480"),
+        BTreeMap::from([(ListColumn::State, 56), (ListColumn::Tags, 480)])
+    );
+}
+
+#[test]
+fn unknown_list_column_keys_are_ignored() {
+    let fixture = Fixture::new();
+    let widths = widths_of(
+        &fixture,
+        "[view.list_columns]\ntitle = 300\nSTATE = 90\nfuture = 100\ntags = 104",
+    );
+    assert_eq!(widths, BTreeMap::from([(ListColumn::Tags, 104)]));
+    assert_eq!(load(&fixture.paths).problem, None);
+}
+
+#[test]
+fn list_columns_that_is_not_a_table_reads_as_defaults() {
+    let fixture = Fixture::new();
+    for text in [
+        "list_columns = 5",
+        "list_columns = \"state\"",
+        "list_columns = [96]",
+        "list_columns = true",
+    ] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nzoom = 90\n{text}\n"
+        ));
+        let view = load(&fixture.paths).view;
+        assert!(view.list_columns.is_empty(), "{text}");
+        // The rest of [view] is still read.
+        assert_eq!(view.zoom, 90, "{text}");
+    }
+}
+
+#[test]
+fn set_list_column_writes_replaces_and_removes_one_key() {
+    let fixture = Fixture::new();
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(104)).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[view.list_columns]\ntags = 104\n"
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::State, Some(96)).unwrap());
+    assert_eq!(
+        load(&fixture.paths).view.list_columns,
+        BTreeMap::from([(ListColumn::State, 96), (ListColumn::Tags, 104)])
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(300)).unwrap());
+    assert_eq!(
+        load(&fixture.paths).view.list_columns,
+        BTreeMap::from([(ListColumn::State, 96), (ListColumn::Tags, 300)])
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    let text = fixture.read();
+    assert!(!text.contains("tags"), "{text}");
+    assert!(text.contains("state = 96"), "{text}");
+    assert_eq!(
+        load(&fixture.paths).view.list_columns,
+        BTreeMap::from([(ListColumn::State, 96)])
+    );
+}
+
+#[test]
+fn set_list_column_clamps_to_the_bounds() {
+    let fixture = Fixture::new();
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(5000)).unwrap());
+    assert_eq!(
+        load(&fixture.paths).view.list_columns[&ListColumn::Tags],
+        480
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(0)).unwrap());
+    assert_eq!(
+        load(&fixture.paths).view.list_columns[&ListColumn::Tags],
+        56
+    );
+    // Clamping lands on the value already there.
+    assert!(!set_list_column(&fixture.paths, ListColumn::Tags, Some(10)).unwrap());
+}
+
+#[test]
+fn saving_a_default_width_removes_the_key() {
+    let fixture = Fixture::new();
+    for column in ListColumn::ALL {
+        assert!(set_list_column(&fixture.paths, column, Some(column.default_width() + 8)).unwrap());
+    }
+    assert_eq!(load(&fixture.paths).view.list_columns.len(), 5);
+    for column in ListColumn::ALL {
+        assert!(
+            set_list_column(&fixture.paths, column, Some(column.default_width())).unwrap(),
+            "{column:?}"
+        );
+        assert!(
+            !fixture.read().contains(column.as_str()),
+            "{column:?}: {}",
+            fixture.read()
+        );
+    }
+    assert!(load(&fixture.paths).view.list_columns.is_empty());
+}
+
+#[test]
+fn removing_the_last_list_column_drops_the_tables_header() {
+    let fixture = Fixture::new();
+    assert!(set_list_column(&fixture.paths, ListColumn::State, Some(96)).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(104)).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::State, None).unwrap());
+    assert!(
+        fixture.read().contains("[view.list_columns]"),
+        "{}",
+        fixture.read()
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    assert_eq!(fixture.read(), "schema_version = 1\n");
+
+    // The rest of [view] stays, and an unknown key keeps the table.
+    fixture.write("schema_version = 1\n\n[view]\nzoom = 90\n\n[view.list_columns]\ntags = 104\n");
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    assert_eq!(fixture.read(), "schema_version = 1\n\n[view]\nzoom = 90\n");
+    fixture.write("schema_version = 1\n\n[view.list_columns]\ntags = 104\nfuture = 9\n");
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[view.list_columns]\nfuture = 9\n"
+    );
+}
+
+#[test]
+fn list_column_no_ops_leave_the_file_alone() {
+    let text = "# keep formatting\nschema_version = 1\n\n[view]\nzoom = 125\n\n[view.list_columns]\nstate   =   96 # mine\nbad = 1\nplaytime = \"wide\"\nsource = 80 # stored default\n";
+    let fixture = Fixture::new();
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+
+    // A stored default reads as an override of that width.
+    assert_eq!(
+        load(&fixture.paths).view.list_columns,
+        BTreeMap::from([(ListColumn::State, 96), (ListColumn::Source, 80)])
+    );
+
+    // Same width, an absent column back to its default, a bad value back
+    // to its default, and a stored default saved or reset over itself.
+    assert!(!set_list_column(&fixture.paths, ListColumn::State, Some(96)).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Source, Some(80)).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Source, None).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Tags, Some(176)).unwrap());
+    assert!(!set_list_column(&fixture.paths, ListColumn::Playtime, None).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    let bare = Fixture::new();
+    bare.write("# keep formatting\nschema_version = 1\n\n[view]\nsort = \"name\"\n");
+    let bytes = fs::read(bare.paths.library_file()).unwrap();
+    assert!(!set_list_column(&bare.paths, ListColumn::Source, None).unwrap());
+    assert!(!set_list_column(&bare.paths, ListColumn::Source, Some(80)).unwrap());
+    assert_eq!(fs::read(bare.paths.library_file()).unwrap(), bytes);
+
+    let missing = Fixture::new();
+    assert!(!set_list_column(&missing.paths, ListColumn::Source, None).unwrap());
+    assert!(!missing.paths.library_file().exists());
+}
+
+#[test]
+fn list_column_edits_keep_comments_and_other_keys() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nzoom = 90 # small\nfuture_view = \"kept\"\n\n[view.list_columns]\n# wide tags\ntags = 300 # was 176\nstate = 96\nfuture = 7\n\n[environments.hades]\n# my favorite\nfavorite = true\n",
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(310)).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Source, Some(120)).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::State, None).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "# my library\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\nzoom = 90 # small\nfuture_view = \"kept\"\n\n[view.list_columns]\n# wide tags\ntags = 310 # was 176\nfuture = 7\nsource = 120\n\n[environments.hades]\n# my favorite\nfavorite = true\n"
+    );
+}
+
+#[test]
+fn a_list_column_edit_replaces_a_list_columns_that_is_not_a_table() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\n\n[view]\nzoom = 90\nlist_columns = 5\n");
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(104)).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!(view.list_columns, BTreeMap::from([(ListColumn::Tags, 104)]));
+    assert_eq!(view.zoom, 90);
+}
+
+#[test]
+fn list_column_edits_leave_the_other_view_keys_alone() {
+    let fixture = Fixture::new();
+    assert!(set_order(&fixture.paths, SortKey::Playtime, true).unwrap());
+    assert!(set_zoom(&fixture.paths, 70).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(104)).unwrap());
+    assert!(set_zoom(&fixture.paths, 80).unwrap());
+    assert_eq!(
+        load(&fixture.paths).view,
+        View {
+            sort: SortKey::Playtime,
+            descending: true,
+            zoom: 80,
+            list_columns: BTreeMap::from([(ListColumn::Tags, 104)]),
+            ..View::default()
+        }
+    );
+}
+
+#[test]
+fn files_from_older_releases_read_with_default_list_columns() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut checked = 0;
+    for set in fs::read_dir(&fixtures).unwrap() {
+        let set = set.unwrap().path();
+        for file in [
+            set.join("portable/config/library.toml"),
+            set.join("xdg/.config/wineo/library.toml"),
+        ] {
+            let Ok(text) = fs::read_to_string(&file) else {
+                continue;
+            };
+            // A later release's set may hold the table, which reads fine
+            // and isn't what this checks.
+            if text.contains("list_columns") {
+                continue;
+            }
+            let fixture = Fixture::new();
+            fixture.write(&text);
+            let library = load(&fixture.paths);
+            assert_eq!(library.problem, None, "{}", file.display());
+            assert!(library.view.list_columns.is_empty(), "{}", file.display());
+            checked += 1;
+        }
+    }
+    assert!(checked >= 14, "only {checked} fixture library files found");
+}
+
+#[test]
+fn list_column_edits_work_in_an_inline_view_table() {
+    let fixture = Fixture::new();
+    fixture.write("schema_version = 1\nview = { zoom = 90 }\n");
+    assert!(set_list_column(&fixture.paths, ListColumn::State, Some(96)).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!(view.list_columns, BTreeMap::from([(ListColumn::State, 96)]));
+    assert_eq!(view.zoom, 90, "{}", fixture.read());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, Some(104)).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::State, None).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    let view = load(&fixture.paths).view;
+    assert!(view.list_columns.is_empty());
+    assert_eq!(view.zoom, 90, "{}", fixture.read());
+}
+
+#[test]
+fn list_column_edits_work_in_an_inline_list_columns_table() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "schema_version = 1\n\n[view]\nzoom = 90\nlist_columns = { state = 96, tags = 104 }\n",
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::State, Some(100)).unwrap());
+    let view = load(&fixture.paths).view;
+    assert_eq!(
+        view.list_columns,
+        BTreeMap::from([(ListColumn::State, 100), (ListColumn::Tags, 104)])
+    );
+    assert!(set_list_column(&fixture.paths, ListColumn::State, None).unwrap());
+    assert!(set_list_column(&fixture.paths, ListColumn::Tags, None).unwrap());
+    let view = load(&fixture.paths).view;
+    assert!(view.list_columns.is_empty(), "{}", fixture.read());
+    assert_eq!(view.zoom, 90);
+    assert!(
+        !fixture.read().contains("list_columns"),
+        "{}",
+        fixture.read()
+    );
 }

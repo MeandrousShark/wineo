@@ -1,5 +1,6 @@
 pub(crate) mod artwork;
 mod clone;
+mod emulated;
 mod frame;
 mod gog;
 mod gog_install;
@@ -26,12 +27,13 @@ use crate::ui::{ListRow, ScrollStyle, list_group, list_row, list_row_text, secon
 const CHOICE_LIST: &str = "add";
 
 /// The Add choices' row ids, in order.
-const CHOICE_IDS: [&str; 5] = [
+const CHOICE_IDS: [&str; 6] = [
     "add-new",
     "add-prefix",
     "add-heroic",
     "add-steam",
     "add-gog",
+    "add-emulated",
 ];
 
 /// One Add choice: its name, with what it does underneath.
@@ -82,6 +84,7 @@ pub(crate) enum Event {
     Heroic,
     Steam,
     Gog,
+    Emulated,
     Back,
     AfterSubmit,
     Create(Box<new::Event>),
@@ -91,6 +94,7 @@ pub(crate) enum Event {
     SteamMessage(Box<steam::Event>),
     GogMessage(Box<gog::Event>),
     UpdateMessage(Box<gog_update::Event>),
+    EmulatedMessage(Box<emulated::Event>),
 }
 
 impl Event {
@@ -121,6 +125,7 @@ wrap_events! {
     steam::Event => SteamMessage,
     gog::Event => GogMessage,
     gog_update::Event => UpdateMessage,
+    emulated::Event => EmulatedMessage,
 }
 
 /// Runs `$body` with `$page` bound to whichever page is open. The pages' event
@@ -136,6 +141,7 @@ macro_rules! on_page {
             Self::Steam($page) => $body,
             Self::Gog($page) => $body,
             Self::GogUpdate($page) => $body,
+            Self::Emulated($page) => $body,
             Self::Choose(_) => $choose,
         }
     };
@@ -150,6 +156,7 @@ pub(crate) enum Page {
     Steam(Box<steam::Page>),
     Gog(Box<gog::Page>),
     GogUpdate(Box<gog_update::Page>),
+    Emulated(Box<emulated::Page>),
 }
 
 impl Page {
@@ -224,6 +231,10 @@ impl Page {
                 let (page, task) = gog::Page::new(paths);
                 (Self::Gog(Box::new(page)), task.map(Event::from))
             }
+            Event::Emulated => {
+                let (page, task) = emulated::Page::new(paths);
+                (Self::Emulated(Box::new(page)), task.map(Event::from))
+            }
             _ => return None,
         })
     }
@@ -252,6 +263,9 @@ impl Page {
             (Self::GogUpdate(page), Event::UpdateMessage(event)) => {
                 page.update(*event).map(Event::from)
             }
+            (Self::Emulated(page), Event::EmulatedMessage(event)) => {
+                page.update(*event, key_available).map(Event::from)
+            }
             _ => Task::none(),
         }
     }
@@ -264,6 +278,7 @@ impl Page {
             Self::Steam(page) => page.spinning(),
             Self::Gog(page) => page.waiting(),
             Self::GogUpdate(page) => page.waiting(),
+            Self::Emulated(page) => page.waiting(),
             _ => false,
         }
     }
@@ -309,6 +324,7 @@ impl Page {
             Self::Steam(page) => page.view(palette, width).map(Event::from),
             Self::Gog(page) => page.view_at(palette, width).map(Event::from),
             Self::GogUpdate(page) => page.view(palette).map(Event::from),
+            Self::Emulated(page) => page.view(palette, width, key_available).map(Event::from),
             Self::Choose(_) => container(
                 column![
                     secondary_button("Back", palette).on_press(Event::Back),
@@ -351,6 +367,13 @@ impl Page {
                                 Event::Gog,
                                 palette,
                             ),
+                            choice(
+                                CHOICE_IDS[5],
+                                "6 - Add emulated games",
+                                "A folder of games for Dolphin, RetroArch, or another emulator",
+                                Event::Emulated,
+                                palette,
+                            ),
                         ],
                         palette,
                     ))
@@ -377,6 +400,7 @@ impl Page {
             Self::Heroic(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             Self::Steam(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             Self::Gog(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
+            Self::Emulated(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             _ => None,
         }
     }
@@ -392,6 +416,7 @@ impl Page {
             Self::New(page) => page.rows(),
             Self::Heroic(page) => page.rows(),
             Self::Gog(page) => page.rows(),
+            Self::Emulated(page) => page.rows(),
             _ => None,
         }
     }
@@ -411,6 +436,7 @@ impl Page {
             Self::Steam(_) => "a Steam import",
             Self::Gog(_) => "a GOG import",
             Self::GogUpdate(_) => "a GOG update",
+            Self::Emulated(_) => "an emulated games import",
         }
     }
 
@@ -436,6 +462,7 @@ impl Page {
             Self::Steam(page) => page.submit().map(Event::from),
             Self::Gog(page) => page.submit().map(Event::from),
             Self::GogUpdate(page) => page.submit().map(Event::from),
+            Self::Emulated(page) => page.submit(key_available).map(Event::from),
             Self::Choose(_) => self.update(Event::New, key_available),
         }
     }
@@ -477,6 +504,25 @@ mod tests {
             assert_eq!(probe.scrollables.len(), 1, "one scrolling region");
             let spilled = probe.outside(inset);
             assert!(spilled.is_empty(), "{width}x{height}: {spilled:?}");
+        }
+    }
+
+    #[test]
+    fn all_six_add_choices_fit_the_add_dialog_without_scrolling() {
+        use crate::layout_probe::probe;
+        let root = tempfile::tempdir().unwrap();
+        let paths =
+            Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+        let page = Page::choose(paths);
+        // The Add dialog is 560 px high; its details wrap below about 520 px.
+        for width in [360.0, 520.0, 680.0] {
+            let mut view = page.view(Palette::DARK, width, false);
+            let probe = probe(&mut view, iced::Size::new(width, 560.0));
+            let (viewport, content) = probe.scrollables[0];
+            assert!(
+                content.height <= viewport.height,
+                "{width}: {content:?} in {viewport:?}"
+            );
         }
     }
 }

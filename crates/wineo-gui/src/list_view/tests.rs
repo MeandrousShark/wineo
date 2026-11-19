@@ -90,7 +90,7 @@ fn columns_leave_from_the_right_in_order() {
         (888.0, &[Playtime, LastPlayed, Source, Tags][..]),
         (2000.0, &Column::ALL[..]),
     ] {
-        assert_eq!(columns(width), expected, "{width}");
+        assert_eq!(columns(width, &Widths::default()), expected, "{width}");
     }
 }
 
@@ -99,12 +99,12 @@ fn the_docked_panel_takes_columns_from_the_right_and_the_header_follows() {
     let (_root, mut app) = listed(3);
     app.viewport_width = 1100.0;
     assert_eq!(app.slot_width(), 1100.0 - 32.0);
-    assert_eq!(columns(app.slot_width()).len(), 4);
+    assert_eq!(columns(app.slot_width(), &app.list_widths).len(), 4);
     let _ = app.update(Message::Select("game-000".into()));
     assert!(app.panel_open);
     assert_eq!(app.slot_width(), 1100.0 - DOCK_WIDTH - 32.0);
     assert_eq!(
-        columns(app.slot_width()),
+        columns(app.slot_width(), &app.list_widths),
         &[Column::Playtime, Column::LastPlayed]
     );
     // The header's labels sit over the same cells as every row's, each
@@ -264,7 +264,7 @@ fn a_row_shows_what_its_poster_does() {
     assert_eq!(titled.title, "Hades");
     assert_eq!(titled.identifier, Some("hades-goty"));
     assert_eq!(titled.tags, ["rpg", "co-op"]);
-    let cells = row_text(&titled, &Column::ALL, 2000.0).cells;
+    let cells = row_text(&titled, &Column::ALL, 2000.0, &Widths::default()).cells;
     assert!(cells.contains(&(Column::Tags, "rpg, co-op".to_owned())));
     assert_eq!(titled.last_played, "yesterday");
     assert_eq!(titled.source, "GOG");
@@ -282,8 +282,17 @@ fn a_row_shows_what_its_poster_does() {
         assert_eq!(badge.color(palette), color, "{name}");
         // The pill takes its room from the title, as the marks do.
         assert!(
-            title_room(&facts, columns(1000.0), 1000.0)
-                < title_room(&plain, columns(1000.0), 1000.0),
+            title_room(
+                &facts,
+                columns(1000.0, &Widths::default()),
+                1000.0,
+                &Widths::default()
+            ) < title_room(
+                &plain,
+                columns(1000.0, &Widths::default()),
+                1000.0,
+                &Widths::default()
+            ),
             "{name}"
         );
         // And it's drawn: the marks gain it before the star, and the title
@@ -295,7 +304,7 @@ fn a_row_shows_what_its_poster_does() {
                 card,
                 1.0,
                 1000.0,
-                columns(1000.0),
+                columns(1000.0, &Widths::default()),
             ),
             Size::new(2000.0, 500.0),
         );
@@ -308,7 +317,12 @@ fn a_row_shows_what_its_poster_does() {
         assert_eq!(marks.children().count(), 2, "{name}");
         assert_eq!(
             bounds_at(&node, &[0, 0, 1]).width,
-            title_room(&facts, columns(1000.0), 1000.0)
+            title_room(
+                &facts,
+                columns(1000.0, &Widths::default()),
+                1000.0,
+                &Widths::default()
+            )
         );
     }
 
@@ -322,7 +336,13 @@ fn a_row_shows_what_its_poster_does() {
     let width = app.slot_width();
     for card in &app.cards {
         let node = layout(
-            &mut app.row_drawn(&card.name.as_str().into(), card, 1.0, width, columns(width)),
+            &mut app.row_drawn(
+                &card.name.as_str().into(),
+                card,
+                1.0,
+                width,
+                columns(width, &Widths::default()),
+            ),
             Size::new(2000.0, 500.0),
         );
         assert_eq!(node.size(), Size::new(width, ROW_HEIGHT), "{}", card.name);
@@ -350,7 +370,7 @@ fn a_row_takes_presses_like_a_card() {
         &card,
         1.0,
         width,
-        columns(width),
+        columns(width, &Widths::default()),
     );
     // Cells, title cell, marks, star.
     let messages = click_at(row, Size::new(2000.0, 100.0), &[0, 0, 2, 0]);
@@ -498,6 +518,38 @@ fn the_source_and_tags_headers_sort_flip_and_show_the_indicator() {
 }
 
 #[test]
+fn an_emulated_game_shows_and_sorts_by_its_emulator() {
+    let (_root, mut app) = fixture();
+    let mut cards = Vec::new();
+    for (name, emulator, native) in [
+        ("a", Some("retroarch"), true),
+        ("b", Some("dolphin"), true),
+        ("c", None, true),
+        ("d", Some("custom"), true),
+        ("e", None, false),
+    ] {
+        let mut card = card(name, State::Inactive, 60);
+        card.source = Source::new(Facts {
+            native,
+            emulator,
+            ..Facts::default()
+        });
+        cards.push(card);
+    }
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    app.layout = ViewLayout::List;
+    app.snap_grid();
+    let sources: Vec<&str> = app.filtered().into_iter().map(source_label).collect();
+    assert_eq!(
+        sources,
+        ["RetroArch", "Dolphin", "Native", "Emulated", "Windows"]
+    );
+    // Source A to Z: Dolphin, Emulated, Native, RetroArch, Windows.
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert_eq!(shown(&app), ["b", "d", "c", "a", "e"]);
+}
+
+#[test]
 fn a_third_header_click_goes_back_to_the_default_sort() {
     let (_root, mut app) = fixture();
     labeled(&mut app);
@@ -547,7 +599,7 @@ fn arrows(app: &App, size: Size) -> Vec<(&'static str, bool)> {
     let node = layout(&mut app.list_header(), size);
     let mut cells = vec![("Title", 0)];
     cells.extend(
-        columns(app.slot_width())
+        columns(app.slot_width(), &app.list_widths)
             .iter()
             .enumerate()
             .map(|(index, column)| (column.label(), index + 2)),
@@ -747,8 +799,18 @@ fn overlong_text_ends_in_an_ellipsis_within_its_column() {
     let _ = app.update(Message::Loaded(Ok(vec![long, short])));
     for width in [500.0, 700.0, 1000.0] {
         let long = facts(&app, "a-very-long-environment-name-for-a-game");
-        let text = row_text(&long, columns(width), width);
-        let room = title_room(&long, columns(width), width);
+        let text = row_text(
+            &long,
+            columns(width, &Widths::default()),
+            width,
+            &Widths::default(),
+        );
+        let room = title_room(
+            &long,
+            columns(width, &Widths::default()),
+            width,
+            &Widths::default(),
+        );
         assert!(text.title.ends_with("..."), "{width}: {}", text.title);
         assert!(
             line_width(&text.title, 14.0, crate::fonts::semibold()) <= room,
@@ -759,7 +821,7 @@ fn overlong_text_ends_in_an_ellipsis_within_its_column() {
         assert!(line_width(&identifier, 12.0, Font::DEFAULT) <= room);
         assert_eq!(long.state, "running (started from Steam)");
         assert!(text.state.ends_with("..."), "{}", text.state);
-        assert!(line_width(&text.state, 13.0, Font::DEFAULT) <= STATE_ROOM);
+        assert!(line_width(&text.state, 13.0, Font::DEFAULT) <= state_room(STATE_WIDTH));
         for (column, value) in &text.cells {
             assert!(line_width(value, 13.0, Font::DEFAULT) <= column.width());
             if *column == Column::Tags {
@@ -767,7 +829,12 @@ fn overlong_text_ends_in_an_ellipsis_within_its_column() {
             }
         }
         // What fits stays whole.
-        let short = row_text(&facts(&app, "short"), columns(width), width);
+        let short = row_text(
+            &facts(&app, "short"),
+            columns(width, &Widths::default()),
+            width,
+            &Widths::default(),
+        );
         assert_eq!(short.title, "short");
         assert_eq!(short.state, "inactive");
     }

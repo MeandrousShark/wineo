@@ -769,7 +769,7 @@ fn push_review<'a>(
             );
             content = push_values(
                 content,
-                "External target paths",
+                "External paths",
                 &review.external_target_paths,
                 palette,
             );
@@ -832,7 +832,7 @@ fn push_review<'a>(
             );
             content = push_values(
                 content,
-                "External target paths",
+                "External paths",
                 &review.external_target_paths,
                 palette,
             );
@@ -901,8 +901,9 @@ fn push_warnings<'a>(
         Review::Native(review) => {
             let mut warnings = vec!["Program files stay where they are.".to_owned()];
             if !review.external_target_paths.is_empty() {
-                warnings
-                    .push("Some target paths still point outside the portable folder.".to_owned());
+                warnings.push(
+                    "Some target or ROM paths still point outside the portable folder.".to_owned(),
+                );
             }
             warnings
         }

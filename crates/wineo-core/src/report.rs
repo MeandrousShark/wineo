@@ -63,6 +63,7 @@ pub struct EnvironmentReport {
     pub desktop: Vec<String>,
     /// None if the environment has never been played.
     pub played: Option<Played>,
+    pub emulation: Option<crate::config::Emulation>,
 }
 
 /// What an environment runs on, for `status` and `list`.
@@ -238,6 +239,7 @@ pub struct OverviewEnvironment {
     pub unresolved: bool,
     pub tags: Vec<String>,
     pub hooks: Option<crate::view::HooksOutput>,
+    pub emulation: Option<crate::config::Emulation>,
 }
 
 /// An environment that could not be included in an overview.
@@ -429,6 +431,7 @@ impl EnvironmentReport {
                 .map(|entry| entry.target)
                 .collect(),
             played,
+            emulation: environment.config.emulation.clone(),
         })
     }
 }
@@ -620,6 +623,7 @@ fn overview_from(
                                 busy,
                                 unresolved,
                                 tags: tags.clone(),
+                                emulation: environment.config.emulation.clone(),
                             });
                         }
                     }
@@ -635,6 +639,7 @@ fn overview_from(
                         unresolved,
                         tags: Vec::new(),
                         hooks: None,
+                        emulation: None,
                     }),
                 }
             }

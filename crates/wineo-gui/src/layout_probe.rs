@@ -298,6 +298,44 @@ impl<M> Laid<'_, M> {
         (messages, status)
     }
 
+    /// Draws the tree as it stands, with its widget state, and the cursor at
+    /// `cursor`, and returns its RGBA pixels.
+    pub(crate) fn draw_at(&mut self, cursor: iced::mouse::Cursor) -> Vec<u8> {
+        use iced::advanced::Renderer as _;
+        let viewport = Rectangle::with_size(self.size);
+        self.renderer.reset(viewport);
+        let (element, tree, node) = (&self.element, &self.tree, &self.node);
+        self.renderer.with_layer(viewport, |renderer| {
+            element.as_widget().draw(
+                tree,
+                renderer,
+                &iced::Theme::Dark,
+                &iced::advanced::renderer::Style {
+                    text_color: iced::Color::WHITE,
+                },
+                Layout::new(node),
+                cursor,
+                &viewport,
+            );
+        });
+        self.renderer.screenshot(
+            iced::Size::new(self.size.width as u32, self.size.height as u32),
+            1.0,
+            iced::Color::TRANSPARENT,
+        )
+    }
+
+    /// The pointer's look with the cursor at `cursor`.
+    pub(crate) fn interaction_at(&self, cursor: iced::mouse::Cursor) -> iced::mouse::Interaction {
+        self.element.as_widget().mouse_interaction(
+            &self.tree,
+            Layout::new(&self.node),
+            cursor,
+            &Rectangle::with_size(self.size),
+            &self.renderer,
+        )
+    }
+
     /// Hands a redraw at `now` to the tree and returns when it asked to be
     /// drawn again.
     pub(crate) fn redraw(&mut self, now: std::time::Instant) -> iced::window::RedrawRequest {

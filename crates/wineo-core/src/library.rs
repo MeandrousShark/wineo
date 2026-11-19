@@ -18,6 +18,7 @@ use crate::paths::Paths;
 
 mod cache;
 mod check;
+mod columns;
 mod input;
 mod preset;
 mod record;
@@ -26,6 +27,7 @@ mod sort;
 
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
+pub use columns::{LIST_COLUMN_MAX, LIST_COLUMN_MIN, ListColumn, set_list_column};
 pub use input::{Bindings, Conflict, Input, PadAction, PadButton, set_input};
 pub use preset::{
     PRESET_NAME_MAX_CHARS, Preset, create_preset, normalize_preset_name, preset_name_problem,
@@ -213,6 +215,9 @@ pub struct View {
     pub group: GroupBy,
     /// Whether entering coverflow also fills the screen.
     pub coverflow_fullscreen: bool,
+    /// The list view's column widths the user changed, in logical pixels. A
+    /// column that isn't here has its default width.
+    pub list_columns: BTreeMap<ListColumn, u16>,
 }
 
 impl Default for View {
@@ -227,6 +232,7 @@ impl Default for View {
             layout: ViewLayout::default(),
             group: GroupBy::default(),
             coverflow_fullscreen: false,
+            list_columns: BTreeMap::new(),
         }
     }
 }
@@ -961,6 +967,7 @@ fn read_library(document: &DocumentMut) -> Library {
                 .get("coverflow_fullscreen")
                 .and_then(Item::as_bool)
                 .unwrap_or_default(),
+            list_columns: columns::read_list_columns(table.get("list_columns")),
         })
         .unwrap_or_default();
     let environments = document

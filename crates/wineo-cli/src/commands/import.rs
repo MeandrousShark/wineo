@@ -9,7 +9,9 @@ use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
-use super::{download, external_runners, import_gog, import_heroic, import_steam, setup};
+use super::{
+    download, external_runners, import_gog, import_heroic, import_roms, import_steam, setup,
+};
 use crate::cancel;
 use crate::picker;
 use crate::prompt::{self, Canceled, Choice, Input, NoInput, Prompt, Reply, Terminal, numbered};
@@ -30,6 +32,18 @@ enum Source {
     Steam(import_steam::Args),
     /// Log in to GOG, list your games, install them, or migrate the ones Heroic installed
     Gog(import_gog::Args),
+    /// Import emulated games from a folder of ROMs, or one game's file
+    Roms(import_roms::Args),
+}
+
+/// The entries of "Import from where?".
+#[derive(Clone, Copy)]
+enum Menu {
+    Prefix,
+    Heroic,
+    Steam,
+    Gog,
+    Roms,
 }
 
 #[derive(clap::Args, Default)]
@@ -77,6 +91,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         Some(Source::Steam(args)) => import_steam::run(paths, args, true),
         Some(Source::Gog(args)) => import_gog::run(paths, args, verbose, true),
         Some(Source::Prefix(args)) => prefix(paths, args, verbose, true),
+        Some(Source::Roms(args)) => import_roms::run(paths, args, true),
         None => {
             anyhow::ensure!(
                 prompt::interactive(),
@@ -90,23 +105,24 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                         "Import from where?",
                         "Source",
                         &numbered([
-                            ("An existing prefix".to_owned(), 1),
-                            ("A manually added Heroic game".to_owned(), 2),
-                            ("A Steam game".to_owned(), 3),
-                            ("A GOG game".to_owned(), 4),
+                            ("An existing prefix".to_owned(), Menu::Prefix),
+                            ("A manually added Heroic game".to_owned(), Menu::Heroic),
+                            ("A Steam game".to_owned(), Menu::Steam),
+                            ("A GOG game".to_owned(), Menu::Gog),
+                            ("Emulated games".to_owned(), Menu::Roms),
                         ]),
                         Some("1"),
                         true,
                     )
                 };
                 match choice {
-                    Ok(Reply::Value(1)) => {
+                    Ok(Reply::Value(Menu::Prefix)) => {
                         match prefix(paths, PrefixArgs::default(), verbose, false) {
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }
                     }
-                    Ok(Reply::Value(2)) => {
+                    Ok(Reply::Value(Menu::Heroic)) => {
                         match import_heroic::run(
                             paths,
                             import_heroic::Args::default(),
@@ -117,14 +133,20 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                             result => return result,
                         }
                     }
-                    Ok(Reply::Value(3)) => {
+                    Ok(Reply::Value(Menu::Steam)) => {
                         match import_steam::run(paths, import_steam::Args::default(), false) {
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }
                     }
-                    Ok(Reply::Value(_)) => {
+                    Ok(Reply::Value(Menu::Gog)) => {
                         match import_gog::run(paths, import_gog::Args::default(), verbose, false) {
+                            Err(error) if error.is::<ReturnToSourceMenu>() => continue,
+                            result => return result,
+                        }
+                    }
+                    Ok(Reply::Value(Menu::Roms)) => {
+                        match import_roms::run(paths, import_roms::Args::default(), false) {
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }
