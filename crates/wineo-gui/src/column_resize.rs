@@ -123,11 +123,16 @@ impl App {
         let Some(drag) = &self.column_drag else {
             return;
         };
-        let column = drag.column;
+        let (column, from, saved) = (drag.column, drag.from, drag.saved);
         // The handle is on the column's left edge, so moving right narrows it.
-        let wanted = drag.from - (x - drag.start_x);
-        let widest = self.column_widest(column, drag.from);
-        self.list_widths.set(column, bounded(wanted, widest));
+        let wanted = from - (x - drag.start_x);
+        let widest = self.column_widest(column, from);
+        let width = bounded(wanted, widest);
+        // Motion that leaves the drawn width alone keeps the saved one, so a
+        // State squeezed to fit isn't saved narrower by a drag that changed
+        // nothing visible.
+        self.list_widths
+            .set(column, if width == from { saved } else { width });
     }
 
     /// Ends a drag, saving where it let go. Closing or hiding the window,
@@ -236,7 +241,11 @@ fn gaps(layout: Layout<'_>, columns: &[ListColumn]) -> Vec<(ListColumn, f32)> {
 
 /// Where the header button of `column` shows its hover look, the cell's
 /// button or, for State's plain label, the room a button would take.
-fn tint_area(layout: Layout<'_>, columns: &[ListColumn], column: ListColumn) -> Option<Rectangle> {
+pub(crate) fn tint_area(
+    layout: Layout<'_>,
+    columns: &[ListColumn],
+    column: ListColumn,
+) -> Option<Rectangle> {
     // The cells start with Title's, which has no handle of its own.
     let index = columns.iter().position(|shown| *shown == column)? + 1;
     let cell = layout.children().next()?.children().nth(index)?;
@@ -249,7 +258,17 @@ fn tint_area(layout: Layout<'_>, columns: &[ListColumn], column: ListColumn) -> 
     } else {
         content
     };
-    area.intersection(&cell.bounds())
+    // Cut to the cell sideways only: State's label has no vertical padding
+    // of its own, so a vertical cut would strip back the button's 2 px.
+    let cell = cell.bounds();
+    let left = area.x.max(cell.x);
+    let right = (area.x + area.width).min(cell.x + cell.width);
+    (right > left).then(|| {
+        Rectangle::new(
+            Point::new(left, area.y),
+            Size::new(right - left, area.height),
+        )
+    })
 }
 
 /// A handle's hit area for the gap starting at `gap`, the header's height.
@@ -440,8 +459,9 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
     ) {
         use iced::advanced::Renderer as _;
         let state = tree.state.downcast_ref::<State>();
-        // The app's word on a drag is the one draw honors: it's the one a
-        // rebuild keeps, and the widget's own can outlive it for a frame.
+        // The app's word on a drag is the one draw honors: it survives a
+        // rebuild of the header mid-drag, which makes the widget's own state
+        // anew.
         let primary = self.dragging;
         // Under the label, so the tint reads as the button's own hover.
         let resized = primary.or_else(|| self.hovered(layout, cursor).map(|(column, _)| column));

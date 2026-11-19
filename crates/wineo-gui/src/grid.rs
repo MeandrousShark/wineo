@@ -241,7 +241,7 @@ impl App {
                     return Some(crate::grid_motion::Outgoing {
                         id: leaving.id.clone(),
                         bounds: leaving.bounds,
-                        card: self.row_drawn(
+                        card: self.row_leaving(
                             &leaving.id,
                             card,
                             leaving.opacity,

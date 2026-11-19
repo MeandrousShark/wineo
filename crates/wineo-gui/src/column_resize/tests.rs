@@ -385,7 +385,7 @@ fn a_drag_cant_widen_past_titles_minimum_with_every_column_showing_or_some_dropp
 }
 
 #[test]
-fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_narrow() {
+fn a_drag_in_a_list_squeezing_state_starts_from_the_drawn_width_and_can_still_narrow() {
     // A wide State in a narrow list is drawn squeezed, so a drag starts from
     // that width, never the saved one.
     let (_root, mut app) = listed_with(3, viewport(400.0), |paths| {
@@ -394,26 +394,25 @@ fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_nar
     let width = app.slot_width();
     assert_eq!(drawn_state_of(&app), 168.0);
     let _ = send(&mut app, Event::Press(ListColumn::State, 200.0));
+    // Motion that leaves the drawn width alone keeps the saved one.
     let _ = send(&mut app, Event::Move(200.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 168.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(190.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 168.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(250.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 118.0);
     let _ = send(&mut app, Event::Move(220.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 148.0);
     let _ = send(&mut app, Event::Move(100.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 168.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(900.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 56.0);
-    assert!(
-        title_cell(
-            &app.drawn_widths(width, app.list_columns()),
-            app.list_columns(),
-            width
-        ) >= TITLE_MIN
-    );
+    let drawn = app.drawn_widths(width, app.list_columns());
+    assert!(title_cell(&drawn, app.list_columns(), width) >= TITLE_MIN);
+}
 
+#[test]
+fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_narrow() {
     // Too narrow for even a default State: Title is under its minimum as
     // before, where a clamp between the two bounds would panic.
     let (_root, mut app) = listed_with(3, viewport(250.0), |paths| {
@@ -421,7 +420,7 @@ fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_nar
     });
     let _ = send(&mut app, Event::Press(ListColumn::State, 200.0));
     let _ = send(&mut app, Event::Move(150.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 128.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(300.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 56.0);
     let _ = send(&mut app, Event::Release);
@@ -525,11 +524,12 @@ fn a_state_drag_in_the_squeezed_layout_starts_at_the_drawn_width_and_saves_what_
     let _ = send(&mut app, Event::Press(ListColumn::State, x));
     // Nothing jumps under the pointer.
     let _ = send(&mut app, Event::Move(x));
-    assert_eq!(app.list_widths.get(ListColumn::State), 268.0);
+    assert_eq!(drawn_state_of(&app), 268.0);
     assert_eq!(gap(&app, ListColumn::State), x - 2.0);
     // It can't widen past what leaves Title its minimum.
     let _ = send(&mut app, Event::Move(x - 50.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 268.0);
+    assert_eq!(drawn_state_of(&app), 268.0);
+    assert_eq!(gap(&app, ListColumn::State), x - 2.0);
     let _ = send(&mut app, Event::Move(x + 30.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 238.0);
     assert_eq!(gap(&app, ListColumn::State), x + 30.0 - 2.0);
@@ -543,6 +543,91 @@ fn a_state_drag_in_the_squeezed_layout_starts_at_the_drawn_width_and_saves_what_
     let _ = send(&mut app, Event::Release);
     assert!(app.view_writes.columns.is_empty());
     assert_eq!(app.list_widths.get(ListColumn::State), 400.0);
+}
+
+/// A State drag from `moves` in a 500 list with State saved at 400, then
+/// the list widened: the wide State is still saved and drawn.
+fn assert_wide_state_survives(moves: &[f32]) {
+    let (_root, mut app) = state_saved(400, 500.0);
+    let x = gap(&app, ListColumn::State) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::State, x));
+    for dx in moves {
+        let _ = send(&mut app, Event::Move(x + dx));
+    }
+    let _ = send(&mut app, Event::Release);
+    assert!(app.view_writes.columns.is_empty(), "{moves:?}");
+    assert_eq!(saved(&app).get(&ListColumn::State), Some(&400), "{moves:?}");
+    app.viewport_width = viewport(1400.0);
+    app.snap_grid();
+    assert_eq!(drawn_state_of(&app), 400.0, "{moves:?}");
+    assert_eq!(app.list_widths.get(ListColumn::State), 400.0, "{moves:?}");
+}
+
+#[test]
+fn a_state_drag_that_changes_nothing_visible_leaves_the_saved_width_alone() {
+    // A fraction of a pixel, a pull left that Title's minimum blocks, and a
+    // drag back to exactly where it started.
+    assert_wide_state_survives(&[0.3]);
+    assert_wide_state_survives(&[-50.0]);
+    assert_wide_state_survives(&[30.0, 0.0]);
+}
+
+#[test]
+fn a_fractional_list_width_still_draws_and_drags_whole_pixels() {
+    let (_root, mut app) = state_saved(400, 500.5);
+    assert_eq!(app.slot_width().fract(), 0.5);
+    let drawn = drawn_state_of(&app);
+    assert_eq!(drawn, 268.0);
+    let x = gap(&app, ListColumn::State) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::State, x));
+    let _ = send(&mut app, Event::Move(x + 30.4));
+    assert_eq!(app.list_widths.get(ListColumn::State), 238.0);
+    assert_eq!(drawn_state_of(&app).fract(), 0.0);
+}
+
+#[test]
+fn states_tint_is_as_tall_as_a_sortable_columns() {
+    let (_root, app) = listed(1400.0);
+    let laid = header(&app);
+    let columns: Vec<ListColumn> = std::iter::once(ListColumn::State)
+        .chain(app.list_columns().iter().map(|column| column.list_column()))
+        .collect();
+    let handles = iced::advanced::Layout::new(&laid.node)
+        .children()
+        .next()
+        .unwrap();
+    let state = tint_area(handles, &columns, ListColumn::State).unwrap();
+    let playtime = tint_area(handles, &columns, ListColumn::Playtime).unwrap();
+    assert_eq!((state.y, state.height), (playtime.y, playtime.height));
+    // Still State's label with a button's side padding.
+    assert!(state.width > 2.0 * HEADER_INSET);
+}
+
+#[test]
+fn a_row_fading_out_fits_its_own_width_for_state_not_the_one_a_drag_holds() {
+    // 744 holds State at 400 and Playtime; the window then narrows to 600.
+    let (_root, mut app) = state_saved(400, 744.0);
+    let x = gap(&app, ListColumn::Playtime) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::Playtime, x));
+    app.viewport_width = viewport(600.0);
+    app.snap_grid();
+    let _ = app.update(Message::SearchChanged("game-001".into()));
+    assert!(!app.grid_motion.leaving().is_empty(), "a row fades out");
+    let grid = layout(&mut app.grid(), Size::new(app.viewport_width, 2000.0));
+    let mut rows: Vec<(usize, f32)> = iced::advanced::Layout::new(&grid)
+        .children()
+        .filter_map(|row| row.children().next())
+        .map(|cells| {
+            (
+                cells.children().count(),
+                cells.children().nth(1).unwrap().bounds().width,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Leaving rows: no optional column, State cut to 368. The live row
+    // holds the drag's columns and State.
+    assert_eq!(rows, [(2, 368.0), (2, 368.0), (3, 400.0)]);
 }
 
 #[test]

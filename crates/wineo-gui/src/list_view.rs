@@ -362,6 +362,34 @@ impl App {
         width: f32,
         columns: &[Column],
     ) -> Element<'a, Message> {
+        let widths = self.drawn_widths(width, columns);
+        self.row_laid(slot, card, opacity, width, columns, widths)
+    }
+
+    /// A row fading out, which fits its own width: State is squeezed for
+    /// that width, not held where a drag left it.
+    pub(crate) fn row_leaving<'a>(
+        &'a self,
+        slot: &SlotId,
+        card: &'a Card,
+        opacity: f32,
+        width: f32,
+        columns: &[Column],
+    ) -> Element<'a, Message> {
+        let mut widths = self.list_widths;
+        widths.state = drawn_state(&widths, columns, width);
+        self.row_laid(slot, card, opacity, width, columns, widths)
+    }
+
+    fn row_laid<'a>(
+        &'a self,
+        slot: &SlotId,
+        card: &'a Card,
+        opacity: f32,
+        width: f32,
+        columns: &[Column],
+        widths: Widths,
+    ) -> Element<'a, Message> {
         let alpha = self.collapse.alpha() * opacity;
         let palette = self.palette.faded(alpha);
         let facts = self.row_facts(slot, card, palette);
@@ -404,7 +432,7 @@ impl App {
         } else {
             thumb
         };
-        let widths = &self.drawn_widths(width, columns);
+        let widths = &widths;
         let fitted = row_text(&facts, columns, width, widths);
         let mut title = column![
             text(fitted.title)
