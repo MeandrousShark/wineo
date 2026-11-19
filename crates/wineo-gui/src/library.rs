@@ -419,7 +419,8 @@ pub(super) fn load_library_with(
         let mut kind = None;
         let mut targets = Vec::new();
         let mut default_target = None;
-        let mut title = item.name.clone();
+        // The overview works the title out from the same snapshot.
+        let title = item.title.clone();
         let mut panel_art = HashMap::new();
         let mut gog_card = None;
         // The overview's kind, for when the config can't be loaded here.
@@ -440,19 +441,9 @@ pub(super) fn load_library_with(
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(env).ok().map(str::to_owned);
-                let steam_name = match &item.kind {
-                    Some(report::KindReport::Proxied { title, .. }) => {
-                        targets = vec!["steam".to_owned()];
-                        Some(title.as_deref())
-                    }
-                    _ => None,
-                };
-                title = report::title(
-                    &item.name,
-                    &env.config,
-                    steam_name,
-                    default_target.as_deref(),
-                );
+                if matches!(item.kind, Some(report::KindReport::Proxied { .. })) {
+                    targets = vec!["steam".to_owned()];
+                }
                 let dir = paths.art_dir(&item.name);
                 let resolved = (|| {
                     let config = ArtConfig::load(&dir)?;
