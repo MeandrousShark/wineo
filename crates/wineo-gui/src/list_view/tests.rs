@@ -497,6 +497,50 @@ fn the_source_and_tags_headers_sort_flip_and_show_the_indicator() {
     let _ = app.list_header();
 }
 
+#[test]
+fn a_third_header_click_goes_back_to_the_default_sort() {
+    let (_root, mut app) = fixture();
+    labeled(&mut app);
+    let default = (SortKey::Name, false);
+    // Text keys start A to Z, the rest start descending; both clear on
+    // the third click.
+    for sort in [
+        SortKey::Source,
+        SortKey::Tags,
+        SortKey::Playtime,
+        SortKey::LastPlayed,
+    ] {
+        let _ = app.update(Message::Sort(SortEvent::Header(sort)));
+        assert_eq!(
+            (app.query.sort, app.query.descending),
+            (sort, sort.starts_descending()),
+            "{sort:?}"
+        );
+        let _ = app.update(Message::Sort(SortEvent::Header(sort)));
+        assert_eq!(
+            (app.query.sort, app.query.descending),
+            (sort, !sort.starts_descending()),
+            "{sort:?}"
+        );
+        let _ = app.update(Message::Sort(SortEvent::Header(sort)));
+        assert_eq!((app.query.sort, app.query.descending), default, "{sort:?}");
+        assert_eq!(shown(&app), ["a", "b", "c", "d"], "{sort:?}");
+    }
+    // Title is the default, so its third state is its first.
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Name)));
+    assert_eq!(
+        (app.query.sort, app.query.descending),
+        (SortKey::Name, true)
+    );
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Name)));
+    assert_eq!((app.query.sort, app.query.descending), default);
+    // A direction flipped from the Sort menu clears on the next click.
+    let _ = app.update(Message::Sort(SortEvent::Pick(SortKey::Source)));
+    let _ = app.update(Message::Sort(SortEvent::FlipDirection));
+    let _ = app.update(Message::Sort(SortEvent::Header(SortKey::Source)));
+    assert_eq!((app.query.sort, app.query.descending), default);
+}
+
 /// Which header cells show a sort arrow at `size`: the button's row holds
 /// the label alone, or the label and the arrow.
 fn arrows(app: &App, size: Size) -> Vec<(&'static str, bool)> {

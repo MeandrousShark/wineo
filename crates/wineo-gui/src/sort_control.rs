@@ -42,8 +42,8 @@ pub(crate) enum Event {
     /// A click outside the menu.
     CloseMenu,
     Pick(SortKey),
-    /// A click on a list column's header: its sort, or the other
-    /// direction when it's the sort already.
+    /// A click on a list column's header: its sort, then the other
+    /// direction, then back to the default sort.
     Header(SortKey),
     FlipDirection,
     ToggleFavoritesFirst,
@@ -366,9 +366,19 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                 app.sort_changed(Field::Sort(sort, app.query.descending)),
             ])
         }
-        Event::Header(sort) if sort == app.query.sort => {
+        Event::Header(sort)
+            if sort == app.query.sort && app.query.descending == sort.starts_descending() =>
+        {
             app.query.descending = !app.query.descending;
             app.sort_changed(Field::Descending(app.query.descending))
+        }
+        // The cycle follows the order shown, not a click count, so a
+        // direction flipped from the Sort menu also clears on the next click.
+        Event::Header(sort) if sort == app.query.sort => {
+            let default = SortKey::default();
+            app.query.sort = default;
+            app.query.descending = default.starts_descending();
+            app.sort_changed(Field::Sort(default, app.query.descending))
         }
         Event::Header(sort) => {
             app.sort_menu = false;
