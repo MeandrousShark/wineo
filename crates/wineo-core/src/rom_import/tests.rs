@@ -393,7 +393,7 @@ fn dolphins_ambiguous_files_take_one_system_choice() {
     .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "Choose gamecube or wii for the games whose files could be either."
+        "Some games could be gamecube or wii; choose one."
     );
     let error = plan_batch(
         &paths,

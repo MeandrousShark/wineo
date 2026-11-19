@@ -649,8 +649,12 @@ impl Flow<'_> {
                         continue;
                     }
                     let what = format!(
-                        "--system {} for the games whose files could be either",
+                        "--system {}, since some games could be either",
                         systems.join(" or --system ")
+                    );
+                    let heading = format!(
+                        "Some games could be {}. Which are they?",
+                        systems.join(" or ")
                     );
                     let choices = numbered(
                         systems
@@ -662,13 +666,7 @@ impl Flow<'_> {
                         .and_then(|current| systems.iter().position(|id| *id == current))
                         .map(|index| (index + 1).to_string());
                     let prompt = self.ask(&what)?;
-                    match prompt.choose(
-                        "Which system are the games whose files could be either?",
-                        "System",
-                        &choices,
-                        default.as_deref(),
-                        true,
-                    )? {
+                    match prompt.choose(&heading, "System", &choices, default.as_deref(), true)? {
                         Reply::Value(value) => {
                             system = Some(value);
                             Reply::Value(())

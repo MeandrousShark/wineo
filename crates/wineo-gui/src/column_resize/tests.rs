@@ -42,6 +42,12 @@ fn listed(width: f32) -> (tempfile::TempDir, App) {
     listed_with(3, width, |_| {})
 }
 
+/// State's width as the list draws it now.
+fn drawn_state_of(app: &App) -> f32 {
+    app.drawn_widths(app.slot_width(), app.list_columns())
+        .get(ListColumn::State)
+}
+
 /// The viewport whose list rows are `slot` wide with the panel closed.
 fn viewport(slot: f32) -> f32 {
     slot + 2.0 * crate::grid_motion::PADDING
@@ -379,29 +385,36 @@ fn a_drag_cant_widen_past_titles_minimum_with_every_column_showing_or_some_dropp
 }
 
 #[test]
-fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_narrow() {
-    // State never leaves, so a wide State in a narrow list squeezes Title.
+fn a_drag_in_a_list_squeezing_state_starts_from_the_drawn_width_and_can_still_narrow() {
+    // A wide State in a narrow list is drawn squeezed, so a drag starts from
+    // that width, never the saved one.
     let (_root, mut app) = listed_with(3, viewport(400.0), |paths| {
         set_list_column(paths, ListColumn::State, Some(300)).unwrap();
     });
     let width = app.slot_width();
-    assert!(title_cell(&app.list_widths, app.list_columns(), width) < TITLE_MIN);
+    assert_eq!(drawn_state_of(&app), 168.0);
     let _ = send(&mut app, Event::Press(ListColumn::State, 200.0));
+    // Motion that leaves the drawn width alone keeps the saved one.
     let _ = send(&mut app, Event::Move(200.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(190.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(250.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 250.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 118.0);
     let _ = send(&mut app, Event::Move(220.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 280.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 148.0);
     let _ = send(&mut app, Event::Move(100.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(900.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 56.0);
+    let drawn = app.drawn_widths(width, app.list_columns());
+    assert!(title_cell(&drawn, app.list_columns(), width) >= TITLE_MIN);
+}
 
-    // Squeezed so far that Title's minimum would leave State under its own,
-    // where a clamp between the two would panic.
+#[test]
+fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_narrow() {
+    // Too narrow for even a default State: Title is under its minimum as
+    // before, where a clamp between the two bounds would panic.
     let (_root, mut app) = listed_with(3, viewport(250.0), |paths| {
         set_list_column(paths, ListColumn::State, Some(300)).unwrap();
     });
@@ -409,10 +422,231 @@ fn a_drag_that_starts_with_title_under_its_minimum_doesnt_jump_and_can_still_nar
     let _ = send(&mut app, Event::Move(150.0));
     assert_eq!(app.list_widths.get(ListColumn::State), 300.0);
     let _ = send(&mut app, Event::Move(300.0));
-    assert_eq!(app.list_widths.get(ListColumn::State), 200.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 56.0);
     let _ = send(&mut app, Event::Release);
+    // Title is under its minimum, so a reset can't widen State.
+    let _ = send(&mut app, Event::Reset(ListColumn::State));
+    assert_eq!(app.list_widths.get(ListColumn::State), 56.0);
+    // From a wider saved width it narrows to the default.
+    let (_root, mut app) = listed_with(3, viewport(250.0), |paths| {
+        set_list_column(paths, ListColumn::State, Some(300)).unwrap();
+    });
     let _ = send(&mut app, Event::Reset(ListColumn::State));
     assert_eq!(app.list_widths.get(ListColumn::State), 128.0);
+}
+
+/// An app whose State is saved at `state`, in a list `slot` wide.
+fn state_saved(state: u16, slot: f32) -> (tempfile::TempDir, App) {
+    listed_with(3, viewport(slot), |paths| {
+        set_list_column(paths, ListColumn::State, Some(state)).unwrap();
+    })
+}
+
+/// The widths of the first row's cells.
+fn row_cells(app: &mut App) -> Vec<f32> {
+    let grid = layout(&mut app.grid(), Size::new(app.viewport_width, 2000.0));
+    iced::advanced::Layout::new(&grid)
+        .children()
+        .next()
+        .and_then(|row| row.children().next())
+        .unwrap()
+        .children()
+        .map(|cell| cell.bounds().width)
+        .collect()
+}
+
+#[test]
+fn a_wide_state_in_a_narrow_list_is_drawn_squeezed_so_title_keeps_its_minimum() {
+    // 500 has no room for an optional column beside a 400 State.
+    let (_root, mut app) = state_saved(400, 500.0);
+    assert!(app.list_columns().is_empty());
+    // 268 leaves Title exactly its 200.
+    assert_eq!(drawn_state_of(&app), 268.0);
+    let laid = header(&app);
+    assert_eq!(cell(&laid, 0).width, TITLE_MIN + 2.0 * HEADER_INSET);
+    assert_eq!(cell(&laid, 1).width, 268.0 + 2.0 * HEADER_INSET);
+    drop(laid);
+    let cells = row_cells(&mut app);
+    assert_eq!(cells[0], TITLE_MIN);
+    assert_eq!(cells[1], 268.0);
+    // The handle sits on the squeezed State's own edge.
+    let laid = header(&app);
+    let left = cell(&laid, 0);
+    drop(laid);
+    assert_eq!(gap(&app, ListColumn::State), left.x + left.width);
+    // Layout never touches the saved width, and a wider list brings it back.
+    assert_eq!(app.list_widths.get(ListColumn::State), 400.0);
+    assert_eq!(saved(&app).get(&ListColumn::State), Some(&400));
+    app.viewport_width = viewport(1400.0);
+    app.snap_grid();
+    assert_eq!(drawn_state_of(&app), 400.0);
+    assert_eq!(saved(&app).get(&ListColumn::State), Some(&400));
+}
+
+#[test]
+fn a_list_too_narrow_for_a_default_state_squeezes_title_as_before() {
+    let (_root, mut app) = state_saved(400, 300.0);
+    // 300 leaves 68 for State, under its default, which is the floor.
+    assert_eq!(drawn_state_of(&app), 128.0);
+    let cells = row_cells(&mut app);
+    assert_eq!(cells[1], 128.0);
+    assert!(cells[0] < TITLE_MIN, "{cells:?}");
+    // A State at its default is never squeezed either.
+    let (_root, app) = listed(viewport(300.0));
+    assert_eq!(drawn_state_of(&app), 128.0);
+}
+
+#[test]
+fn a_saved_state_under_the_default_is_never_widened() {
+    for slot in [300.0, 330.0, 1400.0] {
+        let (_root, app) = state_saved(96, slot);
+        assert_eq!(drawn_state_of(&app), 96.0, "{slot}");
+    }
+    // Squeezed only down to the default: 350 leaves 118 of room.
+    let (_root, app) = state_saved(140, 350.0);
+    assert_eq!(drawn_state_of(&app), 128.0);
+    let (_root, app) = state_saved(200, 380.0);
+    assert_eq!(drawn_state_of(&app), 148.0);
+}
+
+#[test]
+fn a_wide_list_draws_the_saved_state_width() {
+    let (_root, mut app) = state_saved(400, 1400.0);
+    assert_eq!(drawn_state_of(&app), 400.0);
+    assert_eq!(row_cells(&mut app)[1], 400.0);
+    assert_eq!(cell(&header(&app), 1).width, 400.0 + 2.0 * HEADER_INSET);
+}
+
+#[test]
+fn a_state_drag_in_the_squeezed_layout_starts_at_the_drawn_width_and_saves_what_it_drags() {
+    let (_root, mut app) = state_saved(400, 500.0);
+    let x = gap(&app, ListColumn::State) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::State, x));
+    // Nothing jumps under the pointer.
+    let _ = send(&mut app, Event::Move(x));
+    assert_eq!(drawn_state_of(&app), 268.0);
+    assert_eq!(gap(&app, ListColumn::State), x - 2.0);
+    // It can't widen past what leaves Title its minimum.
+    let _ = send(&mut app, Event::Move(x - 50.0));
+    assert_eq!(drawn_state_of(&app), 268.0);
+    assert_eq!(gap(&app, ListColumn::State), x - 2.0);
+    let _ = send(&mut app, Event::Move(x + 30.0));
+    assert_eq!(app.list_widths.get(ListColumn::State), 238.0);
+    assert_eq!(gap(&app, ListColumn::State), x + 30.0 - 2.0);
+    let _ = send(&mut app, Event::Release);
+    finish_write(&mut app, ListColumn::State);
+    assert_eq!(saved(&app).get(&ListColumn::State), Some(&238));
+    // A drag that never moves saves nothing.
+    let (_root, mut app) = state_saved(400, 500.0);
+    let x = gap(&app, ListColumn::State) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::State, x));
+    let _ = send(&mut app, Event::Release);
+    assert!(app.view_writes.columns.is_empty());
+    assert_eq!(app.list_widths.get(ListColumn::State), 400.0);
+}
+
+/// A State drag from `moves` in a 500 list with State saved at 400, then
+/// the list widened: the wide State is still saved and drawn.
+fn assert_wide_state_survives(moves: &[f32]) {
+    let (_root, mut app) = state_saved(400, 500.0);
+    let x = gap(&app, ListColumn::State) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::State, x));
+    for dx in moves {
+        let _ = send(&mut app, Event::Move(x + dx));
+    }
+    let _ = send(&mut app, Event::Release);
+    assert!(app.view_writes.columns.is_empty(), "{moves:?}");
+    assert_eq!(saved(&app).get(&ListColumn::State), Some(&400), "{moves:?}");
+    app.viewport_width = viewport(1400.0);
+    app.snap_grid();
+    assert_eq!(drawn_state_of(&app), 400.0, "{moves:?}");
+    assert_eq!(app.list_widths.get(ListColumn::State), 400.0, "{moves:?}");
+}
+
+#[test]
+fn a_state_drag_that_changes_nothing_visible_leaves_the_saved_width_alone() {
+    // A fraction of a pixel, a pull left that Title's minimum blocks, and a
+    // drag back to exactly where it started.
+    assert_wide_state_survives(&[0.3]);
+    assert_wide_state_survives(&[-50.0]);
+    assert_wide_state_survives(&[30.0, 0.0]);
+}
+
+#[test]
+fn a_fractional_list_width_still_draws_and_drags_whole_pixels() {
+    let (_root, mut app) = state_saved(400, 500.5);
+    assert_eq!(app.slot_width().fract(), 0.5);
+    let drawn = drawn_state_of(&app);
+    assert_eq!(drawn, 268.0);
+    let x = gap(&app, ListColumn::State) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::State, x));
+    let _ = send(&mut app, Event::Move(x + 30.4));
+    assert_eq!(app.list_widths.get(ListColumn::State), 238.0);
+    assert_eq!(drawn_state_of(&app).fract(), 0.0);
+}
+
+#[test]
+fn states_tint_is_as_tall_as_a_sortable_columns() {
+    let (_root, app) = listed(1400.0);
+    let laid = header(&app);
+    let columns: Vec<ListColumn> = std::iter::once(ListColumn::State)
+        .chain(app.list_columns().iter().map(|column| column.list_column()))
+        .collect();
+    let handles = iced::advanced::Layout::new(&laid.node)
+        .children()
+        .next()
+        .unwrap();
+    let state = tint_area(handles, &columns, ListColumn::State).unwrap();
+    let playtime = tint_area(handles, &columns, ListColumn::Playtime).unwrap();
+    assert_eq!((state.y, state.height), (playtime.y, playtime.height));
+    // Still State's label with a button's side padding.
+    assert!(state.width > 2.0 * HEADER_INSET);
+}
+
+#[test]
+fn a_row_fading_out_fits_its_own_width_for_state_not_the_one_a_drag_holds() {
+    // 744 holds State at 400 and Playtime; the window then narrows to 600.
+    let (_root, mut app) = state_saved(400, 744.0);
+    let x = gap(&app, ListColumn::Playtime) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::Playtime, x));
+    app.viewport_width = viewport(600.0);
+    app.snap_grid();
+    let _ = app.update(Message::SearchChanged("game-001".into()));
+    assert!(!app.grid_motion.leaving().is_empty(), "a row fades out");
+    let grid = layout(&mut app.grid(), Size::new(app.viewport_width, 2000.0));
+    let mut rows: Vec<(usize, f32)> = iced::advanced::Layout::new(&grid)
+        .children()
+        .filter_map(|row| row.children().next())
+        .map(|cells| {
+            (
+                cells.children().count(),
+                cells.children().nth(1).unwrap().bounds().width,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Leaving rows: no optional column, State cut to 368. The live row
+    // holds the drag's columns and State.
+    assert_eq!(rows, [(2, 368.0), (2, 368.0), (3, 400.0)]);
+}
+
+#[test]
+fn state_stays_fixed_during_another_columns_drag_and_is_worked_out_again_on_release() {
+    // 744 holds State at 400 and Playtime exactly.
+    let (_root, mut app) = state_saved(400, 744.0);
+    assert_eq!(app.list_columns(), &Column::ALL[..1]);
+    assert_eq!(drawn_state_of(&app), 400.0);
+    let x = gap(&app, ListColumn::Playtime) + 2.0;
+    let _ = send(&mut app, Event::Press(ListColumn::Playtime, x));
+    // The window narrows mid-drag: 600 would squeeze State to 368.
+    app.viewport_width = viewport(600.0);
+    app.snap_grid();
+    assert_eq!(drawn_state_of(&app), 400.0);
+    let _ = send(&mut app, Event::Move(x + 10.0));
+    assert_eq!(drawn_state_of(&app), 400.0);
+    let _ = send(&mut app, Event::Release);
+    assert_eq!(drawn_state_of(&app), 368.0);
+    assert_eq!(app.list_widths.get(ListColumn::State), 400.0);
 }
 
 #[test]
@@ -538,8 +772,32 @@ fn the_hover_line_sits_in_the_gap_on_its_third_pixel() {
     }
 }
 
+/// The middle pixel of every handle's line in `frame`, in `ListColumn::ALL`
+/// order.
+fn middles(app: &App, frame: &[u8], bounds: Rectangle) -> Vec<[u8; 4]> {
+    ListColumn::ALL
+        .into_iter()
+        .map(|column| {
+            let x = gap(app, column) + LINE_OFFSET;
+            pixel(frame, app.viewport_width, x, bounds.center_y())
+        })
+        .collect()
+}
+
+/// What the muted color looks like at the strength the lines draw it, as
+/// the frame holds it: the screenshot's color is premultiplied by alpha.
+fn faint(app: &App) -> Color {
+    let muted = app.palette.muted;
+    Color::from_rgba(
+        muted.r * MUTED_STRENGTH,
+        muted.g * MUTED_STRENGTH,
+        muted.b * MUTED_STRENGTH,
+        MUTED_STRENGTH,
+    )
+}
+
 #[test]
-fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging() {
+fn nothing_shows_at_rest_every_line_muted_on_the_header_and_a_primary_one_while_dragging() {
     let (_root, mut app) = listed(1400.0);
     let width = app.viewport_width;
     let mut laid = header(&app);
@@ -552,28 +810,39 @@ fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging(
             assert_eq!(pixel(&rest, width, x, y as f32)[3], 0, "{column:?} at {y}");
         }
     }
+    let every_line: std::collections::BTreeSet<usize> = ListColumn::ALL
+        .into_iter()
+        .map(|column| (gap(&app, column) + LINE_OFFSET) as usize)
+        .collect();
+    // The lines, and the hover tint on the one column's cell that shows it.
+    let lines_and_tint = |changed: std::collections::BTreeSet<usize>, tinted: Rectangle| {
+        assert!(every_line.is_subset(&changed), "{changed:?}");
+        for x in changed.difference(&every_line) {
+            assert!(
+                *x as f32 >= tinted.x && (*x as f32) < tinted.x + tinted.width,
+                "{x} outside {tinted:?}"
+            );
+        }
+    };
     for column in ListColumn::ALL {
         let gap = gap(&app, column);
-        // Anywhere in the hit area, even over a button's edge.
+        let tinted = cell(&laid, cell_index(&app, column));
+        // Anywhere in the hit area, even over a button's edge, every line
+        // shows the same, the hovered one included.
         for dx in [-2.0, 0.5, 3.0, 5.5] {
             let at = Cursor::Available(Point::new(gap + dx, bounds.center_y()));
             let _ = laid.event_at(&redraw(), at);
             let hovered = laid.draw_at(at);
-            assert_eq!(
-                changed_columns(&rest, &hovered, width),
-                [(gap + LINE_OFFSET) as usize].into(),
-                "{column:?} at {dx}"
-            );
-            for y in [bounds.y, bounds.center_y(), bounds.y + bounds.height - 1.0] {
-                let drawn = pixel(&hovered, width, gap + LINE_OFFSET, y);
-                assert!(near(drawn, app.palette.muted), "{column:?}: {drawn:?}");
+            lines_and_tint(changed_columns(&rest, &hovered, width), tinted);
+            for middle in middles(&app, &hovered, bounds) {
+                assert!(near(middle, faint(&app)), "{column:?}: {middle:?}");
             }
             assert_eq!(
                 laid.interaction_at(at),
                 mouse::Interaction::ResizingHorizontally
             );
         }
-        // Just outside it, nothing.
+        // Just outside it, the lines stay and the cursor isn't the resize one.
         let outside = Cursor::Available(Point::new(gap + 6.5, bounds.center_y()));
         let _ = laid.event_at(&redraw(), outside);
         assert_ne!(
@@ -588,13 +857,18 @@ fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging(
     let mut laid = header(&app);
     let _ = laid.event_at(&redraw(), Cursor::Unavailable);
     let dragging = laid.draw_at(Cursor::Unavailable);
-    assert_eq!(
-        changed_columns(&rest, &dragging, width),
-        [(gap + LINE_OFFSET) as usize].into()
-    );
-    for y in [bounds.y, bounds.y + bounds.height - 1.0] {
-        let drawn = pixel(&dragging, width, gap + LINE_OFFSET, y);
-        assert!(near(drawn, app.palette.primary), "{drawn:?}");
+    let source = cell(&laid, cell_index(&app, ListColumn::Source));
+    lines_and_tint(changed_columns(&rest, &dragging, width), source);
+    for (column, middle) in ListColumn::ALL
+        .into_iter()
+        .zip(middles(&app, &dragging, bounds))
+    {
+        let wanted = if column == ListColumn::Source {
+            app.palette.primary
+        } else {
+            faint(&app)
+        };
+        assert!(near(middle, wanted), "{column:?}: {middle:?}");
     }
     // The header's height only.
     let below = pixel(
@@ -615,6 +889,168 @@ fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging(
         laid.interaction_at(away),
         mouse::Interaction::ResizingHorizontally
     );
+}
+
+#[test]
+fn a_pointer_on_a_label_shows_every_line_and_off_the_header_none() {
+    let (_root, app) = listed(1400.0);
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let playtime = cell(&laid, 2);
+    let on_label = Cursor::Available(playtime.center());
+    let _ = laid.event_at(&redraw(), Cursor::Unavailable);
+    let rest = laid.draw_at(Cursor::Unavailable);
+    let _ = laid.event_at(&redraw(), on_label);
+    let labelled = laid.draw_at(on_label);
+    // The label's own hover look changes pixels too, so look at the lines.
+    for (column, middle) in ListColumn::ALL
+        .into_iter()
+        .zip(middles(&app, &labelled, bounds))
+    {
+        assert!(near(middle, faint(&app)), "{column:?}: {middle:?}");
+    }
+    assert_ne!(
+        laid.interaction_at(on_label),
+        mouse::Interaction::ResizingHorizontally
+    );
+    // Below the header, where nothing of it is.
+    let off = Cursor::Available(Point::new(
+        playtime.center().x,
+        bounds.y + bounds.height + 20.0,
+    ));
+    let _ = laid.event_at(&redraw(), off);
+    assert_eq!(laid.draw_at(off), rest);
+    for middle in middles(&app, &laid.draw_at(off), bounds) {
+        assert_eq!(middle[3], 0);
+    }
+}
+
+#[test]
+fn a_drag_with_the_pointer_off_the_header_keeps_the_dragged_line_primary_and_the_rest_muted() {
+    let (_root, mut app) = listed(1400.0);
+    let gap = gap(&app, ListColumn::Tags);
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, gap + 2.0));
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    assert!(!off.is_over(bounds));
+    let _ = laid.event_at(&redraw(), off);
+    let frame = laid.draw_at(off);
+    let drawn = middles(&app, &frame, bounds);
+    for (column, middle) in ListColumn::ALL.into_iter().zip(drawn) {
+        let wanted = if column == ListColumn::Tags {
+            app.palette.primary
+        } else {
+            faint(&app)
+        };
+        assert!(near(middle, wanted), "{column:?}: {middle:?}");
+    }
+}
+
+#[test]
+fn a_line_fades_in_from_each_end_and_the_muted_one_is_fainter_than_the_primary() {
+    let (_root, mut app) = listed(1400.0);
+    let width = app.viewport_width;
+    let source = gap(&app, ListColumn::Source) + LINE_OFFSET;
+    let tags = gap(&app, ListColumn::Tags) + LINE_OFFSET;
+    let _ = send(&mut app, Event::Press(ListColumn::Source, source));
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    let _ = laid.event_at(&redraw(), off);
+    let frame = laid.draw_at(off);
+    let alpha_at = |x: f32, y: f32| pixel(&frame, width, x, y)[3];
+    let top = bounds.y;
+    let quarter = bounds.height * FADE;
+    for x in [source, tags] {
+        let middle = alpha_at(x, bounds.center_y());
+        // The ends are fainter than the middle, and the fade rises toward it.
+        for y in [top, top + quarter / 2.0, bounds.y + bounds.height - 1.0] {
+            assert!(alpha_at(x, y) < middle, "x {x} y {y}");
+        }
+        assert!(alpha_at(x, top) < alpha_at(x, top + quarter / 2.0));
+        // Solid between the fades.
+        assert_eq!(alpha_at(x, top + quarter + 1.0), middle);
+        assert_eq!(alpha_at(x, top + bounds.height - quarter - 2.0), middle);
+    }
+    let primary = alpha_at(source, bounds.center_y());
+    let muted = alpha_at(tags, bounds.center_y());
+    assert!(primary >= 253, "{primary}");
+    assert!(muted < primary && muted > 0, "{muted}");
+    assert!(near(
+        pixel(&frame, width, tags, bounds.center_y()),
+        faint(&app)
+    ));
+}
+
+/// Which header cells show the hover tint in `frame`, by cell index: Title's
+/// is 0, State's 1, and the others follow. Each cell is read on its
+/// button's left padding, clear of the label and the lines.
+fn tinted(laid: &Laid<'_, Message>, frame: &[u8], width: f32) -> Vec<usize> {
+    (0..cell_count(laid))
+        .filter(|index| {
+            let content = bounds_at(&laid.node, &[0, 0, *index, 0]);
+            // State's label has no button, so its padding is the cell's own.
+            let x = if *index == 1 {
+                content.x - 2.0
+            } else {
+                content.x + 2.0
+            };
+            let tint = pixel(frame, width, x, content.center_y());
+            // A tint is the primary color at a tenth, never a label's pixel.
+            tint[3] > 0 && tint[3] < 40
+        })
+        .collect()
+}
+
+#[test]
+fn the_column_a_handle_resizes_shows_the_hover_tint_while_its_hovered_or_dragged() {
+    let (_root, mut app) = listed(1400.0);
+    let width = app.viewport_width;
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let _ = laid.event_at(&redraw(), Cursor::Unavailable);
+    let rest = laid.draw_at(Cursor::Unavailable);
+    assert_eq!(tinted(&laid, &rest, width), Vec::<usize>::new());
+    for column in ListColumn::ALL {
+        let gap = gap(&app, column);
+        for dx in [-2.0, 0.5, 5.5] {
+            let at = Cursor::Available(Point::new(gap + dx, bounds.center_y()));
+            let _ = laid.event_at(&move_to(at.position().unwrap()).0, at);
+            let _ = laid.event_at(&redraw(), at);
+            let frame = laid.draw_at(at);
+            assert_eq!(
+                tinted(&laid, &frame, width),
+                vec![cell_index(&app, column)],
+                "{column:?} at {dx}"
+            );
+        }
+    }
+    drop(laid);
+    // A drag keeps its column tinted with the pointer off the header.
+    let _ = send(&mut app, Event::Press(ListColumn::Source, 0.0));
+    let mut laid = header(&app);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    let _ = laid.event_at(&redraw(), off);
+    let frame = laid.draw_at(off);
+    assert_eq!(
+        tinted(&laid, &frame, width),
+        vec![cell_index(&app, ListColumn::Source)]
+    );
+}
+
+#[test]
+fn a_plain_label_hover_still_tints_only_that_label() {
+    let (_root, app) = listed(1400.0);
+    let width = app.viewport_width;
+    let mut laid = header(&app);
+    for index in [0, 2, 3, 5] {
+        let label = Cursor::Available(bounds_at(&laid.node, &[0, 0, index, 0]).center());
+        let _ = laid.event_at(&move_to(label.position().unwrap()).0, label);
+        let _ = laid.event_at(&redraw(), label);
+        let frame = laid.draw_at(label);
+        assert_eq!(tinted(&laid, &frame, width), vec![index]);
+    }
 }
 
 #[test]
@@ -648,15 +1084,20 @@ fn the_sort_buttons_show_no_hover_under_a_handle_or_during_a_drag() {
     // The check finds a hover where there is one.
     let hovered = frame(&mut laid, on_label);
     assert!(in_playtime(changed_columns(&rest, &hovered, width)) > 0);
-    let handle = frame(&mut laid, on_handle);
-    assert_eq!(in_playtime(changed_columns(&rest, &handle, width)), 0);
+    // The tint is the handle's, not a hover: the label's own look doesn't
+    // show, so a point over the button and one beside it draw the same.
+    assert!(in_playtime(changed_columns(&rest, &frame(&mut laid, on_handle), width)) > 0);
+    let beside = Cursor::Available(Point::new(gap + 1.0, bounds.center_y()));
+    assert_eq!(frame(&mut laid, on_handle), frame(&mut laid, beside));
+    assert_ne!(frame(&mut laid, on_handle), hovered);
     // During a drag, a label under the pointer stays as it was.
-    let _ = events(
-        &mut laid,
-        &[press_at(Point::new(gap + 2.0, bounds.center_y()))],
-    );
-    let dragged = frame(&mut laid, on_label);
-    assert_eq!(in_playtime(changed_columns(&rest, &dragged, width)), 0);
+    drop(laid);
+    let mut app = app;
+    let _ = send(&mut app, Event::Press(ListColumn::Playtime, gap + 2.0));
+    let mut laid = header(&app);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    let away = frame(&mut laid, off);
+    assert_eq!(frame(&mut laid, on_label), away);
 }
 
 /// Finds the header's place in the whole window.

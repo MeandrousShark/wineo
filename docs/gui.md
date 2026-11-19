@@ -340,17 +340,22 @@ the install bar, the state's dot, and the dim for a hidden or not installed
 game. Text that doesn't fit ends in an ellipsis.
 
 Click **Title**, **Playtime**, **Last played**, **Source**, or **Tags** in
-the header to sort by it, the same as picking it in the Sort menu, and click
-it again to flip the direction. Date added stays in the Sort menu. As the window or the panel
+the header to sort by it, the same as picking it in the Sort menu. Click
+it again to flip the direction, and a third time to go back to sorting by
+title. Date added stays in the Sort menu. As the window or the panel
 narrows the list, columns leave from the right: Tags, then Source, Last
 played, and Playtime. Title and State always stay.
 
 Drag the divider on the left of State, Playtime, Last played, Source, or
 Tags to make that column narrower or wider; Title takes up the
-difference. A column can't widen once Title is down to its minimum, so a
+difference. The dividers show while the pointer is on the header, and the
+column a divider resizes lights up as you point at it. A column can't widen once Title is down to its minimum, so a
 drag never pushes a column out, and narrowing can bring back a column the
 list had dropped when you let go. Double-click a divider to put its column
-back to its default width. The widths are kept in `library.toml`
+back to its default width. When the list only has room for Title and
+State, a widened State is drawn narrower, down to its default width, so
+titles stay readable; it goes back to your width when there's room. The
+widths are kept in `library.toml`
 (`[view.list_columns]`), one setting for every preset, and read when wineo
 starts. A drag that gets cut short keeps the width it had reached: the
 window losing focus, closing, or hiding, a switch to another layout, or a
