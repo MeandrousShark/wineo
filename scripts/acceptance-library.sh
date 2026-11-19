@@ -657,6 +657,18 @@ add wine-played-ten-days-ago added=2026-07-01T09:00:00Z sessions="2026-10-27T20:
 # source: Windows; tags: several (rpg, co-op); hidden and played yesterday, where Group by's Hidden and Recently played sections meet
 add wine-hidden-recent tags="rpg co-op" hidden added=2026-09-12T09:00:00Z sessions="2026-11-05T20:00:00Z@3600"
 
+# Not so fuzzy search (plan 0069). The names don't spell the searches, so
+# each hit comes from the title.
+
+# source: Windows; tags: two (game, strategy); search: initials and a Roman numeral (gta, gta4, gta 4, gtaiv, tidal iv, armada 4, gr ar find it; atg doesn't), and strategy for list --tag strategy gta
+add wine-search-numerals tags="game strategy" title="Grand Tidal Armada IV" added=2026-09-17T09:00:00Z
+
+# source: Windows; tags: one; search: a hyphen joined (skyrunner finds it)
+add wine-search-hyphen tags=game title="Sky-Runner" added=2026-09-17T10:00:00Z
+
+# source: Windows; tags: one; search: camelCase words and a Roman numeral (sf2 and starforge 2 find it)
+add wine-search-camel tags=game title="StarForge II" added=2026-09-17T11:00:00Z
+
 # Tray and hide on launch (plan 0063). These all play after every game above,
 # so with Hide to the tray off nothing else can reach the tray's Play rows.
 # The tray lists the three newest played games that aren't hidden, trashed, or

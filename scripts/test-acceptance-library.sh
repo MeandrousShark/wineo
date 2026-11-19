@@ -69,6 +69,24 @@ for pattern in 'kind = "proxied"' 'kind = "native"' '^gog_id' '^heroic_id' 'stor
     fi
 done
 
+# The search games (plan 0069): each title is there, and the file holding it
+# has a name that doesn't give the searches away, so a hit comes from the
+# title. Grand Tidal Armada IV carries strategy for the --tag check.
+for title in 'Grand Tidal Armada IV' 'Sky-Runner' 'StarForge II'; do
+    file=$(grep -lxF "title = \"$title\"" "$tmp"/one/config/environments/*.toml || true)
+    name=$(basename -- "$file" .toml)
+    if [[ $(wc -l <<<"$file") -eq 1 && -n $file ]] && ! grep -qiE 'gta|tidal|armada|sky|runner|star|forge' <<<"$name"; then
+        pass
+    else
+        fail "no single game titled $title with a name that doesn't spell it: ${file:-none}"
+    fi
+done
+if grep -qxF 'tags = ["game", "strategy"]' "$tmp/one/config/environments/wine-search-numerals.toml"; then
+    pass
+else
+    fail "Grand Tidal Armada IV isn't tagged strategy"
+fi
+
 # no_leftovers LABEL PARENT: a refusal must not leave its work folder behind.
 no_leftovers() {
     if [[ -z $(find "$2" -maxdepth 1 -name '.acceptance-library.*') ]]; then
