@@ -122,6 +122,7 @@ fn only_canonical_uppercase_roman_and_digits_are_numerals() {
         ("Xiv", "14", false),
         ("Game \u{cd}", "game 1", false),
         ("Game I\u{301}", "game 1", false),
+        ("Game 1\u{301}", "game i", false),
         ("Game I\u{301}", "game \u{ed}", true),
         ("XXXI", "31", false),
         ("IIII", "4", false),
@@ -157,6 +158,10 @@ fn many_numeral_words_spell_in_polynomial_time() {
         (&ones, &ones_then_x, false),
         (&twos, &is_then_z, false),
         (&twos, &digit_twos, true),
+        // The shorter stand-ins fail first at the last word with more left
+        // to spell, so only a memo keyed on what is left gets these.
+        ("II II II II", "iiiiii2", true),
+        ("II II II II", "2iiii2", true),
     ]);
 }
 
