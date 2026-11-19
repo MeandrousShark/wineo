@@ -663,6 +663,7 @@ fn ctrl_wheel_over_the_panel_or_the_filter_tab_does_what_the_wheel_does_there() 
     for card in &mut app.cards {
         card.tags = vec!["game".into()];
     }
+    app.order.cards_edited();
     let _ = app.update(Message::Filter(crate::filter_control::Event::ToggleTag(
         "game".into(),
     )));
@@ -1632,6 +1633,8 @@ fn arrow_during_a_zoom(change: fn(&mut App)) -> (tempfile::TempDir, App, String)
     for card in &mut app.cards {
         card.tags = vec!["game".into()];
     }
+    app.order.cards_edited();
+    app.reorder();
     let _ = zoom(&mut app, Event::Key(Key::In));
     let _ = frame(&mut app, 40);
     app.selected = Some(app.filtered()[98].name.clone());

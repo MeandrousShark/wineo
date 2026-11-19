@@ -174,14 +174,17 @@ impl App {
                 .zip(&cards)
                 .all(|(old, new)| order::same_inputs(old, new, self.group)))
         .then(|| {
-            order::Order::sorted(order::Of {
-                cards: &cards,
-                search: &self.search,
-                query: self.query,
-                filters: &self.filters,
-                group: self.group,
-                collapsed: &self.collapsed,
-            })
+            order::Order::sorted(
+                order::Of {
+                    cards: &cards,
+                    search: &self.search,
+                    query: self.query,
+                    filters: &self.filters,
+                    group: self.group,
+                    collapsed: &self.collapsed,
+                },
+                None,
+            )
         });
         let layout_changed = new_order.as_ref().is_some_and(|built| {
             let indices = built.indices();

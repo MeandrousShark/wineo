@@ -846,6 +846,196 @@ fn search_is_case_insensitive() {
     assert_eq!(app.filtered().len(), 1);
     assert_eq!(app.filtered()[0].name, "dusk_id");
 }
+/// Merges titled, tagged cards as a rescan would.
+fn searchable(app: &mut App, games: &[(&str, &str, &[&str])]) {
+    let cards = games
+        .iter()
+        .map(|&(name, title, tags)| {
+            let mut card = card(name, State::Inactive, 0);
+            card.display_title = title.into();
+            card.tags = tags.iter().map(|&tag| tag.into()).collect();
+            card
+        })
+        .collect();
+    app.merge(cards);
+}
+
+fn found(app: &App) -> Vec<&str> {
+    app.filtered()
+        .into_iter()
+        .map(|card| card.name.as_str())
+        .collect()
+}
+
+#[test]
+fn each_search_rule_finds_its_card_through_the_search_field() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+            ("env-c", "Sid Meier's Civilization VI", &[]),
+            ("env-d", "StarForge II", &[]),
+            ("env-e", "Éclair Tactics", &["co-op"]),
+            ("env-f", "Fallout 4", &[]),
+        ],
+    );
+    for (search, want) in [
+        ("tidal", "env-a"),
+        ("eclair", "env-e"),
+        ("skyrunner", "env-b"),
+        ("coop", "env-e"),
+        ("civ 6", "env-c"),
+        ("armada gr", "env-a"),
+        ("fallout iv", "env-f"),
+        ("starforge 2", "env-d"),
+        ("gta", "env-a"),
+        ("gta 4", "env-a"),
+        ("gtaiv", "env-a"),
+        ("sf2", "env-d"),
+        ("smc", "env-c"),
+    ] {
+        let _ = app.search_changed(search.into());
+        assert_eq!(found(&app), [want], "{search}");
+    }
+    for search in ["atg", "civ6", "civilisation", "foiv"] {
+        let _ = app.search_changed(search.into());
+        assert!(found(&app).is_empty(), "{search} found {:?}", found(&app));
+    }
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn a_hidden_card_found_by_a_new_rule_counts_as_a_hidden_match() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+        ],
+    );
+    let mut cards = app.cards.clone();
+    cards[0].hidden = true;
+    app.merge(cards);
+    let _ = app.search_changed("gta".into());
+    assert_eq!(
+        app.empty_state(),
+        Some(crate::library_states::Empty::NoMatches { hidden_matching: 1 })
+    );
+    let _ = app.search_changed("skyrunner".into());
+    assert_eq!(found(&app), ["env-b"]);
+    assert_eq!(app.order.counts(app.order_inputs()).hidden_matching, 0);
+}
+
+#[test]
+fn down_from_the_search_lands_on_the_first_card_a_new_rule_finds() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("aaa", "Aardvark Adventure", &[]),
+            ("mmm", "Golden Tower Arena", &[]),
+            ("zzz", "Grand Tidal Armada IV", &[]),
+        ],
+    );
+    let _ = app.search_changed("gta".into());
+    assert_eq!(found(&app), ["mmm", "zzz"]);
+    let down = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
+    let _ = app.handle_key(down, keyboard::Modifiers::empty(), true, true);
+    assert_eq!(app.selected.as_deref(), Some("mmm"));
+}
+
+#[test]
+fn a_rescan_with_a_changed_title_matches_the_search_again() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[("env-a", "Old Harbor", &[]), ("env-b", "Sky-Runner", &[])],
+    );
+    let _ = app.search_changed("gta".into());
+    assert!(found(&app).is_empty());
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+        ],
+    );
+    assert_eq!(found(&app), ["env-a"]);
+    searchable(
+        &mut app,
+        &[("env-a", "Old Harbor", &[]), ("env-b", "Sky-Runner", &[])],
+    );
+    assert!(found(&app).is_empty());
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn search_changes_and_a_quiet_rescan_prepare_no_fields() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+        ],
+    );
+    let prepared = app.order.preparations;
+    let _ = app.search_changed("g".into());
+    let _ = app.search_changed("gta".into());
+    assert_eq!(found(&app), ["env-a"]);
+    // The same cards read again, as a quiet rescan has them.
+    app.merge(app.cards.clone());
+    let _ = app.search_changed("skyrunner".into());
+    assert_eq!(found(&app), ["env-b"]);
+    assert_eq!(app.order.preparations, prepared);
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn a_bulk_tag_is_found_at_once_and_a_removed_one_is_not() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("env-a", "Grand Tidal Armada IV", &[]),
+            ("env-b", "Sky-Runner", &[]),
+        ],
+    );
+    let _ = app.search_changed("gta".into());
+    app.marked.insert("env-a".to_owned());
+    let _ = app.tag_marked("zz", true);
+    let _ = app.search_changed("zz".into());
+    assert_eq!(found(&app), ["env-a"]);
+    // A rescan read before the write landed still has the tag on screen.
+    let mut stale = app.cards.clone();
+    stale[0].tags.clear();
+    app.merge(stale);
+    assert_eq!(found(&app), ["env-a"]);
+    let _ = app.tag_marked("zz", false);
+    assert!(found(&app).is_empty());
+    assert_eq!(app.order.misses.get(), 0);
+}
+
+#[test]
+fn the_name_sort_keeps_an_accented_title_after_z() {
+    let mut app = app();
+    searchable(
+        &mut app,
+        &[
+            ("a", "Éclair Tactics", &[]),
+            ("b", "Zebra Safari", &[]),
+            ("c", "Aardvark Adventure", &[]),
+        ],
+    );
+    let _ = app.search_changed("a".into());
+    assert_eq!(found(&app), ["c", "b", "a"]);
+    let _ = app.search_changed("eclair".into());
+    assert_eq!(found(&app), ["a"]);
+}
+
 #[test]
 fn card_state_and_playtime() {
     let palette = Palette::DARK;
