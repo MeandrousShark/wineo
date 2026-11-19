@@ -1073,6 +1073,18 @@ fn a_rescan_prepares_only_the_cards_whose_title_name_or_tags_changed() {
     assert_eq!(app.order.misses.get(), 0);
 }
 
+// The guard only runs with debug assertions, which the benches build without.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "changed in place")]
+fn a_title_edited_in_place_without_cards_edited_trips_the_guard() {
+    let mut app = app();
+    searchable(&mut app, &[("env-a", "Old Harbor", &[])]);
+    let _ = app.search_changed("old".into());
+    app.cards[0].display_title = "Grand Tidal Armada IV".into();
+    let _ = app.search_changed("gta".into());
+}
+
 #[test]
 fn an_order_with_no_search_prepares_no_fields() {
     let mut app = app();
