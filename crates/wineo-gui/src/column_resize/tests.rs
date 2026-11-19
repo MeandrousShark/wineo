@@ -580,19 +580,26 @@ fn nothing_shows_at_rest_every_line_muted_on_the_header_and_a_primary_one_while_
         .into_iter()
         .map(|column| (gap(&app, column) + LINE_OFFSET) as usize)
         .collect();
+    // The lines, and the hover tint on the one column's cell that shows it.
+    let lines_and_tint = |changed: std::collections::BTreeSet<usize>, tinted: Rectangle| {
+        assert!(every_line.is_subset(&changed), "{changed:?}");
+        for x in changed.difference(&every_line) {
+            assert!(
+                *x as f32 >= tinted.x && (*x as f32) < tinted.x + tinted.width,
+                "{x} outside {tinted:?}"
+            );
+        }
+    };
     for column in ListColumn::ALL {
         let gap = gap(&app, column);
+        let tinted = cell(&laid, cell_index(&app, column));
         // Anywhere in the hit area, even over a button's edge, every line
         // shows the same, the hovered one included.
         for dx in [-2.0, 0.5, 3.0, 5.5] {
             let at = Cursor::Available(Point::new(gap + dx, bounds.center_y()));
             let _ = laid.event_at(&redraw(), at);
             let hovered = laid.draw_at(at);
-            assert_eq!(
-                changed_columns(&rest, &hovered, width),
-                every_line,
-                "{column:?} at {dx}"
-            );
+            lines_and_tint(changed_columns(&rest, &hovered, width), tinted);
             for middle in middles(&app, &hovered, bounds) {
                 assert!(near(middle, faint(&app)), "{column:?}: {middle:?}");
             }
@@ -616,7 +623,8 @@ fn nothing_shows_at_rest_every_line_muted_on_the_header_and_a_primary_one_while_
     let mut laid = header(&app);
     let _ = laid.event_at(&redraw(), Cursor::Unavailable);
     let dragging = laid.draw_at(Cursor::Unavailable);
-    assert_eq!(changed_columns(&rest, &dragging, width), every_line);
+    let source = cell(&laid, cell_index(&app, ListColumn::Source));
+    lines_and_tint(changed_columns(&rest, &dragging, width), source);
     for (column, middle) in ListColumn::ALL
         .into_iter()
         .zip(middles(&app, &dragging, bounds))
@@ -741,6 +749,76 @@ fn a_line_fades_in_from_each_end_and_the_muted_one_is_fainter_than_the_primary()
     ));
 }
 
+/// Which header cells show the hover tint in `frame`, by cell index: Title's
+/// is 0, State's 1, and the others follow. Each cell is read on its
+/// button's left padding, clear of the label and the lines.
+fn tinted(laid: &Laid<'_, Message>, frame: &[u8], width: f32) -> Vec<usize> {
+    (0..cell_count(laid))
+        .filter(|index| {
+            let content = bounds_at(&laid.node, &[0, 0, *index, 0]);
+            // State's label has no button, so its padding is the cell's own.
+            let x = if *index == 1 {
+                content.x - 2.0
+            } else {
+                content.x + 2.0
+            };
+            let tint = pixel(frame, width, x, content.center_y());
+            // A tint is the primary color at a tenth, never a label's pixel.
+            tint[3] > 0 && tint[3] < 40
+        })
+        .collect()
+}
+
+#[test]
+fn the_column_a_handle_resizes_shows_the_hover_tint_while_its_hovered_or_dragged() {
+    let (_root, mut app) = listed(1400.0);
+    let width = app.viewport_width;
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let _ = laid.event_at(&redraw(), Cursor::Unavailable);
+    let rest = laid.draw_at(Cursor::Unavailable);
+    assert_eq!(tinted(&laid, &rest, width), Vec::<usize>::new());
+    for column in ListColumn::ALL {
+        let gap = gap(&app, column);
+        for dx in [-2.0, 0.5, 5.5] {
+            let at = Cursor::Available(Point::new(gap + dx, bounds.center_y()));
+            let _ = laid.event_at(&move_to(at.position().unwrap()).0, at);
+            let _ = laid.event_at(&redraw(), at);
+            let frame = laid.draw_at(at);
+            assert_eq!(
+                tinted(&laid, &frame, width),
+                vec![cell_index(&app, column)],
+                "{column:?} at {dx}"
+            );
+        }
+    }
+    drop(laid);
+    // A drag keeps its column tinted with the pointer off the header.
+    let _ = send(&mut app, Event::Press(ListColumn::Source, 0.0));
+    let mut laid = header(&app);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    let _ = laid.event_at(&redraw(), off);
+    let frame = laid.draw_at(off);
+    assert_eq!(
+        tinted(&laid, &frame, width),
+        vec![cell_index(&app, ListColumn::Source)]
+    );
+}
+
+#[test]
+fn a_plain_label_hover_still_tints_only_that_label() {
+    let (_root, app) = listed(1400.0);
+    let width = app.viewport_width;
+    let mut laid = header(&app);
+    for index in [0, 2, 3, 5] {
+        let label = Cursor::Available(bounds_at(&laid.node, &[0, 0, index, 0]).center());
+        let _ = laid.event_at(&move_to(label.position().unwrap()).0, label);
+        let _ = laid.event_at(&redraw(), label);
+        let frame = laid.draw_at(label);
+        assert_eq!(tinted(&laid, &frame, width), vec![index]);
+    }
+}
+
 #[test]
 fn the_sort_buttons_show_no_hover_under_a_handle_or_during_a_drag() {
     let (_root, app) = listed(1400.0);
@@ -772,15 +850,20 @@ fn the_sort_buttons_show_no_hover_under_a_handle_or_during_a_drag() {
     // The check finds a hover where there is one.
     let hovered = frame(&mut laid, on_label);
     assert!(in_playtime(changed_columns(&rest, &hovered, width)) > 0);
-    let handle = frame(&mut laid, on_handle);
-    assert_eq!(in_playtime(changed_columns(&rest, &handle, width)), 0);
+    // The tint is the handle's, not a hover: the label's own look doesn't
+    // show, so a point over the button and one beside it draw the same.
+    assert!(in_playtime(changed_columns(&rest, &frame(&mut laid, on_handle), width)) > 0);
+    let beside = Cursor::Available(Point::new(gap + 1.0, bounds.center_y()));
+    assert_eq!(frame(&mut laid, on_handle), frame(&mut laid, beside));
+    assert_ne!(frame(&mut laid, on_handle), hovered);
     // During a drag, a label under the pointer stays as it was.
-    let _ = events(
-        &mut laid,
-        &[press_at(Point::new(gap + 2.0, bounds.center_y()))],
-    );
-    let dragged = frame(&mut laid, on_label);
-    assert_eq!(in_playtime(changed_columns(&rest, &dragged, width)), 0);
+    drop(laid);
+    let mut app = app;
+    let _ = send(&mut app, Event::Press(ListColumn::Playtime, gap + 2.0));
+    let mut laid = header(&app);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    let away = frame(&mut laid, off);
+    assert_eq!(frame(&mut laid, on_label), away);
 }
 
 /// Finds the header's place in the whole window.

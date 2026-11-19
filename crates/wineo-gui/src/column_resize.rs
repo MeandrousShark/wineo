@@ -5,12 +5,13 @@ use iced::advanced::{
     Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget::Operation,
     widget::tree,
 };
+use iced::widget::button;
 use iced::{
     Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector,
 };
 use wineo_core::library::ListColumn;
 
-use crate::list_view::{Column, bounded, widest};
+use crate::list_view::{Column, HEADER_INSET, bounded, header_style, widest};
 use crate::sort_control::Field;
 use crate::theme::Palette;
 use crate::{App, Message};
@@ -223,6 +224,24 @@ fn gaps(layout: Layout<'_>, columns: &[ListColumn]) -> Vec<(ListColumn, f32)> {
         .collect()
 }
 
+/// Where the header button of `column` shows its hover look, the cell's
+/// button or, for State's plain label, the room a button would take.
+fn tint_area(layout: Layout<'_>, columns: &[ListColumn], column: ListColumn) -> Option<Rectangle> {
+    // The cells start with Title's, which has no handle of its own.
+    let index = columns.iter().position(|shown| *shown == column)? + 1;
+    let cell = layout.children().next()?.children().nth(index)?;
+    let content = cell.children().next()?.bounds();
+    let area = if column == ListColumn::State {
+        Rectangle::new(
+            Point::new(content.x - HEADER_INSET, content.y - 2.0),
+            Size::new(content.width + 2.0 * HEADER_INSET, content.height + 4.0),
+        )
+    } else {
+        content
+    };
+    area.intersection(&cell.bounds())
+}
+
 /// A handle's hit area for the gap starting at `gap`, the header's height.
 pub(crate) fn hit_area(bounds: Rectangle, gap: f32) -> Rectangle {
     Rectangle::new(
@@ -411,6 +430,24 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
     ) {
         use iced::advanced::Renderer as _;
         let state = tree.state.downcast_ref::<State>();
+        // The app's word on a drag is the one draw honors: it's the one a
+        // rebuild keeps, and the widget's own can outlive it for a frame.
+        let primary = self.dragging;
+        // Under the label, so the tint reads as the button's own hover.
+        let resized = primary.or_else(|| self.hovered(layout, cursor).map(|(column, _)| column));
+        if let Some(area) = resized.and_then(|column| tint_area(layout, &self.columns, column)) {
+            let hover = header_style(self.palette, button::Status::Hovered, false);
+            if let Some(background) = hover.background {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: area,
+                        border: hover.border,
+                        ..renderer::Quad::default()
+                    },
+                    background,
+                );
+            }
+        }
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -421,9 +458,6 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
             viewport,
         );
         let bounds = layout.bounds();
-        // The app's word on a drag is the one draw honors: it's the one a
-        // rebuild keeps, and the widget's own can outlive it for a frame.
-        let primary = self.dragging;
         if primary.is_none() && !cursor.is_over(bounds) {
             return;
         }
