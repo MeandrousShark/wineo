@@ -5,10 +5,13 @@ use iced::advanced::{
     Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget::Operation,
     widget::tree,
 };
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
+use iced::widget::button;
+use iced::{
+    Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector,
+};
 use wineo_core::library::ListColumn;
 
-use crate::list_view::{Column, bounded, widest};
+use crate::list_view::{Column, HEADER_INSET, bounded, header_style, widest};
 use crate::sort_control::Field;
 use crate::theme::Palette;
 use crate::{App, Message};
@@ -20,6 +23,12 @@ const GAP: f32 = crate::list_view::HEADER_GAP;
 /// The hover and drag line's place in the gap: its third pixel, the one
 /// nearer the column being resized.
 pub(crate) const LINE_OFFSET: f32 = 2.0;
+/// How much of the palette's muted color the idle lines keep, so they sit
+/// back from the header's labels.
+const MUTED_STRENGTH: f32 = 0.5;
+/// How much of the header's height each end of a line fades over, from
+/// transparent to full strength.
+const FADE: f32 = 0.25;
 /// The list header's id.
 pub(crate) const HEADER_ID: &str = "library-list-header";
 
@@ -46,7 +55,13 @@ impl Event {
 #[derive(Debug, Clone)]
 pub(crate) struct Drag {
     pub(crate) column: ListColumn,
+    /// The width the drag starts from, as drawn.
     from: f32,
+    /// The saved width, which differs from `from` for a State squeezed to
+    /// fit, so a drag that never moves saves nothing.
+    saved: f32,
+    /// State as drawn when it started, which a drag of another column holds.
+    pub(crate) state: f32,
     start_x: f32,
     /// The columns showing when it started, which stay until it ends so
     /// nothing jumps under the pointer.
@@ -78,11 +93,12 @@ impl App {
 
     /// The widest `column` can go now, never under `from`.
     fn column_widest(&self, column: ListColumn, from: f32) -> f32 {
+        let (columns, width) = (self.list_columns(), self.slot_width());
         widest(
-            &self.list_widths,
+            &self.drawn_widths(width, columns),
             column,
-            self.list_columns(),
-            self.slot_width(),
+            columns,
+            width,
             from,
         )
     }
@@ -90,9 +106,12 @@ impl App {
     fn column_pressed(&mut self, column: ListColumn, x: f32) -> Task<Message> {
         // A press that arrives with a drag still going ends that one first.
         let ended = self.end_column_drag();
+        let drawn = self.drawn_widths(self.slot_width(), self.list_columns());
         self.column_drag = Some(Drag {
             column,
-            from: self.list_widths.get(column),
+            from: drawn.get(column),
+            saved: self.list_widths.get(column),
+            state: drawn.get(ListColumn::State),
             start_x: x,
             held: self.list_columns(),
             owed: false,
@@ -104,11 +123,16 @@ impl App {
         let Some(drag) = &self.column_drag else {
             return;
         };
-        let column = drag.column;
+        let (column, from, saved) = (drag.column, drag.from, drag.saved);
         // The handle is on the column's left edge, so moving right narrows it.
-        let wanted = drag.from - (x - drag.start_x);
-        let widest = self.column_widest(column, drag.from);
-        self.list_widths.set(column, bounded(wanted, widest));
+        let wanted = from - (x - drag.start_x);
+        let widest = self.column_widest(column, from);
+        let width = bounded(wanted, widest);
+        // Motion that leaves the drawn width alone keeps the saved one, so a
+        // State squeezed to fit isn't saved narrower by a drag that changed
+        // nothing visible.
+        self.list_widths
+            .set(column, if width == from { saved } else { width });
     }
 
     /// Ends a drag, saving where it let go. Closing or hiding the window,
@@ -117,7 +141,7 @@ impl App {
         let Some(drag) = self.column_drag.take() else {
             return Task::none();
         };
-        if self.list_widths.get(drag.column) == drag.from && !drag.owed {
+        if self.list_widths.get(drag.column) == drag.saved && !drag.owed {
             return Task::none();
         }
         self.save_field(Field::Column(
@@ -215,6 +239,38 @@ fn gaps(layout: Layout<'_>, columns: &[ListColumn]) -> Vec<(ListColumn, f32)> {
         .collect()
 }
 
+/// Where the header button of `column` shows its hover look, the cell's
+/// button or, for State's plain label, the room a button would take.
+pub(crate) fn tint_area(
+    layout: Layout<'_>,
+    columns: &[ListColumn],
+    column: ListColumn,
+) -> Option<Rectangle> {
+    // The cells start with Title's, which has no handle of its own.
+    let index = columns.iter().position(|shown| *shown == column)? + 1;
+    let cell = layout.children().next()?.children().nth(index)?;
+    let content = cell.children().next()?.bounds();
+    let area = if column == ListColumn::State {
+        Rectangle::new(
+            Point::new(content.x - HEADER_INSET, content.y - 2.0),
+            Size::new(content.width + 2.0 * HEADER_INSET, content.height + 4.0),
+        )
+    } else {
+        content
+    };
+    // Cut to the cell sideways only: State's label has no vertical padding
+    // of its own, so a vertical cut would strip back the button's 2 px.
+    let cell = cell.bounds();
+    let left = area.x.max(cell.x);
+    let right = (area.x + area.width).min(cell.x + cell.width);
+    (right > left).then(|| {
+        Rectangle::new(
+            Point::new(left, area.y),
+            Size::new(right - left, area.height),
+        )
+    })
+}
+
 /// A handle's hit area for the gap starting at `gap`, the header's height.
 pub(crate) fn hit_area(bounds: Rectangle, gap: f32) -> Rectangle {
     Rectangle::new(
@@ -229,6 +285,17 @@ pub(crate) fn line(bounds: Rectangle, gap: f32) -> Rectangle {
         Point::new(gap + LINE_OFFSET, bounds.y),
         Size::new(1.0, bounds.height),
     )
+}
+
+/// `color` as a vertical gradient, transparent at both ends and solid
+/// between the fades, so a line doesn't end hard at the header's edges.
+fn fading(color: Color) -> Background {
+    let line = iced::gradient::Linear::new(iced::Radians::PI)
+        .add_stop(0.0, color.scale_alpha(0.0))
+        .add_stop(FADE, color)
+        .add_stop(1.0 - FADE, color)
+        .add_stop(1.0, color.scale_alpha(0.0));
+    Background::Gradient(iced::Gradient::Linear(line))
 }
 
 impl Handles<'_> {
@@ -392,6 +459,25 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
     ) {
         use iced::advanced::Renderer as _;
         let state = tree.state.downcast_ref::<State>();
+        // The app's word on a drag is the one draw honors: it survives a
+        // rebuild of the header mid-drag, which makes the widget's own state
+        // anew.
+        let primary = self.dragging;
+        // Under the label, so the tint reads as the button's own hover.
+        let resized = primary.or_else(|| self.hovered(layout, cursor).map(|(column, _)| column));
+        if let Some(area) = resized.and_then(|column| tint_area(layout, &self.columns, column)) {
+            let hover = header_style(self.palette, button::Status::Hovered, false);
+            if let Some(background) = hover.background {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: area,
+                        border: hover.border,
+                        ..renderer::Quad::default()
+                    },
+                    background,
+                );
+            }
+        }
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -402,23 +488,21 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
             viewport,
         );
         let bounds = layout.bounds();
-        let gaps = gaps(layout, &self.columns);
-        let shown = match self.dragging {
-            Some(dragged) => gaps
-                .iter()
-                .find(|(column, _)| *column == dragged)
-                .map(|(_, gap)| (*gap, self.palette.primary)),
-            None => self
-                .hovered(layout, cursor)
-                .map(|(_, gap)| (gap, self.palette.muted)),
-        };
-        if let Some((gap, color)) = shown {
+        if primary.is_none() && !cursor.is_over(bounds) {
+            return;
+        }
+        for (column, gap) in gaps(layout, &self.columns) {
+            let color = if primary == Some(column) {
+                self.palette.primary
+            } else {
+                self.palette.muted.scale_alpha(MUTED_STRENGTH)
+            };
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: line(bounds, gap),
                     ..renderer::Quad::default()
                 },
-                color,
+                fading(color),
             );
         }
     }

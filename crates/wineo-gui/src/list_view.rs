@@ -172,6 +172,19 @@ pub(crate) fn title_cell(widths: &Widths, columns: &[Column], width: f32) -> f32
     width - 2.0 * ROW_PADDING - CELL_GAP - widths.state - others
 }
 
+/// State's width as it's drawn in a row `width` wide with `columns`: the
+/// saved one, cut to what leaves Title its minimum, but never under State's
+/// default and never wider than saved. This is layout only, so the saved
+/// width stays and a wider list brings it back.
+pub(crate) fn drawn_state(widths: &Widths, columns: &[Column], width: f32) -> f32 {
+    let others: f32 = columns
+        .iter()
+        .map(|column| CELL_GAP + widths.of(*column))
+        .sum();
+    let room = (width - 2.0 * ROW_PADDING - CELL_GAP - TITLE_MIN - others).floor();
+    widths.state.min(room).max(STATE_WIDTH.min(widths.state))
+}
+
 /// The widest `column` can be made in a row `width` wide with `columns`
 /// showing: as wide as leaves Title its minimum, but never narrower than
 /// `from`, so a column already past that doesn't jump, and never past the
@@ -272,6 +285,18 @@ impl App {
         }
     }
 
+    /// The widths to lay a row `width` wide with `columns` out by: the saved
+    /// ones with State's squeezed to fit. A drag of another column holds
+    /// State where it was, as it holds the column set, until it ends.
+    pub(crate) fn drawn_widths(&self, width: f32, columns: &[Column]) -> Widths {
+        let mut widths = self.list_widths;
+        widths.state = match &self.column_drag {
+            Some(drag) if drag.column != ListColumn::State => drag.state,
+            _ => drawn_state(&widths, columns, width),
+        };
+        widths
+    }
+
     /// What the list's header takes from the scroll's height.
     pub(crate) fn header_room(&self) -> f32 {
         if self.layout == crate::grid_motion::ViewLayout::List {
@@ -337,6 +362,34 @@ impl App {
         width: f32,
         columns: &[Column],
     ) -> Element<'a, Message> {
+        let widths = self.drawn_widths(width, columns);
+        self.row_laid(slot, card, opacity, width, columns, widths)
+    }
+
+    /// A row fading out, which fits its own width: State is squeezed for
+    /// that width, not held where a drag left it.
+    pub(crate) fn row_leaving<'a>(
+        &'a self,
+        slot: &SlotId,
+        card: &'a Card,
+        opacity: f32,
+        width: f32,
+        columns: &[Column],
+    ) -> Element<'a, Message> {
+        let mut widths = self.list_widths;
+        widths.state = drawn_state(&widths, columns, width);
+        self.row_laid(slot, card, opacity, width, columns, widths)
+    }
+
+    fn row_laid<'a>(
+        &'a self,
+        slot: &SlotId,
+        card: &'a Card,
+        opacity: f32,
+        width: f32,
+        columns: &[Column],
+        widths: Widths,
+    ) -> Element<'a, Message> {
         let alpha = self.collapse.alpha() * opacity;
         let palette = self.palette.faded(alpha);
         let facts = self.row_facts(slot, card, palette);
@@ -379,7 +432,7 @@ impl App {
         } else {
             thumb
         };
-        let widths = &self.list_widths;
+        let widths = &widths;
         let fitted = row_text(&facts, columns, width, widths);
         let mut title = column![
             text(fitted.title)
@@ -517,8 +570,8 @@ impl App {
     /// it.
     pub(crate) fn list_header(&self) -> Element<'_, Message> {
         let width = self.slot_width();
-        let widths = &self.list_widths;
         let shown = self.list_columns();
+        let widths = &self.drawn_widths(width, shown);
         let mut cells = row![
             self.header_cell(
                 "Title",
