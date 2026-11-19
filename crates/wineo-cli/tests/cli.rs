@@ -11,12 +11,8 @@ use std::time::{Duration, Instant};
 use wineo_core::launch::Overrides;
 use wineo_core::runtime::{RunMode, RunState, RunStatus, Runtime};
 
-#[path = "../../wineo-core/tests/common/test_script.rs"]
-mod test_script;
-use test_script::{KillOnDrop, write_script};
-
 mod common;
-use common::Fixture;
+use common::{Fixture, KillOnDrop, write_script};
 
 /// Points every XDG dir into `root` so tests never touch the real config.
 fn wineo(root: &Path) -> Command {
