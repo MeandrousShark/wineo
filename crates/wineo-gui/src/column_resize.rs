@@ -5,7 +5,9 @@ use iced::advanced::{
     Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget::Operation,
     widget::tree,
 };
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector};
+use iced::{
+    Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme, Vector,
+};
 use wineo_core::library::ListColumn;
 
 use crate::list_view::{Column, bounded, widest};
@@ -20,6 +22,12 @@ const GAP: f32 = crate::list_view::HEADER_GAP;
 /// The hover and drag line's place in the gap: its third pixel, the one
 /// nearer the column being resized.
 pub(crate) const LINE_OFFSET: f32 = 2.0;
+/// How much of the palette's muted color the idle lines keep, so they sit
+/// back from the header's labels.
+const MUTED_STRENGTH: f32 = 0.5;
+/// How much of the header's height each end of a line fades over, from
+/// transparent to full strength.
+const FADE: f32 = 0.25;
 /// The list header's id.
 pub(crate) const HEADER_ID: &str = "library-list-header";
 
@@ -231,6 +239,17 @@ pub(crate) fn line(bounds: Rectangle, gap: f32) -> Rectangle {
     )
 }
 
+/// `color` as a vertical gradient, transparent at both ends and solid
+/// between the fades, so a line doesn't end hard at the header's edges.
+fn fading(color: Color) -> Background {
+    let line = iced::gradient::Linear::new(iced::Radians::PI)
+        .add_stop(0.0, color.scale_alpha(0.0))
+        .add_stop(FADE, color)
+        .add_stop(1.0 - FADE, color)
+        .add_stop(1.0, color.scale_alpha(0.0));
+    Background::Gradient(iced::Gradient::Linear(line))
+}
+
 impl Handles<'_> {
     /// The handle the pointer is on, if any.
     fn hovered(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<(ListColumn, f32)> {
@@ -402,23 +421,24 @@ impl Widget<Message, Theme, Renderer> for Handles<'_> {
             viewport,
         );
         let bounds = layout.bounds();
-        let gaps = gaps(layout, &self.columns);
-        let shown = match self.dragging {
-            Some(dragged) => gaps
-                .iter()
-                .find(|(column, _)| *column == dragged)
-                .map(|(_, gap)| (*gap, self.palette.primary)),
-            None => self
-                .hovered(layout, cursor)
-                .map(|(_, gap)| (gap, self.palette.muted)),
-        };
-        if let Some((gap, color)) = shown {
+        // The app's word on a drag is the one draw honors: it's the one a
+        // rebuild keeps, and the widget's own can outlive it for a frame.
+        let primary = self.dragging;
+        if primary.is_none() && !cursor.is_over(bounds) {
+            return;
+        }
+        for (column, gap) in gaps(layout, &self.columns) {
+            let color = if primary == Some(column) {
+                self.palette.primary
+            } else {
+                self.palette.muted.scale_alpha(MUTED_STRENGTH)
+            };
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: line(bounds, gap),
                     ..renderer::Quad::default()
                 },
-                color,
+                fading(color),
             );
         }
     }

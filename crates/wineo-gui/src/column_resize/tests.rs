@@ -538,8 +538,32 @@ fn the_hover_line_sits_in_the_gap_on_its_third_pixel() {
     }
 }
 
+/// The middle pixel of every handle's line in `frame`, in `ListColumn::ALL`
+/// order.
+fn middles(app: &App, frame: &[u8], bounds: Rectangle) -> Vec<[u8; 4]> {
+    ListColumn::ALL
+        .into_iter()
+        .map(|column| {
+            let x = gap(app, column) + LINE_OFFSET;
+            pixel(frame, app.viewport_width, x, bounds.center_y())
+        })
+        .collect()
+}
+
+/// What the muted color looks like at the strength the lines draw it, as
+/// the frame holds it: the screenshot's color is premultiplied by alpha.
+fn faint(app: &App) -> Color {
+    let muted = app.palette.muted;
+    Color::from_rgba(
+        muted.r * MUTED_STRENGTH,
+        muted.g * MUTED_STRENGTH,
+        muted.b * MUTED_STRENGTH,
+        MUTED_STRENGTH,
+    )
+}
+
 #[test]
-fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging() {
+fn nothing_shows_at_rest_every_line_muted_on_the_header_and_a_primary_one_while_dragging() {
     let (_root, mut app) = listed(1400.0);
     let width = app.viewport_width;
     let mut laid = header(&app);
@@ -552,28 +576,32 @@ fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging(
             assert_eq!(pixel(&rest, width, x, y as f32)[3], 0, "{column:?} at {y}");
         }
     }
+    let every_line: std::collections::BTreeSet<usize> = ListColumn::ALL
+        .into_iter()
+        .map(|column| (gap(&app, column) + LINE_OFFSET) as usize)
+        .collect();
     for column in ListColumn::ALL {
         let gap = gap(&app, column);
-        // Anywhere in the hit area, even over a button's edge.
+        // Anywhere in the hit area, even over a button's edge, every line
+        // shows the same, the hovered one included.
         for dx in [-2.0, 0.5, 3.0, 5.5] {
             let at = Cursor::Available(Point::new(gap + dx, bounds.center_y()));
             let _ = laid.event_at(&redraw(), at);
             let hovered = laid.draw_at(at);
             assert_eq!(
                 changed_columns(&rest, &hovered, width),
-                [(gap + LINE_OFFSET) as usize].into(),
+                every_line,
                 "{column:?} at {dx}"
             );
-            for y in [bounds.y, bounds.center_y(), bounds.y + bounds.height - 1.0] {
-                let drawn = pixel(&hovered, width, gap + LINE_OFFSET, y);
-                assert!(near(drawn, app.palette.muted), "{column:?}: {drawn:?}");
+            for middle in middles(&app, &hovered, bounds) {
+                assert!(near(middle, faint(&app)), "{column:?}: {middle:?}");
             }
             assert_eq!(
                 laid.interaction_at(at),
                 mouse::Interaction::ResizingHorizontally
             );
         }
-        // Just outside it, nothing.
+        // Just outside it, the lines stay and the cursor isn't the resize one.
         let outside = Cursor::Available(Point::new(gap + 6.5, bounds.center_y()));
         let _ = laid.event_at(&redraw(), outside);
         assert_ne!(
@@ -588,13 +616,17 @@ fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging(
     let mut laid = header(&app);
     let _ = laid.event_at(&redraw(), Cursor::Unavailable);
     let dragging = laid.draw_at(Cursor::Unavailable);
-    assert_eq!(
-        changed_columns(&rest, &dragging, width),
-        [(gap + LINE_OFFSET) as usize].into()
-    );
-    for y in [bounds.y, bounds.y + bounds.height - 1.0] {
-        let drawn = pixel(&dragging, width, gap + LINE_OFFSET, y);
-        assert!(near(drawn, app.palette.primary), "{drawn:?}");
+    assert_eq!(changed_columns(&rest, &dragging, width), every_line);
+    for (column, middle) in ListColumn::ALL
+        .into_iter()
+        .zip(middles(&app, &dragging, bounds))
+    {
+        let wanted = if column == ListColumn::Source {
+            app.palette.primary
+        } else {
+            faint(&app)
+        };
+        assert!(near(middle, wanted), "{column:?}: {middle:?}");
     }
     // The header's height only.
     let below = pixel(
@@ -615,6 +647,98 @@ fn nothing_shows_at_rest_a_muted_line_on_hover_and_a_primary_one_while_dragging(
         laid.interaction_at(away),
         mouse::Interaction::ResizingHorizontally
     );
+}
+
+#[test]
+fn a_pointer_on_a_label_shows_every_line_and_off_the_header_none() {
+    let (_root, app) = listed(1400.0);
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let playtime = cell(&laid, 2);
+    let on_label = Cursor::Available(playtime.center());
+    let _ = laid.event_at(&redraw(), Cursor::Unavailable);
+    let rest = laid.draw_at(Cursor::Unavailable);
+    let _ = laid.event_at(&redraw(), on_label);
+    let labelled = laid.draw_at(on_label);
+    // The label's own hover look changes pixels too, so look at the lines.
+    for (column, middle) in ListColumn::ALL
+        .into_iter()
+        .zip(middles(&app, &labelled, bounds))
+    {
+        assert!(near(middle, faint(&app)), "{column:?}: {middle:?}");
+    }
+    assert_ne!(
+        laid.interaction_at(on_label),
+        mouse::Interaction::ResizingHorizontally
+    );
+    // Below the header, where nothing of it is.
+    let off = Cursor::Available(Point::new(
+        playtime.center().x,
+        bounds.y + bounds.height + 20.0,
+    ));
+    let _ = laid.event_at(&redraw(), off);
+    assert_eq!(laid.draw_at(off), rest);
+    for middle in middles(&app, &laid.draw_at(off), bounds) {
+        assert_eq!(middle[3], 0);
+    }
+}
+
+#[test]
+fn a_drag_with_the_pointer_off_the_header_keeps_the_dragged_line_primary_and_the_rest_muted() {
+    let (_root, mut app) = listed(1400.0);
+    let gap = gap(&app, ListColumn::Tags);
+    let _ = send(&mut app, Event::Press(ListColumn::Tags, gap + 2.0));
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    assert!(!off.is_over(bounds));
+    let _ = laid.event_at(&redraw(), off);
+    let frame = laid.draw_at(off);
+    let drawn = middles(&app, &frame, bounds);
+    for (column, middle) in ListColumn::ALL.into_iter().zip(drawn) {
+        let wanted = if column == ListColumn::Tags {
+            app.palette.primary
+        } else {
+            faint(&app)
+        };
+        assert!(near(middle, wanted), "{column:?}: {middle:?}");
+    }
+}
+
+#[test]
+fn a_line_fades_in_from_each_end_and_the_muted_one_is_fainter_than_the_primary() {
+    let (_root, mut app) = listed(1400.0);
+    let width = app.viewport_width;
+    let source = gap(&app, ListColumn::Source) + LINE_OFFSET;
+    let tags = gap(&app, ListColumn::Tags) + LINE_OFFSET;
+    let _ = send(&mut app, Event::Press(ListColumn::Source, source));
+    let mut laid = header(&app);
+    let bounds = inner(&laid);
+    let off = Cursor::Available(Point::new(300.0, bounds.y + bounds.height + 40.0));
+    let _ = laid.event_at(&redraw(), off);
+    let frame = laid.draw_at(off);
+    let alpha_at = |x: f32, y: f32| pixel(&frame, width, x, y)[3];
+    let top = bounds.y;
+    let quarter = bounds.height * FADE;
+    for x in [source, tags] {
+        let middle = alpha_at(x, bounds.center_y());
+        // The ends are fainter than the middle, and the fade rises toward it.
+        for y in [top, top + quarter / 2.0, bounds.y + bounds.height - 1.0] {
+            assert!(alpha_at(x, y) < middle, "x {x} y {y}");
+        }
+        assert!(alpha_at(x, top) < alpha_at(x, top + quarter / 2.0));
+        // Solid between the fades.
+        assert_eq!(alpha_at(x, top + quarter + 1.0), middle);
+        assert_eq!(alpha_at(x, top + bounds.height - quarter - 2.0), middle);
+    }
+    let primary = alpha_at(source, bounds.center_y());
+    let muted = alpha_at(tags, bounds.center_y());
+    assert!(primary >= 253, "{primary}");
+    assert!(muted < primary && muted > 0, "{muted}");
+    assert!(near(
+        pixel(&frame, width, tags, bounds.center_y()),
+        faint(&app)
+    ));
 }
 
 #[test]
