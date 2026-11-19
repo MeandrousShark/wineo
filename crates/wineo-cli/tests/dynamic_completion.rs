@@ -73,6 +73,28 @@ fn fixture(root: &Path) {
 }
 
 #[test]
+fn list_search_words_complete_to_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    // Files a path completer would offer.
+    fs::write(root.path().join("halo-notes.txt"), "").unwrap();
+    fs::create_dir(root.path().join("hades-saves")).unwrap();
+    for shell in ["bash", "fish", "zsh"] {
+        for words in [
+            &["wineo", "list", "ha"][..],
+            &["wineo", "list", "halo", "ha"],
+            &["wineo", "list", "--tag", "x", "ha"],
+        ] {
+            assert_eq!(
+                complete(root.path(), shell, words),
+                Vec::<String>::new(),
+                "{shell} {words:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn list_tag_completion_is_sorted_deduplicated_and_skips_broken_configs() {
     let root = tempfile::tempdir().unwrap();
     write_environment(
