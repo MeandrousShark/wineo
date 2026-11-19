@@ -446,7 +446,7 @@ fn page_down_and_up_move_by_the_covers_on_screen() {
 fn a_selection_filtered_out_hands_the_middle_to_the_first_game() {
     let (_root, mut app) = flat(12);
     select(&mut app, "game-07");
-    let _ = app.update(Message::SearchChanged("game-1".into()));
+    let _ = app.update(Message::SearchChanged("me-1".into()));
     assert_eq!(selected(&app), "game-10");
     assert_eq!(app.strip.target(), 0);
     let _ = app.update(Message::SearchChanged(String::new()));
@@ -475,7 +475,7 @@ fn filtering_mid_glide_retargets_from_where_the_strip_is() {
     let (_root, mut app, mut clock) = moving(30, 12);
     let at = glide_midway(&mut app, &mut clock, 3);
     assert_eq!(app.strip.target(), 15);
-    let _ = app.update(Message::SearchChanged("game-1".into()));
+    let _ = app.update(Message::SearchChanged("me-1".into()));
     assert_eq!((selected(&app), app.strip.target()), ("game-15", 5));
     assert_eq!(middle(&app), "game-15");
     assert_eq!(app.strip.position(), at, "no jump on the filter");
@@ -492,7 +492,7 @@ fn filtering_mid_glide_retargets_from_where_the_strip_is() {
     let (_root, mut app, mut clock) = moving(30, 2);
     let at = glide_midway(&mut app, &mut clock, 6);
     assert_eq!(app.strip.target(), 8);
-    let _ = app.update(Message::SearchChanged("game-1".into()));
+    let _ = app.update(Message::SearchChanged("me-1".into()));
     assert_eq!((selected(&app), app.strip.target()), ("game-10", 0));
     assert_eq!(middle(&app), "game-10");
     assert_eq!(app.strip.position(), at);
@@ -1770,7 +1770,7 @@ fn a_search_that_moves_the_selection_asks_no_large_cover_for_the_old_place() {
     select(&mut app, "game-07");
     let kind = app.cover_kind().expect("a large cover");
     app.loading.clear();
-    let _ = app.update(Message::SearchChanged("game-1".into()));
+    let _ = app.update(Message::SearchChanged("me-1".into()));
     assert_eq!((selected(&app), app.strip.target()), ("game-10", 0));
     let covers: std::collections::BTreeSet<String> = app
         .loading

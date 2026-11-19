@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use wineo_core::library::{self, GroupBy, SortFields, SortKey};
+use wineo_core::search::{Field, Search};
 use wineo_core::source::{Platform, Store};
 
 use crate::library::Card;
@@ -155,11 +156,19 @@ pub(crate) struct Built {
     indices: Vec<usize>,
     counts: Counts,
     sections: Vec<Section>,
+    /// Set when the rebuild had to prepare its cards' fields itself.
+    prepared: Option<Prepared>,
 }
 
 impl Built {
     pub(crate) fn indices(&self) -> &[usize] {
         &self.indices
+    }
+
+    /// How many cards' search fields this rebuild made.
+    #[cfg(test)]
+    pub(crate) fn prepared_cards(&self) -> usize {
+        self.prepared.as_ref().map_or(0, |prepared| prepared.made)
     }
 
     /// Whether these sections, of `cards`, hold the same games in the same
@@ -187,6 +196,162 @@ impl Built {
     }
 }
 
+/// What searching and sorting read from each card, made once per set of
+/// cards so a keystroke only scans them.
+#[derive(Debug)]
+pub(crate) struct Prepared {
+    /// The cards these were made from, as `Inputs::cards`.
+    cards: (usize, usize),
+    /// The Name sort key and every tiebreak: the title lowercased, nothing
+    /// more, so `Éclair` still sorts after Z.
+    titles: Vec<String>,
+    /// Made only once a search needs them, so a library nobody searches,
+    /// like the tray's, never pays for them.
+    fields: Option<Vec<Fields>>,
+    /// How many cards' fields were made for this, rather than carried over.
+    #[cfg(test)]
+    made: usize,
+    /// What each card was when these were made, to catch a test that edits
+    /// cards in place without `cards_edited`. Benches build with tests but
+    /// without debug assertions, so they time the app's code.
+    #[cfg(all(test, debug_assertions))]
+    made_from: Vec<(String, String, Vec<String>)>,
+}
+
+#[derive(Debug)]
+struct Fields {
+    title: Field,
+    name: Field,
+    tags: Vec<Field>,
+}
+
+impl Fields {
+    fn of(card: &Card) -> Self {
+        Self {
+            title: Field::new(&card.display_title),
+            name: Field::new(&card.name),
+            tags: card.tags.iter().map(|tag| Field::new(tag)).collect(),
+        }
+    }
+
+    /// A search never mixes fields, so each is matched on its own.
+    fn matched(&self, search: &Search) -> bool {
+        search.matches(&self.title)
+            || search.matches(&self.name)
+            || self.tags.iter().any(|tag| search.matches(tag))
+    }
+}
+
+/// Whether a card's search fields and sort title would come out the same.
+fn same_fields(a: &Card, b: &Card) -> bool {
+    a.name == b.name && a.display_title == b.display_title && a.tags == b.tags
+}
+
+fn cards_key(cards: &[Card]) -> (usize, usize) {
+    (cards.as_ptr() as usize, cards.len())
+}
+
+impl Prepared {
+    fn of(cards: &[Card], fields: bool) -> Self {
+        Self {
+            cards: cards_key(cards),
+            titles: cards
+                .iter()
+                .map(|card| card.display_title.to_lowercase())
+                .collect(),
+            fields: fields.then(|| cards.iter().map(Fields::of).collect()),
+            #[cfg(test)]
+            made: if fields { cards.len() } else { 0 },
+            #[cfg(all(test, debug_assertions))]
+            made_from: cards.iter().map(made_from).collect(),
+        }
+    }
+
+    fn fit(&self, cards: &[Card]) -> bool {
+        let fit = self.cards == cards_key(cards);
+        #[cfg(all(test, debug_assertions))]
+        assert!(
+            !fit || self.made_from.iter().zip(cards).all(|(made, card)| {
+                made.0 == card.display_title && made.1 == card.name && made.2 == card.tags
+            }),
+            "a card's title, name, or tags changed in place without Order::cards_edited"
+        );
+        fit
+    }
+
+    /// These, made from `old`, moved over to `cards`: a card whose name,
+    /// title, and tags are unchanged keeps what it had, and only the rest
+    /// are made again.
+    fn carried(mut self, old: &[Card], cards: &[Card]) -> Self {
+        // Rescans list cards by name, so most sit where they were.
+        let mut by_name: Option<std::collections::HashMap<&str, usize>> = None;
+        let mut at = |index: usize, card: &Card| -> Option<usize> {
+            if old.get(index).is_some_and(|old| old.name == card.name) {
+                return Some(index);
+            }
+            by_name
+                .get_or_insert_with(|| {
+                    old.iter()
+                        .enumerate()
+                        .map(|(index, card)| (card.name.as_str(), index))
+                        .collect()
+                })
+                .get(card.name.as_str())
+                .copied()
+        };
+        let reused: Vec<Option<usize>> = cards
+            .iter()
+            .enumerate()
+            .map(|(index, card)| at(index, card).filter(|&from| same_fields(&old[from], card)))
+            .collect();
+        let mut titles: Vec<Option<String>> = self.titles.drain(..).map(Some).collect();
+        let mut fields: Option<Vec<Option<Fields>>> = self
+            .fields
+            .take()
+            .map(|fields| fields.into_iter().map(Some).collect());
+        #[cfg(test)]
+        let mut made = 0;
+        let mut carried_fields = fields.as_ref().map(|_| Vec::with_capacity(cards.len()));
+        let mut carried_titles = Vec::with_capacity(cards.len());
+        for (card, from) in cards.iter().zip(&reused) {
+            carried_titles.push(
+                from.and_then(|from| titles[from].take())
+                    .unwrap_or_else(|| card.display_title.to_lowercase()),
+            );
+            if let (Some(fields), Some(carried)) = (fields.as_mut(), carried_fields.as_mut()) {
+                carried.push(
+                    from.and_then(|from| fields[from].take())
+                        .unwrap_or_else(|| {
+                            #[cfg(test)]
+                            {
+                                made += 1;
+                            }
+                            Fields::of(card)
+                        }),
+                );
+            }
+        }
+        Self {
+            cards: cards_key(cards),
+            titles: carried_titles,
+            fields: carried_fields,
+            #[cfg(test)]
+            made,
+            #[cfg(all(test, debug_assertions))]
+            made_from: cards.iter().map(made_from).collect(),
+        }
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+fn made_from(card: &Card) -> (String, String, Vec<String>) {
+    (
+        card.display_title.clone(),
+        card.name.clone(),
+        card.tags.clone(),
+    )
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Order {
     /// Indices into the cards, in shown order.
@@ -194,6 +359,9 @@ pub(crate) struct Order {
     counts: Counts,
     sections: Vec<Section>,
     options: Options,
+    /// The fields of the cards the order was built from, while they're
+    /// known to match them.
+    prepared: Option<Prepared>,
     /// What the order was built from. Every change goes through
     /// `App::reorder`, so in the app this always matches; tests that set
     /// the cards or search directly get an order computed on the spot.
@@ -202,6 +370,9 @@ pub(crate) struct Order {
     revision: u64,
     #[cfg(test)]
     pub(crate) rebuilds: usize,
+    /// How many cards' search fields have been made.
+    #[cfg(test)]
+    pub(crate) prepared_cards: usize,
     /// Reads that found the cache didn't fit and sorted on the spot.
     #[cfg(test)]
     pub(crate) misses: std::cell::Cell<usize>,
@@ -233,7 +404,7 @@ pub(crate) struct Of<'a> {
 
 impl Of<'_> {
     fn cards_key(&self) -> (usize, usize) {
-        (self.cards.as_ptr() as usize, self.cards.len())
+        cards_key(self.cards)
     }
 }
 
@@ -263,8 +434,9 @@ impl Order {
     /// The shown indices for `of`, with the empty states' counts. Hidden
     /// cards go unless Show hidden is on, then the store, platform, and tag filters
     /// and the search narrow, and what's left is sorted. Sort keys are
-    /// computed once here, not per comparison.
-    pub(crate) fn sorted(of: Of<'_>) -> Built {
+    /// computed once here, not per comparison. `prepared` is reused when it
+    /// was made from these cards; otherwise new ones are made and returned.
+    pub(crate) fn sorted(of: Of<'_>, prepared: Option<&Prepared>) -> Built {
         let Of {
             cards,
             search,
@@ -273,22 +445,27 @@ impl Order {
             group,
             collapsed,
         } = of;
-        let needle = search.to_lowercase();
-        let titles: Vec<String> = cards
-            .iter()
-            .map(|card| card.display_title.to_lowercase())
-            .collect();
+        let search = Search::new(search);
+        let fresh = match prepared {
+            Some(prepared)
+                if prepared.fit(cards) && (search.is_empty() || prepared.fields.is_some()) =>
+            {
+                None
+            }
+            _ => Some(Prepared::of(cards, !search.is_empty())),
+        };
+        let ready = fresh
+            .as_ref()
+            .or(prepared)
+            .expect("made fresh unless the given ones fit");
+        let fields = ready.fields.as_deref();
         let mut counts = Counts::default();
         let mut indices: Vec<usize> = Vec::new();
         for (index, card) in cards.iter().enumerate() {
             counts.hidden += usize::from(card.hidden);
-            let found = filters.admit(card)
-                && (titles[index].contains(&needle)
-                    || card.name.to_lowercase().contains(&needle)
-                    || card
-                        .tags
-                        .iter()
-                        .any(|tag| tag.to_lowercase().contains(&needle)));
+            // Fields are only missing when there's no search.
+            let found =
+                filters.admit(card) && fields.is_none_or(|fields| fields[index].matched(&search));
             if !found {
                 continue;
             }
@@ -324,7 +501,7 @@ impl Order {
         };
         let fields: Vec<SortFields<'_>> = cards
             .iter()
-            .zip(&titles)
+            .zip(&ready.titles)
             .enumerate()
             .map(|(index, (card, title))| SortFields {
                 source: sources.get(index).and_then(Option::as_deref),
@@ -352,11 +529,12 @@ impl Order {
             indices,
             counts,
             sections,
+            prepared: fresh,
         }
     }
 
     pub(crate) fn rebuild(&mut self, of: Of<'_>) {
-        self.replace(Self::sorted(of), of);
+        self.replace(Self::sorted(of, self.prepared.as_ref()), of);
     }
 
     /// Takes what `sorted` built for exactly these inputs.
@@ -364,6 +542,13 @@ impl Order {
         self.indices = built.indices;
         self.counts = built.counts;
         self.sections = built.sections;
+        if let Some(prepared) = built.prepared {
+            #[cfg(test)]
+            {
+                self.prepared_cards += prepared.made;
+            }
+            self.prepared = Some(prepared);
+        }
         #[cfg(test)]
         {
             self.rebuilds += 1;
@@ -380,12 +565,53 @@ impl Order {
     /// so the next rebuild lists their stores, platforms, and tags again.
     pub(crate) fn cards_edited(&mut self) {
         self.built_from.cards = (0, 0);
+        self.prepared = None;
+    }
+
+    /// The cards' favorite or hidden flags changed where they are. Neither
+    /// is searched or offered as a filter value, so the prepared fields stay.
+    pub(crate) fn flags_edited(&mut self) {
+        self.built_from.cards = (0, 0);
+    }
+
+    /// Moves the prepared fields from `old`, the cards the order was built
+    /// from, over to `cards`, which are about to replace them, so only the
+    /// cards whose name, title, or tags changed are prepared again.
+    pub(crate) fn carry(&mut self, old: &[Card], cards: &[Card]) {
+        self.prepared = self
+            .prepared
+            .take()
+            .filter(|prepared| prepared.fit(old))
+            .map(|prepared| {
+                let carried = prepared.carried(old, cards);
+                #[cfg(test)]
+                {
+                    self.prepared_cards += carried.made;
+                }
+                carried
+            });
+    }
+
+    /// The prepared fields, for `merge_cards` to hand `sorted` after `carry`.
+    pub(crate) fn prepared(&self) -> Option<&Prepared> {
+        self.prepared.as_ref()
     }
 
     /// Records that the order still fits new cards whose sort, filter, and
     /// search inputs match the old ones card for card, so their stores,
     /// platforms, and tags are the same too.
     pub(crate) fn keep(&mut self, of: Of<'_>) {
+        // Fields made from the old cards fit the new ones too, so a quiet
+        // rescan makes none. Any others are for cards long gone.
+        let (old, new) = (self.built_from.cards, of.cards_key());
+        self.prepared = self
+            .prepared
+            .take()
+            .filter(|prepared| prepared.cards == old || prepared.cards == new)
+            .map(|mut prepared| {
+                prepared.cards = new;
+                prepared
+            });
         self.built_from = Inputs::of(of);
         self.revision = self.revision.wrapping_add(1);
     }
@@ -419,7 +645,7 @@ impl Order {
                 .filter_map(|&index| cards.get(index))
                 .collect();
         }
-        Self::sorted(of)
+        Self::sorted(of, self.prepared.as_ref())
             .indices
             .into_iter()
             .map(|index| &cards[index])
@@ -432,7 +658,7 @@ impl Order {
         if self.fits(of) {
             Cow::Borrowed(&self.sections)
         } else {
-            Cow::Owned(Self::sorted(of).sections)
+            Cow::Owned(Self::sorted(of, self.prepared.as_ref()).sections)
         }
     }
 
@@ -440,7 +666,7 @@ impl Order {
         if self.fits(of) {
             self.counts
         } else {
-            Self::sorted(of).counts
+            Self::sorted(of, self.prepared.as_ref()).counts
         }
     }
 
