@@ -855,6 +855,17 @@ fn list_searches_titles_names_and_tags_like_the_library() {
     assert_eq!(value["environments"][0]["name"], "liberty");
     assert_eq!(value["environments"][0]["tags"], serde_json::json!(["rpg"]));
     assert_eq!(listed_names(&f, &["--", "-tools"]), ["gta-tools"]);
+    // The title finds a row but stays out of the JSON (Q11).
+    let gta = output(f.wineo_at_home().args(["list", "gta", "--json"]));
+    assert!(gta.status.success(), "{}", stderr(&gta));
+    let rows = parsed_json(&gta)["environments"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(rows.len(), 5);
+    for row in rows {
+        assert!(row.get("title").is_none(), "{row}");
+    }
     assert!(
         !output(f.wineo_at_home().args(["list", "-tools"]))
             .status
@@ -866,6 +877,34 @@ fn list_searches_titles_names_and_tags_like_the_library() {
     let text = stdout(&table);
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(text.starts_with("liberty"), "{text}");
+}
+
+#[test]
+fn list_with_an_empty_or_all_space_search_is_a_plain_list() {
+    let f = Fixture::new();
+    for search in ["", " "] {
+        let result = output(f.wineo_at_home().args(["list", search]));
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert!(stdout(&result).is_empty(), "{}", stdout(&result));
+        assert_eq!(
+            stderr(&result),
+            "No environments. Create one with: wineo new\n"
+        );
+    }
+
+    write_environment(f.root.path(), "dusk", "kind = 'native'\n");
+    write_environment(
+        f.root.path(),
+        "liberty",
+        "kind = 'native'\ntitle = 'Grand Theft Auto IV'\n",
+    );
+    for search in ["", " "] {
+        assert_eq!(listed_names(&f, &[search]), ["dusk", "liberty"]);
+        let result = output(f.wineo_at_home().args(["list", search]));
+        assert!(result.status.success(), "{}", stderr(&result));
+        assert_eq!(stdout(&result).lines().count(), 2, "{}", stdout(&result));
+        assert!(stderr(&result).is_empty(), "{}", stderr(&result));
+    }
 }
 
 #[test]
@@ -886,6 +925,9 @@ fn list_search_reports_no_match_on_stdout() {
     let none = output(f.wineo_at_home().args(["list", "civ 6"]));
     assert!(none.status.success(), "{}", stderr(&none));
     assert_eq!(stdout(&none), "No environments match \"civ 6\".\n");
+    let padded = output(f.wineo_at_home().args(["list", "  civ 6  "]));
+    assert!(padded.status.success(), "{}", stderr(&padded));
+    assert_eq!(stdout(&padded), "No environments match \"civ 6\".\n");
     let tagged = output(f.wineo_at_home().args(["list", "--tag", "rpg", "civ", "6"]));
     assert!(tagged.status.success(), "{}", stderr(&tagged));
     assert_eq!(
