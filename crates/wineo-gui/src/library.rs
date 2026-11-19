@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use iced::Color;
 use jiff::Timestamp;
 use wineo_core::art::{self, ArtConfig};
-use wineo_core::config::{EnvironmentConfig, Kind, Target};
+use wineo_core::config::Kind;
 use wineo_core::launch;
 use wineo_core::paths::Paths;
 use wineo_core::refresh::RefreshSnapshot;
@@ -251,45 +251,6 @@ impl Card {
     }
 }
 
-/// What the card, the panel, and the poster-only overlay call an
-/// environment: the person's `title`, then a Steam game's name, then the
-/// default target's desktop-entry name, then the environment name.
-/// `steam_name` is set for a Steam game: Steam's own name, or the import's
-/// fallback when Steam doesn't know the game. A Steam game's `title` key is
-/// that fallback, so it never comes ahead of Steam's name.
-fn card_title(
-    name: &str,
-    config: &EnvironmentConfig,
-    steam_name: Option<Option<&str>>,
-    default_target: Option<&str>,
-) -> String {
-    if let Some(steam_name) = steam_name {
-        return steam_name
-            .filter(|title| !title.is_empty())
-            .unwrap_or(name)
-            .to_owned();
-    }
-    // Loading takes any title, so one that would show blank is passed over.
-    match config.title.as_deref().map(str::trim) {
-        Some(title) if !title.is_empty() => title.to_owned(),
-        _ => display_title(name, &config.targets, default_target),
-    }
-}
-
-fn display_title(
-    name: &str,
-    targets: &BTreeMap<String, Target>,
-    default_target: Option<&str>,
-) -> String {
-    default_target
-        .and_then(|target| targets.get(target))
-        .filter(|target| target.desktop)
-        .and_then(|target| target.name.as_deref())
-        .filter(|title| !title.is_empty())
-        .unwrap_or(name)
-        .to_owned()
-}
-
 pub(super) fn playtime_label(seconds: i64) -> String {
     if seconds <= 0 {
         "never played".into()
@@ -486,7 +447,7 @@ pub(super) fn load_library_with(
                     }
                     _ => None,
                 };
-                title = card_title(
+                title = report::title(
                     &item.name,
                     &env.config,
                     steam_name,

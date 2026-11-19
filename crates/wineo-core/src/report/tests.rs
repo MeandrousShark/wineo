@@ -557,3 +557,77 @@ fn a_bad_environment_is_a_blank_row_or_with_a_tag_filter_an_error() {
     assert!(errors[0].1.contains("failed to read"));
     assert!(errors[0].1.contains("UTF-8"), "{}", errors[0].1);
 }
+
+fn target(desktop: bool, name: Option<&str>) -> Target {
+    Target {
+        exe: "app.exe".into(),
+        args: Vec::new(),
+        cwd: None,
+        default: false,
+        gamemode: None,
+        wayland: None,
+        mangohud: None,
+        gamescope: None,
+        hooks: None,
+        desktop,
+        name: name.map(str::to_owned),
+    }
+}
+
+#[test]
+fn display_title_uses_only_the_default_targets_explicit_desktop_name() {
+    let targets = BTreeMap::from([
+        ("app".to_owned(), target(true, Some("My App"))),
+        ("tool".to_owned(), target(true, Some("Setup Tool"))),
+    ]);
+
+    assert_eq!(display_title("env_id", &targets, Some("app")), "My App");
+    assert_eq!(
+        display_title("env_id", &targets, Some("tool")),
+        "Setup Tool"
+    );
+}
+
+#[test]
+fn display_title_falls_back_for_missing_disabled_or_unnamed_targets() {
+    let targets = BTreeMap::from([
+        ("no-entry".to_owned(), target(false, Some("Ignored"))),
+        ("no-title".to_owned(), target(true, None)),
+        ("empty-title".to_owned(), target(true, Some(""))),
+    ]);
+
+    for default in [
+        None,
+        Some("missing"),
+        Some("no-entry"),
+        Some("no-title"),
+        Some("empty-title"),
+    ] {
+        assert_eq!(display_title("env_id", &targets, default), "env_id");
+    }
+}
+
+#[test]
+fn titles_go_steam_name_then_title_then_desktop_name_then_name() {
+    let mut config = EnvironmentConfig::parse(
+        Path::new("/env_id.toml"),
+        "kind = 'native'\ntitle = 'My Title'\n[targets.app]\nexe = 'app'\ndesktop = true\nname = 'Entry Name'\n",
+    )
+    .unwrap();
+    let app = Some("app");
+    assert_eq!(
+        title("env_id", &config, Some(Some("Steam Name")), app),
+        "Steam Name"
+    );
+    // Steam's name, even blank or missing, comes ahead of the config's.
+    assert_eq!(title("env_id", &config, Some(Some("")), app), "env_id");
+    assert_eq!(title("env_id", &config, Some(None), app), "env_id");
+    assert_eq!(title("env_id", &config, None, app), "My Title");
+    config.title = Some("  Padded  ".to_owned());
+    assert_eq!(title("env_id", &config, None, app), "Padded");
+    config.title = Some("   ".to_owned());
+    assert_eq!(title("env_id", &config, None, app), "Entry Name");
+    config.title = None;
+    assert_eq!(title("env_id", &config, None, app), "Entry Name");
+    assert_eq!(title("env_id", &config, None, None), "env_id");
+}
