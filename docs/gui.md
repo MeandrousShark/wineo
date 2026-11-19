@@ -125,8 +125,10 @@ people say its name:
 - Initials of a run of title words: `gta` finds Grand Theft Auto, and
   `sf2` finds StarForge II.
 - The starts of title words, in any order: `auto gr` and `civ 6` work.
-- Numbers by value, as digits or Roman numerals: `4` and `iv` both find
-  Fallout 4 and Grand Theft Auto IV.
+- Numbers by value, as digits or Roman numerals: `gta 4` finds Grand
+  Theft Auto IV, and `fallout iv` finds Fallout 4. A Roman numeral in the
+  search counts as a number only when the search has more than one word,
+  so a lone `v` is just a letter.
 - Case, accents, and punctuation don't matter: `eclair` finds Éclair
   Tactics, and `skyrunner` finds Sky-Runner.
 
