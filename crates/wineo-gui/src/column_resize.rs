@@ -55,7 +55,13 @@ impl Event {
 #[derive(Debug, Clone)]
 pub(crate) struct Drag {
     pub(crate) column: ListColumn,
+    /// The width the drag starts from, as drawn.
     from: f32,
+    /// The saved width, which differs from `from` for a State squeezed to
+    /// fit, so a drag that never moves saves nothing.
+    saved: f32,
+    /// State as drawn when it started, which a drag of another column holds.
+    pub(crate) state: f32,
     start_x: f32,
     /// The columns showing when it started, which stay until it ends so
     /// nothing jumps under the pointer.
@@ -87,11 +93,12 @@ impl App {
 
     /// The widest `column` can go now, never under `from`.
     fn column_widest(&self, column: ListColumn, from: f32) -> f32 {
+        let (columns, width) = (self.list_columns(), self.slot_width());
         widest(
-            &self.list_widths,
+            &self.drawn_widths(width, columns),
             column,
-            self.list_columns(),
-            self.slot_width(),
+            columns,
+            width,
             from,
         )
     }
@@ -99,9 +106,12 @@ impl App {
     fn column_pressed(&mut self, column: ListColumn, x: f32) -> Task<Message> {
         // A press that arrives with a drag still going ends that one first.
         let ended = self.end_column_drag();
+        let drawn = self.drawn_widths(self.slot_width(), self.list_columns());
         self.column_drag = Some(Drag {
             column,
-            from: self.list_widths.get(column),
+            from: drawn.get(column),
+            saved: self.list_widths.get(column),
+            state: drawn.get(ListColumn::State),
             start_x: x,
             held: self.list_columns(),
             owed: false,
@@ -126,7 +136,7 @@ impl App {
         let Some(drag) = self.column_drag.take() else {
             return Task::none();
         };
-        if self.list_widths.get(drag.column) == drag.from && !drag.owed {
+        if self.list_widths.get(drag.column) == drag.saved && !drag.owed {
             return Task::none();
         }
         self.save_field(Field::Column(
