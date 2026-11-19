@@ -33,6 +33,9 @@ fn joined_ignores_everything_but_letters_and_digits() {
         ("Half-Life 2", "halflife", true),
         ("co-op", "coop", true),
         ("Sky-Runner", "skyrunner", true),
+        // Not at a word start, so only this rule finds them.
+        ("Spider-Man", "piderman", true),
+        ("Half-Life 2", "alf life", true),
     ]);
 }
 
@@ -128,6 +131,7 @@ fn digit_runs_too_long_for_u32_have_no_value() {
         ),
         ("Big 99999999999999999999", "big 4294967295", false),
         ("Big 4294967296", "big 0", false),
+        ("Big 4294967295", "big 99999999999999999999", false),
         ("Big 99999999999999999999", "99999999999999999999", true),
         ("Big 4294967295", "big MMMMMMMMMMMMMMMMMMMMM", false),
     ]);
