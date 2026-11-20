@@ -499,34 +499,56 @@ fn attached_run_exits_one_when_steam_never_starts_the_game() {
     assert!(!s.f.stats_log("civ").exists());
 }
 
+/// An attached `wineo run civ`, in its own group so a failed assertion can't
+/// leave it or its fake Steam running. Its stderr goes to a file.
+fn spawn_run(s: &SteamFixture, env: &[(&str, &str)]) -> (KillOnDrop, std::path::PathBuf) {
+    let log = s.f.root.path().join("run-stderr");
+    let mut command = s.wineo();
+    command
+        .envs(env.iter().copied())
+        .args(["run", "civ"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap());
+    (KillOnDrop::group(command.spawn().unwrap()), log)
+}
+
+/// The exit code of a run that must end within `limit`, so a run held for
+/// the 30 minute cap fails the test instead of hanging it.
+fn finish(run: &mut KillOnDrop, limit: Duration) -> Option<i32> {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = run.try_wait().unwrap() {
+            return status.code();
+        }
+        assert!(Instant::now() < deadline, "the run is still going");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_starting(s: &SteamFixture) {
+    wait_for("starting state", || {
+        s.f.state("civ").contains("phase = \"starting\"")
+    });
+}
+
 #[test]
 fn a_shader_pass_keeps_a_steam_launch_starting_past_the_start_window() {
     let s = SteamFixture::new();
     s.set_mode("none");
     s.config("");
-    assert_success(
-        &s.wineo()
-            .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "1000")
-            .args(["start", "civ"])
-            .output()
-            .unwrap(),
-    );
-    wait_for("starting state", || {
-        s.f.state("civ").contains("phase = \"starting\"")
-    });
-    // The supervisor takes its mark of the log just after this state is written.
-    thread::sleep(Duration::from_millis(300));
+    let (mut run, _) = spawn_run(&s, &[("WINEO_TEST_STEAM_START_TIMEOUT_MS", "3000")]);
+    wait_starting(&s);
     s.append_launch_task("289070", "ProcessingShaderCache");
-    thread::sleep(Duration::from_millis(2500));
-    assert!(
-        !s.f.state("civ").contains("status = \"failed\""),
-        "the shader pass was treated as a failed start"
-    );
+    thread::sleep(Duration::from_millis(4500));
+    assert!(run.try_wait().unwrap().is_none(), "the pass ended the run");
     s.append_launch_task("289070", "CreatingProcess");
     s.launch_from_steam("289070");
     claimed_pid(&s);
     assert_success(&s.run(&["stop", "civ"]));
     s.f.wait_for_run_end("civ", "stopped");
+    finish(&mut run, Duration::from_secs(15));
 }
 
 #[test]
@@ -535,10 +557,56 @@ fn a_shader_pass_from_an_earlier_launch_does_not_hold_this_one() {
     s.set_mode("none");
     s.config("");
     s.append_launch_task("289070", "ProcessingShaderCache");
-    let ran = s.run_with_start_timeout(&["run", "civ"], 500);
-    assert_eq!(ran.status.code(), Some(1), "{}", stderr(&ran));
-    assert!(stderr(&ran).contains("Steam didn't start civ."));
+    let (mut run, log) = spawn_run(&s, &[("WINEO_TEST_STEAM_START_TIMEOUT_MS", "500")]);
+    assert_eq!(finish(&mut run, Duration::from_secs(15)), Some(1));
+    let stderr = fs::read_to_string(log).unwrap();
+    assert!(stderr.contains("Steam didn't start civ."), "{stderr}");
     s.f.wait_for_run_end("civ", "failed");
+}
+
+#[test]
+fn a_shader_pass_is_waited_on_only_up_to_its_cap() {
+    let s = SteamFixture::new();
+    s.set_mode("none");
+    s.config("");
+    let began = Instant::now();
+    let (mut run, log) = spawn_run(
+        &s,
+        &[
+            ("WINEO_TEST_STEAM_START_TIMEOUT_MS", "3000"),
+            ("WINEO_TEST_STEAM_SHADER_CAP_MS", "2000"),
+        ],
+    );
+    wait_starting(&s);
+    s.append_launch_task("289070", "ProcessingShaderCache");
+    assert_eq!(finish(&mut run, Duration::from_secs(20)), Some(1));
+    // The pass is seen after it is written, then held for the cap, and the
+    // usual window follows. Without the pass the run ends at 3 s.
+    assert!(began.elapsed() >= Duration::from_millis(4500));
+    let stderr = fs::read_to_string(log).unwrap();
+    assert!(stderr.contains("Steam didn't start civ."), "{stderr}");
+}
+
+#[test]
+fn a_shader_pass_ends_when_steam_goes_away_during_it() {
+    let s = SteamFixture::new();
+    s.set_mode("none");
+    s.config("");
+    let (mut run, log) = spawn_run(
+        &s,
+        &[
+            ("WINEO_TEST_STEAM_START_TIMEOUT_MS", "3000"),
+            ("WINEO_TEST_STEAM_CLIENT_ABSENT_MS", "500"),
+        ],
+    );
+    wait_starting(&s);
+    s.append_launch_task("289070", "ProcessingShaderCache");
+    thread::sleep(Duration::from_millis(1500));
+    assert!(run.try_wait().unwrap().is_none());
+    signal(s.client_pid(), "-KILL");
+    assert_eq!(finish(&mut run, Duration::from_secs(20)), Some(1));
+    let stderr = fs::read_to_string(log).unwrap();
+    assert!(stderr.contains("Steam didn't start civ."), "{stderr}");
 }
 
 #[test]
