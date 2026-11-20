@@ -1,4 +1,0 @@
-schema_version = 1
-prefix = "prefixes/doomed-prefix"
-runner = "wine"
-arch = "win64"

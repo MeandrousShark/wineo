@@ -1,5 +1,0 @@
-schema_version = 1
-gameid = "umu-12345"
-store = "steam"
-dxvk = "latest"
-vkd3d = "latest"

@@ -122,9 +122,22 @@ fn new_wine(
     if let Some(installer) = &args.install_exe {
         launch::check_program_path(paths, installer)?;
     }
+    let request = || CreateRequest {
+        name: name.to_owned(),
+        dir: args.dir.clone(),
+        runner: args.runner.clone(),
+        arch: args.arch,
+        template_name: args.template.clone(),
+        exe: args.exe.clone(),
+        desktop: args.desktop,
+        ..Default::default()
+    };
     // The questions come before the create lock is taken, and before the
-    // installer's wait, and the download once the installer has ended.
+    // installer's wait, and the download once the installer has ended. A
+    // request that can't be created is refused first, so nobody answers
+    // questions for nothing.
     let picked = if args.art && args.install_exe.is_some() {
+        create::plan(paths, request())?;
         match pick_art(paths, name, access) {
             Ok(picked) => picked,
             Err(err) if cancel::prompted(&err) => {
@@ -150,17 +163,7 @@ fn new_wine(
         install_token: install_token.clone(),
     };
     let token = hooks.cancellation.as_ref().unwrap().token.clone();
-    let request = CreateRequest {
-        name: name.to_owned(),
-        dir: args.dir,
-        runner: args.runner,
-        arch: args.arch,
-        template_name: args.template,
-        exe: args.exe.clone(),
-        desktop: args.desktop,
-        ..Default::default()
-    };
-    let created = match create::create_and_install(paths, request, step, &token, &mut hooks) {
+    let created = match create::create_and_install(paths, request(), step, &token, &mut hooks) {
         Ok(created) => created,
         Err(err) if cancel::core(&err) => {
             eprintln!("Canceled. Nothing was created.");
@@ -737,7 +740,7 @@ mod tests {
     struct Run {
         _root: tempfile::TempDir,
         paths: Paths,
-        code: ExitCode,
+        code: anyhow::Result<ExitCode>,
         seen: Rc<RefCell<Vec<Seen>>>,
     }
 
@@ -757,6 +760,10 @@ mod tests {
     /// built, fetching art through `fake`. With `installer` it runs a fake one
     /// instead of adding a target, with a desktop entry otherwise.
     fn new_with_art(fake: Fake, installer: bool) -> Run {
+        new_with_runner(fake, installer, "test-wine")
+    }
+
+    fn new_with_runner(fake: Fake, installer: bool, runner: &str) -> Run {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         let runner_dir = paths.default_runner_root().join("test-wine/bin");
@@ -772,7 +779,7 @@ mod tests {
         let program = program.display().to_string();
         let mut args = args(false);
         args.dry_run = false;
-        args.runner = Some("test-wine".to_owned());
+        args.runner = Some(runner.to_owned());
         args.dir = Some(prefix.display().to_string());
         if installer {
             args.install_exe = Some(program);
@@ -797,7 +804,7 @@ mod tests {
                 }))
             }),
         };
-        let code = new_wine(&paths, args, "hades", &access).unwrap();
+        let code = new_wine(&paths, args, "hades", &access);
         drop(access);
         Run {
             _root: root,
@@ -821,7 +828,7 @@ mod tests {
     #[test]
     fn art_is_fetched_without_holding_the_environment_lock() {
         let run = new_with_art(hades(), false);
-        assert_eq!(run.code, ExitCode::SUCCESS);
+        assert_eq!(run.code.as_ref().unwrap(), &ExitCode::SUCCESS);
         let seen = run.seen.borrow();
         assert!(!seen.is_empty());
         for request in seen.iter() {
@@ -839,7 +846,7 @@ mod tests {
     #[test]
     fn a_failed_art_fetch_leaves_the_environment_and_its_entry() {
         let run = new_with_art(Fake::default(), false);
-        assert_eq!(run.code, ExitCode::SUCCESS);
+        assert_eq!(run.code.as_ref().unwrap(), &ExitCode::SUCCESS);
         assert!(run.seen.borrow().iter().all(|request| request.lock_free));
         assert_eq!(
             wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
@@ -850,9 +857,18 @@ mod tests {
     }
 
     #[test]
+    fn a_request_that_cant_be_created_asks_nothing_before_an_installer() {
+        let run = new_with_runner(hades(), true, "missing-wine");
+        let err = run.code.as_ref().unwrap_err();
+        assert!(err.to_string().contains("missing-wine"), "{err:#}");
+        assert!(run.seen.borrow().is_empty());
+        assert!(!run.paths.environment_config("hades").exists());
+    }
+
+    #[test]
     fn with_an_installer_the_search_comes_before_creation_and_the_download_after() {
         let run = new_with_art(hades(), true);
-        assert_eq!(run.code, ExitCode::SUCCESS);
+        assert_eq!(run.code.as_ref().unwrap(), &ExitCode::SUCCESS);
         let seen = run.seen.borrow();
         let (search, downloads) = seen.split_first().expect("the search is asked");
         assert!(search.url.contains("/search/"), "{}", search.url);

@@ -1,3 +1,0 @@
-#!/bin/sh
-echo "gamemoderun wrapped: $1"
-exec "$@"
