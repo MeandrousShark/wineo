@@ -404,14 +404,27 @@ fn the_fake_sweep_finds_fakes_through_a_symlinked_root() {
     symlink(&real, &link).unwrap();
 
     // wineo hands Wine the canonical prefix, however the root was reached.
+    // Spawn can return before the child's exec swaps in its own memory, and
+    // until then its environment reads as this test's, with no WINEPREFIX,
+    // so the sweep would take it for a stranger. A fake wine's `sleep` never
+    // has that gap, since its script already carries the prefix.
     let fake = |wineprefix: &Path| {
-        KillOnDrop::new(
+        let child = KillOnDrop::new(
             Command::new("sleep")
                 .arg("30")
                 .env("WINEPREFIX", wineprefix)
                 .spawn()
                 .unwrap(),
-        )
+        );
+        let wanted = format!("WINEPREFIX={}", wineprefix.display()).into_bytes();
+        let environment = format!("/proc/{}/environ", child.id());
+        wait_for("the fake to show its prefix", || {
+            fs::read(&environment)
+                .unwrap_or_default()
+                .split(|byte| *byte == 0)
+                .any(|var| var == wanted)
+        });
+        child
     };
     let mut ours = fake(&prefix);
     let mut stranger = fake(dir.path());
