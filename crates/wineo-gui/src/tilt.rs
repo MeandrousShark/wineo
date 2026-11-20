@@ -160,11 +160,12 @@ fn homography(to: [(f64, f64); 4], from: [(f64, f64); 4]) -> [f64; 9] {
             .max_by(|&a, &b| rows[a][column].abs().total_cmp(&rows[b][column].abs()))
             .unwrap_or(column);
         rows.swap(column, pivot);
-        for row in 0..8 {
+        let pivot_row = rows[column];
+        for (row, cells) in rows.iter_mut().enumerate() {
             if row != column {
-                let factor = rows[row][column] / rows[column][column];
-                for k in column..9 {
-                    rows[row][k] -= factor * rows[column][k];
+                let factor = cells[column] / pivot_row[column];
+                for (cell, p) in cells.iter_mut().zip(pivot_row).skip(column) {
+                    *cell -= factor * p;
                 }
             }
         }
