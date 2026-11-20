@@ -81,53 +81,26 @@ fn the_row_names_the_switch() {
 
 /// The window mode changes a task asks for.
 fn modes(task: Task<Message>) -> Vec<Mode> {
-    use iced::futures::StreamExt;
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return Vec::new();
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let mut modes = Vec::new();
-        while let Ok(Some(action)) =
-            tokio::time::timeout(std::time::Duration::from_millis(300), stream.next()).await
-        {
-            if let iced_runtime::Action::Window(WindowAction::SetMode(_, mode)) = action {
-                modes.push(mode);
-            }
+    let mut modes = Vec::new();
+    crate::test_tasks::each_action(task, |action| {
+        if let iced_runtime::Action::Window(WindowAction::SetMode(_, mode)) = action {
+            modes.push(mode);
         }
-        modes
-    })
+    });
+    modes
 }
 
 /// Saves the switch from the open page the way a click and Save would, and
 /// returns the mode changes the whole round asked for.
 fn flip_and_save(app: &mut App, on: bool) -> Vec<Mode> {
-    use iced::futures::StreamExt;
     let _ = app.update(Message::Settings(Event::GlobalCoverflowFullscreen(on)));
     let task = app.update(Message::Settings(Event::Save));
     let mut asked = Vec::new();
     let mut pending = vec![task];
     for _ in 0..6 {
         let Some(task) = pending.pop() else { break };
-        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-            continue;
-        };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let actions = runtime.block_on(async {
-            let mut actions = Vec::new();
-            while let Ok(Some(action)) =
-                tokio::time::timeout(std::time::Duration::from_millis(300), stream.next()).await
-            {
-                actions.push(action);
-            }
-            actions
-        });
+        let mut actions = Vec::new();
+        crate::test_tasks::each_action(task, |action| actions.push(action));
         for action in actions {
             match action {
                 iced_runtime::Action::Window(WindowAction::SetMode(_, mode)) => asked.push(mode),

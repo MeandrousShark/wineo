@@ -9,6 +9,7 @@ use wineo_core::runtime::State;
 
 use super::*;
 use crate::pad::{Axis, PadEvent, PadInfo, Raw};
+use crate::test_tasks::each_ready;
 use crate::tests::card;
 
 fn xbox() -> PadInfo {
@@ -99,51 +100,6 @@ fn outputs(app: &App, task: Task<Message>) -> Vec<Message> {
         _ => {}
     });
     messages
-}
-
-/// Takes every action `stream` has ready now, and stops when it has none
-/// and nothing woke it: a wakeup's sleep, or work on another thread.
-/// Nothing here waits on the clock, so a loaded machine can't cut a press's
-/// key path short; that path is all widget operations and their answers.
-/// A batch's stream says Pending now and then just to take turns, waking
-/// itself first, so a wake means poll again.
-fn each_ready<S>(
-    runtime: &tokio::runtime::Runtime,
-    stream: &mut S,
-    mut take: impl FnMut(iced_runtime::Action<Message>),
-) where
-    S: iced::futures::Stream<Item = iced_runtime::Action<Message>> + Unpin,
-{
-    use iced::futures::StreamExt;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::{Context, Poll, Wake, Waker};
-
-    struct Woken(AtomicBool);
-    impl Wake for Woken {
-        fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
-    // Sleeps in the stream need the runtime's timer to exist, not to run.
-    let _runtime = runtime.enter();
-    let woken = Arc::new(Woken(AtomicBool::new(false)));
-    let waker = Waker::from(woken.clone());
-    let mut context = Context::from_waker(&waker);
-    // A stream that only ever wakes itself would never finish.
-    for _ in 0..100_000 {
-        woken.0.store(false, Ordering::SeqCst);
-        match stream.poll_next_unpin(&mut context) {
-            Poll::Ready(Some(action)) => take(action),
-            Poll::Ready(None) => return,
-            Poll::Pending if woken.0.load(Ordering::SeqCst) => {}
-            Poll::Pending => return,
-        }
-    }
-    panic!("the task kept waking itself without finishing");
 }
 
 /// Runs the key path a press starts: the text field check, the page's

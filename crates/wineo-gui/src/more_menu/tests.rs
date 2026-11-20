@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use iced::advanced::widget::Tree;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -76,25 +76,11 @@ pub(crate) fn shown(app: &App, id: &'static str) -> Option<Rectangle> {
 /// Runs `task` against `laid`, answering its widget operations, and
 /// returns the messages it sent.
 pub(crate) fn drive(laid: &mut Laid<'_, Message>, task: Task<Message>) -> Vec<Message> {
-    use iced::futures::StreamExt;
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return Vec::new();
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
     let mut messages = Vec::new();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid.run(operation),
-                _ => {}
-            }
-        }
+    crate::test_tasks::each_action(task, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid.run(operation),
+        _ => {}
     });
     messages
 }

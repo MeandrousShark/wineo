@@ -21,18 +21,11 @@ fn fixture() -> (tempfile::TempDir, App) {
 
 /// Whether running `task` asks the window to exit.
 pub(crate) fn exits(task: Task<Message>) -> bool {
-    use iced::futures::StreamExt;
     let Some(mut stream) = iced_runtime::task::into_stream(task) else {
         return false;
     };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-        {
+    crate::test_tasks::paused_runtime().block_on(async {
+        while let Some(action) = crate::test_tasks::next_action(&mut stream).await {
             if matches!(action, iced_runtime::Action::Exit) {
                 return true;
             }
@@ -239,7 +232,6 @@ fn any_update_while_closing_with_nothing_left_exits_through_the_watchdog() {
 
 #[test]
 fn the_watchdog_starts_when_the_chained_exit_runs_not_when_it_is_queued() {
-    use iced::futures::StreamExt;
     let (_root, mut app) = fixture();
     app.closing = true;
     // A reload still running ahead of the exit, like the one a finished
@@ -251,22 +243,11 @@ fn the_watchdog_starts_when_the_chained_exit_runs_not_when_it_is_queued() {
     let task = app.settle_panel(false, slow);
     assert!(app.watchdog.started().is_none(), "queued, not run");
 
-    let mut stream = iced_runtime::task::into_stream(task).unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
     let mut seen = Vec::new();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(1000), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(_) => seen.push(("slow task", app.watchdog.started())),
-                iced_runtime::Action::Exit => seen.push(("exit", app.watchdog.started())),
-                _ => {}
-            }
-        }
+    crate::test_tasks::each_action(task, |action| match action {
+        iced_runtime::Action::Output(_) => seen.push(("slow task", app.watchdog.started())),
+        iced_runtime::Action::Exit => seen.push(("exit", app.watchdog.started())),
+        _ => {}
     });
     assert_eq!(seen.len(), 2, "{seen:?}");
     assert_eq!(seen[0], ("slow task", None));

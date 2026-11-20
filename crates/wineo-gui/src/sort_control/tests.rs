@@ -929,15 +929,16 @@ pub(crate) struct Ran {
     pub(crate) exits: bool,
 }
 
-/// How long a test waits for a write's result before failing. Well past a
-/// config lock wait, so a slow machine never drops a real completion.
+/// How far the paused clock may run ahead while a test waits for a write's
+/// result. The write itself holds the clock still however long it takes, so
+/// this only passes once the task has nothing left to run.
 const SAVE_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Runs `task` the way the runtime would, on a runtime with a blocking pool,
 /// until it has sent `saves` write results. Widget operations are kept only
 /// when `keep` says so. There's no window to run them in, so a task waiting
 /// on an operation's answer would wait forever: once every write result is
-/// in, the run ends when nothing new arrives for a moment.
+/// in, the run ends as `next_action` does.
 fn run_keeping(task: Task<Message>, keep: bool, saves: usize) -> Ran {
     run_counting(task, keep, saves, |message| {
         matches!(message, Message::Sort(Event::Saved(..)))
@@ -961,26 +962,20 @@ pub(crate) fn run_counting(
         assert_eq!(saves, 0, "the task does nothing, so no write can finish");
         return ran;
     };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
+    crate::test_tasks::paused_runtime().block_on(async {
         let mut seen = 0;
         loop {
-            let waiting = seen < saves;
-            let patience = if waiting {
-                SAVE_PATIENCE
-            } else {
-                Duration::from_millis(500)
-            };
-            let action = match tokio::time::timeout(patience, stream.next()).await {
-                Ok(Some(action)) => action,
-                Ok(None) if waiting => panic!("the task ended after {seen} of {saves} writes"),
-                Err(_) if waiting => {
-                    panic!("only {seen} of {saves} writes finished within {SAVE_PATIENCE:?}")
+            let action = if seen < saves {
+                match tokio::time::timeout(SAVE_PATIENCE, stream.next()).await {
+                    Ok(Some(action)) => action,
+                    Ok(None) => panic!("the task ended after {seen} of {saves} writes"),
+                    Err(_) => panic!("the task stalled after {seen} of {saves} writes"),
                 }
-                _ => break,
+            } else {
+                match crate::test_tasks::next_action(&mut stream).await {
+                    Some(action) => action,
+                    None => break,
+                }
             };
             match action {
                 iced_runtime::Action::Output(message) => {
@@ -1029,26 +1024,15 @@ pub(crate) fn press(named: Named) -> iced::Event {
 /// Runs `task` with the widget operations it asks for answered by the
 /// window's real layout, and returns the messages it sent.
 pub(crate) fn answers(app: &App, task: Task<Message>) -> Vec<Message> {
-    use iced::futures::StreamExt;
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return Vec::new();
-    };
-    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
+    // Laid out only once an operation needs it.
+    let mut laid = None;
     let mut messages = Vec::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid.run(operation),
-                _ => {}
-            }
-        }
+    crate::test_tasks::each_action(task, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid
+            .get_or_insert_with(|| crate::layout_probe::lay_out(app.view(), app.window_size))
+            .run(operation),
+        _ => {}
     });
     messages
 }

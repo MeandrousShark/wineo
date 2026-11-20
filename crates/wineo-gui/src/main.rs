@@ -99,6 +99,8 @@ mod test_runners;
 #[cfg(test)]
 #[path = "../../wineo-core/tests/common/test_script.rs"]
 mod test_script;
+#[cfg(test)]
+mod test_tasks;
 mod theme;
 mod tile_title;
 mod tilt;

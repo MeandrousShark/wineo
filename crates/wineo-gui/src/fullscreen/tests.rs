@@ -21,36 +21,25 @@ struct Calls {
 }
 
 fn run(app: &App, task: Task<Message>, compositor: Mode) -> Calls {
-    use iced::futures::StreamExt;
     let mut calls = Calls::default();
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return calls;
-    };
-    let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Window(WindowAction::SetMode(_, mode)) => {
-                    calls.set_modes.push(mode);
-                }
-                iced_runtime::Action::Window(WindowAction::GetMode(_, channel)) => {
-                    calls.read_modes += 1;
-                    let _ = channel.send(compositor);
-                }
-                iced_runtime::Action::Window(WindowAction::Open(_, settings, _)) => {
-                    calls.opened.push(settings);
-                }
-                iced_runtime::Action::Output(message) => calls.messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid.run(operation),
-                _ => {}
-            }
+    // Laid out only once an operation needs it.
+    let mut laid = None;
+    crate::test_tasks::each_action(task, |action| match action {
+        iced_runtime::Action::Window(WindowAction::SetMode(_, mode)) => {
+            calls.set_modes.push(mode);
         }
+        iced_runtime::Action::Window(WindowAction::GetMode(_, channel)) => {
+            calls.read_modes += 1;
+            let _ = channel.send(compositor);
+        }
+        iced_runtime::Action::Window(WindowAction::Open(_, settings, _)) => {
+            calls.opened.push(settings);
+        }
+        iced_runtime::Action::Output(message) => calls.messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid
+            .get_or_insert_with(|| crate::layout_probe::lay_out(app.view(), app.window_size))
+            .run(operation),
+        _ => {}
     });
     calls
 }

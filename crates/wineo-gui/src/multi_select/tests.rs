@@ -397,30 +397,16 @@ fn a_ctrl_or_shift_double_click_never_launches() {
 
 /// Runs `task` in a window where `focus` has keyboard focus.
 fn answers_with_focus(app: &App, task: iced::Task<Message>, focus: &'static str) -> Vec<Message> {
-    use iced::futures::StreamExt;
     let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
     laid.run(Box::new(
         iced::advanced::widget::operation::focusable::focus(iced::widget::Id::new(focus)),
     ));
     assert_eq!(laid.focused(), vec![iced::widget::Id::new(focus)]);
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return Vec::new();
-    };
     let mut messages = Vec::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
-        {
-            match action {
-                iced_runtime::Action::Output(message) => messages.push(message),
-                iced_runtime::Action::Widget(operation) => laid.run(operation),
-                _ => {}
-            }
-        }
+    crate::test_tasks::each_action(task, |action| match action {
+        iced_runtime::Action::Output(message) => messages.push(message),
+        iced_runtime::Action::Widget(operation) => laid.run(operation),
+        _ => {}
     });
     messages
 }

@@ -157,23 +157,12 @@ fn key(app: &mut App, named: Named) -> Task<Message> {
 /// The widget operations `task` asks for, run in the laid out window, and
 /// what has focus after.
 fn focused_after(app: &App, task: Task<Message>) -> Vec<iced::widget::Id> {
-    use iced::futures::StreamExt;
     let mut laid = crate::layout_probe::lay_out(app.view(), app.window_size);
-    if let Some(mut stream) = iced_runtime::task::into_stream(task) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            while let Ok(Some(action)) =
-                tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
-            {
-                if let iced_runtime::Action::Widget(operation) = action {
-                    laid.run(operation);
-                }
-            }
-        });
-    }
+    crate::test_tasks::each_action(task, |action| {
+        if let iced_runtime::Action::Widget(operation) = action {
+            laid.run(operation);
+        }
+    });
     laid.focused()
 }
 

@@ -672,18 +672,11 @@ fn answer_size(
     main: iced::window::Id,
     size: iced::Size,
 ) -> Option<Message> {
-    use iced::futures::StreamExt;
     use iced_runtime::{Action, window::Action as Window};
     let mut stream = iced_runtime::task::into_stream(task)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
+    crate::test_tasks::paused_runtime().block_on(async {
         let mut asked = false;
-        while let Ok(Some(action)) =
-            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await
-        {
+        while let Some(action) = crate::test_tasks::next_action(&mut stream).await {
             match action {
                 Action::Window(Window::GetSize(id, channel)) => {
                     assert_eq!(id, main);
@@ -731,27 +724,15 @@ fn a_size_change_refreshes_the_window_size() {
 /// The minimum sizes `task` sets on `main`, in order. Other actions are
 /// dropped, which closes their channels.
 fn min_size_updates(task: iced::Task<Message>, main: iced::window::Id) -> Vec<Option<iced::Size>> {
-    use iced::futures::StreamExt;
     use iced_runtime::{Action, window::Action as Window};
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return Vec::new();
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let mut found = Vec::new();
-        while let Ok(Some(action)) =
-            tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await
-        {
-            if let Action::Window(Window::SetMinSize(id, size)) = action {
-                assert_eq!(id, main);
-                found.push(size);
-            }
+    let mut found = Vec::new();
+    crate::test_tasks::each_action(task, |action| {
+        if let Action::Window(Window::SetMinSize(id, size)) = action {
+            assert_eq!(id, main);
+            found.push(size);
         }
-        found
-    })
+    });
+    found
 }
 
 #[test]

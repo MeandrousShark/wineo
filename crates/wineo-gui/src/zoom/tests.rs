@@ -145,21 +145,9 @@ fn focus(laid: &mut Laid<'_, Message>, id: &'static str) {
 
 /// Runs `task`'s widget operations against `laid`.
 fn drive(laid: &mut Laid<'_, Message>, task: Task<Message>) {
-    use iced::futures::StreamExt;
-    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
-        return;
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        while let Ok(Some(action)) =
-            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-        {
-            if let iced_runtime::Action::Widget(operation) = action {
-                laid.run(operation);
-            }
+    crate::test_tasks::each_action(task, |action| {
+        if let iced_runtime::Action::Widget(operation) = action {
+            laid.run(operation);
         }
     });
 }
