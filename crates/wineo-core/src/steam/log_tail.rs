@@ -30,8 +30,9 @@ pub(super) enum Event<'a> {
 
 /// A position in a log, taken at some moment, from which every later read
 /// gives only the whole lines written since. The log's identity is kept
-/// across reads, so a replaced or truncated file is noticed however big it
-/// has grown back by the next look.
+/// across reads, so a replaced file is noticed however big it has grown by
+/// the next look. A file truncated in place is noticed only while it's
+/// shorter than what was already read; Steam replaces its logs instead.
 pub(super) struct Follower {
     path: PathBuf,
     /// Device and inode, or none when there was no log.

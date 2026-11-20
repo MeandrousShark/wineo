@@ -324,8 +324,9 @@ on start, the 60 seconds pause and start over once the update is done, up to
 30 minutes in all. They also pause while Steam processes shaders for the
 game, which wineo reads from Steam's `logs/console_log.txt`, and start over
 once the pass is done, up to 30 minutes for each pass. A pass stops counting
-if Steam closes during it, and a log wineo can't read or understand adds no
-wait. A game that never appears ends the run with `Steam didn't start bg3.`
+once Steam has been closed for about 10 seconds, and a log wineo can't read
+or understand adds no wait. A game that never appears ends the run with
+`Steam didn't start bg3.`
 
 `wineo run bg3` stays in the foreground through all of it. It exits 0 when
 the game exits on its own, 130 when it's stopped, and 1 when Steam never
