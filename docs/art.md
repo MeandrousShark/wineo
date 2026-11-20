@@ -278,6 +278,11 @@ hades: art from SteamGridDB game 1234, Hades (2020)
 `wineo art fetch --search` or `--game` replaces a wrong pick later. Only
 kinds with no art are fetched, as with a plain `art fetch`.
 
+`wineo new --art` without `--install-exe` fetches once the environment is
+created and unlocked, so other commands can use it while SteamGridDB answers.
+The desktop entry picks up the icon afterwards. With `--install-exe` the fetch
+stays before the installer, which keeps the environment locked until it ends.
+
 Failures never stop the flow. A rejected key, a failed download, or a
 search with no matches when there's no pick list prints a warning such as
 `warning: art fetch failed: ...` and the command carries on; kinds fetched before the error stay. Art never
