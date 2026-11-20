@@ -1,0 +1,184 @@
+#!/bin/sh
+fake_cmd() {
+    # Wine sets it for every program.
+    : "${SystemRoot:=C:\\windows}"
+    fake_unix() { printf '%s' "$1" | sed 's/^[Zz]://; s/\\/\//g'; }
+    # Expands each %NAME% once from the environment, as cmd does in a batch
+    # file: an unset one is empty, `%%` is `%`, and what a value holds is
+    # never expanded again.
+    fake_expand() {
+        rest=$1
+        expanded=
+        while :; do
+            case $rest in
+            *%*%*) ;;
+            *) break ;;
+            esac
+            expanded=$expanded${rest%%\%*}
+            rest=${rest#*%}
+            name=${rest%%\%*}
+            rest=${rest#*%}
+            case $name in
+            '') expanded=$expanded% ;;
+            *[!A-Za-z0-9_]* | [0-9]*) expanded=$expanded%$name% ;;
+            *)
+                value=
+                eval "value=\${$name-}"
+                expanded=$expanded$value
+                ;;
+            esac
+        done
+        printf '%s' "$expanded$rest"
+    }
+    fake_line() { fake_expand "$(sed -n "$1p" "$2" | tr -d '\r')"; }
+    bat=$(fake_unix "$1")
+    dir=$(fake_line 2 "$bat" | sed 's/^cd \/d "\(.*\)"$/\1/')
+    line=$(fake_line 3 "$bat")
+    out=$(sed -n '4p' "$bat" | tr -d '\r' | sed 's/^>"\(.*\)" echo %ERRORLEVEL%$/\1/')
+    out=$(fake_expand "$out")
+    program=${line#\"}
+    program=${program%%\"*}
+    args=${line#*\"}
+    args=${args#*\"}
+    args=${args# }
+    target=$program
+    case $program in
+    *[\\/]msiexec.exe)
+        target=${args#/i \"}
+        target=${target%%\"*}
+        ;;
+    esac
+    target=$(fake_unix "$target")
+    printf '%s\t%s\t%s\n' "$program" "$dir" "$args" >>"${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}"
+    if [ -n "$target" ] && [ -f "$target" ]; then
+        code=$(cat "$target.exit" 2>/dev/null || echo 0)
+    else
+        code=9009
+    fi
+    if [ -n "$out" ] && [ ! -e "$target.nocode" ]; then
+        printf '%s\r\n' "$code" >"$(fake_unix "$out")"
+    fi
+    return $((code & 255))
+}
+pids="$WINEPREFIX/fake-pids"
+record_pids() {
+    # Renamed into place, so nothing ever reads a half-written file.
+    echo "$*" >"$pids.$$" && mv -f "$pids.$$" "$pids"
+}
+# wineo lowers the core limit right after spawning, so wait for that to land.
+record_core_when_one() {
+    i=0
+    while [ "$i" -lt 100 ] && ! grep -Eq '^Max core file size +1 ' /proc/self/limits; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    grep 'Max core file size' /proc/self/limits >"$WINEPREFIX/core-limit"
+}
+burst() {
+    line=$(printf 'x%.0s' $(seq 1023))
+    i=0
+    while [ "$i" -lt 2048 ]; do
+        echo "$line"
+        i=$((i + 1))
+    done
+}
+case "$1" in
+cmd)
+    case "$3" in *.bat)
+        fake_cmd "$3"
+        exit
+        ;;
+    esac
+    ;;
+--version)
+    echo wine-fake
+    exit 0
+    ;;
+wineboot)
+    if [ "$2" = --init ]; then
+        mkdir -p "$WINEPREFIX/drive_c"
+        printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/system.reg"
+        if [ -n "${WINEO_TEST_RECORD_CORE-}" ]; then
+            record_core_when_one
+        fi
+        if [ -n "${WINEO_TEST_REMOVE_INSTALLER-}" ]; then
+            rm -f "$WINEO_TEST_REMOVE_INSTALLER"
+        fi
+    elif [ "$2" = --end-session ] && read -r program _ 2>/dev/null <"$pids"; then
+        kill "$program" 2>/dev/null
+    fi
+    exit 0
+    ;;
+reg)
+    echo "$*" >>"$WINEPREFIX/reg.log"
+    if [ -n "${WINEO_TEST_REMOVE_WINE-}" ]; then
+        rm -f "$WINEO_TEST_REMOVE_WINE"
+    fi
+    exit 0
+    ;;
+winemenubuilder.exe)
+    echo "$*" >>"$WINEPREFIX/menubuilder.log"
+    exit 1
+    ;;
+esac
+echo "fake wine: $*"
+echo "fake wine: FAKE_VAR=${FAKE_VAR-}"
+case "$1" in
+exit-*)
+    exit "${1#exit-}"
+    ;;
+slow)
+    sleep 0.5
+    ;;
+quiet-corelimit)
+    record_core_when_one
+    exit 0
+    ;;
+corelimit)
+    # Records its core limit for a test, then runs like any other program.
+    sleep 0.5
+    grep 'Max core file size' /proc/self/limits >"$WINEPREFIX/core-limit"
+    ;;
+noisy)
+    # Two megabytes, a pause long enough for the size check to run, then two
+    # more, so the log is cleared while the program is still going.
+    burst
+    sleep 2
+    burst
+    ;;
+noisy-exit)
+    # Exits right away, leaving something in the prefix still writing.
+    (sleep 0.5; burst; burst; rm -f "$pids") &
+    record_pids "$! $!"
+    exit 0
+    ;;
+handoff)
+    (sleep 2; touch "$WINEPREFIX/handoff-done"; rm -f "$pids") &
+    record_pids "$! $!"
+    exit 0
+    ;;
+break-wineserver)
+    rm -f "${0%/*}/wineserver"
+    exit 0
+    ;;
+*install-game.exe)
+    mkdir -p "$WINEPREFIX/drive_c/Games/Game"
+    : >"$WINEPREFIX/drive_c/Games/Game/Game.exe"
+    exit 0
+    ;;
+*fail-game.exe)
+    # Installs the game, then fails anyway.
+    mkdir -p "$WINEPREFIX/drive_c/Games/Game"
+    : >"$WINEPREFIX/drive_c/Games/Game/Game.exe"
+    exit 3
+    ;;
+esac
+sleep 60 &
+if [ "$1" = stubborn ]; then
+    trap '' TERM
+else
+    trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM
+fi
+record_pids "$$ $!"
+wait
+rm -f "$pids"

@@ -1,0 +1,161 @@
+#!/bin/sh
+fake_cmd() {
+    # Wine sets it for every program.
+    : "${SystemRoot:=C:\\windows}"
+    fake_unix() { printf '%s' "$1" | sed 's/^[Zz]://; s/\\/\//g'; }
+    # Expands each %NAME% once from the environment, as cmd does in a batch
+    # file: an unset one is empty, `%%` is `%`, and what a value holds is
+    # never expanded again.
+    fake_expand() {
+        rest=$1
+        expanded=
+        while :; do
+            case $rest in
+            *%*%*) ;;
+            *) break ;;
+            esac
+            expanded=$expanded${rest%%\%*}
+            rest=${rest#*%}
+            name=${rest%%\%*}
+            rest=${rest#*%}
+            case $name in
+            '') expanded=$expanded% ;;
+            *[!A-Za-z0-9_]* | [0-9]*) expanded=$expanded%$name% ;;
+            *)
+                value=
+                eval "value=\${$name-}"
+                expanded=$expanded$value
+                ;;
+            esac
+        done
+        printf '%s' "$expanded$rest"
+    }
+    fake_line() { fake_expand "$(sed -n "$1p" "$2" | tr -d '\r')"; }
+    bat=$(fake_unix "$1")
+    dir=$(fake_line 2 "$bat" | sed 's/^cd \/d "\(.*\)"$/\1/')
+    line=$(fake_line 3 "$bat")
+    out=$(sed -n '4p' "$bat" | tr -d '\r' | sed 's/^>"\(.*\)" echo %ERRORLEVEL%$/\1/')
+    out=$(fake_expand "$out")
+    program=${line#\"}
+    program=${program%%\"*}
+    args=${line#*\"}
+    args=${args#*\"}
+    args=${args# }
+    target=$program
+    case $program in
+    *[\\/]msiexec.exe)
+        target=${args#/i \"}
+        target=${target%%\"*}
+        ;;
+    esac
+    target=$(fake_unix "$target")
+    printf '%s\t%s\t%s\n' "$program" "$dir" "$args" >>"${FAKE_CMD_LOG:-$WINEPREFIX/fake-cmd.log}"
+    if [ -n "$target" ] && [ -f "$target" ]; then
+        code=$(cat "$target.exit" 2>/dev/null || echo 0)
+    else
+        code=9009
+    fi
+    if [ -n "$out" ] && [ ! -e "$target.nocode" ]; then
+        printf '%s\r\n' "$code" >"$(fake_unix "$out")"
+    fi
+    return $((code & 255))
+}
+echo "umu-run: $*"
+echo "umu-run: WINEPREFIX=$WINEPREFIX PROTONPATH=$PROTONPATH"
+echo "umu-run: GAMEID=${GAMEID-unset} STORE=${STORE-unset}"
+if [ -z "$1" ]; then
+    mkdir -p "$WINEPREFIX/pfx/drive_c"
+    printf 'WINE REGISTRY Version 2\n\n#arch=win64\n' >"$WINEPREFIX/pfx/system.reg"
+    # Like the real one, which makes the prefix and then fails to run the
+    # empty program.
+    echo "ShellExecuteEx failed: File not found."
+    exit 1
+fi
+echo "umu-run: FAKE_VAR=${FAKE_VAR-}"
+pids="$WINEPREFIX/fake-pids"
+record_pids() {
+    # Renamed into place, so nothing ever reads a half-written file.
+    echo "$*" >"$pids.$$" && mv -f "$pids.$$" "$pids"
+}
+case "$1" in
+cmd)
+    case "$3" in *.bat)
+        fake_cmd "$3"
+        exit
+        ;;
+    esac
+    ;;
+winetricks)
+    shift
+    if [ "${1-}" = -q ]; then
+        shift
+        for verb in "$@"; do
+            if [ "$verb" = "${WINEO_TEST_FAIL_VERB-}" ]; then
+                exit 1
+            fi
+            printf '%s\n' "$verb" >>"$WINEPREFIX/pfx/winetricks.log"
+        done
+    fi
+    exit 0
+    ;;
+reg | winecfg)
+    exit 0
+    ;;
+exit-*)
+    exit "${1#exit-}"
+    ;;
+stubborn)
+    # Nothing outside the container can ask it to close, so only SIGKILL to
+    # the process group ends this.
+    trap '' TERM
+    record_pids "$$ $$"
+    # Gives up after a minute, so a killed test can't leave it looping.
+    i=0
+    while [ "$i" -lt 600 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    ;;
+handoff)
+    # Leaves something in umu's process group after umu itself has exited.
+    (sleep 2; touch "$WINEPREFIX/handoff-done") &
+    exit 0
+    ;;
+handoff-held)
+    # Like handoff, but what is left runs until the test creates
+    # handoff-release, or for a minute at most. Its pid stays in the pids
+    # file until then, so the fixture can kill it.
+    (
+        i=0
+        while [ ! -e "$WINEPREFIX/handoff-release" ] && [ "$i" -lt 600 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        touch "$WINEPREFIX/handoff-done"
+        rm -f "$pids"
+    ) &
+    record_pids "$!"
+    exit 0
+    ;;
+stubborn-child)
+    # umu closes when asked, but leaves something in its group that ignores
+    # the request, for a minute at most. The pids file outlives umu, so the
+    # fixture can still kill what it left.
+    (
+        trap '' TERM
+        i=0
+        while [ "$i" -lt 600 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+    ) &
+    trap 'exit 0' TERM
+    record_pids "$$ $!"
+    wait
+    ;;
+esac
+sleep 60 &
+trap 'kill "$!" 2>/dev/null; rm -f "$pids"; exit 0' TERM
+record_pids "$$ $!"
+wait
+rm -f "$pids"

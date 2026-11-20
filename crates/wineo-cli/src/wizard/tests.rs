@@ -1,5 +1,6 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
+use std::rc::Rc;
 
 use wineo_core::art::Kind;
 use wineo_core::config::{Defaults, Hooks, HooksSetting};
@@ -353,4 +354,132 @@ fn canceling_the_pick_list_keeps_the_environment() {
         "{result:?}\n{transcript}"
     );
     assert!(world.paths.environment_config("hades").exists());
+}
+
+/// What `wizard` returns, plus each request SteamGridDB saw with whether the
+/// environment existed and its lock was free.
+fn wizard_probed(
+    world: &World,
+    answers: &[&str],
+) -> (
+    anyhow::Result<ExitCode>,
+    String,
+    Vec<crate::commands::art::fake::Seen>,
+) {
+    use crate::commands::art::fake::Probe;
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let fake = fake();
+    let access = Access {
+        check_key: Box::new(found),
+        transport: Box::new(|| {
+            Ok(Box::new(Probe {
+                fake: fake.clone(),
+                paths: world.paths.clone(),
+                name: "hades".to_owned(),
+                seen: seen.clone(),
+            }))
+        }),
+    };
+    let mut prompt = Prompt::new(Script::new(answers), Vec::new());
+    let mut guided = Guided { registered: None };
+    let result = run(
+        &world.paths,
+        &world.global,
+        &Prefill::default(),
+        &mut prompt,
+        &mut guided,
+        &access,
+    );
+    let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+    drop(access);
+    let seen = Rc::try_unwrap(seen).ok().unwrap().into_inner();
+    (result, transcript, seen)
+}
+
+/// The fake runner where the installer step looks for it, since that step
+/// reads the config from disk rather than the world's.
+fn install_runner(world: &World) {
+    let bin = world.paths.default_runner_root().join("fake/bin");
+    fs::create_dir_all(&bin).unwrap();
+    for executable in ["wine", "wineserver"] {
+        write_script(bin.join(executable), "#!/bin/sh\nexit 0\n");
+    }
+}
+
+/// A file the How question accepts, as a program to use or an installer.
+fn program(world: &World) -> String {
+    let path = world._root.path().join("game.exe");
+    fs::write(&path, "").unwrap();
+    path.display().to_string()
+}
+
+/// The questions up to How, then How's own answers, then art answered yes
+/// with a search for Hades, and the review.
+fn art_after(how: &[&str], rest: &[&str]) -> Vec<String> {
+    BEFORE_ART[..5]
+        .iter()
+        .chain(how)
+        .chain(&["1", "Hades", ""])
+        .chain(rest)
+        .map(|answer| (*answer).to_owned())
+        .collect()
+}
+
+fn borrowed(answers: &[String]) -> Vec<&str> {
+    answers.iter().map(String::as_str).collect()
+}
+
+#[test]
+fn guided_art_without_an_installer_is_fetched_with_the_lock_free() {
+    for existing in [false, true] {
+        let world = world();
+        let program = program(&world);
+        let answers = if existing {
+            art_after(&["2", &program], &["1", "", ""])
+        } else {
+            art_after(&["3"], &["1"])
+        };
+        let (result, transcript, seen) = wizard_probed(&world, &borrowed(&answers));
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        assert!(!seen.is_empty(), "{transcript}");
+        for request in &seen {
+            assert!(request.exists && request.lock_free, "{}", request.url);
+        }
+        assert_eq!(saved_game(&world), Some(7));
+    }
+}
+
+#[test]
+fn with_an_installer_the_pick_list_comes_before_creation_and_the_download_after() {
+    let world = world();
+    install_runner(&world);
+    let program = program(&world);
+    let answers = art_after(&["1", &program], &["1", "s"]);
+    let (result, transcript, seen) = wizard_probed(&world, &borrowed(&answers));
+    assert!(result.is_ok(), "{result:?}\n{transcript}");
+    let picked = transcript.find("Which game is it?").unwrap();
+    let created = transcript.find("Created hades").unwrap();
+    assert!(picked < created, "{transcript}");
+    let (search, downloads) = seen.split_first().expect("the search is asked");
+    assert!(search.url.contains("/search/"), "{}", search.url);
+    assert!(!search.exists, "nothing exists while the questions run");
+    assert!(!downloads.is_empty(), "{transcript}");
+    for request in downloads {
+        assert!(request.exists && request.lock_free, "{}", request.url);
+    }
+    assert_eq!(saved_game(&world), Some(7));
+    assert!(world.paths.art_dir("hades").join("icon.png").exists());
+}
+
+#[test]
+fn canceling_the_pick_list_before_an_installer_creates_nothing() {
+    let world = world();
+    let program = program(&world);
+    let answers = art_after(&["1", &program], &["q"]);
+    let (result, transcript, _) = wizard_probed(&world, &borrowed(&answers));
+    assert!(
+        result.as_ref().is_err_and(|err| err.is::<Canceled>()),
+        "{result:?}\n{transcript}"
+    );
+    assert!(!world.paths.environment_config("hades").exists());
 }

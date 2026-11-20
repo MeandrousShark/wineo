@@ -1,0 +1,29 @@
+#!/bin/sh
+pids="$WINEPREFIX/fake-pids"
+case "$1" in
+-w)
+    # Gives up after a minute, so a recorded pid that never goes away can't hold
+    # it forever.
+    i=0
+    while [ "$i" -lt 600 ] && read -r program sleeper 2>/dev/null <"$pids" &&
+        read -r _ _ state _ 2>/dev/null <"/proc/$program/stat"; do
+        # wineo reaps the program only once this returns, so a zombie is as
+        # gone as it gets, the way the real wineserver sees it disconnect. The
+        # pids go too: returning ends a run, and `-k` may not have got to them.
+        if [ "$state" = Z ]; then
+            kill -9 "$sleeper" 2>/dev/null
+            rm -f "$pids"
+            break
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    ;;
+-k)
+    if read -r program sleeper 2>/dev/null <"$pids"; then
+        kill -9 "$program" "$sleeper" 2>/dev/null
+        rm -f "$pids"
+    fi
+    ;;
+esac
+exit 0

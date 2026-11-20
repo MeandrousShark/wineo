@@ -524,6 +524,64 @@ impl<'a> Access<'a> {
     }
 }
 
+/// A game picked for an environment that doesn't exist yet, whose art is
+/// fetched once it does.
+pub struct Picked {
+    game: u64,
+    term: String,
+}
+
+impl Access<'_> {
+    /// The searching and asking half of `fetch`, for a flow that fetches once
+    /// the environment is unlocked. A skipped pick or a failed search is None,
+    /// the latter with a warning, and only canceling the pick list is an error.
+    pub fn pick<I: Input, W: Write>(
+        &self,
+        key: &Key,
+        request: &AutoFetch,
+        pick: Pick<I, W>,
+        err: &mut dyn Write,
+    ) -> Result<Option<Picked>, Canceled> {
+        if request.kinds.kinds().is_empty() {
+            return Ok(None);
+        }
+        let result = (|| -> anyhow::Result<Option<Picked>> {
+            let transport = (self.transport)()?;
+            let api = Api::new(&*transport, &key.value);
+            Ok(choose_game(&api, request, pick)?.map(|(game, term, _)| Picked { game, term }))
+        })();
+        match result {
+            Ok(picked) => Ok(picked),
+            Err(error) if cancel::prompted(&error) => Err(Canceled),
+            Err(error) => {
+                warn_failed(&error, err);
+                Ok(None)
+            }
+        }
+    }
+
+    /// The downloading half: records the game `pick` chose and fetches into
+    /// the environment, which has to exist. Failures are warnings on `err`.
+    pub fn fetch_picked(
+        &self,
+        paths: &Paths,
+        key: &Key,
+        request: &AutoFetch,
+        picked: &Picked,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) {
+        let result = (|| {
+            let transport = (self.transport)()?;
+            let api = Api::new(&*transport, &key.value);
+            store_art(paths, &api, request, picked.game, &picked.term, out)
+        })();
+        if let Err(error) = result {
+            warn_failed(&error, err);
+        }
+    }
+}
+
 fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
     let line = format!("warning: art fetch failed: {error:#}");
     let _ = writeln!(err, "{}", style::warning_stderr(line));
@@ -561,9 +619,22 @@ fn try_fetch_new<I: Input, W: Write>(
     request: &AutoFetch,
     pick: Pick<I, W>,
 ) -> anyhow::Result<()> {
-    let env = request.env;
     let api = Api::new(transport, &key.value);
-    let (game, term, out): (u64, String, &mut dyn Write) = match pick {
+    let Some((game, term, out)) = choose_game(&api, request, pick)? else {
+        return Ok(());
+    };
+    store_art(paths, &api, request, game, &term, out)
+}
+
+/// Picks the game from the search results, naming a skipped pick. `out` is
+/// where the fetch reports, which for a pick list is the prompt's own writer.
+fn choose_game<'p, I: Input, W: Write>(
+    api: &Api,
+    request: &AutoFetch,
+    pick: Pick<'p, I, W>,
+) -> anyhow::Result<Option<(u64, String, &'p mut dyn Write)>> {
+    let env = request.env;
+    Ok(Some(match pick {
         Pick::Top(out) => {
             let games = api.search(request.term)?;
             let Some(top) = games.first() else {
@@ -577,23 +648,36 @@ fn try_fetch_new<I: Input, W: Write>(
             )?;
             (top.id, request.term.to_owned(), out)
         }
-        Pick::Ask(prompt) => match ask_game(&api, request.term, prompt, true)? {
+        Pick::Ask(prompt) => match ask_game(api, request.term, prompt, true)? {
             Some((game, term)) => (game, term, prompt.writer()),
             None => {
                 writeln!(
                     prompt.writer(),
                     "Skipped art. Fetch later with: wineo art fetch {env} --search <term>"
                 )?;
-                return Ok(());
+                return Ok(None);
             }
         },
-    };
+    }))
+}
+
+/// Records the picked game and fetches the configured kinds, then updates the
+/// desktop entries once an icon is stored.
+fn store_art(
+    paths: &Paths,
+    api: &Api,
+    request: &AutoFetch,
+    game: u64,
+    term: &str,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let env = request.env;
     if art::saved_game(paths, env)? != Some(game) {
         art::save_game(paths, env, game)?;
     }
     let fetch = FetchRequest {
         spot: env,
-        search: Some(&term),
+        search: Some(term),
         game: Some(game),
         only: (request.kinds == ArtFetch::Icon).then_some(Kind::Icon),
         kinds: request.kinds,
@@ -606,7 +690,7 @@ fn try_fetch_new<I: Input, W: Write>(
     };
     let language = steamgriddb::language(|var| std::env::var_os(var));
     let mut icon = false;
-    let fetched = fetch_kinds(&spot, &fetch, &api, game, &language, &mut icon, out);
+    let fetched = fetch_kinds(&spot, &fetch, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store.
     if icon {
         apply_desktop(paths, env)?;
@@ -801,12 +885,16 @@ fn source(source: Option<&Source>) -> String {
 /// A SteamGridDB stand-in for tests here and in the flows that fetch art.
 #[cfg(test)]
 pub(crate) mod fake {
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io::{Cursor, Read};
+    use std::rc::Rc;
 
     use anyhow::bail;
     use wineo_core::art::Kind;
     use wineo_core::download::{Response, Transport};
+    use wineo_core::operation::{Locks, Operation};
+    use wineo_core::paths::Paths;
     use wineo_core::steamgriddb::{self, Api, Filters};
 
     pub(crate) const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
@@ -869,6 +957,52 @@ pub(crate) mod fake {
             for kind in [Kind::Grid, Kind::Hero, Kind::Logo] {
                 self.page(kind, &[]);
             }
+        }
+    }
+
+    /// One request a `Probe` saw.
+    pub(crate) struct Seen {
+        pub(crate) url: String,
+        /// Whether the environment was already registered.
+        pub(crate) exists: bool,
+        /// Whether another command could take the environment, as a launch.
+        pub(crate) lock_free: bool,
+    }
+
+    /// A `Fake` that notes, per request, whether the environment exists and
+    /// whether its lock was free, which is what a flow holding the lock while
+    /// it fetches fails.
+    pub(crate) struct Probe {
+        pub(crate) fake: Fake,
+        pub(crate) paths: Paths,
+        pub(crate) name: String,
+        pub(crate) seen: Rc<RefCell<Vec<Seen>>>,
+    }
+
+    impl Transport for Probe {
+        fn get(&self, url: &str) -> anyhow::Result<Box<dyn Read>> {
+            self.note(url);
+            self.fake.get(url)
+        }
+
+        fn request(&self, url: &str, bearer: Option<&str>) -> anyhow::Result<Response> {
+            self.note(url);
+            self.fake.request(url, bearer)
+        }
+    }
+
+    impl Probe {
+        fn note(&self, url: &str) {
+            let exists = self.paths.environment_config(&self.name).exists();
+            let lock_free = !exists
+                || Locks::new(&self.paths)
+                    .acquire(Operation::Launch, &self.name, &[])
+                    .is_ok();
+            self.seen.borrow_mut().push(Seen {
+                url: url.to_owned(),
+                exists,
+                lock_free,
+            });
         }
     }
 

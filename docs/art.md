@@ -246,8 +246,9 @@ Search for [the-sims-4]: The Sims 4
 ```
 
 The review shows `art  fetch from SteamGridDB, searching "The Sims 4"`, or
-`art  none`. The search and pick list run right after the environment is
-created and before the installer, so every question comes before the wait.
+`art  none`. With an installer, the search and pick list run right after the
+review, before anything is created, so every question comes before the wait.
+Without one they run once the environment is created.
 Guided `wineo import heroic` has an `art` row on its review instead,
 searching the Heroic title, and editing it asks the same two questions.
 
@@ -278,10 +279,14 @@ hades: art from SteamGridDB game 1234, Hades (2020)
 `wineo art fetch --search` or `--game` replaces a wrong pick later. Only
 kinds with no art are fetched, as with a plain `art fetch`.
 
-`wineo new --art` without `--install-exe` fetches once the environment is
-created and unlocked, so other commands can use it while SteamGridDB answers.
-The desktop entry picks up the icon afterwards. With `--install-exe` the fetch
-stays before the installer, which keeps the environment locked until it ends.
+`wineo new` never holds an environment's lock while it talks to SteamGridDB,
+so other commands can use the environment meanwhile. Without an installer the
+search, the pick list, and the download run once the environment is created.
+With an installer the search and pick list run before anything is created, so
+every question still comes before the wait, and the download runs after the
+installer finishes. Ctrl+C at that early pick list creates nothing. The
+download is skipped when the installer is canceled, can't start, or leaves
+cleanup unresolved. The desktop entry picks up the icon afterwards.
 
 Failures never stop the flow. A rejected key, a failed download, or a
 search with no matches when there's no pick list prints a warning such as

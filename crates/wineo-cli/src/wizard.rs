@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
-use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
@@ -334,6 +334,7 @@ pub fn run<I: Input, W: Write>(
             template,
             how,
             art,
+            kinds: global.art.fetch,
         },
     )
 }
@@ -1016,6 +1017,7 @@ struct Creating {
     how: How,
     /// The key and search term when art is to be fetched.
     art: Option<(Key, String)>,
+    kinds: ArtFetch,
 }
 
 fn review<I: Input, W: Write>(
@@ -1174,6 +1176,7 @@ fn create<I: Input, W: Write>(
         template,
         how,
         art,
+        kinds,
     } = creating;
     let shown = paths
         .contract(&dir)
@@ -1188,14 +1191,29 @@ fn create<I: Input, W: Write>(
         }),
         How::Existing(_) | How::Nothing => None,
     };
+    // With an installer, the questions come now, before the create lock and
+    // the installer's wait, and the download once the installer has ended.
+    // Without one the whole fetch comes once the environment is unlocked.
+    let picked = match (&art, &how) {
+        (Some((key, term)), How::Installer(_)) => access
+            .pick(
+                key,
+                &AutoFetch {
+                    env: &name,
+                    term,
+                    kinds,
+                },
+                Pick::Ask(&mut *prompt),
+                &mut crate::output::stderr(),
+            )?
+            .map(|picked| (key, picked)),
+        _ => None,
+    };
     let mut hooks = WizardHooks {
-        paths,
         prompt,
         guided,
-        access,
         name: &name,
         shown: &shown,
-        art: art.as_ref(),
         cancellation: Some(Cancellation::new()?),
         install_token: install_token.clone(),
     };
@@ -1241,6 +1259,11 @@ fn create<I: Input, W: Write>(
         ..
     } = created;
     let global = &global;
+    if let (Some((key, term)), How::Existing(_) | How::Nothing) = (&art, &how) {
+        // The create lock is released, so a slow SteamGridDB only holds up
+        // this command.
+        fetch_art(paths, global, prompt, access, &name, key, term)?;
+    }
 
     let place = Place {
         paths,
@@ -1276,7 +1299,24 @@ fn create<I: Input, W: Write>(
             };
             drop(install_cancellation);
             match ran {
-                Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
+                Ran::Finished => {
+                    if let Some((key, picked)) = &picked {
+                        let request = AutoFetch {
+                            env: &name,
+                            term: &name,
+                            kinds: global.art.fetch,
+                        };
+                        access.fetch_picked(
+                            paths,
+                            key,
+                            &request,
+                            picked,
+                            prompt.writer(),
+                            &mut crate::output::stderr(),
+                        );
+                    }
+                    picker::pick(prompt, &place, &mut batch).map(|_| ())?
+                }
                 Ran::Ended(code) => return Ok(code),
                 Ran::Back => unreachable!("an installer that ran never goes back"),
             }
@@ -1304,13 +1344,10 @@ fn create<I: Input, W: Write>(
 
 /// The guided side of creating a Wine environment, and of its installer.
 struct WizardHooks<'a, I: Input, W: Write> {
-    paths: &'a Paths,
     prompt: &'a mut Prompt<I, W>,
     guided: &'a mut Guided,
-    access: &'a Access<'a>,
     name: &'a str,
     shown: &'a str,
-    art: Option<&'a (Key, String)>,
     /// Listens for Ctrl+C while creating until the config is saved, then
     /// again while the installer runs.
     cancellation: Option<Cancellation>,
@@ -1354,22 +1391,6 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
             }
             CreateEvent::TemplateComponentsOmitted { .. } => {}
         }
-    }
-
-    fn created(&mut self, created: &create::Created) -> anyhow::Result<()> {
-        // Before the installer, so every question is answered before the wait.
-        if let Some((key, term)) = self.art {
-            fetch_art(
-                self.paths,
-                &created.global,
-                self.prompt,
-                self.access,
-                self.name,
-                key,
-                term,
-            )?;
-        }
-        Ok(())
     }
 
     fn ready(&mut self, _launch: &Launch) -> anyhow::Result<()> {

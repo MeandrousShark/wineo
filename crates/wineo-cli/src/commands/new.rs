@@ -14,9 +14,10 @@ use wineo_core::launch::{self, Launch};
 use wineo_core::paths::Paths;
 use wineo_core::prefix;
 use wineo_core::programs::Listing;
+use wineo_core::steamgriddb::Key;
 use wineo_core::supervisor::{Notice, Watched};
 
-use super::art::{Access, AutoFetch, KeyCheck, Pick};
+use super::art::{Access, AutoFetch, KeyCheck, Pick, Picked};
 use super::transfer::Cancellation;
 use super::{components, desktop, external_runners, programs, setup};
 use crate::cancel;
@@ -121,6 +122,20 @@ fn new_wine(
     if let Some(installer) = &args.install_exe {
         launch::check_program_path(paths, installer)?;
     }
+    // The questions come before the create lock is taken, and before the
+    // installer's wait, and the download once the installer has ended.
+    let picked = if args.art && args.install_exe.is_some() {
+        match pick_art(paths, name, access) {
+            Ok(picked) => picked,
+            Err(err) if cancel::prompted(&err) => {
+                eprintln!("Canceled. Nothing was created.");
+                return Ok(cancel::exit_code());
+            }
+            Err(err) => return Err(err),
+        }
+    } else {
+        None
+    };
     let install_token = Token::new();
     let step = args.install_exe.as_deref().map(|program| Step::Installer {
         program,
@@ -131,7 +146,6 @@ fn new_wine(
         paths,
         exe: args.exe.as_deref(),
         name,
-        art: (args.art && args.install_exe.is_some()).then_some(access),
         cancellation: Some(Cancellation::new()?),
         install_token: install_token.clone(),
     };
@@ -159,8 +173,7 @@ fn new_wine(
         Stepped::Stopped(code) => return code,
         Stepped::None => {
             // The create lock is already released, so a slow SteamGridDB only
-            // holds up this command. With an installer the pick list comes
-            // first instead, so its questions are answered before the wait.
+            // holds up this command.
             if args.art && fetch_art(paths, &created.global, name, access).is_err() {
                 eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
                 return Ok(cancel::exit_code());
@@ -203,6 +216,23 @@ fn new_wine(
             if exit_code != Some(0) {
                 note(&setup::recovery_message(paths, name));
             }
+            if let Some((key, picked)) = &picked {
+                // Nothing listens for the installer's Ctrl+C from here on.
+                drop(hooks.cancellation.take());
+                let request = AutoFetch {
+                    env: name,
+                    term: name,
+                    kinds: created.global.art.fetch,
+                };
+                access.fetch_picked(
+                    paths,
+                    key,
+                    &request,
+                    picked,
+                    &mut crate::output::stdout(),
+                    &mut crate::output::stderr(),
+                );
+            }
             match installed(&created.prefix) {
                 Some(listing) => programs::report(name, &listing, false),
                 None => println!("Add a target with: wineo set {name} targets.<target>.exe=<path>"),
@@ -239,10 +269,6 @@ struct WineHooks<'a> {
     paths: &'a Paths,
     exe: Option<&'a str>,
     name: &'a str,
-    /// Fetches art before the installer starts, when there is one. The installer
-    /// keeps the environment locked until it ends, so art after it would wait
-    /// behind the whole install.
-    art: Option<&'a Access<'a>>,
     /// Listens for Ctrl+C until the config is saved.
     cancellation: Option<Cancellation>,
     install_token: Token,
@@ -313,13 +339,6 @@ impl Hooks for WineHooks<'_> {
                 );
             }
             return Err(Ok(ExitCode::FAILURE));
-        }
-        // Before the installer, so the pick list isn't left waiting behind it.
-        if let Some(access) = self.art
-            && fetch_art(self.paths, &created.global, name, access).is_err()
-        {
-            eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-            return Err(Ok(cancel::exit_code()));
         }
         Ok(())
     }
@@ -552,31 +571,70 @@ fn fetch_art(
     name: &str,
     access: &Access<'_>,
 ) -> Result<(), Canceled> {
-    if global.art.fetch.kinds().is_empty() {
+    let Some(key) = art_key(global, access) else {
         return Ok(());
-    }
-    let key = match (access.check_key)() {
-        KeyCheck::Found(key) => key,
-        check => {
-            check.print_skip();
-            return Ok(());
-        }
     };
     let request = AutoFetch {
         env: name,
         term: name,
         kinds: global.art.fetch,
     };
-    let mut prompt = prompt::interactive()
-        .then(|| Terminal::open().ok())
-        .flatten()
-        .map(|input| Prompt::new(input, crate::output::stdout()));
+    let mut prompt = pick_prompt();
     let mut stdout = crate::output::stdout();
     let pick = match &mut prompt {
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(&mut stdout),
     };
     access.fetch(paths, &key, &request, pick, &mut crate::output::stderr())
+}
+
+/// The key to fetch art with, or None after saying why there is no art.
+fn art_key(global: &GlobalConfig, access: &Access<'_>) -> Option<Key> {
+    if global.art.fetch.kinds().is_empty() {
+        return None;
+    }
+    match (access.check_key)() {
+        KeyCheck::Found(key) => Some(key),
+        check => {
+            check.print_skip();
+            None
+        }
+    }
+}
+
+/// The pick list's prompt, when there is a terminal to show it on.
+fn pick_prompt() -> Option<Prompt<Terminal, crate::output::Stream<std::io::Stdout>>> {
+    prompt::interactive()
+        .then(|| Terminal::open().ok())
+        .flatten()
+        .map(|input| Prompt::new(input, crate::output::stdout()))
+}
+
+/// The game for `fetch_art`, picked before the environment exists so the
+/// questions are answered ahead of the installer's wait. `picked_art` fetches
+/// it once the environment is unlocked.
+fn pick_art(
+    paths: &Paths,
+    name: &str,
+    access: &Access<'_>,
+) -> anyhow::Result<Option<(Key, Picked)>> {
+    let global = GlobalConfig::load(paths)?;
+    let Some(key) = art_key(&global, access) else {
+        return Ok(None);
+    };
+    let request = AutoFetch {
+        env: name,
+        term: name,
+        kinds: global.art.fetch,
+    };
+    let mut prompt = pick_prompt();
+    let mut stdout = crate::output::stdout();
+    let pick = match &mut prompt {
+        Some(prompt) => Pick::Ask(prompt),
+        None => Pick::Top(&mut stdout),
+    };
+    let picked = access.pick(&key, &request, pick, &mut crate::output::stderr())?;
+    Ok(picked.map(|picked| (key, picked)))
 }
 
 /// The terminal may already be gone after a SIGHUP, and a failed write must
@@ -598,14 +656,13 @@ use crate::snapshot;
 #[cfg(test)]
 mod tests {
     use crate::test_script::write_script;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::fs;
     use std::rc::Rc;
 
-    use wineo_core::operation::{Locks, Operation};
-    use wineo_core::steamgriddb::{self, Key, KeySource, NoKeyring};
+    use wineo_core::steamgriddb::{self, KeySource, NoKeyring};
 
-    use super::super::art::fake::Fake;
+    use super::super::art::fake::{Fake, Probe, Seen};
     use super::*;
 
     fn paths(root: &Path) -> Paths {
@@ -675,44 +732,31 @@ mod tests {
 
     const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9c\x63\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99\x3d\x1d\0\0\0\0IEND\xaeB`\x82";
 
-    /// What `wineo new --art` left behind, and whether another command could
-    /// take the environment while SteamGridDB was being asked.
+    /// What `wineo new --art` left behind, and what SteamGridDB was asked
+    /// while it ran.
     struct Run {
         _root: tempfile::TempDir,
         paths: Paths,
         code: ExitCode,
-        lock_free_during_fetch: Option<bool>,
+        seen: Rc<RefCell<Vec<Seen>>>,
     }
 
-    /// Asks the environment lock for a launch, as another command would, on
-    /// the first request.
-    struct Probe {
-        fake: Fake,
-        paths: Paths,
-        free: Rc<Cell<Option<bool>>>,
-    }
-
-    impl wineo_core::download::Transport for Probe {
-        fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
-            self.fake.get(url)
-        }
-
-        fn request(
-            &self,
-            url: &str,
-            bearer: Option<&str>,
-        ) -> anyhow::Result<wineo_core::download::Response> {
-            if self.free.get().is_none() {
-                let guard = Locks::new(&self.paths).acquire(Operation::Launch, "hades", &[]);
-                self.free.set(Some(guard.is_ok()));
-            }
-            self.fake.request(url, bearer)
-        }
+    /// A game with an icon whose image the desktop entry can decode.
+    fn hades() -> Fake {
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.icon_only();
+        fake.0.insert(
+            "https://cdn.example/1".into(),
+            (200, ONE_PIXEL_PNG.to_vec()),
+        );
+        fake
     }
 
     /// Creates `hades` in a fake wine with an existing prefix, so no prefix is
-    /// built, fetching art through `fake`.
-    fn new_with_art(fake: Fake, desktop: bool) -> Run {
+    /// built, fetching art through `fake`. With `installer` it runs a fake one
+    /// instead of adding a target, with a desktop entry otherwise.
+    fn new_with_art(fake: Fake, installer: bool) -> Run {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         let runner_dir = paths.default_runner_root().join("test-wine/bin");
@@ -723,15 +767,20 @@ mod tests {
         let prefix = root.path().join("prefixes/hades");
         fs::create_dir_all(&prefix).unwrap();
         fs::write(prefix.join("system.reg"), "#arch=win64\n").unwrap();
-        let game = root.path().join("game.exe");
-        fs::write(&game, "").unwrap();
+        let program = root.path().join("game.exe");
+        fs::write(&program, "").unwrap();
+        let program = program.display().to_string();
         let mut args = args(false);
         args.dry_run = false;
         args.runner = Some("test-wine".to_owned());
         args.dir = Some(prefix.display().to_string());
-        args.exe = Some(game.display().to_string());
-        args.desktop = desktop;
-        let free = Rc::new(Cell::new(None));
+        if installer {
+            args.install_exe = Some(program);
+        } else {
+            args.exe = Some(program);
+            args.desktop = true;
+        }
+        let seen = Rc::new(RefCell::new(Vec::new()));
         let access = Access {
             check_key: Box::new(|| {
                 KeyCheck::Found(Key {
@@ -743,7 +792,8 @@ mod tests {
                 Ok(Box::new(Probe {
                     fake: fake.clone(),
                     paths: paths.clone(),
-                    free: free.clone(),
+                    name: "hades".to_owned(),
+                    seen: seen.clone(),
                 }))
             }),
         };
@@ -753,53 +803,69 @@ mod tests {
             _root: root,
             paths,
             code,
-            lock_free_during_fetch: free.get(),
+            seen,
+        }
+    }
+
+    impl Run {
+        fn entry(&self) -> String {
+            fs::read_to_string(
+                self.paths
+                    .applications_dir()
+                    .join("wineo-hades-hades.desktop"),
+            )
+            .unwrap()
         }
     }
 
     #[test]
     fn art_is_fetched_without_holding_the_environment_lock() {
-        let mut fake = Fake::default();
-        fake.search("hades", true);
-        fake.icon_only();
-        // The entry only takes an icon it can decode.
-        fake.0.insert(
-            "https://cdn.example/1".into(),
-            (200, ONE_PIXEL_PNG.to_vec()),
-        );
-        let run = new_with_art(fake, true);
+        let run = new_with_art(hades(), false);
         assert_eq!(run.code, ExitCode::SUCCESS);
-        assert_eq!(run.lock_free_during_fetch, Some(true));
+        let seen = run.seen.borrow();
+        assert!(!seen.is_empty());
+        for request in seen.iter() {
+            assert!(request.exists && request.lock_free, "{}", request.url);
+        }
         assert_eq!(
             wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
             Some(7)
         );
         assert!(run.paths.art_dir("hades").join("icon.png").is_file());
-        let entry = fs::read_to_string(
-            run.paths
-                .applications_dir()
-                .join("wineo-hades-hades.desktop"),
-        )
-        .unwrap();
+        let entry = run.entry();
         assert!(entry.contains("\nIcon=wineo-hades-hades\n"), "{entry}");
     }
 
     #[test]
     fn a_failed_art_fetch_leaves_the_environment_and_its_entry() {
-        let run = new_with_art(Fake::default(), true);
+        let run = new_with_art(Fake::default(), false);
         assert_eq!(run.code, ExitCode::SUCCESS);
-        assert_eq!(run.lock_free_during_fetch, Some(true));
+        assert!(run.seen.borrow().iter().all(|request| request.lock_free));
         assert_eq!(
             wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
             None
         );
-        let entry = fs::read_to_string(
-            run.paths
-                .applications_dir()
-                .join("wineo-hades-hades.desktop"),
-        )
-        .unwrap();
+        let entry = run.entry();
         assert!(!entry.contains("Icon="), "{entry}");
+    }
+
+    #[test]
+    fn with_an_installer_the_search_comes_before_creation_and_the_download_after() {
+        let run = new_with_art(hades(), true);
+        assert_eq!(run.code, ExitCode::SUCCESS);
+        let seen = run.seen.borrow();
+        let (search, downloads) = seen.split_first().expect("the search is asked");
+        assert!(search.url.contains("/search/"), "{}", search.url);
+        assert!(!search.exists, "nothing exists while the questions run");
+        assert!(!downloads.is_empty());
+        for request in downloads {
+            assert!(request.exists && request.lock_free, "{}", request.url);
+        }
+        assert_eq!(
+            wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
+            Some(7)
+        );
+        assert!(run.paths.art_dir("hades").join("icon.png").is_file());
     }
 
     #[test]
