@@ -14,6 +14,7 @@ mod client_log;
 mod console_log;
 mod discovery;
 pub mod key;
+mod log_tail;
 pub mod owned;
 mod placement;
 pub mod process;
@@ -33,7 +34,7 @@ use crate::art;
 pub use account::{Playtime, Playtimes, active_account, active_steam_id, compat_tools, playtime};
 pub use appinfo_cache::AppInfoCache;
 pub use client_log::{ClientUpdate, ClientUpdatePhase, client_update};
-pub use console_log::{ConsoleMark, console_mark, shader_pass};
+pub use console_log::ShaderWatch;
 pub use discovery::{Discovery, PendingGame, discover};
 pub use placement::{Placement, place};
 pub use process::{

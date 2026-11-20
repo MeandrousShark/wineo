@@ -2,6 +2,7 @@ use super::*;
 use crate::steam::{InstallKind, installs};
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 
 const APP: &str = "427520";
 
@@ -46,6 +47,7 @@ fn write_log(install: &Install, text: &str) {
 
 fn append_log(install: &Install, text: &str) {
     fs::OpenOptions::new()
+        .create(true)
         .append(true)
         .open(log_path(install))
         .unwrap()
@@ -64,138 +66,179 @@ fn joined(lines: &[&str]) -> String {
     lines.iter().map(|line| format!("{line}\n")).collect()
 }
 
+fn watch(install: &Install) -> ShaderWatch {
+    ShaderWatch::start(install, APP)
+}
+
+fn noise(bytes: usize) -> String {
+    let unit = line("1245620", 1, "Completed");
+    unit.repeat(bytes / unit.len() + 1)
+}
+
 #[test]
 fn a_real_launch_is_a_pass_only_while_it_processes_shaders() {
     let (_home, install) = native_home();
-    let nothing = console_mark(&install);
-    for end in 0..=LAUNCH.len() {
-        write_log(&install, &joined(&LAUNCH[..end]));
-        assert_eq!(
-            shader_pass(&install, &nothing, APP),
-            end == SHADER_LINE + 1,
-            "after {end} lines"
-        );
+    let mut watch = watch(&install);
+    for (index, line) in LAUNCH.iter().enumerate() {
+        append_log(&install, &format!("{line}\n"));
+        assert_eq!(watch.processing(), index == SHADER_LINE, "line {index}");
     }
 }
 
 #[test]
 fn another_apps_pass_does_not_count_and_does_not_end_ours() {
     let (_home, install) = native_home();
-    let mark = console_mark(&install);
-    write_log(&install, &line("1245620", 1, "ProcessingShaderCache"));
-    assert!(!shader_pass(&install, &mark, APP));
-    // The id must match whole, not by prefix.
-    write_log(&install, &line("4275200", 1, "ProcessingShaderCache"));
-    assert!(!shader_pass(&install, &mark, APP));
-    write_log(&install, &line("42752", 1, "ProcessingShaderCache"));
-    assert!(!shader_pass(&install, &mark, APP));
-    let text = line(APP, 1, "ProcessingShaderCache") + &line("1245620", 1, "CreatingProcess");
-    write_log(&install, &text);
-    assert!(shader_pass(&install, &mark, APP));
+    let mut watch = watch(&install);
+    for app in ["1245620", "4275200", "42752"] {
+        append_log(&install, &line(app, 1, "ProcessingShaderCache"));
+        assert!(!watch.processing(), "{app}");
+    }
+    append_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
+    append_log(&install, &line("1245620", 1, "CreatingProcess"));
+    assert!(watch.processing());
 }
 
 #[test]
 fn the_newest_line_wins_whatever_its_action_id() {
     let (_home, install) = native_home();
-    let mark = console_mark(&install);
-    let text = line(APP, 1, "ProcessingShaderCache") + &line(APP, 2, "CheckShaderDepotManifest");
-    write_log(&install, &text);
-    assert!(!shader_pass(&install, &mark, APP));
-    // Another launch's pass is newer than the first one's end.
-    let text = line(APP, 1, "Completed") + &line(APP, 2, "ProcessingShaderCache");
-    write_log(&install, &text);
-    assert!(shader_pass(&install, &mark, APP));
-    // And an older action's late line doesn't hide the newest by number.
-    let text = line(APP, 2, "ProcessingShaderCache") + &line(APP, 1, "Completed");
-    write_log(&install, &text);
-    assert!(!shader_pass(&install, &mark, APP));
+    let mut watch = watch(&install);
+    append_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
+    append_log(&install, &line(APP, 2, "CheckShaderDepotManifest"));
+    assert!(!watch.processing());
+    append_log(&install, &line(APP, 2, "ProcessingShaderCache"));
+    assert!(watch.processing());
+    // An older action's late line is still the newest in the file.
+    append_log(&install, &line(APP, 1, "Completed"));
+    assert!(!watch.processing());
 }
 
 #[test]
 fn crlf_line_endings_read_the_same() {
     let (_home, install) = native_home();
-    let mark = console_mark(&install);
+    let mut watch = watch(&install);
     let text: String = LAUNCH[..=SHADER_LINE]
         .iter()
         .map(|line| format!("{line}\r\n"))
         .collect();
-    write_log(&install, &text);
-    assert!(shader_pass(&install, &mark, APP));
+    append_log(&install, &text);
+    assert!(watch.processing());
     append_log(&install, &format!("{}\r\n", LAUNCH[SHADER_LINE + 1]));
-    assert!(!shader_pass(&install, &mark, APP));
+    assert!(!watch.processing());
 }
 
 #[test]
-fn lines_before_the_mark_do_not_count() {
+fn lines_before_the_start_do_not_count() {
     let (_home, install) = native_home();
     // A pass an earlier launch never finished.
     write_log(&install, &line(APP, 1, "ProcessingShaderCache"));
-    let mark = console_mark(&install);
-    assert!(!shader_pass(&install, &mark, APP));
+    let mut watch = watch(&install);
+    assert!(!watch.processing());
     append_log(&install, &line(APP, 2, "CheckShaderDepotManifest"));
-    assert!(!shader_pass(&install, &mark, APP));
+    assert!(!watch.processing());
     append_log(&install, &line(APP, 2, "ProcessingShaderCache"));
-    assert!(shader_pass(&install, &mark, APP));
+    assert!(watch.processing());
 }
 
 #[test]
-fn a_mark_that_cuts_a_line_ignores_its_rest() {
+fn a_start_on_a_line_boundary_keeps_the_next_line() {
+    let (_home, install) = native_home();
+    write_log(&install, &line("1245620", 1, "Completed"));
+    let mut watch = watch(&install);
+    append_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
+}
+
+#[test]
+fn a_start_that_cuts_a_line_ignores_the_rest_of_it() {
     let (_home, install) = native_home();
     let text = line(APP, 1, "ProcessingShaderCache");
-    write_log(&install, &text[..text.len() - 10]);
-    let mark = console_mark(&install);
-    append_log(&install, &text[text.len() - 10..]);
-    assert!(!shader_pass(&install, &mark, APP));
+    // Every cut but the two ends, including right after the time stamp.
+    for cut in 1..text.len() {
+        write_log(&install, &text[..cut]);
+        let mut watch = watch(&install);
+        append_log(&install, &text[cut..]);
+        assert!(!watch.processing(), "cut at {cut}");
+    }
+    // The line after the cut one is whole.
+    write_log(&install, &text[..40]);
+    let mut watch = watch(&install);
+    append_log(&install, &text[40..]);
+    append_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
 }
 
 #[test]
 fn a_rotated_log_is_read_from_its_start() {
     let (_home, install) = native_home();
     write_log(&install, &joined(&LAUNCH));
-    let mark = console_mark(&install);
+    let mut watch = watch(&install);
+    let old_len = fs::metadata(log_path(&install)).unwrap().len();
     // The new file is longer than the old one, so only its identity differs.
     let mut fresh = line(APP, 1, "ProcessingShaderCache");
-    while fresh.len() as u64 <= mark.len {
+    while (fresh.len() as u64) <= old_len {
         fresh.push_str(&line("1245620", 1, "Completed"));
     }
     rotate_log(&install, &fresh);
-    assert!(shader_pass(&install, &mark, APP));
+    assert!(watch.processing());
 }
 
 #[test]
-fn a_shrunk_log_is_read_from_its_start() {
+fn a_rotation_is_not_forgotten_once_the_new_log_outgrows_the_old_one() {
     let (_home, install) = native_home();
     write_log(&install, &joined(&LAUNCH));
-    let mark = console_mark(&install);
-    write_log(&install, &line(APP, 1, "ProcessingShaderCache"));
-    assert!(shader_pass(&install, &mark, APP));
+    let mut watch = watch(&install);
+    let old_len = fs::metadata(log_path(&install)).unwrap().len();
+    rotate_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
+    append_log(&install, &noise(old_len as usize * 2));
+    assert!(watch.processing());
 }
 
 #[test]
-fn a_log_that_appears_after_the_mark_is_read_from_its_start() {
+fn a_truncated_log_is_read_from_its_start_and_stays_followed() {
     let (_home, install) = native_home();
-    let mark = console_mark(&install);
+    write_log(&install, &joined(&LAUNCH));
+    let mut watch = watch(&install);
+    let old_len = fs::metadata(log_path(&install)).unwrap().len();
+    append_log(&install, &line("1245620", 1, "Completed"));
+    assert!(!watch.processing());
+    // Cut in place, so the identity stays.
     write_log(&install, &line(APP, 1, "ProcessingShaderCache"));
-    assert!(shader_pass(&install, &mark, APP));
+    assert!(watch.processing());
+    append_log(&install, &noise(old_len as usize * 2));
+    assert!(watch.processing());
 }
 
 #[test]
-fn a_log_that_disappears_is_no_pass() {
+fn a_log_that_appears_after_the_start_is_read_from_its_start() {
     let (_home, install) = native_home();
+    let mut watch = watch(&install);
+    assert!(!watch.processing());
     write_log(&install, &line(APP, 1, "ProcessingShaderCache"));
-    let mark = console_mark(&install);
-    assert!(!shader_pass(&install, &mark, APP));
-    append_log(&install, &line(APP, 2, "ProcessingShaderCache"));
-    assert!(shader_pass(&install, &mark, APP));
+    assert!(watch.processing());
+}
+
+#[test]
+fn a_log_that_disappears_is_no_pass_and_a_new_one_is_read_whole() {
+    let (_home, install) = native_home();
+    let mut watch = watch(&install);
+    write_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
     fs::remove_file(log_path(&install)).unwrap();
-    assert!(!shader_pass(&install, &mark, APP));
+    assert!(!watch.processing());
+    write_log(&install, &line(APP, 1, "CheckShaderDepotManifest"));
+    assert!(!watch.processing());
+    append_log(&install, &line(APP, 1, "ProcessingShaderCache"));
+    assert!(watch.processing());
 }
 
 #[test]
 fn a_missing_or_garbled_log_is_no_pass() {
     let (_home, install) = native_home();
-    let mark = console_mark(&install);
-    assert!(!shader_pass(&install, &mark, APP));
+    let mut watch = watch(&install);
+    assert!(!watch.processing());
     for text in [
         &b""[..],
         &[0xff, 0xfe, b'\n', 0x80],
@@ -207,40 +250,59 @@ fn a_missing_or_garbled_log_is_no_pass() {
         b"ProcessingShaderCache\n",
     ] {
         fs::write(log_path(&install), text).unwrap();
-        assert!(!shader_pass(&install, &mark, APP), "{text:?}");
+        let mut watch = watch_of(&install);
+        assert!(!watch.processing(), "{text:?}");
     }
 }
 
-#[test]
-fn a_line_still_being_written_is_not_read() {
-    let (_home, install) = native_home();
-    let mark = console_mark(&install);
-    let text = line(APP, 1, "ProcessingShaderCache")
-        + "[2026-10-30 12:00:03] GameAction [AppID 427520, ActionID 1] : LaunchApp changed task to Si";
-    write_log(&install, &text);
-    assert!(shader_pass(&install, &mark, APP));
-    // With no whole line yet, nothing has been decided.
-    let first = line(APP, 1, "ProcessingShaderCache");
-    write_log(&install, &first[..first.len() - 5]);
-    assert!(!shader_pass(&install, &mark, APP));
+fn watch_of(install: &Install) -> ShaderWatch {
+    // Started before the bytes, so they all count if they parse.
+    let path = log_path(install);
+    let text = fs::read(&path).unwrap();
+    fs::write(&path, "").unwrap();
+    let watch = watch(install);
+    fs::write(&path, text).unwrap();
+    watch
 }
 
 #[test]
-fn a_long_stretch_after_the_mark_keeps_its_newest_lines() {
+fn a_log_that_cannot_be_read_is_no_pass() {
     let (_home, install) = native_home();
-    write_log(&install, "");
-    let mark = console_mark(&install);
-    let noise = line("1245620", 1, "Completed");
-    let mut text = String::new();
-    while text.len() < 2 * TAIL_BYTES {
-        text.push_str(&noise);
+    fs::create_dir(log_path(&install)).unwrap();
+    let mut watch = watch(&install);
+    assert!(!watch.processing());
+}
+
+#[test]
+fn a_line_still_being_written_is_not_read_until_it_is_whole() {
+    let (_home, install) = native_home();
+    let mut watch = watch(&install);
+    let text = line(APP, 1, "ProcessingShaderCache");
+    append_log(&install, &text[..text.len() - 5]);
+    assert!(!watch.processing());
+    append_log(&install, &text[text.len() - 5..]);
+    assert!(watch.processing());
+    // A half-written next line doesn't end the pass yet.
+    let next = line(APP, 1, "SiteLicenseSeatCheckout");
+    append_log(&install, &next[..next.len() - 5]);
+    assert!(watch.processing());
+    append_log(&install, &next[next.len() - 5..]);
+    assert!(!watch.processing());
+}
+
+#[test]
+fn a_pass_line_followed_by_more_than_the_tail_of_other_output_still_counts() {
+    let (_home, install) = native_home();
+    let mut watch = watch(&install);
+    let text = line(APP, 1, "ProcessingShaderCache") + &noise(3 * 512 * 1024);
+    append_log(&install, &text);
+    assert!(watch.processing());
+    // And across several looks of a noisy pass.
+    for _ in 0..3 {
+        append_log(&install, &noise(600 * 1024));
+        assert!(watch.processing());
     }
-    text.push_str(&line(APP, 1, "ProcessingShaderCache"));
-    write_log(&install, &text);
-    assert!(shader_pass(&install, &mark, APP));
 }
-
-const TAIL_BYTES: usize = client_log::TAIL as usize;
 
 #[test]
 fn a_flatpak_install_reads_its_own_log() {
@@ -251,7 +313,7 @@ fn a_flatpak_install_reads_its_own_log() {
     fs::create_dir_all(root.join("logs")).unwrap();
     let install = installs(home.path()).remove(0);
     assert_eq!(install.kind(), InstallKind::Flatpak);
-    let mark = console_mark(&install);
+    let mut watch = watch(&install);
     write_log(&install, &line(APP, 1, "ProcessingShaderCache"));
-    assert!(shader_pass(&install, &mark, APP));
+    assert!(watch.processing());
 }

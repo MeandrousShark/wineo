@@ -10,12 +10,13 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::Install;
+use super::log_tail::message;
 
 /// Only the end of the log is read. A download writes a line of about 66
 /// bytes every 300 ms, so this holds the start of a block through about 40
 /// minutes of one, past the 30 minutes a launch waits on the client at most
 /// (`CLIENT_WAIT_CAP` in the supervisor).
-pub(super) const TAIL: u64 = 512 * 1024;
+const TAIL: u64 = 512 * 1024;
 
 const BLOCK_START: &str = "Startup - updater built";
 
@@ -58,21 +59,14 @@ fn written_within(modified: SystemTime, now: SystemTime, limit: Duration) -> boo
 fn read_tail(path: &Path) -> io::Result<(String, SystemTime)> {
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
-    let tail = tail_after(&mut file, metadata.len(), 0)?;
-    Ok((tail, metadata.modified()?))
-}
-
-/// The last `TAIL` bytes of the file's first `len`, but nothing before
-/// `floor`. A cut made by the `TAIL` limit drops its partial line. A cut at
-/// `floor` keeps what follows it, which may start mid-line.
-pub(super) fn tail_after(file: &mut File, len: u64, floor: u64) -> io::Result<String> {
+    let len = metadata.len();
+    let modified = metadata.modified()?;
     // One byte more, so a cut that lands just after a newline keeps its line.
-    let start = floor.max(len.saturating_sub(TAIL + 1));
+    let start = len.saturating_sub(TAIL + 1);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
-    file.take(len.saturating_sub(start))
-        .read_to_end(&mut bytes)?;
-    let whole = if start > floor {
+    file.take(len - start).read_to_end(&mut bytes)?;
+    let whole = if start > 0 {
         match bytes.iter().position(|byte| *byte == b'\n') {
             Some(newline) => &bytes[newline + 1..],
             None => &[],
@@ -80,7 +74,7 @@ pub(super) fn tail_after(file: &mut File, len: u64, floor: u64) -> io::Result<St
     } else {
         &bytes[..]
     };
-    Ok(String::from_utf8_lossy(whole).into_owned())
+    Ok((String::from_utf8_lossy(whole).into_owned(), modified))
 }
 
 /// Only the part of a block before the client starts normally counts: a
@@ -122,14 +116,6 @@ fn ends_update(message: &str) -> bool {
             | "Shutdown"
     ) || message.starts_with("Background update loop")
         || message.starts_with("Download skipped")
-}
-
-/// A line without its `[date time] ` stamp.
-pub(super) fn message(line: &str) -> &str {
-    let line = line.trim_end_matches('\r');
-    line.strip_prefix('[')
-        .and_then(|rest| rest.split_once("] "))
-        .map_or(line, |(_, message)| message)
 }
 
 /// `Downloading update (60,732 of 410,553 KB)...`
