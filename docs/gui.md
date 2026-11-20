@@ -1405,9 +1405,11 @@ Heroic and GOG lists, and the version picker:
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
 The first row has focus when a list appears, and **Add**'s 1 to 6 and New's
-1 to 5 keys still work with a row focused. On New's choice page and the
-emulated import's emulator, core, and system pages, Ctrl+Enter opens the
-focused row, since those pages have nothing else to submit, and coming back
+1 to 5 keys still work with a row focused. On New's choice page, the
+emulated import's emulator, core, and system pages, and Heroic's Sources
+page, Ctrl+Enter opens the focused row, since those pages have nothing else
+to submit. On Sources with no row focused, it opens the typed config folder
+path, or the only source when there is just one. Coming back
 from Details lands on the row you picked. Holding a number key, Esc, or
 Ctrl+Enter in Add or an import flow acts once, so it can't run on through
 the following pages. The version picker has nothing to submit, so Ctrl+Enter

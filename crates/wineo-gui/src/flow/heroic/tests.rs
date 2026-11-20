@@ -1820,6 +1820,139 @@ fn no_sources_focus_no_row() {
     assert!(laid.focused().is_empty());
 }
 
+type Tree = iced::advanced::widget::Tree;
+
+/// The Sources page with `sources` loaded and its first row focused, as the
+/// widget state that leaves.
+fn sources_page(root: &std::path::Path, sources: Vec<HeroicSource>) -> (crate::App, Tree) {
+    let (mut app, generation) = discovering(root);
+    let task = sources_loaded(&mut app, generation, sources);
+    let tree = crate::focus_button::landed(&app, task).into_tree();
+    (app, tree)
+}
+
+/// Runs `edit` on the laid out window, and returns the widget state after.
+fn with_window(
+    app: &crate::App,
+    tree: Tree,
+    edit: impl FnOnce(&mut crate::layout_probe::Laid<'_, crate::Message>),
+) -> Tree {
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, iced::Size::new(1200.0, 800.0));
+    edit(&mut laid);
+    laid.into_tree()
+}
+
+fn unfocus(app: &crate::App, tree: Tree) -> Tree {
+    with_window(app, tree, |laid| {
+        laid.run(Box::new(
+            iced::advanced::widget::operation::focusable::unfocus::<()>(),
+        ));
+        assert!(laid.focused().is_empty());
+    })
+}
+
+fn type_path(app: &mut crate::App, path: &std::path::Path) {
+    let _ = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::HeroicMessage(Box::new(Event::SourcePath(path.display().to_string()))),
+    ));
+}
+
+/// Presses Ctrl+Enter on the window as the app's keys do, then runs what
+/// that starts and hands the app what it sends.
+fn ctrl_enter(app: &mut crate::App, tree: Tree) {
+    use crate::focus_button::press_key;
+    use iced::keyboard::{Key, Modifiers};
+    let size = iced::Size::new(1200.0, 800.0);
+    let key = Key::Named(Named::Enter);
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
+    let (published, status) = press_key(&mut laid, key.clone(), Modifiers::CTRL);
+    let tree = laid.into_tree();
+    for message in published {
+        let _ = app.update(message);
+    }
+    let task = app.update(crate::Message::Key(key, Modifiers::CTRL, status));
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
+    let sent = crate::more_menu::tests::drive(&mut laid, task);
+    drop(laid);
+    for message in sent {
+        let _ = app.update(message);
+    }
+}
+
+fn heroic_page(app: &crate::App) -> &Page {
+    match &app.flow {
+        Some(crate::flow::Page::Heroic(page)) => page,
+        _ => panic!("expected the Heroic page"),
+    }
+}
+
+#[test]
+fn ctrl_enter_opens_the_focused_source_of_several() {
+    let root = tempdir().unwrap();
+    let (mut app, tree) = sources_page(root.path(), found(root.path()));
+    let second = source_id(&found(root.path())[1]);
+    let tree = with_window(&app, tree, |laid| {
+        crate::focus_button::press(laid, Named::ArrowDown, keyboard::Modifiers::empty());
+        assert_eq!(laid.focused(), [iced::widget::Id::from(second)]);
+    });
+    ctrl_enter(&mut app, tree);
+    let page = heroic_page(&app);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(1));
+}
+
+#[test]
+fn ctrl_enter_opens_the_focused_source_over_a_typed_path() {
+    let root = tempdir().unwrap();
+    let (mut app, tree) = sources_page(root.path(), found(root.path()));
+    type_path(&mut app, &root.path().join("typed"));
+    ctrl_enter(&mut app, tree);
+    let page = heroic_page(&app);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2, "the typed path was not opened");
+}
+
+#[test]
+fn ctrl_enter_with_no_row_focused_opens_the_typed_path() {
+    let root = tempdir().unwrap();
+    let (mut app, tree) = sources_page(root.path(), found(root.path()));
+    let tree = unfocus(&app, tree);
+    let typed = root.path().join("typed");
+    type_path(&mut app, &typed);
+    ctrl_enter(&mut app, tree);
+    let page = heroic_page(&app);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.sources[2].config_dir(), typed);
+}
+
+#[test]
+fn ctrl_enter_with_no_row_focused_opens_the_only_source() {
+    let root = tempdir().unwrap();
+    let mut sources = found(root.path());
+    sources.truncate(1);
+    let (mut app, tree) = sources_page(root.path(), sources);
+    let tree = unfocus(&app, tree);
+    ctrl_enter(&mut app, tree);
+    let page = heroic_page(&app);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+}
+
+#[test]
+fn ctrl_enter_with_no_row_focused_opens_none_of_several_sources() {
+    let root = tempdir().unwrap();
+    let (mut app, tree) = sources_page(root.path(), found(root.path()));
+    let tree = unfocus(&app, tree);
+    ctrl_enter(&mut app, tree);
+    let page = heroic_page(&app);
+    assert_eq!(page.step, Step::Sources);
+    assert_eq!(page.source, None);
+}
+
 #[test]
 fn a_stuck_import_is_named_and_force_stop_closes_the_window() {
     use crate::exit_watchdog::tests::exits;

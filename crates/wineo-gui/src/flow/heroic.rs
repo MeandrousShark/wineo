@@ -460,16 +460,41 @@ impl Page {
             return Task::none();
         }
         match self.step {
-            Step::Sources if !self.source_path.trim().is_empty() => {
-                self.update(Event::OpenSourcePath)
-            }
-            Step::Sources if self.sources.len() == 1 => self.update(Event::Source(0)),
+            Step::Sources => self.open_source(),
             Step::Games => self.import_chosen(),
             Step::Details => self.plan(),
             Step::Review => self.start_import(),
             Step::Finished => self.update(Event::BackToLibrary),
             _ => Task::none(),
         }
+    }
+
+    /// Ctrl+Enter on the Sources page, which has no forward action, opens the
+    /// focused source. With no source row focused, the typed path or the only
+    /// source opens, so a path typed in its field still opens from there.
+    fn open_source(&self) -> Task<Event> {
+        use iced::advanced::widget::{operate, operation::focusable::find_focused};
+        let fallback = if !self.source_path.trim().is_empty() {
+            Some(Event::OpenSourcePath)
+        } else if self.sources.len() == 1 {
+            Some(Event::Source(0))
+        } else {
+            None
+        };
+        let rows: Vec<(iced::widget::Id, Event)> = self
+            .sources
+            .iter()
+            .map(|source| iced::widget::Id::from(source_id(source)))
+            .zip((0..).map(Event::Source))
+            .collect();
+        // Nothing focused finds no id at all, so collect to still answer then.
+        operate(find_focused()).collect().then(move |ids| {
+            rows.iter()
+                .find(|(row, _)| ids.contains(row))
+                .map(|(_, event)| event.clone())
+                .or_else(|| fallback.clone())
+                .map_or_else(Task::none, Task::done)
+        })
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
