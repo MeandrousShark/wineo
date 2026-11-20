@@ -4,6 +4,23 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.8.0 - 2026-11-20
+
+Not so fuzzy search (plan 0069, done).
+
+New in this release:
+
+- Library search finds a game by the way people say its name, like `gta`, `civ 6`, or `sf2`, as well as by any part of it.
+- `wineo list` searches titles, names, and tags with the words after it, like `wineo list gta`.
+
+Behavior changes:
+
+- A number in a search also finds it zero-padded, so `game-1` finds `game-01`.
+
+Fixes:
+
+- A Steam launch now waits while Steam processes shaders before starting the game, instead of ending with "Steam didn't start NAME." while the game starts later.
+
 ## 1.7.0 - 2026-11-19
 
 Emulated games and resizable list columns (plans 0067 and 0068, done).
