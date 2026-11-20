@@ -714,8 +714,9 @@ impl StartingWait {
     }
 
     /// The helper gives up on the client after `CLIENT_WAIT_CAP`, and the
-    /// launch then gets the usual window, or a later one when a shader pass
-    /// ended or lapsed after that cap.
+    /// launch then gets the usual window, or a later one when anything that
+    /// restarts the window (a shader pass ending or lapsing, an update
+    /// ending) happened after that cap.
     fn expired(&self, now: Instant, start_limit: Duration, stall_limit: Duration) -> bool {
         if self.shader_waiting {
             false
