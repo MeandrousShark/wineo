@@ -1,0 +1,4 @@
+schema_version = 1
+prefix = "prefixes/doomed"
+runner = "wine"
+arch = "win64"
