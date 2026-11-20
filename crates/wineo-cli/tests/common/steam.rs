@@ -554,6 +554,24 @@ impl SteamFixture {
             .unwrap();
     }
 
+    /// Adds a `LaunchApp changed task to` line for `app_id` to the install's
+    /// `logs/console_log.txt`, as the Steam client writes while it works on a
+    /// launch.
+    pub fn append_launch_task(&self, app_id: &str, task: &str) {
+        let logs = self.root.join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let mut log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("console_log.txt"))
+            .unwrap();
+        writeln!(
+            log,
+            "[2026-10-30 11:11:47] GameAction [AppID {app_id}, ActionID 1] : LaunchApp changed task to {task} with \"\""
+        )
+        .unwrap();
+    }
+
     pub fn make_silent_start_inert(&self) {
         fs::write(self.f.root.path().join("steam-silent-inert"), "").unwrap();
     }

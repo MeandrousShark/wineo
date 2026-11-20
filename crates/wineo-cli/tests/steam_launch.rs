@@ -500,6 +500,48 @@ fn attached_run_exits_one_when_steam_never_starts_the_game() {
 }
 
 #[test]
+fn a_shader_pass_keeps_a_steam_launch_starting_past_the_start_window() {
+    let s = SteamFixture::new();
+    s.set_mode("none");
+    s.config("");
+    assert_success(
+        &s.wineo()
+            .env("WINEO_TEST_STEAM_START_TIMEOUT_MS", "1000")
+            .args(["start", "civ"])
+            .output()
+            .unwrap(),
+    );
+    wait_for("starting state", || {
+        s.f.state("civ").contains("phase = \"starting\"")
+    });
+    // The supervisor takes its mark of the log just after this state is written.
+    thread::sleep(Duration::from_millis(300));
+    s.append_launch_task("289070", "ProcessingShaderCache");
+    thread::sleep(Duration::from_millis(2500));
+    assert!(
+        !s.f.state("civ").contains("status = \"failed\""),
+        "the shader pass was treated as a failed start"
+    );
+    s.append_launch_task("289070", "CreatingProcess");
+    s.launch_from_steam("289070");
+    claimed_pid(&s);
+    assert_success(&s.run(&["stop", "civ"]));
+    s.f.wait_for_run_end("civ", "stopped");
+}
+
+#[test]
+fn a_shader_pass_from_an_earlier_launch_does_not_hold_this_one() {
+    let s = SteamFixture::new();
+    s.set_mode("none");
+    s.config("");
+    s.append_launch_task("289070", "ProcessingShaderCache");
+    let ran = s.run_with_start_timeout(&["run", "civ"], 500);
+    assert_eq!(ran.status.code(), Some(1), "{}", stderr(&ran));
+    assert!(stderr(&ran).contains("Steam didn't start civ."));
+    s.f.wait_for_run_end("civ", "failed");
+}
+
+#[test]
 fn staging_progress_keeps_a_steam_launch_starting_past_the_normal_limit() {
     let s = SteamFixture::new();
     s.set_game_progress("289070", "Civilization VI", 1030, 100, 0);
