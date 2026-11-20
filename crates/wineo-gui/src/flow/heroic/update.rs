@@ -1,6 +1,7 @@
 //! The Heroic page's event handling.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use iced::Task;
 use wineo_core::components::Component;
@@ -72,10 +73,7 @@ impl Page {
             Event::PickedSource(sequence, Ok(Some(path)))
                 if sequence == self.picker_sequence && self.step == Step::Sources =>
             {
-                let source = HeroicSource::from_config_dir(path);
-                self.sources.push(source.clone());
-                self.source = Some(self.sources.len() - 1);
-                self.list(source)
+                self.open_folder(path)
             }
             Event::PickedSource(sequence, Err(error))
                 if sequence == self.picker_sequence && self.step == Step::Sources =>
@@ -385,17 +383,46 @@ impl Page {
             return Task::none();
         }
         match self.paths.absolute(&self.source_path) {
-            Ok(path) => {
-                let source = HeroicSource::from_config_dir(path);
-                self.sources.push(source.clone());
-                self.source = Some(self.sources.len() - 1);
-                self.list(source)
-            }
+            Ok(path) => self.open_folder(path),
             Err(error) => {
                 self.error = Some(error.to_string());
                 Task::none()
             }
         }
+    }
+
+    /// Opens a typed or picked config folder. One that is already listed
+    /// opens its row, so the list never shows a folder twice and focus
+    /// lookups by row id stay unambiguous.
+    fn open_folder(&mut self, path: PathBuf) -> Task<Event> {
+        let source = match self.listed_source(&path) {
+            Some(index) => {
+                self.source = Some(index);
+                self.sources[index].clone()
+            }
+            None => {
+                let source = HeroicSource::from_config_dir(path);
+                self.sources.push(source.clone());
+                self.source = Some(self.sources.len() - 1);
+                source
+            }
+        };
+        self.list(source)
+    }
+
+    /// The row whose config folder is `path`. Paths match by components, so
+    /// a trailing slash or `~` (already expanded by the caller) doesn't
+    /// matter, and by their resolved targets when both exist, so a symlink or
+    /// `..` to the same folder counts as the same one.
+    fn listed_source(&self, path: &Path) -> Option<usize> {
+        let resolved = path.canonicalize().ok();
+        self.sources.iter().position(|source| {
+            let dir = source.config_dir();
+            dir == path
+                || resolved
+                    .as_ref()
+                    .is_some_and(|resolved| dir.canonicalize().is_ok_and(|dir| dir == *resolved))
+        })
     }
 
     fn listed(

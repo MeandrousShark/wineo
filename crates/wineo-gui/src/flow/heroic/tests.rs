@@ -1990,6 +1990,79 @@ fn a_late_source_answer_after_leaving_sources_does_nothing() {
     assert!(page.listing.is_some(), "the games were not read again");
 }
 
+/// The Sources page with the discovered `found` sources listed.
+fn listed_sources(root: &std::path::Path) -> Page {
+    let (mut page, _) = Page::new(paths(root));
+    page.step = Step::Sources;
+    page.sources = found(root);
+    page.status.clear();
+    page
+}
+
+#[test]
+fn a_typed_folder_that_is_already_listed_opens_its_row() {
+    let root = tempdir().unwrap();
+    for typed in [
+        root.path().join("flatpak-heroic").display().to_string(),
+        format!("{}/", root.path().join("flatpak-heroic").display()),
+    ] {
+        let mut page = listed_sources(root.path());
+        let _ = page.update(Event::SourcePath(typed.clone()));
+        let _ = page.update(Event::OpenSourcePath);
+        assert_eq!(page.step, Step::Games, "{typed}");
+        assert_eq!(page.source, Some(1), "{typed}");
+        assert_eq!(page.sources.len(), 2, "{typed}");
+    }
+}
+
+#[test]
+fn a_picked_folder_that_is_already_listed_opens_its_row() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::PickedSource(
+        page.picker_sequence,
+        Ok(Some(root.path().join("heroic"))),
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2);
+}
+
+#[test]
+fn a_symlink_to_a_listed_folder_opens_its_row() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("heroic")).unwrap();
+    std::os::unix::fs::symlink(root.path().join("heroic"), root.path().join("link")).unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(
+        root.path().join("link").display().to_string(),
+    ));
+    let _ = page.update(Event::OpenSourcePath);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2);
+}
+
+#[test]
+fn a_new_folder_is_still_added() {
+    let root = tempdir().unwrap();
+    let new = root.path().join("elsewhere");
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(new.display().to_string()));
+    let _ = page.update(Event::OpenSourcePath);
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.sources[2].config_dir(), new);
+
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::PickedSource(
+        page.picker_sequence,
+        Ok(Some(new.clone())),
+    ));
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.step, Step::Games);
+}
+
 #[test]
 fn a_stuck_import_is_named_and_force_stop_closes_the_window() {
     use crate::exit_watchdog::tests::exits;
