@@ -19,6 +19,9 @@ const CLIENT_ABSENT_LIMIT: Duration = Duration::from_secs(10);
 /// The longest a launch waits on a client, so an update whose log never
 /// stops changing can't hold the launch forever.
 const CLIENT_WAIT_CAP: Duration = Duration::from_secs(30 * 60);
+/// The longest one shader pass holds the start window, so a log that says
+/// Steam is processing shaders forever can't hold a run forever.
+const SHADER_WAIT_CAP: Duration = Duration::from_secs(30 * 60);
 const CLIENT_POLL: Duration = Duration::from_millis(250);
 
 pub(super) fn dispatch_request_entry() -> Option<Result<()>> {
@@ -332,7 +335,7 @@ impl Supervisor {
         overrides: &Overrides,
         name: &str,
         mut notify: impl FnMut(Notice),
-    ) -> Result<(RunState, bool)> {
+    ) -> Result<(RunState, bool, steam::ShaderWatch)> {
         let Host::Proxied {
             install,
             app_id,
@@ -350,29 +353,35 @@ impl Supervisor {
         let adopted = !candidates.is_empty();
         let mut state = RunState::running(mode, "steam".to_owned(), 0, None, overrides);
         state.record_host(&launch.host);
+        let shaders;
         if let Some(reaper) = candidates.first() {
+            shaders = steam::ShaderWatch::start(install, app_id);
             claim(&mut state, reaper);
         } else {
             if self.steam_stop().is_some() {
                 return Err(Error::Canceled("launch"));
             }
+            // Before the request, so nothing Steam logs for it is missed.
+            shaders = steam::ShaderWatch::start(install, app_id);
             request(launch)?;
             state.phase = Some(crate::runtime::RunPhase::Starting);
         }
         write_state(runtime, &state, &mut notify);
-        Ok((state, adopted))
+        Ok((state, adopted, shaders))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn wait_steam(
         &self,
         runtime: &Runtime,
         launch: &Launch,
         state: &mut RunState,
+        shaders: steam::ShaderWatch,
         name: &str,
         timeout: Duration,
         mut notify: impl FnMut(Notice),
     ) -> Result<()> {
-        let result = self.watch_steam(runtime, launch, state, name, timeout, &mut notify);
+        let result = self.watch_steam(runtime, launch, state, shaders, name, timeout, &mut notify);
         match result {
             Ok(status) => {
                 state.finish(status);
@@ -428,11 +437,13 @@ impl Supervisor {
         stop
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn watch_steam(
         &self,
         runtime: &Runtime,
         launch: &Launch,
         state: &mut RunState,
+        mut shaders: steam::ShaderWatch,
         name: &str,
         timeout: Duration,
         notify: &mut impl FnMut(Notice),
@@ -447,7 +458,10 @@ impl Supervisor {
             unreachable!()
         };
         let dispatched = Instant::now();
-        let mut waiting = StartingWait::new(dispatched);
+        let mut waiting = StartingWait::new(dispatched).with_shader_limits(
+            test_timeout("WINEO_TEST_STEAM_SHADER_CAP_MS", SHADER_WAIT_CAP),
+            test_timeout("WINEO_TEST_STEAM_CLIENT_ABSENT_MS", CLIENT_ABSENT_LIMIT),
+        );
         let client_silence = client_update_silence();
         let mut next_scan = dispatched;
         let mut next_manifest = dispatched;
@@ -494,6 +508,9 @@ impl Supervisor {
                 let (app_state, progress) = steam::app_snapshot(Some(install), app_id);
                 waiting.observe(now, &app_state, progress);
                 waiting.observe_client(now, steam::client_update(install, client_silence).as_ref());
+                let client_absent =
+                    matches!(steam::client_state(install), Ok(steam::ClientState::Absent));
+                waiting.observe_shaders(now, shaders.processing(), client_absent);
                 next_manifest = now + Duration::from_secs(1);
             }
             if waiting.expired(now, start_limit, stall_limit) {
@@ -574,7 +591,9 @@ fn claim(state: &mut RunState, reaper: &steam::Reaper) {
 /// The clocks for a launch Steam hasn't started yet. While the game updates,
 /// the start window waits and a stall clock runs instead. While a startup
 /// update of the client counts, both wait and only `CLIENT_WAIT_CAP` can end
-/// the run. The window starts over when an update ends.
+/// the run. The window starts over when an update ends. A shader pass Steam
+/// runs before the game does the same, for up to the shader cap, and ends
+/// early if Steam goes away during it.
 struct StartingWait {
     updating: bool,
     start_window: Instant,
@@ -582,6 +601,17 @@ struct StartingWait {
     previous_progress: Option<steam::Progress>,
     began: Instant,
     client_updating: bool,
+    shader_cap: Duration,
+    absent_limit: Duration,
+    /// When the shader pass being waited on began, until it ends.
+    shader_pass: Option<Instant>,
+    /// Whether that pass still holds the clocks: not for longer than the cap.
+    shader_waiting: bool,
+    /// When the cap on a pass lapsed. The usual window runs from then, even
+    /// when a client update has been counting all along.
+    shader_lapsed: Option<Instant>,
+    /// When the client was first seen gone, while it still is.
+    client_absent_since: Option<Instant>,
 }
 
 impl StartingWait {
@@ -593,15 +623,69 @@ impl StartingWait {
             previous_progress: None,
             began: now,
             client_updating: false,
+            shader_cap: SHADER_WAIT_CAP,
+            absent_limit: CLIENT_ABSENT_LIMIT,
+            shader_pass: None,
+            shader_waiting: false,
+            shader_lapsed: None,
+            client_absent_since: None,
         }
+    }
+
+    fn with_shader_limits(mut self, cap: Duration, absent_limit: Duration) -> Self {
+        self.shader_cap = cap;
+        self.absent_limit = absent_limit;
+        self
+    }
+
+    /// Steam spends a shader pass before it starts the game, and logs it
+    /// only in its console log, which also says nothing when Steam dies in
+    /// the middle of one. So a pass ends when the client has been gone for
+    /// `absent_limit` as well, which is how the helper tells a quit from a
+    /// restart. The end of a pass, or the cap on waiting for it, restarts
+    /// both clocks, which stood still during it.
+    fn observe_shaders(&mut self, now: Instant, processing: bool, client_absent: bool) {
+        self.client_absent_since = if client_absent {
+            self.client_absent_since.or(Some(now))
+        } else {
+            None
+        };
+        let gone = self
+            .client_absent_since
+            .is_some_and(|since| now.duration_since(since) >= self.absent_limit);
+        let processing = processing && !gone;
+        match self.shader_pass {
+            None if processing => {
+                self.shader_pass = Some(now);
+                self.shader_waiting = true;
+            }
+            Some(_) if !processing => {
+                // A pass that outlasted its cap already had its fresh window.
+                if self.shader_waiting {
+                    self.restart_clocks(now);
+                }
+                self.shader_pass = None;
+                self.shader_waiting = false;
+            }
+            Some(began) if self.shader_waiting && now.duration_since(began) >= self.shader_cap => {
+                self.shader_waiting = false;
+                self.shader_lapsed = Some(now);
+                self.restart_clocks(now);
+            }
+            _ => {}
+        }
+    }
+
+    fn restart_clocks(&mut self, now: Instant) {
+        self.start_window = now;
+        self.progressed_at = now;
     }
 
     /// The end of a client update also restarts the game's stall clock,
     /// which stood still while the client updated.
     fn observe_client(&mut self, now: Instant, update: Option<&steam::ClientUpdate>) {
         if self.client_updating && update.is_none() {
-            self.start_window = now;
-            self.progressed_at = now;
+            self.restart_clocks(now);
         }
         self.client_updating = update.is_some();
     }
@@ -637,8 +721,11 @@ impl StartingWait {
     /// The helper gives up on the client after `CLIENT_WAIT_CAP`, and the
     /// launch then gets the usual window.
     fn expired(&self, now: Instant, start_limit: Duration, stall_limit: Duration) -> bool {
-        if self.client_updating {
-            now.duration_since(self.began) >= CLIENT_WAIT_CAP + start_limit
+        if self.shader_waiting {
+            false
+        } else if self.client_updating {
+            let from = (self.began + CLIENT_WAIT_CAP).max(self.shader_lapsed.unwrap_or(self.began));
+            now.duration_since(from) >= start_limit
         } else if self.updating {
             now.duration_since(self.progressed_at) >= stall_limit
         } else {
@@ -928,6 +1015,156 @@ mod tests {
         wait.observe_client(ended, None);
         assert!(!wait.expired(ended + Duration::from_secs(599), start, stall));
         assert!(wait.expired(ended + stall, start, stall));
+    }
+
+    #[test]
+    fn a_shader_pass_pauses_the_start_window_and_restarts_it_when_it_ends() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        // The pass begins after most of the window is gone.
+        wait.observe_shaders(now + Duration::from_secs(50), false, false);
+        for second in 51..=300 {
+            let at = now + Duration::from_secs(second);
+            wait.observe_shaders(at, true, false);
+            assert!(!wait.expired(at, start, stall), "expired at {second} s");
+        }
+        let ended = now + Duration::from_secs(301);
+        wait.observe_shaders(ended, false, false);
+        assert!(!wait.expired(ended + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(ended + start, start, stall));
+    }
+
+    #[test]
+    fn a_shader_pass_is_waited_on_for_at_most_its_cap() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        assert_eq!(SHADER_WAIT_CAP, Duration::from_secs(30 * 60));
+        let mut wait = StartingWait::new(now);
+        let began = now + Duration::from_secs(5);
+        wait.observe_shaders(began, true, false);
+        let before = began + SHADER_WAIT_CAP - Duration::from_secs(1);
+        wait.observe_shaders(before, true, false);
+        assert!(!wait.expired(before, start, stall));
+        // The usual window starts over at the cap, and a log that still says
+        // processing doesn't hold it again.
+        let capped = began + SHADER_WAIT_CAP;
+        wait.observe_shaders(capped, true, false);
+        assert!(!wait.expired(capped + Duration::from_secs(59), start, stall));
+        wait.observe_shaders(capped + Duration::from_secs(59), true, false);
+        assert!(wait.expired(capped + start, start, stall));
+    }
+
+    #[test]
+    fn a_shader_pass_during_a_game_update_keeps_the_stall_clock_still() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe(now, &steam::AppState::Updating, Some(progress(1030, 0)));
+        wait.observe_shaders(now, true, false);
+        for second in 1..=700 {
+            let at = now + Duration::from_secs(second);
+            wait.observe(at, &steam::AppState::Updating, Some(progress(1030, 0)));
+            wait.observe_shaders(at, true, false);
+            assert!(!wait.expired(at, start, stall), "expired at {second} s");
+        }
+        let ended = now + Duration::from_secs(701);
+        wait.observe_shaders(ended, false, false);
+        assert!(!wait.expired(ended + Duration::from_secs(599), start, stall));
+        assert!(wait.expired(ended + stall, start, stall));
+    }
+
+    #[test]
+    fn a_shader_pass_during_a_client_update_restarts_the_clocks_once_both_end() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe_client(now, Some(&UPDATE));
+        wait.observe_shaders(now, true, false);
+        let client_ended = now + Duration::from_secs(100);
+        wait.observe_client(client_ended, None);
+        assert!(!wait.expired(client_ended + start, start, stall));
+        let ended = now + Duration::from_secs(200);
+        wait.observe_shaders(ended, false, false);
+        assert!(!wait.expired(ended + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(ended + start, start, stall));
+    }
+
+    #[test]
+    fn a_pass_ends_when_the_client_stays_gone_for_the_absent_limit() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe_shaders(now, true, false);
+        // Steam dies a minute into the pass, which stays the newest line.
+        let died = now + Duration::from_secs(60);
+        wait.observe_shaders(died, true, true);
+        let almost = died + CLIENT_ABSENT_LIMIT - Duration::from_secs(1);
+        wait.observe_shaders(almost, true, true);
+        assert!(!wait.expired(almost + start, start, stall));
+        let gone = died + CLIENT_ABSENT_LIMIT;
+        wait.observe_shaders(gone, true, true);
+        assert!(!wait.expired(gone + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(gone + start, start, stall));
+        // The stale line doesn't start the pass again while the client's gone.
+        wait.observe_shaders(gone + Duration::from_secs(1), true, true);
+        assert!(wait.expired(gone + start, start, stall));
+    }
+
+    #[test]
+    fn a_client_that_comes_back_in_time_keeps_the_pass_going() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe_shaders(now, true, false);
+        // Steam restarts itself, so the client is gone for a moment twice.
+        for round in 0..3u64 {
+            let at = now + Duration::from_secs(100 * round);
+            wait.observe_shaders(at, true, true);
+            wait.observe_shaders(
+                at + CLIENT_ABSENT_LIMIT - Duration::from_secs(1),
+                true,
+                true,
+            );
+            wait.observe_shaders(at + CLIENT_ABSENT_LIMIT, true, false);
+        }
+        assert!(!wait.expired(now + Duration::from_secs(1000), start, stall));
+    }
+
+    #[test]
+    fn the_window_after_a_lapsed_cap_runs_from_the_lapse_even_in_a_client_update() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe_client(now, Some(&UPDATE));
+        wait.observe_shaders(now, true, false);
+        // The client update has counted for longer than its own cap by now.
+        let lapse = now + SHADER_WAIT_CAP.max(CLIENT_WAIT_CAP) + Duration::from_secs(120);
+        wait.observe_client(lapse, Some(&UPDATE));
+        wait.observe_shaders(lapse, true, false);
+        assert!(!wait.expired(lapse + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(lapse + start, start, stall));
+    }
+
+    #[test]
+    fn a_pass_that_ends_after_its_cap_lapsed_does_not_restart_the_clocks_again() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe_shaders(now, true, false);
+        let lapse = now + SHADER_WAIT_CAP;
+        wait.observe_shaders(lapse, true, false);
+        wait.observe_shaders(lapse + Duration::from_secs(30), false, false);
+        assert!(!wait.expired(lapse + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(lapse + start, start, stall));
     }
 
     fn limits(now: Instant) -> ClientWait {
