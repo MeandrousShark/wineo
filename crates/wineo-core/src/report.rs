@@ -1,11 +1,11 @@
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::components::{Builds, Component, LATEST};
-use crate::config::{GlobalConfig, Kind, Launcher};
+use crate::config::{EnvironmentConfig, GlobalConfig, Kind, Launcher, Target};
 use crate::desktop;
 use crate::environment::Environment;
 use crate::error::{IoContext, Result, chain};
@@ -227,11 +227,53 @@ pub struct Played {
     pub playtime_unknown: bool,
 }
 
+/// What the desktop app and `wineo list`'s search call an environment: a
+/// Steam game's name, then the person's `title`, then the default target's
+/// desktop-entry name, then the environment name. `steam_name` is set for a
+/// Steam game: Steam's own name, or the import's fallback when Steam doesn't
+/// know the game. A Steam game's `title` key is that fallback, so it never
+/// comes ahead of Steam's name.
+pub fn title(
+    name: &str,
+    config: &EnvironmentConfig,
+    steam_name: Option<Option<&str>>,
+    default_target: Option<&str>,
+) -> String {
+    if let Some(steam_name) = steam_name {
+        return steam_name
+            .filter(|title| !title.is_empty())
+            .unwrap_or(name)
+            .to_owned();
+    }
+    // Loading takes any title, so one that would show blank is passed over.
+    match config.title.as_deref().map(str::trim) {
+        Some(title) if !title.is_empty() => title.to_owned(),
+        _ => display_title(name, &config.targets, default_target),
+    }
+}
+
+fn display_title(
+    name: &str,
+    targets: &BTreeMap<String, Target>,
+    default_target: Option<&str>,
+) -> String {
+    default_target
+        .and_then(|target| targets.get(target))
+        .filter(|target| target.desktop)
+        .and_then(|target| target.name.as_deref())
+        .filter(|title| !title.is_empty())
+        .unwrap_or(name)
+        .to_owned()
+}
+
 /// What `wineo list` and `wineo status` without a name need from every
 /// environment.
 #[derive(Debug, Clone)]
 pub struct OverviewEnvironment {
     pub name: String,
+    /// What the library calls it, from `title`; the name when the config
+    /// can't be read.
+    pub title: String,
     /// None when the config can't be read.
     pub kind: Option<KindReport>,
     pub status: Status,
@@ -593,6 +635,31 @@ fn overview_from(
                             .tags
                             .is_none_or(|filter| filter.iter().all(|tag| tags.contains(tag)))
                         {
+                            let kind = match &environment.config.kind {
+                                // Display only: without a readable global
+                                // config there's no install to show, and
+                                // nothing here writes or launches.
+                                Kind::Proxied(_) if steam.global().is_ok() => {
+                                    let steam = overview.steam.get_or_insert_with(|| {
+                                        SteamOverview::new(
+                                            probe.install().cloned(),
+                                            probe.steam.scan().cloned(),
+                                        )
+                                    });
+                                    kind_report_with_steam(&environment.config.kind, Some(steam))
+                                }
+                                kind => KindReport::new(kind),
+                            };
+                            let steam_name = match &kind {
+                                KindReport::Proxied { title, .. } => Some(title.as_deref()),
+                                KindReport::Wine | KindReport::Native => None,
+                            };
+                            let title = title(
+                                name,
+                                &environment.config,
+                                steam_name,
+                                crate::launch::default_target(environment).ok(),
+                            );
                             overview.environments.push(OverviewEnvironment {
                                 hooks: crate::view::HooksOutput::presence(crate::launch::hooks(
                                     environment,
@@ -600,24 +667,8 @@ fn overview_from(
                                         environment.config.targets.get(&run.target)
                                     }),
                                 )),
-                                kind: Some(match &environment.config.kind {
-                                    // Display only: without a readable global
-                                    // config there's no install to show, and
-                                    // nothing here writes or launches.
-                                    Kind::Proxied(_) if steam.global().is_ok() => {
-                                        let steam = overview.steam.get_or_insert_with(|| {
-                                            SteamOverview::new(
-                                                probe.install().cloned(),
-                                                probe.steam.scan().cloned(),
-                                            )
-                                        });
-                                        kind_report_with_steam(
-                                            &environment.config.kind,
-                                            Some(steam),
-                                        )
-                                    }
-                                    kind => KindReport::new(kind),
-                                }),
+                                kind: Some(kind),
+                                title,
                                 name: name.to_owned(),
                                 status,
                                 busy,
@@ -633,6 +684,7 @@ fn overview_from(
                     }),
                     Err(_) => overview.environments.push(OverviewEnvironment {
                         name: name.to_owned(),
+                        title: name.to_owned(),
                         kind: None,
                         status,
                         busy,

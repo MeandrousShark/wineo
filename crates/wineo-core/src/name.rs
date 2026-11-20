@@ -61,7 +61,7 @@ pub fn from_title(title: &str) -> String {
     out
 }
 
-fn fold(character: char) -> Option<&'static str> {
+pub(crate) fn fold(character: char) -> Option<&'static str> {
     Some(match character {
         // Latin-1 Supplement, which leaves out the multiplication and
         // division signs that sit among the letters.

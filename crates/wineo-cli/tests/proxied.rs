@@ -33,6 +33,33 @@ fn json(output: &std::process::Output) -> serde_json::Value {
 }
 
 #[test]
+fn list_searches_a_steam_game_by_steams_name_before_its_imported_title() {
+    let f = Fixture::new();
+    f.write_config("larian", &format!("{BG3}title = \"Imported Name\"\n"));
+    let names = |search: &str| -> Vec<String> {
+        json(&f.run_at_home(&["list", "--json", search]))["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|environment| environment["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Steam doesn't know the game, so the import's title stands in.
+    assert_eq!(names("imported"), ["larian"]);
+    assert!(names("bg3").is_empty());
+
+    let steamapps = f.root.path().join(".local/share/Steam/steamapps");
+    fs::create_dir_all(&steamapps).unwrap();
+    fs::write(
+        steamapps.join("appmanifest_1086940.acf"),
+        "\"AppState\" { \"appid\" \"1086940\" \"name\" \"Baldur's Gate 3\" \"StateFlags\" \"4\" }",
+    )
+    .unwrap();
+    assert_eq!(names("bg3"), ["larian"]);
+    assert!(names("imported").is_empty());
+}
+
+#[test]
 fn list_and_status_show_a_proxied_environment() {
     let f = Fixture::new();
     let steamapps = f.root.path().join(".local/share/Steam/steamapps");

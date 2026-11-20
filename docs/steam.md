@@ -301,11 +301,9 @@ start.
 
 That keeps the library window closed, unless Steam has shaders to process
 before the launch: it shows that progress inside the library window and
-starts the game only after it, and wineo can't turn it off. A long shader
-pass can outlast the 60 seconds below, so wineo reports that Steam didn't
-start the game, and the game still starts later. Turning off Shader
-Pre-Caching in Steam's settings may avoid it. A Steam that's already open
-stays as it is, and Steam may still show its own launch progress:
+starts the game only after it, and wineo can't turn it off. Turning off
+Shader Pre-Caching in Steam's settings may avoid it. A Steam that's already
+open stays as it is, and Steam may still show its own launch progress:
 
 ```
 $ wineo start bg3
@@ -323,8 +321,12 @@ wait is generous: 60 seconds for the game to appear. While Steam is updating
 the game, the wait lasts as long as the download or staging keeps making
 progress, giving up after 10 minutes without any. While Steam updates itself
 on start, the 60 seconds pause and start over once the update is done, up to
-30 minutes in all. A game that never appears ends the run with `Steam didn't
-start bg3.`
+30 minutes in all. They also pause while Steam processes shaders for the
+game, which wineo reads from Steam's `logs/console_log.txt`, and start over
+once the pass is done, up to 30 minutes for each pass. A pass stops counting
+once Steam has been closed for about 10 seconds, and a log wineo can't read
+or understand adds no wait. A game that never appears ends the run with
+`Steam didn't start bg3.`
 
 `wineo run bg3` stays in the foreground through all of it. It exits 0 when
 the game exits on its own, 130 when it's stopped, and 1 when Steam never

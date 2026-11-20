@@ -96,8 +96,14 @@ CLI's attached `wineo run` holds the terminal and isn't meant for a GUI.
 ### Reading state
 
 - `report::overview(paths, filter) -> Overview`: every environment with its
-  run state, busy lock, unresolved installer, and tags, plus per-environment
-  errors. This is the query behind `list` and `status`.
+  run state, busy lock, unresolved installer, tags, and title, plus
+  per-environment errors. This is the query behind `list` and `status`.
+- `report::title(...)`: the title a card shows: a Steam game's name, then
+  the config's `title`, then the default target's desktop name, then the
+  environment name. `overview` fills it in for each environment.
+- `search::Search` and `search::Field`: the library search. Prepare each
+  field once with `Field::new`, parse the words once with `Search::new`,
+  then call `matches`.
 - `report::EnvironmentReport::load_with_warnings(...)`: one environment in
   detail, returned with any warnings.
 - `stats::overview(paths)`: playtime for every environment, sorted and

@@ -166,6 +166,7 @@ impl App {
     fn merge_cards(&mut self, mut cards: Vec<Card>) -> Task<Message> {
         self.flag_writes.reconcile(&mut cards);
         self.tag_writes.reconcile(&mut cards);
+        self.order.carry(&self.cards, &cards);
         // A rescan that changed nothing the order reads keeps the order.
         let new_order = (self.cards.len() != cards.len()
             || !self
@@ -174,14 +175,17 @@ impl App {
                 .zip(&cards)
                 .all(|(old, new)| order::same_inputs(old, new, self.group)))
         .then(|| {
-            order::Order::sorted(order::Of {
-                cards: &cards,
-                search: &self.search,
-                query: self.query,
-                filters: &self.filters,
-                group: self.group,
-                collapsed: &self.collapsed,
-            })
+            order::Order::sorted(
+                order::Of {
+                    cards: &cards,
+                    search: &self.search,
+                    query: self.query,
+                    filters: &self.filters,
+                    group: self.group,
+                    collapsed: &self.collapsed,
+                },
+                self.order.prepared(),
+            )
         });
         let layout_changed = new_order.as_ref().is_some_and(|built| {
             let indices = built.indices();

@@ -150,11 +150,14 @@ Each item in `environments` contains the common status fields shown above,
 including `hooks`, plus `kind`, which is `null` for a config that can't be read, a Steam
 game's `launcher`, `app_id`, `install`, `install_progress`, `install_problem`,
 and `started_by`, and an emulated game's `emulation`.
-`list` includes every environment whose runtime status can be read, and
-`list --tag` only those with every given tag. Nameless `status` includes
-running, busy, or unresolved environments. Both sort by environment name.
-They read each config only for its tags, so a config that can't be read still
-appears, with empty `tags`, unless `--tag` is given.
+`list` includes every environment whose runtime status can be read,
+`list --tag` only those with every given tag, and `list SEARCH...` only those
+whose title, name, or a tag matches the words, with the desktop app's search
+rules ([gui.md](gui.md#the-library)). The title is used for matching only and
+isn't in the output. Nameless `status` includes running, busy, or unresolved
+environments. Both sort by environment name. They read each config only for
+its tags and title, so a config that can't be read still appears, with empty
+`tags`, unless `--tag` is given; a search matches it by name only.
 
 If a runtime status cannot be read for one environment, or with `--tag` its
 config can't be read, it is omitted from `environments` and an error with its

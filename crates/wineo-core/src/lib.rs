@@ -48,6 +48,7 @@ pub mod runner;
 pub mod runner_alias;
 pub mod runners;
 pub mod runtime;
+pub mod search;
 pub mod secret_service;
 pub mod settings;
 pub mod shortcut;

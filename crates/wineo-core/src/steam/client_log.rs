@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::Install;
+use super::log_tail::message;
 
 /// Only the end of the log is read. A download writes a line of about 66
 /// bytes every 300 ms, so this holds the start of a block through about 40
@@ -115,14 +116,6 @@ fn ends_update(message: &str) -> bool {
             | "Shutdown"
     ) || message.starts_with("Background update loop")
         || message.starts_with("Download skipped")
-}
-
-/// A line without its `[date time] ` stamp.
-fn message(line: &str) -> &str {
-    let line = line.trim_end_matches('\r');
-    line.strip_prefix('[')
-        .and_then(|rest| rest.split_once("] "))
-        .map_or(line, |(_, message)| message)
 }
 
 /// `Downloading update (60,732 of 410,553 KB)...`

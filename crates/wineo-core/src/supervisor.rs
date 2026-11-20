@@ -755,7 +755,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
             .context(|| format!("failed to open {}", log_path.display()))
     };
     if matches!(spec.launch.host, Host::Proxied { .. }) {
-        let (mut state, adopted) = supervisor.begin_steam(
+        let (mut state, adopted, shaders) = supervisor.begin_steam(
             &runtime,
             &spec.launch,
             RunMode::Detached,
@@ -773,6 +773,7 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
             &runtime,
             &spec.launch,
             &mut state,
+            shaders,
             &spec.claim.name,
             Duration::from_secs(spec.stop_timeout.into()),
             |notice| log_notice(&log, false, notice),

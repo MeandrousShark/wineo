@@ -73,14 +73,17 @@ impl App {
             show_hidden: true,
             ..crate::order::Filters::default()
         };
-        let sorted = crate::order::Order::sorted(crate::order::Of {
-            cards: &running,
-            search: "",
-            query: self.query,
-            filters: &shown,
-            group: wineo_core::library::GroupBy::None,
-            collapsed: &BTreeSet::new(),
-        });
+        let sorted = crate::order::Order::sorted(
+            crate::order::Of {
+                cards: &running,
+                search: "",
+                query: self.query,
+                filters: &shown,
+                group: wineo_core::library::GroupBy::None,
+                collapsed: &BTreeSet::new(),
+            },
+            None,
+        );
         let stop = sorted
             .indices()
             .iter()

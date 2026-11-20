@@ -389,9 +389,25 @@ fn filtered_search_change() {
     let paths = paths();
     let mut app = crate::tests::app();
     app.cards = library(&paths);
-    // Mixes empty, broad, narrow, and no-match searches, since each lowercases
-    // and scans every card.
-    let searches = ["", "a", "ar", "arc", "iron", "harbor 3", "zzz", "gar", "e"];
+    // Mixes empty, broad, narrow, and no-match searches, since each scans
+    // every card, and ones only the word, numeral, and initials rules find.
+    let searches = [
+        "",
+        "a",
+        "ar",
+        "arc",
+        "iron",
+        "harbor 3",
+        "zzz",
+        "gar",
+        "e",
+        "gta",
+        "civ 6",
+        "ff7",
+        "spiderman",
+        "iron harbor iv",
+        "ih4",
+    ];
     let iterations = iterations() * 20;
 
     header("order rebuild, one per search change", iterations);
@@ -409,6 +425,15 @@ fn filtered_search_change() {
     }
     black_box(matched);
     report("reorder() per search", samples, "us", 1e6);
+
+    // What new or edited cards add: their search fields and sort titles
+    // made again, as a rescan that changed them or a tag edit does.
+    app.search = "gta".to_owned();
+    let samples = time(iterations / 10, || {
+        app.order.cards_edited();
+        app.reorder();
+    });
+    report("reorder() after cards_edited", samples, "us", 1e6);
 }
 
 /// What a sort change costs: the order rebuilt after a new key or

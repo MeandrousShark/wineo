@@ -1,54 +1,5 @@
 use super::*;
 
-fn target(desktop: bool, name: Option<&str>) -> Target {
-    Target {
-        exe: "app.exe".into(),
-        args: Vec::new(),
-        cwd: None,
-        default: false,
-        gamemode: None,
-        wayland: None,
-        mangohud: None,
-        gamescope: None,
-        hooks: None,
-        desktop,
-        name: name.map(str::to_owned),
-    }
-}
-
-#[test]
-fn display_title_uses_only_the_default_targets_explicit_desktop_name() {
-    let targets = BTreeMap::from([
-        ("app".to_owned(), target(true, Some("My App"))),
-        ("tool".to_owned(), target(true, Some("Setup Tool"))),
-    ]);
-
-    assert_eq!(display_title("env_id", &targets, Some("app")), "My App");
-    assert_eq!(
-        display_title("env_id", &targets, Some("tool")),
-        "Setup Tool"
-    );
-}
-
-#[test]
-fn display_title_falls_back_for_missing_disabled_or_unnamed_targets() {
-    let targets = BTreeMap::from([
-        ("no-entry".to_owned(), target(false, Some("Ignored"))),
-        ("no-title".to_owned(), target(true, None)),
-        ("empty-title".to_owned(), target(true, Some(""))),
-    ]);
-
-    for default in [
-        None,
-        Some("missing"),
-        Some("no-entry"),
-        Some("no-title"),
-        Some("empty-title"),
-    ] {
-        assert_eq!(display_title("env_id", &targets, default), "env_id");
-    }
-}
-
 #[test]
 fn card_titles_put_the_persons_title_first() {
     let root = tempfile::tempdir().unwrap();

@@ -122,7 +122,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 
         let supervisor = Supervisor::with_token(&cancellation.token);
         if matches!(launch.host, launch::Host::Proxied { .. }) {
-            let (state, _) = supervisor.begin_steam(
+            let (state, _, shaders) = supervisor.begin_steam(
                 &runtime,
                 launch,
                 RunMode::Attached,
@@ -134,7 +134,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                     }
                 },
             )?;
-            return Ok((runtime, supervisor, None, Some(state)));
+            return Ok((runtime, supervisor, None, Some((state, shaders))));
         }
         // A separate process group keeps the terminal's Ctrl+C away from wine, so
         // wineo can ask the app to close instead of it being cut off. It is also
@@ -167,7 +167,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     let environment = &prepared.environment;
     let launch = &prepared.launch;
     let proxied = steam_state.is_some();
-    let mut state = if let Some(state) = steam_state {
+    let mut shaders = None;
+    let mut state = if let Some((state, watch)) = steam_state {
+        shaders = Some(watch);
         state
     } else {
         let child = child.as_ref().expect("ordinary run child");
@@ -209,7 +211,15 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     };
     let timeout = Duration::from_secs(global.stop_timeout.into());
     let result = if proxied {
-        supervisor.wait_steam(&runtime, launch, &mut state, name, timeout, &mut notify)
+        supervisor.wait_steam(
+            &runtime,
+            launch,
+            &mut state,
+            shaders.take().expect("Steam run's shader watch"),
+            name,
+            timeout,
+            &mut notify,
+        )
     } else {
         supervisor.wait(
             &runtime,
