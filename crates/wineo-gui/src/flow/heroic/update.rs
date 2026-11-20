@@ -40,7 +40,9 @@ impl Page {
                 self.leave_prompt = false;
                 Task::none()
             }
-            Event::Source(index) => {
+            // Ctrl+Enter answers after a widget round trip, so a late reply
+            // must not reopen Sources from another step.
+            Event::Source(index) if self.step == Step::Sources => {
                 let Some(source) = self.sources.get(index).cloned() else {
                     return Task::none();
                 };
@@ -52,7 +54,7 @@ impl Page {
                 self.source_path = value;
                 Task::none()
             }
-            Event::OpenSourcePath => self.open_source_path(),
+            Event::OpenSourcePath if self.step == Step::Sources => self.open_source_path(),
             Event::OpenExisting(name) => {
                 self.action = Some(Action::Settings {
                     name,

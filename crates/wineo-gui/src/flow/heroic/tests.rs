@@ -1954,6 +1954,43 @@ fn ctrl_enter_with_no_row_focused_opens_none_of_several_sources() {
 }
 
 #[test]
+fn ctrl_enter_with_the_discard_prompt_open_opens_nothing() {
+    let root = tempdir().unwrap();
+    let (mut app, tree) = sources_page(root.path(), found(root.path()));
+    let Some(crate::flow::Page::Heroic(page)) = &mut app.flow else {
+        unreachable!("sources_page opens the Heroic page");
+    };
+    // Back asks to discard only once a source has been chosen.
+    page.source = Some(1);
+    let _ = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::Back,
+    ));
+    assert!(heroic_page(&app).leave_prompt);
+    ctrl_enter(&mut app, tree);
+    let page = heroic_page(&app);
+    assert_eq!(page.step, Step::Sources);
+    assert!(page.leave_prompt, "the prompt stays up");
+    assert_eq!(page.source, Some(1));
+}
+
+#[test]
+fn a_late_source_answer_after_leaving_sources_does_nothing() {
+    let root = tempdir().unwrap();
+    let mut page = grid_page(root.path());
+    page.sources = found(root.path());
+    let _ = page.update(Event::Source(1));
+    let _ = page.update(Event::SourcePath(
+        root.path().join("typed").display().to_string(),
+    ));
+    let _ = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, None);
+    assert_eq!(page.sources.len(), 2, "the typed path was not opened");
+    assert!(page.listing.is_some(), "the games were not read again");
+}
+
+#[test]
 fn a_stuck_import_is_named_and_force_stop_closes_the_window() {
     use crate::exit_watchdog::tests::exits;
     let root = tempdir().unwrap();

@@ -456,7 +456,7 @@ impl Page {
     }
 
     pub(crate) fn submit(&mut self) -> Task<Event> {
-        if self.busy() {
+        if self.busy() || self.leave_prompt {
             return Task::none();
         }
         match self.step {
