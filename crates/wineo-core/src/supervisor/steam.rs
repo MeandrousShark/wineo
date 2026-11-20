@@ -607,9 +607,6 @@ struct StartingWait {
     shader_pass: Option<Instant>,
     /// Whether that pass still holds the clocks: not for longer than the cap.
     shader_waiting: bool,
-    /// When the cap on a pass lapsed. The usual window runs from then, even
-    /// when a client update has been counting all along.
-    shader_lapsed: Option<Instant>,
     /// When the client was first seen gone, while it still is.
     client_absent_since: Option<Instant>,
 }
@@ -627,7 +624,6 @@ impl StartingWait {
             absent_limit: CLIENT_ABSENT_LIMIT,
             shader_pass: None,
             shader_waiting: false,
-            shader_lapsed: None,
             client_absent_since: None,
         }
     }
@@ -669,7 +665,6 @@ impl StartingWait {
             }
             Some(began) if self.shader_waiting && now.duration_since(began) >= self.shader_cap => {
                 self.shader_waiting = false;
-                self.shader_lapsed = Some(now);
                 self.restart_clocks(now);
             }
             _ => {}
@@ -719,12 +714,14 @@ impl StartingWait {
     }
 
     /// The helper gives up on the client after `CLIENT_WAIT_CAP`, and the
-    /// launch then gets the usual window.
+    /// launch then gets the usual window, or a later one when anything that
+    /// restarts the window (a shader pass ending or lapsing, an update
+    /// ending) happened after that cap.
     fn expired(&self, now: Instant, start_limit: Duration, stall_limit: Duration) -> bool {
         if self.shader_waiting {
             false
         } else if self.client_updating {
-            let from = (self.began + CLIENT_WAIT_CAP).max(self.shader_lapsed.unwrap_or(self.began));
+            let from = (self.began + CLIENT_WAIT_CAP).max(self.start_window);
             now.duration_since(from) >= start_limit
         } else if self.updating {
             now.duration_since(self.progressed_at) >= stall_limit
@@ -1151,6 +1148,22 @@ mod tests {
         wait.observe_shaders(lapse, true, false);
         assert!(!wait.expired(lapse + Duration::from_secs(59), start, stall));
         assert!(wait.expired(lapse + start, start, stall));
+    }
+
+    #[test]
+    fn a_pass_ending_after_the_client_cap_gets_a_fresh_window_in_a_client_update() {
+        let now = Instant::now();
+        let start = Duration::from_secs(60);
+        let stall = Duration::from_secs(600);
+        let mut wait = StartingWait::new(now);
+        wait.observe_client(now, Some(&UPDATE));
+        let pass = now + CLIENT_WAIT_CAP - Duration::from_secs(600);
+        wait.observe_shaders(pass, true, false);
+        let end = now + CLIENT_WAIT_CAP + Duration::from_secs(600);
+        wait.observe_client(end, Some(&UPDATE));
+        wait.observe_shaders(end, false, false);
+        assert!(!wait.expired(end + Duration::from_secs(59), start, stall));
+        assert!(wait.expired(end + start, start, stall));
     }
 
     #[test]

@@ -538,17 +538,17 @@ fn a_shader_pass_keeps_a_steam_launch_starting_past_the_start_window() {
     let s = SteamFixture::new();
     s.set_mode("none");
     s.config("");
-    let (mut run, _) = spawn_run(&s, &[("WINEO_TEST_STEAM_START_TIMEOUT_MS", "3000")]);
+    let (mut run, _) = spawn_run(&s, &[("WINEO_TEST_STEAM_START_TIMEOUT_MS", "5000")]);
     wait_starting(&s);
     s.append_launch_task("289070", "ProcessingShaderCache");
-    thread::sleep(Duration::from_millis(4500));
+    thread::sleep(Duration::from_millis(6500));
     assert!(run.try_wait().unwrap().is_none(), "the pass ended the run");
     s.append_launch_task("289070", "CreatingProcess");
     s.launch_from_steam("289070");
     claimed_pid(&s);
     assert_success(&s.run(&["stop", "civ"]));
     s.f.wait_for_run_end("civ", "stopped");
-    finish(&mut run, Duration::from_secs(15));
+    assert_eq!(finish(&mut run, Duration::from_secs(15)), Some(130));
 }
 
 #[test]
