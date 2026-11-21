@@ -6,7 +6,8 @@ use wineo_core::paths::Paths;
 use crate::Message;
 use crate::settings::form::EnvRow;
 use crate::settings::load::{self, Report, Scan, Snapshot, Texts};
-use crate::settings::{ChangedFile, Event, Mode, Page, Step, View, unfocus, view};
+use crate::settings::tabs::Tab;
+use crate::settings::{ChangedFile, Event, Mode, Page, Reveal, Step, View, unfocus, view};
 
 impl Page {
     pub(super) fn go_back(&mut self) -> Step {
@@ -95,13 +96,26 @@ impl Page {
             let after_save = pending.after_save;
             self.land(pending, snapshot);
             if self.global && matches!(self.view, View::Global(_)) {
-                let reveal = if std::mem::take(&mut self.reveal_steam_key) {
-                    let generation = self.generation;
-                    view::locate_steam_key().map(move |bounds| {
-                        Message::Settings(Event::SteamKeyLocated(generation, bounds))
-                    })
-                } else {
-                    Task::none()
+                let generation = self.generation;
+                let reveal = match self.reveal.take() {
+                    Some(reveal) => {
+                        // Both key rows are on Stores, so it shows before
+                        // the row is looked for.
+                        self.tab = Tab::Stores;
+                        match reveal {
+                            Reveal::SteamKey => view::locate_steam_key().map(move |bounds| {
+                                Message::Settings(Event::SteamKeyLocated(generation, bounds))
+                            }),
+                            Reveal::SteamGridDbKey => {
+                                view::locate_steamgriddb_key().map(move |bounds| {
+                                    Message::Settings(Event::SteamGridDbKeyLocated(
+                                        generation, bounds,
+                                    ))
+                                })
+                            }
+                        }
+                    }
+                    None => Task::none(),
                 };
                 return Step::task(Task::batch([
                     self.refresh_steamgriddb(paths),

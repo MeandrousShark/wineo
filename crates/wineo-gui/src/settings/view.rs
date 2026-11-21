@@ -30,6 +30,7 @@ pub(super) const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
 pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
+const STEAMGRIDDB_KEY_ID: &str = "settings-steamgriddb-key";
 pub(super) const CHECKUP_ID: &str = "settings-open-checkup";
 
 fn send(event: Event) -> Message {
@@ -92,15 +93,9 @@ impl Page {
             View::Form(editor) => {
                 editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
             }
-            View::Global(editor) => match self.tab {
-                tabs::Tab::General => global_view(editor, self, paths, self.locked(), palette),
-                tabs::Tab::Appearance => super::appearance::tab(
-                    &editor.appearance,
-                    self.locked(),
-                    palette,
-                    self.system_mode,
-                ),
-            },
+            View::Global(editor) => {
+                global_view(self.tab, editor, self, paths, self.locked(), palette)
+            }
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -436,14 +431,46 @@ pub(super) const AUTO_IMPORT_NOTE: &str = "New installs, and any games the libra
      are imported with the same defaults as importing them all. Games you already have aren't \
      touched, and nothing is launched or downloaded.";
 
+/// One tab of the global page, ending with the version.
 pub(super) fn global_view<'a>(
+    tab: tabs::Tab,
     editor: &'a global::Editor,
     page: &'a Page,
     paths: &Paths,
     locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
-    let (steamgriddb, steam_key, gog) = (&page.steamgriddb, &page.steam_key, &page.gog);
+    let content = match tab {
+        tabs::Tab::General => general_tab(editor, locked, palette),
+        tabs::Tab::Appearance => {
+            super::appearance::tab(&editor.appearance, locked, palette, page.system_mode)
+        }
+        // The tab names it, so the rows' surface starts the tab without a
+        // heading, as Appearance's first row does.
+        tabs::Tab::Controller => grouped_section(
+            controller_rows(&editor.form.draft.input, page, locked, palette),
+            palette,
+        )
+        .into(),
+        tabs::Tab::Stores => stores_tab(editor, page, paths, locked, palette),
+        tabs::Tab::Advanced => advanced_tab(editor, paths, locked, palette),
+    };
+    column![
+        content,
+        // The same string as `wineo --version`, so a problem report can name
+        // the exact build.
+        text(version_line()).size(12).color(palette.muted),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
+}
+
+fn general_tab<'a>(
+    editor: &'a global::Editor,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
     let draft = &editor.form.draft;
     let mut launch = column![].spacing(12);
     for key in Switch::ALL {
@@ -457,6 +484,102 @@ pub(super) fn global_view<'a>(
             palette,
         ));
     }
+    let mut art = column![].spacing(12);
+    for kind in Kind::ALL {
+        let label = match kind {
+            Kind::Icon => "Icon",
+            Kind::Grid => "Grid",
+            Kind::Hero => "Hero",
+            Kind::Logo => "Logo",
+        };
+        art = art.push(switch_row(
+            label,
+            draft.art_fetch.kinds().contains(&kind),
+            None,
+            move |on| send(Event::GlobalArtKind(kind, on)),
+            None,
+            locked,
+            palette,
+        ));
+    }
+    column![
+        section(
+            "Desktop",
+            desktop_rows(draft.desktop, locked, palette),
+            palette
+        ),
+        section(
+            "Coverflow",
+            coverflow_rows(draft.coverflow_fullscreen, locked, palette),
+            palette
+        ),
+        section("Launch defaults", launch.into(), palette),
+        section("Art to fetch", art.into(), palette),
+        section(
+            "RetroArch",
+            retroarch_rows(draft.retroarch_quit.unwrap_or(true), locked, palette),
+            palette
+        ),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
+}
+
+fn stores_tab<'a>(
+    editor: &'a global::Editor,
+    page: &'a Page,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let (steamgriddb, steam_key, gog) = (&page.steamgriddb, &page.steam_key, &page.gog);
+    let portable = paths.portable_root().is_some();
+    let steam = column![
+        auto_import_rows(
+            editor.form.draft.auto_import,
+            editor.steam_found,
+            portable,
+            locked,
+            palette,
+        ),
+        // Only the key row, so a reveal puts the key at the top.
+        container(key_row(steam_key_row(steam_key, paths), palette))
+            .id(iced::widget::Id::new(STEAM_KEY_ID)),
+    ]
+    .spacing(12);
+    column![
+        section("Steam", steam.into(), palette),
+        section(
+            "GOG",
+            column![
+                gog_install_rows(editor, paths, locked, palette),
+                gog_row(gog, locked, palette)
+            ]
+            .spacing(12)
+            .into(),
+            palette
+        ),
+        section(
+            "SteamGridDB",
+            container(key_row(steamgriddb_row(steamgriddb, paths), palette))
+                .id(iced::widget::Id::new(STEAMGRIDDB_KEY_ID))
+                .into(),
+            palette,
+        ),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
+}
+
+fn advanced_tab<'a>(
+    editor: &'a global::Editor,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let draft = &editor.form.draft;
     let runner = super::runner_picker::picker(
         &editor.runners,
         &draft.runner,
@@ -545,78 +668,9 @@ pub(super) fn global_view<'a>(
             palette,
         ));
     }
-    let mut art = column![].spacing(12);
-    for kind in Kind::ALL {
-        let label = match kind {
-            Kind::Icon => "Icon",
-            Kind::Grid => "Grid",
-            Kind::Hero => "Hero",
-            Kind::Logo => "Logo",
-        };
-        art = art.push(switch_row(
-            label,
-            draft.art_fetch.kinds().contains(&kind),
-            None,
-            move |on| send(Event::GlobalArtKind(kind, on)),
-            None,
-            locked,
-            palette,
-        ));
-    }
-    let steam = auto_import_rows(
-        draft.auto_import,
-        editor.steam_found,
-        portable,
-        locked,
-        palette,
-    );
     column![
-        section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
-        section(
-            "RetroArch",
-            retroarch_rows(draft.retroarch_quit.unwrap_or(true), locked, palette),
-            palette
-        ),
-        section(
-            "Desktop",
-            desktop_rows(draft.desktop, locked, palette),
-            palette
-        ),
-        section(
-            "Coverflow",
-            coverflow_rows(draft.coverflow_fullscreen, locked, palette),
-            palette
-        ),
-        section(
-            "Controller",
-            controller_rows(&draft.input, page, locked, palette),
-            palette
-        ),
-        section("Art to fetch", art.into(), palette),
-        section(
-            "SteamGridDB",
-            key_row(steamgriddb_row(steamgriddb, paths), palette),
-            palette,
-        ),
-        section("Steam", steam, palette),
-        container(section(
-            "Steam Web API",
-            key_row(steam_key_row(steam_key, paths), palette),
-            palette,
-        ))
-        .id(iced::widget::Id::new(STEAM_KEY_ID)),
-        section(
-            "GOG",
-            column![
-                gog_install_rows(editor, paths, locked, palette),
-                gog_row(gog, locked, palette)
-            ]
-            .spacing(12)
-            .into(),
-            palette
-        ),
         section(
             "Environment variables",
             env_rows(
@@ -629,9 +683,6 @@ pub(super) fn global_view<'a>(
             ),
             palette
         ),
-        // The same string as `wineo --version`, so a problem report can name
-        // the exact build.
-        text(version_line()).size(12).color(palette.muted),
     ]
     .spacing(24)
     .width(Fill)
@@ -1426,6 +1477,14 @@ fn gog_row<'a>(
 pub(super) fn locate_steam_key() -> iced::Task<crate::grid_motion::CardBounds> {
     crate::grid_motion::locate(
         iced::widget::Id::new(STEAM_KEY_ID),
+        iced::widget::Id::new(SCROLL_ID),
+    )
+}
+
+/// Finds the SteamGridDB key row, for the art page's link to it.
+pub(super) fn locate_steamgriddb_key() -> iced::Task<crate::grid_motion::CardBounds> {
+    crate::grid_motion::locate(
+        iced::widget::Id::new(STEAMGRIDDB_KEY_ID),
         iced::widget::Id::new(SCROLL_ID),
     )
 }

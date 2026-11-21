@@ -104,7 +104,7 @@ fn sidebar_navigation_leaves_art_and_opens_its_destination() {
 }
 
 #[test]
-fn settings_hint_opens_global_settings() {
+fn settings_hint_opens_global_settings_at_the_steamgriddb_key() {
     let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
     let generation = app.art_pages["game"].generation;
@@ -115,6 +115,10 @@ fn settings_hint_opens_global_settings() {
     ));
     assert!(app.art_page.is_none());
     assert!(app.global_settings_open());
+    assert_eq!(
+        app.settings.as_ref().unwrap().reveal,
+        Some(crate::settings::Reveal::SteamGridDbKey)
+    );
 }
 
 #[test]

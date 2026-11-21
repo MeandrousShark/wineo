@@ -210,7 +210,7 @@ impl App {
                 Task::batch([self.load_visible_art(), self.load_panel_art()])
             }
             art_page::Event::Settings if self.art_page.as_ref() == Some(&name) => {
-                self.navigate_section(sidebar::Section::Settings)
+                self.open_settings_at(crate::settings::Reveal::SteamGridDbKey)
             }
             art_page::Event::Settings => Task::none(),
             event => {

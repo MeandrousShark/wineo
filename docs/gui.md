@@ -1204,45 +1204,45 @@ Hover the selected runner to see its full name.
 
 ### Global settings
 
-The global page has two tabs under its title, **General** and
-**Appearance**, and opens on General. General holds everything below.
-Switching tabs keeps your edits, and one Save and Revert footer covers
-both. Each tab remembers how far it's scrolled while the page is open.
+The global page has five tabs under its title: **General**,
+**Appearance**, **Controller**, **Stores**, and **Advanced**. It opens on
+General, except when another page sends you to a key row, which opens it on
+Stores with the row in view: **Open Settings** from the Steam import's
+missing key, and **Settings** on the Art page. Switching tabs keeps your
+edits, and one Save and Revert footer covers every tab. Each tab remembers
+how far it's scrolled while the page is open. In a narrow window the tabs
+wrap onto more lines.
 
-- **Launch defaults:** gamemode, MangoHud, and Wayland for every
-  environment that doesn't set its own.
-- **New environments:** the runner and arch `wineo new` uses, whether to
-  use **Builds from Steam, Heroic, and Lutris**, and where prefixes, runners,
-  DXVK, and vkd3d-proton builds go. The builds switch is off until it's
-  answered, and is disabled in a portable folder. Empty root fields show
-  the default locations for the current XDG or portable setup.
-- **Runs:** how long `stop` waits before killing a game, and how big a log
-  gets.
-- **RetroArch:** **Quit RetroArch when its game closes** (on by default),
-  so a RetroArch game's playtime ends when you close the game. See
-  [Quitting with the game](native.md#quitting-with-the-game) for the trade-off.
+**General** holds:
+
 - **Desktop:** **Show a tray icon** (on by default), **Closing the
   window** (**Quit**, the default, or **Keep running in the tray**), **When
   something starts** (**Keep the window open**, the default, or **Hide to
   the tray**), and **When everything stops** (**Bring back a hidden
   window**, the default, or **Always show the window**). The last three
   need the tray icon. See [The tray icon](#the-tray-icon).
+- **Coverflow:** **Open coverflow in full screen**, off by default. See
+  [Full screen](#full-screen).
+- **Launch defaults:** gamemode, MangoHud, and Wayland for every
+  environment that doesn't set its own.
 - **Art to fetch:** independent Icon, Grid, Hero, and Logo switches for
   `new` and `import`. Turn all four off to disable automatic fetching.
-- **Environment variables** for every launch.
-- **SteamGridDB:** where the API key comes from: "From
-  WINEO_STEAMGRIDDB_KEY", "Saved in the keyring", "Saved in a plain text
-  file" with its path, or "No key". The key itself is never shown.
+- **RetroArch:** **Quit RetroArch when its game closes** (on by default),
+  so a RetroArch game's playtime ends when you close the game. See
+  [Quitting with the game](native.md#quitting-with-the-game) for the trade-off.
 
-**Set key...** takes the key in a masked field, checks it with SteamGridDB,
-and saves it like `wineo art key`: to the keyring, or to a plain text file
-with a warning when there's no keyring. **Remove key** deletes the saved
-key. Only the one that applies shows: **Set key...** with no key,
-**Remove key** with one saved, and both while the variable's key could
-hide a saved one. Both apply right away, outside the Save bar, and don't count as
-edits. You can leave the page while one runs, and its result shows when you
-come back. With `WINEO_STEAMGRIDDB_KEY` set, the section says it overrides
-the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
+**Controller** holds **Use a controller in the Library**, on by default,
+and the names of the connected controllers, or "No controller found."
+Below them, each controller action has a row showing its button. Click a
+row, or press Enter or Space on it, and it says "Press a button..." for 5
+seconds; the next controller button takes the action. A button another
+action had swaps with it, so every button stays used once. Any key, click,
+second click on the row, or switch to another tab stops waiting. **Reset to
+defaults** puts every button back. The rows save with the Save bar to
+`[input.buttons]` in `library.toml` (see [config files](config-files.md)).
+See [Controller](#controller).
+
+**Stores** holds the Steam, GOG, and SteamGridDB sections.
 
 **Steam**: **Import new Steam games automatically**, off by default, skips the
 [banner](#new-steam-games) and imports new installs with the same defaults as
@@ -1250,38 +1250,49 @@ the saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 it on, and never the games you already have. It's off in a portable folder or
 with no Steam, and the row says why.
 
-**Steam Web API** works the same way for the key that lists
-[owned Steam games](steam.md#owned-games), checked with Steam before it's
-saved, and shows where to get a key: <https://steamcommunity.com/dev/apikey>. With
-`WINEO_STEAM_KEY` set, it says that overrides the saved key.
+Below it, the Steam Web API key that lists
+[owned Steam games](steam.md#owned-games) shows where it comes from:
+"From WINEO_STEAM_KEY", "Saved in the keyring", "Saved in a plain text
+file" with its path, or "No key". The key itself is never shown. The row
+shows where to get a key: <https://steamcommunity.com/dev/apikey>.
+**Set key...** takes the key in a masked field, checks it with Steam, and
+saves it to the keyring, or to a plain text file with a warning when
+there's no keyring. **Remove key** deletes the saved key. Only the one that
+applies shows: **Set key...** with no key, **Remove key** with one saved,
+and both while the variable's key could hide a saved one. Both apply right
+away, outside the Save bar, and don't count as edits. You can leave the
+page while one runs, and its result shows when you come back. With
+`WINEO_STEAM_KEY` set, the row says it overrides the saved key.
 
-**GOG** shows the GOG username you're logged in as, or the account number
-until wineo has looked the name up. **Log in**, shown while you're
-logged out, opens GOG's login page
-in your browser and shows its address with **Copy link**, then a masked
-**Address** field for the address of the page you land on, like `wineo
-import gog --login`; what you paste is never shown or logged. **Log out**,
-shown while you're logged in, removes the login and that account's owned-games list. Both run outside
-the Save bar, and their result shows if you leave and come back. The
-section works in a portable folder too. **Games folder** (with
-**Browse...**) and **GOG language** (a locale tag like `fr-FR`) set where
-and in what language games install; they save with the Save bar, and a
-portable folder leaves them alone.
+**GOG**: **Games folder** (with **Browse...**) and **GOG language** (a
+locale tag like `fr-FR`) set where and in what language games install; they
+save with the Save bar, and a portable folder leaves them alone. Then the
+GOG username you're logged in as, or the account number until wineo has
+looked the name up. **Log in**, shown while you're logged out, opens GOG's
+login page in your browser and shows its address with **Copy link**, then a
+masked **Address** field for the address of the page you land on, like
+`wineo import gog --login`; what you paste is never shown or logged. **Log
+out**, shown while you're logged in, removes the login and that account's
+owned-games list. Both run outside the Save bar, and their result shows if
+you leave and come back. The section works in a portable folder too.
 
-**Coverflow**: **Open coverflow in full screen**, off by default. See
-[Full screen](#full-screen).
+**SteamGridDB**: the art API key's row, which works the same way as the
+Steam key's, checked with SteamGridDB and saved like `wineo art key`. With
+`WINEO_STEAMGRIDDB_KEY` set, the row says it overrides the saved key. See
+[The SteamGridDB key](art.md#the-steamgriddb-key).
 
-**Controller**: **Use a controller in the Library**, on by default, and the
-names of the connected controllers, or "No controller found." Below them,
-each controller action has a row showing its button. Click a row, or press
-Enter or Space on it, and it says "Press a button..." for 5 seconds; the
-next controller button takes the action. A button another action had swaps
-with it, so every button stays used once. Any key, click, or second click
-on the row stops waiting. **Reset to defaults** puts every button back. The
-rows save with the Save bar to `[input.buttons]` in `library.toml` (see
-[config files](config-files.md)). See [Controller](#controller).
+**Advanced** holds:
 
-The General tab ends with the version, like `wineo 1.5.0`, the same line
+- **New environments:** the runner and arch `wineo new` uses, whether to
+  use **Builds from Steam, Heroic, and Lutris**, and where prefixes, runners,
+  DXVK, and vkd3d-proton builds go. The builds switch is off until it's
+  answered, and is disabled in a portable folder. Empty root fields show
+  the default locations for the current XDG or portable setup.
+- **Runs:** how long `stop` waits before killing a game, and how big a log
+  gets.
+- **Environment variables** for every launch.
+
+Every tab ends with the version, like `wineo 1.5.0`, the same line
 `wineo --version` prints. A build that isn't a tagged release adds which
 commit it is, like `wineo 1.4.1+12.g7e952c93` (12 commits past v1.4.1),
 with `.dirty` when it was built with uncommitted changes, so a problem can
@@ -1293,7 +1304,7 @@ The **Appearance** tab picks the app's colors (plan
 0057). Picking a theme repaints the app right
 away, so you can try a few before you **Save**; **Revert**, or leaving and
 choosing **Discard**, puts back what was saved. Theme edits count in the
-same bar as General's, and one **Save** writes both.
+same bar as the other tabs' edits, and one **Save** writes them all.
 
 - **Follow the system**, on by default, switches with the desktop's light
   or dark mode. It shows a **Dark theme** list and a **Light theme** list,
@@ -1430,7 +1441,7 @@ On a settings page:
 |---|---|
 | Ctrl+S | Save |
 | Tab, Shift+Tab | Move between the tabs and fields |
-| Left, Right (on the tabs) | Switch between General and Appearance |
+| Left, Right (on the tabs) | Move to the previous or next of General, Appearance, Controller, Stores, and Advanced, and select it |
 | Esc | Leave the field, then an environment's page, asking first if there are edits |
 
 In an Add, import, or clone flow:
