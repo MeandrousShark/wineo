@@ -260,6 +260,12 @@ fn apply_native_registers_the_environment_and_carries_playtime() {
     plan.set_desktop_enabled(true);
     let registered = apply_native(&paths, &source, &plan).unwrap();
     assert_eq!(registered.environment.name, "dusklight");
+    // Read under the config lock, for art stored later to be checked against.
+    assert!(registered.identity.is_some());
+    assert_eq!(
+        registered.identity,
+        crate::environment::EnvironmentIdentity::read(&paths, "dusklight")
+    );
     assert_eq!(
         registered.environment.config.heroic_id.as_deref(),
         Some("dusk")

@@ -435,7 +435,7 @@ pub(super) fn store_heroic_poster(
     {
         return None;
     }
-    heroic_import::store_poster(paths, name, app, &poster.path)
+    heroic_import::store_poster(paths, name, app, &poster.path, None)
         .err()
         .map(|error| format!("Heroic poster: {error}"))
 }

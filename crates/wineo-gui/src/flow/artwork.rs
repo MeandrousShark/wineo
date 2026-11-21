@@ -460,9 +460,15 @@ impl Draft {
             }
             let result = resolve(Some(paths), &local.path).and_then(|path| {
                 match &local.prefilled {
-                    Some(prefilled) => {
-                        art::set_manual_as(paths, name, None, *kind, &path, &prefilled.original)
-                    }
+                    Some(prefilled) => art::set_manual_as(
+                        paths,
+                        name,
+                        None,
+                        *kind,
+                        &path,
+                        &prefilled.original,
+                        None,
+                    ),
                     None => art::set_manual(paths, name, None, *kind, &path, None),
                 }
                 .map_err(|e| e.to_string())

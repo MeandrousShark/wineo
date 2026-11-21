@@ -85,6 +85,9 @@ pub fn fetch_kind_for(
     if cancel.is_canceled() {
         return Err(crate::Error::Canceled("download").into());
     }
+    // First, so a removed environment reads as changed when one is expected,
+    // as it does under the art lock.
+    art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?
@@ -340,6 +343,7 @@ fn publish_with_cancel(
     cancel: Option<&Token>,
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Fetched> {
+    art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?

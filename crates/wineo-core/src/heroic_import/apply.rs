@@ -14,7 +14,7 @@ use crate::art::{self, Kind};
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::desktop::{self, Change};
-use crate::environment::Environment;
+use crate::environment::{Environment, EnvironmentIdentity};
 use crate::heroic::HeroicSource;
 use crate::import::{self, ImportProgress};
 use crate::paths::Paths;
@@ -47,6 +47,10 @@ pub enum Playtime {
 #[derive(Debug)]
 pub struct Registered {
     pub environment: Environment,
+    /// The config as written, read while the config lock was held. Art
+    /// stored or fetched afterwards, and on a retry, is written only while
+    /// the environment is still this one.
+    pub identity: Option<EnvironmentIdentity>,
     pub playtime: Playtime,
     pub warnings: Vec<String>,
     runner: Option<Runner>,
@@ -89,7 +93,7 @@ pub fn apply(
 ) -> anyhow::Result<Registered> {
     ensure_unchanged(source, &plan.heroic().id, &plan.heroic().fingerprint)?;
     let settings = plan.settings();
-    let environment = import::execute_reviewed(
+    let (environment, identity) = import::execute_reviewed_identified(
         paths,
         global,
         plan.request().clone(),
@@ -101,6 +105,7 @@ pub fn apply(
     let playtime = import_playtime(paths, source, &plan.heroic().id, &environment.name);
     Ok(Registered {
         environment,
+        identity,
         playtime,
         warnings: Vec::new(),
         runner: Some(plan.runner().clone()),
@@ -118,12 +123,14 @@ pub fn apply_native(
 ) -> anyhow::Result<Registered> {
     ensure_unchanged(source, &plan.heroic().id, &plan.heroic().fingerprint)?;
     let mut warnings = Vec::new();
-    let environment = import::register_native(paths, plan.name(), &plan.settings(), |warning| {
-        warnings.push(warning)
-    })?;
+    let (environment, identity) =
+        import::register_native_identified(paths, plan.name(), &plan.settings(), |warning| {
+            warnings.push(warning)
+        })?;
     let playtime = import_playtime(paths, source, &plan.heroic().id, &environment.name);
     Ok(Registered {
         environment,
+        identity,
         playtime,
         warnings,
         runner: None,
@@ -144,6 +151,7 @@ pub fn store_poster(
     env: &str,
     app_name: &str,
     poster: &Path,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> crate::Result<Option<art::Stored>> {
     let mut bytes = Vec::new();
     let read = fs::File::open(poster)
@@ -172,6 +180,7 @@ pub fn store_poster(
         Kind::Grid,
         &bytes,
         &poster_name(app_name, format),
+        expected_identity,
     )
     .map(Some)
 }

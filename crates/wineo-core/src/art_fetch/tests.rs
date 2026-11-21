@@ -975,3 +975,28 @@ fn fetch_game_canceled_during_its_last_kind_says_so() {
     ));
     assert_eq!(names(&paths.art_dir("hades")), ["art.toml"]);
 }
+
+#[test]
+fn fetch_kind_for_reads_a_removed_environment_as_changed() {
+    let (_root, paths) = setup();
+    let identity = EnvironmentIdentity::read(&paths, "hades");
+    fs::remove_file(paths.environment_config("hades")).unwrap();
+    let api = FakeApi::default();
+    let error = fetch_kind_for(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &Api::new(&api, "k"),
+        7,
+        "en",
+        Mode::Fill,
+        identity,
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<Error>(),
+        Some(Error::ArtEnvironmentChanged(_))
+    ));
+}

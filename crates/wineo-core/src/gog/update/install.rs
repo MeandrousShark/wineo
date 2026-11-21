@@ -1294,7 +1294,7 @@ fn run(
     let mut library_warning = None;
     if !plan.has_config {
         let config = import::native_config(paths, &settings(plan))?;
-        import::write_native_config(paths, name, &config)?;
+        let _ = import::write_native_config(paths, name, &config)?;
         if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
             warnings.push(warning.clone());
             library_warning = Some(warning);

@@ -1498,7 +1498,7 @@ fn write_art_for(
                     "environment changed before artwork could be removed".into(),
                 );
             }
-            art::remove(paths, name, spot.0.as_deref(), spot.1)
+            art::remove(paths, name, spot.0.as_deref(), spot.1, None)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }

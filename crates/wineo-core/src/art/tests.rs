@@ -617,7 +617,16 @@ fn manual_art_rechecks_identity_after_waiting_for_art_lock() {
 fn set_as_records_the_given_name() {
     let (root, paths) = store();
     let file = source(root.path(), "0123abcd", WEBP);
-    set_manual_as(&paths, "hades", None, Kind::Grid, &file, "heroic-a.webp").unwrap();
+    set_manual_as(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &file,
+        "heroic-a.webp",
+        None,
+    )
+    .unwrap();
     let art = paths.art_dir("hades");
     assert_eq!(fs::read(art.join("grid.webp")).unwrap(), WEBP);
     assert_eq!(
@@ -736,7 +745,7 @@ fn a_target_override_is_set_and_removed_on_its_own() {
     assert_eq!(listing.targets.len(), 1);
     assert_eq!(listing.targets[0].1[0].1.found.path, stored.path);
 
-    let removed = remove(&paths, "hades", Some("server"), Kind::Icon).unwrap();
+    let removed = remove(&paths, "hades", Some("server"), Kind::Icon, None).unwrap();
     assert_eq!(removed.files, vec![stored.path]);
     assert!(removed.record);
     assert!(!art.join("server").exists());
@@ -745,9 +754,9 @@ fn a_target_override_is_set_and_removed_on_its_own() {
     assert!(config.targets.is_empty());
     assert!(config.record(None, Kind::Icon).is_some());
 
-    let err = remove(&paths, "hades", Some("server"), Kind::Icon).unwrap_err();
+    let err = remove(&paths, "hades", Some("server"), Kind::Icon, None).unwrap_err();
     assert_eq!(err.to_string(), "`hades.server` has no icon art");
-    let err = remove(&paths, "hades", None, Kind::Logo).unwrap_err();
+    let err = remove(&paths, "hades", None, Kind::Logo, None).unwrap_err();
     assert_eq!(err.to_string(), "`hades` has no logo art");
 }
 
@@ -757,7 +766,7 @@ fn remove_takes_unrecorded_files_and_stale_records() {
     let art = paths.art_dir("hades");
     let png = touch(&art, "hero.png");
     let jpg = touch(&art, "hero.jpg");
-    let removed = remove(&paths, "hades", None, Kind::Hero).unwrap();
+    let removed = remove(&paths, "hades", None, Kind::Hero, None).unwrap();
     assert_eq!((removed.files, removed.record), (vec![png, jpg], false));
     assert!(!art.join(ART_FILE).exists());
 
@@ -766,7 +775,7 @@ fn remove_takes_unrecorded_files_and_stale_records() {
         "schema_version = 1\n[logo]\nfile = \"logo.png\"\nsteamgriddb = 3\n",
     )
     .unwrap();
-    let removed = remove(&paths, "hades", None, Kind::Logo).unwrap();
+    let removed = remove(&paths, "hades", None, Kind::Logo, None).unwrap();
     assert_eq!((removed.files.len(), removed.record), (0, true));
     assert_eq!(read(&art), "schema_version = 1\n");
 }
@@ -949,4 +958,62 @@ fn saving_writes_through_a_symlinked_art_file() {
         new_file: NewFile::Default,
     }
     .check();
+}
+
+/// Swaps the config for a copy, which is a different file as far as its
+/// identity goes.
+fn replace_config(paths: &Paths, name: &str) {
+    let config = paths.environment_config(name);
+    let staged = config.with_extension("replacement");
+    fs::copy(&config, &staged).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+#[test]
+fn every_manual_write_and_removal_refuses_a_replaced_environment() {
+    let (root, paths) = store();
+    let art = paths.art_dir("hades");
+    let file = source(root.path(), "grid.png", PNG);
+    let kept = source(root.path(), "kept.png", PNG);
+    set_manual(&paths, "hades", None, Kind::Logo, &kept, None).unwrap();
+    let identity = EnvironmentIdentity::read(&paths, "hades");
+    // Written under the identity it was read with, as before.
+    set_manual_as(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &file,
+        "mine.png",
+        identity,
+    )
+    .unwrap();
+    set_manual_bytes(&paths, "hades", None, Kind::Hero, PNG, "hero.png", identity).unwrap();
+
+    replace_config(&paths, "hades");
+    let changed =
+        |error: Error| matches!(error, Error::ArtEnvironmentChanged(name) if name == "hades");
+    assert!(changed(
+        set_manual_as(
+            &paths,
+            "hades",
+            None,
+            Kind::Icon,
+            &file,
+            "mine.png",
+            identity
+        )
+        .unwrap_err()
+    ));
+    assert!(changed(
+        set_manual_bytes(&paths, "hades", None, Kind::Icon, PNG, "icon.png", identity).unwrap_err()
+    ));
+    assert!(changed(
+        remove(&paths, "hades", None, Kind::Logo, identity).unwrap_err()
+    ));
+    assert!(!art.join("icon.png").exists());
+    assert!(art.join("logo.png").exists());
+    // Without an identity, which is what the command line passes, it goes.
+    remove(&paths, "hades", None, Kind::Logo, None).unwrap();
+    assert!(!art.join("logo.png").exists());
 }

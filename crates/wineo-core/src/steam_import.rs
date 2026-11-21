@@ -745,7 +745,7 @@ fn store_cached_art(paths: &Paths, name: &str, kind: Kind, source: &Path) -> any
             .to_string_lossy(),
         source.file_name().unwrap_or_default().to_string_lossy()
     );
-    art::set_manual_bytes(paths, name, None, kind, &bytes, &original)?;
+    art::set_manual_bytes(paths, name, None, kind, &bytes, &original, None)?;
     Ok(())
 }
 

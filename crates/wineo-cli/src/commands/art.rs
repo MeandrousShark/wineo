@@ -147,7 +147,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
-            art::remove(paths, env, target, kind)?;
+            art::remove(paths, env, target, kind, None)?;
             println!("Removed {kind} from {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;
