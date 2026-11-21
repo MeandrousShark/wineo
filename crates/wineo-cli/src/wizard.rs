@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped};
-use wineo_core::environment::Environment;
+use wineo_core::environment::{Environment, EnvironmentIdentity};
 use wineo_core::error::Error;
 use wineo_core::install::{self, Wanted};
 use wineo_core::installer::{Outcome, Output};
@@ -1217,6 +1217,8 @@ fn create<I: Input, W: Write>(
         shown: &shown,
         cancellation: Some(Cancellation::new()?),
         install_token: install_token.clone(),
+        paths,
+        identity: None,
     };
     let token = hooks.cancellation.as_ref().unwrap().token.clone();
     let created = create::create_and_install(
@@ -1235,6 +1237,7 @@ fn create<I: Input, W: Write>(
     );
     // Kept through the installer's report, like `setup`'s own install.
     let install_cancellation = hooks.cancellation.take();
+    let identity = hooks.identity;
     let mut created = match created {
         Ok(created) => created,
         Err(err) => {
@@ -1292,15 +1295,16 @@ fn create<I: Input, W: Write>(
                 key,
                 picked,
                 kinds: global.art.fetch,
+                identity,
             });
             match installer_ended(
                 paths,
                 &name,
                 prompt,
-                outcome,
-                resolved,
+                (outcome, resolved),
                 install_cancellation,
                 art,
+                &mut crate::output::stderr(),
             )? {
                 Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
                 Ran::Ended(code) => return Ok(code),
@@ -1361,6 +1365,9 @@ struct ArtAfter<'a> {
     key: &'a Key,
     picked: &'a Picked,
     kinds: ArtFetch,
+    /// The environment as created, which the art is stored in only while it
+    /// is still the same one.
+    identity: Option<EnvironmentIdentity>,
 }
 
 /// Reports how the installer ended, downloading the art picked for it only
@@ -1370,10 +1377,10 @@ fn installer_ended<I: Input, W: Write>(
     paths: &Paths,
     name: &str,
     prompt: &mut Prompt<I, W>,
-    outcome: wineo_core::Result<Outcome>,
-    resolved: bool,
+    (outcome, resolved): (wineo_core::Result<Outcome>, bool),
     cancellation: Option<Cancellation>,
     art: Option<ArtAfter>,
+    err: &mut dyn Write,
 ) -> anyhow::Result<Ran> {
     // Those were the installer's to act on, not a request to leave setup.
     prompt.input().forget_interrupts();
@@ -1399,8 +1406,8 @@ fn installer_ended<I: Input, W: Write>(
                 art.key,
                 &request,
                 art.picked,
-                prompt.writer(),
-                &mut crate::output::stderr(),
+                art.identity,
+                (prompt.writer(), err),
             );
         }
         (Ran::Finished, None) => {}
@@ -1432,6 +1439,9 @@ struct WizardHooks<'a, I: Input, W: Write> {
     /// again while the installer runs.
     cancellation: Option<Cancellation>,
     install_token: Token,
+    paths: &'a Paths,
+    /// The environment as created, read while the create lock is held.
+    identity: Option<EnvironmentIdentity>,
 }
 
 impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
@@ -1471,6 +1481,11 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
             }
             CreateEvent::TemplateComponentsOmitted { .. } => {}
         }
+    }
+
+    fn created(&mut self, created: &create::Created) -> anyhow::Result<()> {
+        self.identity = EnvironmentIdentity::read(self.paths, &created.environment.name);
+        Ok(())
     }
 
     fn ready(&mut self, _launch: &Launch) -> anyhow::Result<()> {

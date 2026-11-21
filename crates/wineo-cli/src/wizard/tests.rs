@@ -529,6 +529,17 @@ fn installer_ended_with(
     outcome: wineo_core::Result<Outcome>,
     resolved: bool,
 ) -> (Ran, String, usize) {
+    let (ran, transcript, requests, _) = installer_ended_replacing(outcome, resolved, false);
+    (ran, transcript, requests)
+}
+
+/// `installer_ended_with`, also returning what went to stderr, with the
+/// environment replaced after the identity was read when `replace` is set.
+fn installer_ended_replacing(
+    outcome: wineo_core::Result<Outcome>,
+    resolved: bool,
+    replace: bool,
+) -> (Ran, String, usize, String) {
     use crate::commands::art::fake::Probe;
     let world = world();
     // The environment the installer ran in, for the art to be stored in.
@@ -579,20 +590,25 @@ fn installer_ended_with(
         key: &key,
         picked: &picked,
         kinds: world.global.art.fetch,
+        identity: EnvironmentIdentity::read(&world.paths, "hades"),
     };
+    if replace {
+        crate::commands::art::fake::replace_environment(&world.paths, "hades");
+    }
+    let mut err = Vec::new();
     let ran = installer_ended(
         &world.paths,
         "hades",
         &mut prompt,
-        outcome,
-        resolved,
+        (outcome, resolved),
         None,
         Some(art),
+        &mut err,
     )
     .unwrap();
     let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
     let requests = seen.borrow().len() - before;
-    (ran, transcript, requests)
+    (ran, transcript, requests, String::from_utf8(err).unwrap())
 }
 
 fn assert_ended_without_art((ran, transcript, requests): (Ran, String, usize)) {
@@ -691,4 +707,43 @@ fn a_stopped_step_ends_setup_and_says_the_art_was_not_fetched() {
     let step = Stepped::Stopped(anyhow::anyhow!("stopped by a hook"));
     let _ = ended_early(&world.paths, "hades", &mut prompt, step, false).unwrap();
     assert_eq!(prompt.output(), b"");
+}
+
+#[test]
+fn art_is_not_stored_in_an_environment_replaced_before_the_download() {
+    let (ran, transcript, _, err) =
+        installer_ended_replacing(Ok(Outcome::Finished { exit_code: Some(0) }), true, true);
+    assert!(matches!(ran, Ran::Finished));
+    assert_eq!(
+        err,
+        "warning: art fetch failed: environment `hades` changed before artwork could be written\n"
+    );
+    assert!(!transcript.contains("icon:"), "{transcript}");
+    assert!(!transcript.contains("Art not fetched"), "{transcript}");
+}
+
+#[test]
+fn guided_art_is_not_stored_in_an_environment_replaced_during_the_installer() {
+    let world = world();
+    install_runner(&world);
+    let program = program(&world);
+    // The installer swaps the config for a copy, as removing the environment
+    // and creating another of the same name would.
+    let config = world.paths.environment_config("hades");
+    let swap = format!(
+        "#!/bin/sh\ncase \"$*\" in\n*game.exe*) cp '{0}' '{0}.new' && mv '{0}.new' '{0}' ;;\nesac\nexit 0\n",
+        config.display()
+    );
+    for root in [
+        world.paths.default_runner_root(),
+        world._root.path().join("runners"),
+    ] {
+        write_script(root.join("fake/bin/wine"), &swap);
+    }
+    let answers = art_after(&["1", &program], &["1", "s"]);
+    let (result, transcript, _) = wizard_probed(&world, &borrowed(&answers));
+    assert!(result.is_ok(), "{result:?}\n{transcript}");
+    assert!(!transcript.contains("icon:"), "{transcript}");
+    assert!(!world.paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(saved_game(&world), None);
 }

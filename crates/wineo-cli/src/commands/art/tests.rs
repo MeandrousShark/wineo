@@ -77,6 +77,7 @@ fn steam_fetch_uses_the_app_id_even_with_a_saved_game() {
         paths: &paths,
         env: "hades",
         target: None,
+        identity: EnvironmentIdentity::read(&paths, "hades"),
     };
     let mut icon = false;
     let mut out = Vec::new();
@@ -186,6 +187,7 @@ fn run(paths: &Paths, fake: &Fake, only: Option<Kind>) -> (anyhow::Result<bool>,
         paths,
         env: "hades",
         target: None,
+        identity: EnvironmentIdentity::read(paths, "hades"),
     };
     let mut out = Vec::new();
     let mut icon = false;
@@ -653,4 +655,63 @@ fn picking_from_a_new_search_saves_that_game() {
     let game = result.unwrap().unwrap();
     art::save_game(&paths, "hades", game).unwrap();
     assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(42));
+}
+
+const CHANGED: &str =
+    "warning: art fetch failed: environment `hades` changed before artwork could be written\n";
+
+#[test]
+fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
+    let (_root, paths) = paths();
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    fake.icon_only();
+    let swap = super::fake::Swap::new(fake, &paths, "hades");
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::Icon,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        &paths,
+        &swap,
+        &key(),
+        &request,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    assert_eq!(String::from_utf8(err).unwrap(), CHANGED);
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+}
+
+#[test]
+fn art_fetch_warns_instead_of_failing_when_the_environment_is_replaced() {
+    for replaced in [false, true] {
+        let (_root, paths) = paths();
+        let mut fake = Fake::default();
+        fake.icon_only();
+        let swap = super::fake::Swap::new(fake, &paths, "hades");
+        let mut request = fetch_request();
+        request.game = Some(7);
+        // Without a swap the same fetch stores its icon.
+        swap.done.set(!replaced);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out, &mut err);
+        assert!(result.unwrap());
+        let icon = paths.art_dir("hades").join("icon.png").exists();
+        if replaced {
+            assert_eq!(String::from_utf8(err).unwrap(), CHANGED);
+            assert_eq!(String::from_utf8(out).unwrap(), "");
+            assert!(!icon);
+        } else {
+            assert_eq!(String::from_utf8(err).unwrap(), "");
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                "icon: fetched SteamGridDB 1\n"
+            );
+            assert!(icon);
+        }
+    }
 }

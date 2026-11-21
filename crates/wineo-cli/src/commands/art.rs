@@ -8,9 +8,10 @@ use clap::{Subcommand, ValueHint};
 use clap_complete::ArgValueCompleter;
 use wineo_core::art::{self, Kind, Listing, Resolved, Source, Warning};
 use wineo_core::art_fetch::{self, Fetched, Mode};
+use wineo_core::cancel::Token;
 use wineo_core::config::ArtFetch;
 use wineo_core::download::{Https, Lazy, Transport};
-use wineo_core::environment::Environment;
+use wineo_core::environment::{Environment, EnvironmentIdentity};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Removed, Saved};
@@ -250,24 +251,65 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
     let transport = Https::new()?;
     let api = Api::new(&transport, &key.value);
-    let Some(game) = fetch_game(paths, env, request, &api)? else {
+    fetch_with(
+        paths,
+        request,
+        &api,
+        &mut crate::output::stdout(),
+        &mut crate::output::stderr(),
+    )
+}
+
+/// `fetch` once there is a connection. Nothing is stored if the environment
+/// is replaced while this runs, which is a warning rather than a failure.
+fn fetch_with(
+    paths: &Paths,
+    request: &FetchRequest,
+    api: &Api,
+    out: &mut dyn io::Write,
+    err: &mut dyn io::Write,
+) -> anyhow::Result<bool> {
+    let (env, _) = split(request.spot);
+    let identity = EnvironmentIdentity::read(paths, env);
+    match fetch_checked(paths, request, api, identity, out) {
+        Err(error) if environment_changed(&error) => {
+            warn_failed(&error, err);
+            Ok(true)
+        }
+        other => other,
+    }
+}
+
+fn environment_changed(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<wineo_core::Error>(),
+        Some(wineo_core::Error::ArtEnvironmentChanged(_))
+    )
+}
+
+fn fetch_checked(
+    paths: &Paths,
+    request: &FetchRequest,
+    api: &Api,
+    identity: Option<EnvironmentIdentity>,
+    out: &mut dyn io::Write,
+) -> anyhow::Result<bool> {
+    let (env, target) = split(request.spot);
+    let Some(game) = fetch_game(paths, env, request, api)? else {
         return Ok(true);
     };
     if art::saved_game(paths, env)? != Some(game) {
-        art::save_game(paths, env, game)?;
+        art::save_game_for(paths, env, game, identity, None)?;
     }
     let language = steamgriddb::language(|var| std::env::var_os(var));
-    let spot = Spot { paths, env, target };
+    let spot = Spot {
+        paths,
+        env,
+        target,
+        identity,
+    };
     let mut icon = false;
-    let fetched = fetch_kinds(
-        &spot,
-        request,
-        &api,
-        game,
-        &language,
-        &mut icon,
-        &mut crate::output::stdout(),
-    );
+    let fetched = fetch_kinds(&spot, request, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store.
     if icon {
         apply_desktop(paths, env)?;
@@ -310,6 +352,9 @@ struct Spot<'a> {
     paths: &'a Paths,
     env: &'a str,
     target: Option<&'a str>,
+    /// What the environment was when the fetch began. Nothing is written
+    /// once it has been replaced.
+    identity: Option<EnvironmentIdentity>,
 }
 
 /// Fetches each kind the request asks for, printing a line per kind as it
@@ -331,7 +376,7 @@ fn fetch_kinds(
     };
     let mut found = true;
     for kind in kinds {
-        let fetched = art_fetch::fetch_kind(
+        let fetched = art_fetch::fetch_kind_for(
             spot.paths,
             spot.env,
             spot.target,
@@ -340,6 +385,8 @@ fn fetch_kinds(
             game,
             language,
             request.mode,
+            spot.identity,
+            &Token::new(),
         )?;
         match fetched {
             Fetched::Stored { asset, .. } => {
@@ -561,20 +608,28 @@ impl Access<'_> {
     }
 
     /// The downloading half: records the game `pick` chose and fetches into
-    /// the environment, which has to exist. Failures are warnings on `err`.
+    /// the environment, which has to exist and, when `identity` is given,
+    /// still be the one it was read from. Failures are warnings on `err`.
     pub fn fetch_picked(
         &self,
         paths: &Paths,
         key: &Key,
         request: &AutoFetch,
         picked: &Picked,
-        out: &mut dyn Write,
-        err: &mut dyn Write,
+        identity: Option<EnvironmentIdentity>,
+        (out, err): (&mut dyn Write, &mut dyn Write),
     ) {
         let result = (|| {
             let transport = (self.transport)()?;
             let api = Api::new(&*transport, &key.value);
-            store_art(paths, &api, request, picked.game, &picked.term, out)
+            store_art(
+                paths,
+                &api,
+                request,
+                (picked.game, &picked.term),
+                identity,
+                out,
+            )
         })();
         if let Err(error) = result {
             warn_failed(&error, err);
@@ -620,10 +675,12 @@ fn try_fetch_new<I: Input, W: Write>(
     pick: Pick<I, W>,
 ) -> anyhow::Result<()> {
     let api = Api::new(transport, &key.value);
+    // Before the pick, so a replacement while the questions are asked counts.
+    let identity = EnvironmentIdentity::read(paths, request.env);
     let Some((game, term, out)) = choose_game(&api, request, pick)? else {
         return Ok(());
     };
-    store_art(paths, &api, request, game, &term, out)
+    store_art(paths, &api, request, (game, &term), identity, out)
 }
 
 /// Picks the game from the search results, naming a skipped pick. `out` is
@@ -662,18 +719,19 @@ fn choose_game<'p, I: Input, W: Write>(
 }
 
 /// Records the picked game and fetches the configured kinds, then updates the
-/// desktop entries once an icon is stored.
+/// desktop entries once an icon is stored. Nothing is written once the
+/// environment is no longer the one `identity` was read from.
 fn store_art(
     paths: &Paths,
     api: &Api,
     request: &AutoFetch,
-    game: u64,
-    term: &str,
+    (game, term): (u64, &str),
+    identity: Option<EnvironmentIdentity>,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let env = request.env;
     if art::saved_game(paths, env)? != Some(game) {
-        art::save_game(paths, env, game)?;
+        art::save_game_for(paths, env, game, identity, None)?;
     }
     let fetch = FetchRequest {
         spot: env,
@@ -687,6 +745,7 @@ fn store_art(
         paths,
         env,
         target: None,
+        identity,
     };
     let language = steamgriddb::language(|var| std::env::var_os(var));
     let mut icon = false;
@@ -1012,6 +1071,54 @@ pub(crate) mod fake {
                 lock_free,
                 build_free,
             });
+        }
+    }
+
+    /// Replaces the environment's config with a copy of itself, which is a
+    /// different file as far as its identity goes.
+    pub(crate) fn replace_environment(paths: &Paths, name: &str) {
+        let config = paths.environment_config(name);
+        let staged = config.with_extension("toml.new");
+        std::fs::copy(&config, &staged).unwrap();
+        std::fs::rename(&staged, &config).unwrap();
+    }
+
+    /// A `Fake` that has the environment replaced the first time an image
+    /// is asked for, as `rm` and a new `new` would between a pick and the
+    /// download that follows.
+    pub(crate) struct Swap {
+        pub(crate) fake: Fake,
+        pub(crate) paths: Paths,
+        pub(crate) name: String,
+        pub(crate) done: std::cell::Cell<bool>,
+    }
+
+    impl Swap {
+        pub(crate) fn new(fake: Fake, paths: &Paths, name: &str) -> Self {
+            Self {
+                fake,
+                paths: paths.clone(),
+                name: name.to_owned(),
+                done: std::cell::Cell::new(false),
+            }
+        }
+
+        fn note(&self, url: &str) {
+            if !url.contains("/search/") && !self.done.replace(true) {
+                replace_environment(&self.paths, &self.name);
+            }
+        }
+    }
+
+    impl Transport for Swap {
+        fn get(&self, url: &str) -> anyhow::Result<Box<dyn Read>> {
+            self.note(url);
+            self.fake.get(url)
+        }
+
+        fn request(&self, url: &str, bearer: Option<&str>) -> anyhow::Result<Response> {
+            self.note(url);
+            self.fake.request(url, bearer)
         }
     }
 

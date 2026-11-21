@@ -9,7 +9,7 @@ use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::create::{
     self, AfterInstall, CreateEvent, CreateRequest, ExeCheck, Hooks, Step, Stepped, TargetOutcome,
 };
-use wineo_core::environment::Environment;
+use wineo_core::environment::{Environment, EnvironmentIdentity};
 use wineo_core::installer::{Outcome, Output};
 use wineo_core::launch::{self, Launch};
 use wineo_core::paths::Paths;
@@ -116,6 +116,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         &access,
         &Token::new(),
         &mut crate::output::stdout(),
+        &mut crate::output::stderr(),
     )
 }
 
@@ -127,6 +128,7 @@ fn new_wine(
     access: &Access<'_>,
     install_token: &Token,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> anyhow::Result<ExitCode> {
     // Checked up front so a typo fails before the prefix creation wait.
     if let Some(installer) = &args.install_exe {
@@ -148,7 +150,7 @@ fn new_wine(
     // questions for nothing.
     let picked = if args.art && args.install_exe.is_some() {
         create::plan(paths, request())?;
-        match pick_art(paths, name, access, out) {
+        match pick_art(paths, name, access, out, err) {
             Ok(picked) => picked,
             Err(err) if cancel::prompted(&err) => {
                 eprintln!("Canceled. Nothing was created.");
@@ -170,6 +172,7 @@ fn new_wine(
         name,
         cancellation: Some(Cancellation::new()?),
         install_token: install_token.clone(),
+        identity: None,
     };
     let token = hooks.cancellation.as_ref().unwrap().token.clone();
     let mut created = match create::create_and_install(paths, request(), step, &token, &mut hooks) {
@@ -187,7 +190,7 @@ fn new_wine(
     if let Stepped::None = created.step {
         // The create lock is already released, so a slow SteamGridDB only
         // holds up this command.
-        if args.art && fetch_art(paths, &created.global, name, access, out).is_err() {
+        if args.art && fetch_art(paths, &created.global, name, access, out, err).is_err() {
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
             return Ok(cancel::exit_code());
         }
@@ -203,8 +206,9 @@ fn new_wine(
         prefix: &created.prefix,
         kinds: created.global.art.fetch,
         picked: picked.as_ref(),
+        identity: hooks.identity,
     };
-    ended.report(created.step, &mut hooks.cancellation, out)
+    ended.report(created.step, &mut hooks.cancellation, out, err)
 }
 
 /// An environment whose installer has ended, and the art picked for it.
@@ -215,6 +219,9 @@ struct Ended<'a> {
     prefix: &'a Path,
     kinds: ArtFetch,
     picked: Option<&'a (Key, Picked)>,
+    /// The environment as it was created, which the art is stored in only
+    /// while it is still the same one.
+    identity: Option<EnvironmentIdentity>,
 }
 
 impl Ended<'_> {
@@ -226,9 +233,10 @@ impl Ended<'_> {
         step: Stepped<anyhow::Result<ExitCode>>,
         cancellation: &mut Option<Cancellation>,
         out: &mut dyn Write,
+        err: &mut dyn Write,
     ) -> anyhow::Result<ExitCode> {
         let downloaded = Cell::new(false);
-        let result = self.report_step(step, cancellation, out, &downloaded);
+        let result = self.report_step(step, cancellation, (out, err), &downloaded);
         if self.picked.is_some() && !downloaded.get() {
             let _ = writeln!(out, "{}", art_not_fetched(self.name));
         }
@@ -239,7 +247,7 @@ impl Ended<'_> {
         &self,
         step: Stepped<anyhow::Result<ExitCode>>,
         cancellation: &mut Option<Cancellation>,
-        out: &mut dyn Write,
+        (out, err): (&mut dyn Write, &mut dyn Write),
         downloaded: &Cell<bool>,
     ) -> anyhow::Result<ExitCode> {
         let (paths, name) = (self.paths, self.name);
@@ -292,8 +300,8 @@ impl Ended<'_> {
                         key,
                         &request,
                         picked,
-                        out,
-                        &mut crate::output::stderr(),
+                        self.identity,
+                        (out, err),
                     );
                     downloaded.set(true);
                 }
@@ -345,6 +353,8 @@ struct WineHooks<'a> {
     /// Listens for Ctrl+C until the config is saved.
     cancellation: Option<Cancellation>,
     install_token: Token,
+    /// The environment as created, read while the create lock is held.
+    identity: Option<EnvironmentIdentity>,
 }
 
 impl Hooks for WineHooks<'_> {
@@ -413,6 +423,7 @@ impl Hooks for WineHooks<'_> {
             }
             return Err(Ok(ExitCode::FAILURE));
         }
+        self.identity = EnvironmentIdentity::read(self.paths, name);
         Ok(())
     }
 
@@ -571,7 +582,15 @@ fn new_native(
     }
     desktop::reconcile_native(paths, &global, &environment)?;
     if let Some(access) = art
-        && fetch_art(paths, &global, name, access, &mut crate::output::stdout()).is_err()
+        && fetch_art(
+            paths,
+            &global,
+            name,
+            access,
+            &mut crate::output::stdout(),
+            &mut crate::output::stderr(),
+        )
+        .is_err()
     {
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
         return Ok(cancel::exit_code());
@@ -644,6 +663,7 @@ fn fetch_art(
     name: &str,
     access: &Access<'_>,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<(), Canceled> {
     let Some(key) = art_key(global, access) else {
         return Ok(());
@@ -658,7 +678,7 @@ fn fetch_art(
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(out),
     };
-    access.fetch(paths, &key, &request, pick, &mut crate::output::stderr())
+    access.fetch(paths, &key, &request, pick, err)
 }
 
 /// The key to fetch art with, or None after saying why there is no art.
@@ -691,6 +711,7 @@ fn pick_art(
     name: &str,
     access: &Access<'_>,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> anyhow::Result<Option<(Key, Picked)>> {
     let global = GlobalConfig::load(paths)?;
     let Some(key) = art_key(&global, access) else {
@@ -706,7 +727,7 @@ fn pick_art(
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(out),
     };
-    let picked = access.pick(&key, &request, pick, &mut crate::output::stderr())?;
+    let picked = access.pick(&key, &request, pick, err)?;
     Ok(picked.map(|picked| (key, picked)))
 }
 
@@ -813,6 +834,8 @@ mod tests {
         code: anyhow::Result<ExitCode>,
         /// What went to stdout for the art.
         out: String,
+        /// What went to stderr for the art.
+        err: String,
         seen: Rc<RefCell<Vec<Seen>>>,
     }
 
@@ -892,7 +915,8 @@ mod tests {
         };
         before(root.path());
         let mut out = Vec::new();
-        let code = new_wine(&paths, args, "hades", &access, token, &mut out);
+        let mut err = Vec::new();
+        let code = new_wine(&paths, args, "hades", &access, token, &mut out, &mut err);
         drop(access);
         Run {
             _root: root,
@@ -900,6 +924,7 @@ mod tests {
             code,
             seen,
             out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
         }
     }
 
@@ -1093,7 +1118,7 @@ mod tests {
             }),
         };
         let mut out = Vec::new();
-        let picked = pick_art(&paths, "hades", &access, &mut out)
+        let picked = pick_art(&paths, "hades", &access, &mut out, &mut Vec::new())
             .unwrap()
             .expect("a game is picked");
         // Only the download counts below, so the pick's own line goes.
@@ -1105,8 +1130,11 @@ mod tests {
             prefix: root.path(),
             kinds: ArtFetch::default(),
             picked: Some(&picked),
+            identity: EnvironmentIdentity::read(&paths, "hades"),
         };
-        let code = ended.report(step, &mut None, &mut out).unwrap();
+        let code = ended
+            .report(step, &mut None, &mut out, &mut Vec::new())
+            .unwrap();
         let requests = seen.borrow().len() - before;
         (code, String::from_utf8(out).unwrap(), requests)
     }
@@ -1121,6 +1149,35 @@ mod tests {
         assert_eq!(code, expected);
         assert_eq!(out, NOT_FETCHED);
         assert_eq!(requests, 0);
+    }
+
+    #[test]
+    fn art_is_not_stored_in_an_environment_replaced_during_the_installer() {
+        // The installer swaps the config for a copy, as removing the
+        // environment and creating another of the same name would.
+        let wine = |root: &Path| {
+            let config = paths(root).environment_config("hades");
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n*game.exe*) cp '{0}' '{0}.new' && mv '{0}.new' '{0}' ;;\nesac\nexit 0\n",
+                config.display()
+            )
+        };
+        let run = new_with(hades(), true, "test-wine", &wine, &Token::new(), &|_| {});
+        assert_eq!(run.code.as_ref().unwrap(), &ExitCode::SUCCESS);
+        assert_eq!(
+            run.err,
+            "warning: art fetch failed: environment `hades` changed before artwork could be written\n"
+        );
+        assert_eq!(run.out, TOP_PICK);
+        assert!(!run.paths.art_dir("hades").join("icon.png").exists());
+        assert!(!run.out.contains("Art not fetched"));
+    }
+
+    #[test]
+    fn an_unchanged_environment_gets_its_art_after_the_installer() {
+        let run = new_with_art(hades(), true);
+        assert_eq!(run.err, "");
+        assert!(run.paths.art_dir("hades").join("icon.png").exists());
     }
 
     #[test]
