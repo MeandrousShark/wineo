@@ -1088,14 +1088,16 @@ written. A search that's already under way finishes first, which takes at
 most 10 seconds. The desktop entry is refreshed afterward so its icon uses
 the new art. Closing the window during the fetch doesn't ask, and stops it.
 A failed fetch shows on the finished page with **Retry artwork** and **Skip
-artwork**. The finished page's **Choose artwork...** opens the new card's
+artwork**; if the environment was replaced meanwhile, only **Skip artwork**
+is offered, since a retry would meet the same thing. The finished page's **Choose artwork...** opens the new card's
 Art page, without launching it.
 
 Import prefix works the same way: the same checkbox and notes on Details,
 and the fetch runs once the import is registered, searching for the Name as
 typed, with **Skip**. The import refreshes the desktop entry either way. If
 the fetch or the entry fails, the page says which, with **Retry artwork**
-and **Skip artwork**; Retry fetches again only if the fetch itself failed.
+and **Skip artwork**; Retry fetches again only if the fetch itself failed,
+and isn't offered when the environment was replaced meanwhile.
 The finished page lists what the fetch couldn't find and offers **Choose
 artwork...** beside **Set up targets**; local art files go through the Art
 page's **Browse...**.
@@ -1108,7 +1110,8 @@ the global **Art to fetch** switches: after you search and choose a match,
 each enabled kind downloads right away and appears in its tile, and the
 import stores those images without downloading them again. Local files can
 be mixed with fetched art, and the local choice wins for that kind. If
-artwork fails after registration, retry or skip it.
+artwork fails after registration, retry or skip it; if the environment was
+replaced meanwhile, only skipping is offered.
 
 Windows creation keeps runner, architecture, and prefix overrides under
 **Additional wine options**. The architecture list starts with **Use
