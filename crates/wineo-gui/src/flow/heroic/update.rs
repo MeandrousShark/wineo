@@ -1,6 +1,7 @@
 //! The Heroic page's event handling.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use iced::Task;
 use wineo_core::components::Component;
@@ -10,6 +11,7 @@ use wineo_core::heroic::{HeroicListing, HeroicSource};
 use wineo_core::heroic_import::{self, RunnerSuggestion};
 
 use crate::flow::{Action, artwork};
+use crate::task;
 
 use super::{
     BatchOptions, Draft, Event, Page, Prepared, Prerequisite, Refreshed, Review, ScopeDraft, Step,
@@ -55,6 +57,11 @@ impl Page {
                 Task::none()
             }
             Event::OpenSourcePath if self.step == Step::Sources => self.open_source_path(),
+            Event::FolderResolved(sequence, path, matched)
+                if sequence == self.picker_sequence && self.step == Step::Sources =>
+            {
+                self.folder_resolved(path, matched)
+            }
             Event::OpenExisting(name) => {
                 self.action = Some(Action::Settings {
                     name,
@@ -72,10 +79,7 @@ impl Page {
             Event::PickedSource(sequence, Ok(Some(path)))
                 if sequence == self.picker_sequence && self.step == Step::Sources =>
             {
-                let source = HeroicSource::from_config_dir(path);
-                self.sources.push(source.clone());
-                self.source = Some(self.sources.len() - 1);
-                self.list(source)
+                self.open_folder(path)
             }
             Event::PickedSource(sequence, Err(error))
                 if sequence == self.picker_sequence && self.step == Step::Sources =>
@@ -385,16 +389,74 @@ impl Page {
             return Task::none();
         }
         match self.paths.absolute(&self.source_path) {
-            Ok(path) => {
-                let source = HeroicSource::from_config_dir(path);
-                self.sources.push(source.clone());
-                self.source = Some(self.sources.len() - 1);
-                self.list(source)
-            }
+            Ok(path) => self.open_folder(path),
             Err(error) => {
                 self.error = Some(error.to_string());
                 Task::none()
             }
+        }
+    }
+
+    /// Opens a typed or picked config folder. One that is already listed
+    /// opens its row, so the list never shows a folder twice and focus
+    /// lookups by row id stay unambiguous.
+    ///
+    /// A folder that differs only in spelling from a listed one (a symlink,
+    /// `..`) needs the disk to tell, and a hung mount would freeze the
+    /// window, so that check runs on the blocking pool. Until it answers the
+    /// page stays as it is, like while the folder picker is open, and any
+    /// other input drops the answer through the picker sequence.
+    fn open_folder(&mut self, path: PathBuf) -> Task<Event> {
+        if let Some(index) = self.listed_source(&path) {
+            return self.open_listed(index);
+        }
+        if self.sources.is_empty() {
+            return self.add_folder(path);
+        }
+        let sequence = self.next_picker();
+        let listed: Vec<PathBuf> = self
+            .sources
+            .iter()
+            .map(|source| source.config_dir().to_owned())
+            .collect();
+        let target = path.clone();
+        task::blocking_value(
+            move || same_folder(&target, &listed),
+            move |result| Event::FolderResolved(sequence, path, result.ok().flatten()),
+        )
+    }
+
+    /// The row whose config folder is spelled like `path`. Paths match by
+    /// components, so a trailing slash or `.` doesn't matter, and `~` is
+    /// already expanded by the caller. This never touches the disk.
+    fn listed_source(&self, path: &Path) -> Option<usize> {
+        self.sources
+            .iter()
+            .position(|source| source.config_dir() == path)
+    }
+
+    fn open_listed(&mut self, index: usize) -> Task<Event> {
+        self.source = Some(index);
+        let source = self.sources[index].clone();
+        self.list(source)
+    }
+
+    fn add_folder(&mut self, path: PathBuf) -> Task<Event> {
+        let source = HeroicSource::from_config_dir(path);
+        self.sources.push(source.clone());
+        self.source = Some(self.sources.len() - 1);
+        self.list(source)
+    }
+
+    /// The answer to `open_folder`'s disk check. The matched folder is looked
+    /// up again, since discovery may have replaced the list meanwhile.
+    fn folder_resolved(&mut self, path: PathBuf, matched: Option<PathBuf>) -> Task<Event> {
+        let index = matched
+            .and_then(|dir| self.listed_source(&dir))
+            .or_else(|| self.listed_source(&path));
+        match index {
+            Some(index) => self.open_listed(index),
+            None => self.add_folder(path),
         }
     }
 
@@ -535,4 +597,14 @@ impl Page {
         };
         self.prerequisite(Prerequisite::Download(provider, version))
     }
+}
+
+/// The listed folder that is the same directory as `path` once links and
+/// `..` are resolved. A folder that can't be resolved matches nothing.
+fn same_folder(path: &Path, listed: &[PathBuf]) -> Option<PathBuf> {
+    let resolved = path.canonicalize().ok()?;
+    listed
+        .iter()
+        .find(|dir| dir.canonicalize().is_ok_and(|dir| dir == resolved))
+        .cloned()
 }

@@ -1867,16 +1867,19 @@ fn ctrl_enter(app: &mut crate::App, tree: Tree) {
     let key = Key::Named(Named::Enter);
     let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
     let (published, status) = press_key(&mut laid, key.clone(), Modifiers::CTRL);
-    let tree = laid.into_tree();
+    let mut tree = laid.into_tree();
     for message in published {
         let _ = app.update(message);
     }
     let task = app.update(crate::Message::Key(key, Modifiers::CTRL, status));
-    let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
-    let sent = crate::more_menu::tests::drive(&mut laid, task);
-    drop(laid);
-    for message in sent {
-        let _ = app.update(message);
+    // Opening a folder that isn't listed answers after a disk check, so what
+    // the task sends can start a task of its own. Two rounds reach it.
+    let mut task = task;
+    for _ in 0..2 {
+        let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
+        let sent = crate::more_menu::tests::drive(&mut laid, task);
+        tree = laid.into_tree();
+        task = iced::Task::batch(sent.into_iter().map(|message| app.update(message)));
     }
 }
 
@@ -1988,6 +1991,304 @@ fn a_late_source_answer_after_leaving_sources_does_nothing() {
     assert_eq!(page.source, None);
     assert_eq!(page.sources.len(), 2, "the typed path was not opened");
     assert!(page.listing.is_some(), "the games were not read again");
+}
+
+/// The Sources page with the discovered `found` sources listed.
+fn listed_sources(root: &std::path::Path) -> Page {
+    let (mut page, _) = Page::new(paths(root));
+    page.step = Step::Sources;
+    page.sources = found(root);
+    page.status.clear();
+    page
+}
+
+#[test]
+fn a_typed_folder_that_is_already_listed_opens_its_row() {
+    let root = tempdir().unwrap();
+    for typed in [
+        root.path().join("flatpak-heroic").display().to_string(),
+        format!("{}/", root.path().join("flatpak-heroic").display()),
+    ] {
+        let mut page = listed_sources(root.path());
+        let _ = page.update(Event::SourcePath(typed.clone()));
+        let _ = page.update(Event::OpenSourcePath);
+        assert_eq!(page.step, Step::Games, "{typed}");
+        assert_eq!(page.source, Some(1), "{typed}");
+        assert_eq!(page.sources.len(), 2, "{typed}");
+    }
+}
+
+#[test]
+fn a_picked_folder_that_is_already_listed_opens_its_row() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::PickedSource(
+        page.picker_sequence,
+        Ok(Some(root.path().join("heroic"))),
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2);
+}
+
+/// Runs `task` to its end on the blocking pool as the runtime would, and
+/// returns what it sent.
+fn sent(task: iced::Task<Event>) -> Vec<Event> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut events = Vec::new();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_secs(5), stream.next()).await
+        {
+            if let iced_runtime::Action::Output(event) = action {
+                events.push(event);
+            }
+        }
+    });
+    events
+}
+
+/// Opens the typed `path` and hands the page what the task sends back.
+fn open_typed(page: &mut Page, path: &std::path::Path) -> Vec<Event> {
+    let _ = page.update(Event::SourcePath(path.display().to_string()));
+    let events = sent(page.update(Event::OpenSourcePath));
+    for event in events.clone() {
+        let _ = page.update(event);
+    }
+    events
+}
+
+fn resolved(events: &[Event]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, Event::FolderResolved(..)))
+}
+
+#[test]
+fn a_symlink_to_a_listed_folder_opens_its_row() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("heroic")).unwrap();
+    std::os::unix::fs::symlink(root.path().join("heroic"), root.path().join("link")).unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(
+        root.path().join("link").display().to_string(),
+    ));
+    let task = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Sources, "it waits for the disk check");
+    for event in sent(task) {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2);
+}
+
+#[test]
+fn a_dotdot_path_to_a_listed_folder_opens_its_row() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("heroic")).unwrap();
+    fs::create_dir(root.path().join("flatpak-heroic")).unwrap();
+    let mut page = listed_sources(root.path());
+    open_typed(
+        &mut page,
+        &root.path().join("flatpak-heroic").join("..").join("heroic"),
+    );
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2);
+}
+
+#[test]
+fn a_home_relative_path_to_a_listed_folder_opens_its_row() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath("~/flatpak-heroic".to_owned()));
+    let task = page.update(Event::OpenSourcePath);
+    // The folders don't exist, so only a spelling match can open it.
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(1));
+    assert_eq!(page.sources.len(), 2);
+    assert!(!resolved(&sent(task)));
+}
+
+#[test]
+fn a_matching_spelling_opens_without_the_disk_check() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(
+        root.path().join("heroic").display().to_string(),
+    ));
+    let task = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Games, "it opened at once");
+    assert!(!resolved(&sent(task)));
+
+    let mut page = listed_sources(root.path());
+    let task = page.update(Event::PickedSource(
+        page.picker_sequence,
+        Ok(Some(root.path().join("flatpak-heroic"))),
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert!(!resolved(&sent(task)));
+
+    // With nothing listed there is nothing to compare, so it adds at once.
+    let (mut page, _) = Page::new(paths(root.path()));
+    page.step = Step::Sources;
+    let _ = page.update(Event::SourcePath(
+        root.path().join("elsewhere").display().to_string(),
+    ));
+    let task = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.sources.len(), 1);
+    assert!(!resolved(&sent(task)));
+}
+
+#[test]
+fn an_answer_that_is_stale_or_late_does_nothing() {
+    let root = tempdir().unwrap();
+    let new = root.path().join("elsewhere");
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(new.display().to_string()));
+    let events = sent(page.update(Event::OpenSourcePath));
+    assert!(resolved(&events));
+    // Typing again, like any other input, drops the pending answer.
+    let _ = page.update(Event::SourcePath(String::new()));
+    for event in events.clone() {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.step, Step::Sources);
+    assert_eq!(page.sources.len(), 2);
+
+    // An answer that is current but arrives after leaving Sources does
+    // nothing either.
+    let _ = page.update(Event::SourcePath(new.display().to_string()));
+    let events = sent(page.update(Event::OpenSourcePath));
+    page.step = Step::Games;
+    for event in events {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.sources.len(), 2);
+    assert_eq!(page.source, None);
+}
+
+#[test]
+fn an_answer_matching_a_folder_no_longer_listed_adds_the_typed_one_once() {
+    let root = tempdir().unwrap();
+    let new = root.path().join("elsewhere");
+    let mut page = listed_sources(root.path());
+    // Discovery replaced the list after the check started, so the folder it
+    // matched is gone.
+    let _ = page.update(Event::FolderResolved(
+        page.picker_sequence,
+        new.clone(),
+        Some(root.path().join("gone")),
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.sources[2].config_dir(), new);
+}
+
+#[test]
+fn an_answer_with_no_match_opens_the_row_the_typed_folder_now_matches() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    // The check found nothing, but the list now holds the typed spelling.
+    let _ = page.update(Event::FolderResolved(
+        page.picker_sequence,
+        root.path().join("flatpak-heroic"),
+        None,
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(1));
+    assert_eq!(page.sources.len(), 2, "nothing was added");
+}
+
+fn heroic_mut(app: &mut crate::App) -> &mut Page {
+    match &mut app.flow {
+        Some(crate::flow::Page::Heroic(page)) => page,
+        _ => panic!("expected the Heroic page"),
+    }
+}
+
+/// The ids focused after Back from the games to the sources.
+fn focused_after_back(app: &mut crate::App) -> Vec<iced::widget::Id> {
+    assert_eq!(heroic_page(app).step, Step::Games);
+    let task = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::Back,
+    ));
+    assert_eq!(heroic_page(app).step, Step::Sources);
+    crate::focus_button::landed(app, task).focused()
+}
+
+#[test]
+fn back_lands_on_the_source_that_opened_the_games() {
+    let root = tempdir().unwrap();
+    let row = |dir: &str| iced::widget::Id::from(format!("heroic-source:{dir}"));
+    let heroic = |name: &str| root.path().join(name).display().to_string();
+
+    // First visit: the first row.
+    let (app, tree) = sources_page(root.path(), found(root.path()));
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, iced::Size::new(1200.0, 800.0));
+    assert_eq!(laid.focused(), [row(&heroic("heroic"))]);
+
+    // A click on the second row.
+    let (mut app, _) = sources_page(root.path(), found(root.path()));
+    let _ = heroic_mut(&mut app).update(Event::Source(1));
+    assert_eq!(
+        focused_after_back(&mut app),
+        [row(&heroic("flatpak-heroic"))],
+        "click"
+    );
+
+    // A typed path that is listed.
+    let (mut app, _) = sources_page(root.path(), found(root.path()));
+    open_typed(heroic_mut(&mut app), &root.path().join("flatpak-heroic"));
+    assert_eq!(
+        focused_after_back(&mut app),
+        [row(&heroic("flatpak-heroic"))],
+        "typed path"
+    );
+
+    // A folder added by typing it.
+    let (mut app, _) = sources_page(root.path(), found(root.path()));
+    open_typed(heroic_mut(&mut app), &root.path().join("elsewhere"));
+    assert_eq!(
+        focused_after_back(&mut app),
+        [row(&heroic("elsewhere"))],
+        "new folder"
+    );
+}
+
+#[test]
+fn a_new_folder_is_still_added() {
+    let root = tempdir().unwrap();
+    let new = root.path().join("elsewhere");
+    let mut page = listed_sources(root.path());
+    open_typed(&mut page, &new);
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.sources[2].config_dir(), new);
+    assert_eq!(page.step, Step::Games);
+
+    let mut page = listed_sources(root.path());
+    let task = page.update(Event::PickedSource(
+        page.picker_sequence,
+        Ok(Some(new.clone())),
+    ));
+    for event in sent(task) {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.step, Step::Games);
 }
 
 #[test]

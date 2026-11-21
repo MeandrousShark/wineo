@@ -249,6 +249,9 @@ pub(crate) enum Event {
     OpenExisting(String),
     BrowseSource,
     PickedSource(u64, Result<Option<PathBuf>, String>),
+    /// A typed or picked folder checked against the listed ones on disk: the
+    /// folder, and the listed folder it is the same as, if any.
+    FolderResolved(u64, PathBuf, Option<PathBuf>),
     SourcesLoaded(u64, Result<Vec<HeroicSource>, String>),
     Listed(
         u64,
@@ -404,7 +407,11 @@ impl Page {
         (self.step == Step::Sources).then(|| ListRows {
             list: SOURCE_LIST,
             ids: self.sources.iter().map(source_id).collect(),
-            focus: None,
+            // The row that opened the games, when coming back to the list.
+            focus: self
+                .source
+                .and_then(|index| self.sources.get(index))
+                .map(source_id),
         })
     }
 

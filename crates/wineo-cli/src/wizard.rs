@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
-use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped};
 use wineo_core::environment::Environment;
 use wineo_core::error::Error;
@@ -28,7 +28,7 @@ use wineo_core::templates::{NEWEST_PROTON, Template, Templates};
 use wineo_core::winpath;
 
 use crate::cancel;
-use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick};
+use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick, Picked};
 use crate::commands::setup::{self, Ran};
 use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop, external_runners};
@@ -334,6 +334,7 @@ pub fn run<I: Input, W: Write>(
             template,
             how,
             art,
+            kinds: global.art.fetch,
         },
     )
 }
@@ -1016,6 +1017,7 @@ struct Creating {
     how: How,
     /// The key and search term when art is to be fetched.
     art: Option<(Key, String)>,
+    kinds: ArtFetch,
 }
 
 fn review<I: Input, W: Write>(
@@ -1174,6 +1176,7 @@ fn create<I: Input, W: Write>(
         template,
         how,
         art,
+        kinds,
     } = creating;
     let shown = paths
         .contract(&dir)
@@ -1188,14 +1191,29 @@ fn create<I: Input, W: Write>(
         }),
         How::Existing(_) | How::Nothing => None,
     };
+    // With an installer, the questions come now, before the create lock and
+    // the installer's wait, and the download once the installer has ended.
+    // Without one the whole fetch comes once the environment is unlocked.
+    let picked = match (&art, &how) {
+        (Some((key, term)), How::Installer(_)) => access
+            .pick(
+                key,
+                &AutoFetch {
+                    env: &name,
+                    term,
+                    kinds,
+                },
+                Pick::Ask(&mut *prompt),
+                &mut crate::output::stderr(),
+            )?
+            .map(|picked| (key, picked)),
+        _ => None,
+    };
     let mut hooks = WizardHooks {
-        paths,
         prompt,
         guided,
-        access,
         name: &name,
         shown: &shown,
-        art: art.as_ref(),
         cancellation: Some(Cancellation::new()?),
         install_token: install_token.clone(),
     };
@@ -1241,6 +1259,11 @@ fn create<I: Input, W: Write>(
         ..
     } = created;
     let global = &global;
+    if let (Some((key, term)), How::Existing(_) | How::Nothing) = (&art, &how) {
+        // The create lock is released, so a slow SteamGridDB only holds up
+        // this command.
+        fetch_art(paths, global, prompt, access, &name, key, term)?;
+    }
 
     let place = Place {
         paths,
@@ -1251,31 +1274,35 @@ fn create<I: Input, W: Write>(
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     match (how, step) {
-        (_, Stepped::Stopped(err)) => return Err(err),
+        (_, Stepped::Stopped(err)) => {
+            art_not_fetched(prompt, &name, picked.is_some())?;
+            return Err(err);
+        }
         (How::Nothing, _) => {
             return setup::finish(paths, global, &name, prompt, &batch);
         }
         (How::Installer(_), Stepped::NotPrepared(err)) => {
             prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
             setup::report_recovery(paths, &name, prompt)?;
+            art_not_fetched(prompt, &name, picked.is_some())?;
             return Ok(ExitCode::FAILURE);
         }
         (How::Installer(_), Stepped::Ran { outcome, resolved }) => {
-            // Those were the installer's to act on, not a request to leave setup.
-            prompt.input().forget_interrupts();
-            let ran = match (&outcome, create::after_install(&outcome, resolved)) {
-                // Unlike `setup`'s own install, a failing exit still goes on to
-                // what got installed, since the environment is new.
-                (Ok(Outcome::Finished { exit_code }), AfterInstall::Programs)
-                    if *exit_code != Some(0) =>
-                {
-                    setup::report_failed_exit(paths, &name, prompt, *exit_code)?;
-                    Ran::Finished
-                }
-                _ => setup::report_installer(paths, &name, prompt, outcome)?,
-            };
-            drop(install_cancellation);
-            match ran {
+            let art = picked.as_ref().map(|(key, picked)| ArtAfter {
+                access,
+                key,
+                picked,
+                kinds: global.art.fetch,
+            });
+            match installer_ended(
+                paths,
+                &name,
+                prompt,
+                outcome,
+                resolved,
+                install_cancellation,
+                art,
+            )? {
                 Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
                 Ran::Ended(code) => return Ok(code),
                 Ran::Back => unreachable!("an installer that ran never goes back"),
@@ -1302,15 +1329,79 @@ fn create<I: Input, W: Write>(
     }
 }
 
+/// The art picked before an installer ran, to download once it finished.
+struct ArtAfter<'a> {
+    access: &'a Access<'a>,
+    key: &'a Key,
+    picked: &'a Picked,
+    kinds: ArtFetch,
+}
+
+/// Reports how the installer ended, downloading the art picked for it only
+/// when it finished and saying so when it didn't. `cancellation` was
+/// listening for the installer's Ctrl+C and is let go after the report.
+fn installer_ended<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    outcome: wineo_core::Result<Outcome>,
+    resolved: bool,
+    cancellation: Option<Cancellation>,
+    art: Option<ArtAfter>,
+) -> anyhow::Result<Ran> {
+    // Those were the installer's to act on, not a request to leave setup.
+    prompt.input().forget_interrupts();
+    let ran = match (&outcome, create::after_install(&outcome, resolved)) {
+        // Unlike `setup`'s own install, a failing exit still goes on to
+        // what got installed, since the environment is new.
+        (Ok(Outcome::Finished { exit_code }), AfterInstall::Programs) if *exit_code != Some(0) => {
+            setup::report_failed_exit(paths, name, prompt, *exit_code)?;
+            Ran::Finished
+        }
+        _ => setup::report_installer(paths, name, prompt, outcome)?,
+    };
+    drop(cancellation);
+    match (&ran, art) {
+        (Ran::Finished, Some(art)) => {
+            let request = AutoFetch {
+                env: name,
+                term: name,
+                kinds: art.kinds,
+            };
+            art.access.fetch_picked(
+                paths,
+                art.key,
+                &request,
+                art.picked,
+                prompt.writer(),
+                &mut crate::output::stderr(),
+            );
+        }
+        (Ran::Finished, None) => {}
+        (_, art) => art_not_fetched(prompt, name, art.is_some())?,
+    }
+    Ok(ran)
+}
+
+/// Says a game picked before the installer got no art, because the installer
+/// didn't finish.
+fn art_not_fetched<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    name: &str,
+    picked: bool,
+) -> anyhow::Result<()> {
+    if picked {
+        prompt.say(crate::commands::new::art_not_fetched(name))?;
+    }
+    Ok(())
+}
+
 /// The guided side of creating a Wine environment, and of its installer.
 struct WizardHooks<'a, I: Input, W: Write> {
-    paths: &'a Paths,
     prompt: &'a mut Prompt<I, W>,
     guided: &'a mut Guided,
-    access: &'a Access<'a>,
     name: &'a str,
     shown: &'a str,
-    art: Option<&'a (Key, String)>,
     /// Listens for Ctrl+C while creating until the config is saved, then
     /// again while the installer runs.
     cancellation: Option<Cancellation>,
@@ -1354,22 +1445,6 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
             }
             CreateEvent::TemplateComponentsOmitted { .. } => {}
         }
-    }
-
-    fn created(&mut self, created: &create::Created) -> anyhow::Result<()> {
-        // Before the installer, so every question is answered before the wait.
-        if let Some((key, term)) = self.art {
-            fetch_art(
-                self.paths,
-                &created.global,
-                self.prompt,
-                self.access,
-                self.name,
-                key,
-                term,
-            )?;
-        }
-        Ok(())
     }
 
     fn ready(&mut self, _launch: &Launch) -> anyhow::Result<()> {
