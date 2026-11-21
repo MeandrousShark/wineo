@@ -706,6 +706,18 @@ fn coverflow_fullscreen_is_a_known_view_key_and_a_bad_value_is_reported() {
 }
 
 #[test]
+fn advanced_settings_is_a_known_view_key_and_a_bad_value_is_reported() {
+    let inspection = inspect_text("[view]\nadvanced_settings = true\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[view]\nadvanced_settings = \"yes\"\n");
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: view.advanced_settings: expected true or false, found \"yes\""]
+    );
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+}
+
+#[test]
 fn a_clean_input_table_has_no_findings() {
     let inspection = inspect_text("[input]\ncontroller = false\n");
     assert_eq!(inspection.findings, []);
