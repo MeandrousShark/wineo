@@ -1,4 +1,4 @@
-//! The Controller section's remap rows: picking a button for an action,
+//! The Controller tab's remap rows: picking a button for an action,
 //! swaps, Reset, the capture's cancels, and hand-edited files.
 
 use std::time::{Duration, Instant};
@@ -33,6 +33,13 @@ fn write_library(paths: &Paths, text: &str) {
     fs::write(paths.library_file(), text).unwrap();
 }
 
+/// The global page on the Controller tab, where the remap rows are.
+fn controller_page(paths: &Paths) -> Page {
+    let mut page = global_page(paths);
+    let _ = page.update(paths, Event::Tab(Tab::Controller));
+    page
+}
+
 fn capture(page: &mut Page, action: PadAction) {
     page.toggle_capture(action, Instant::now() + CAPTURE_FOR);
     assert_eq!(page.capturing(), Some(action));
@@ -41,7 +48,7 @@ fn capture(page: &mut Page, action: PadAction) {
 #[test]
 fn a_free_button_moves_the_action_and_saving_writes_only_that() {
     let (_root, paths) = setup();
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     capture(&mut page, PadAction::Favorite);
     assert!(page.take_capture(PadButton::Rs));
     assert_eq!(page.capturing(), None);
@@ -54,7 +61,7 @@ fn a_free_button_moves_the_action_and_saving_writes_only_that() {
         "schema_version = 1\n\n[input.buttons]\nfavorite = \"rs\"\n"
     );
     // No capture waiting, a press changes nothing.
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     assert!(!page.take_capture(PadButton::A));
     assert!(!page.is_dirty());
 }
@@ -62,7 +69,7 @@ fn a_free_button_moves_the_action_and_saving_writes_only_that() {
 #[test]
 fn a_button_in_use_swaps_the_two_actions() {
     let (_root, paths) = setup();
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     form(&mut page).assign(PadAction::Favorite, PadButton::A);
     assert_eq!(button(&page, PadAction::Favorite), Some(PadButton::A));
     assert_eq!(button(&page, PadAction::Confirm), Some(PadButton::Y));
@@ -84,7 +91,7 @@ fn a_button_in_use_swaps_the_two_actions() {
 fn back_and_any_other_button_can_be_picked_for_an_action() {
     // The capture takes whatever is pressed, B included.
     let (_root, paths) = setup();
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     capture(&mut page, PadAction::Confirm);
     assert!(page.take_capture(PadButton::B));
     assert_eq!(button(&page, PadAction::Confirm), Some(PadButton::B));
@@ -98,7 +105,7 @@ fn reset_puts_every_action_back_and_saving_drops_the_table() {
         &paths,
         "schema_version = 1\n\n[input.buttons]\nfavorite = \"rs\"\nconfirm = \"x\"\n",
     );
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     assert_eq!(button(&page, PadAction::Favorite), Some(PadButton::Rs));
     let _ = page.update(&paths, Event::ResetButtons);
     for action in PadAction::ALL {
@@ -121,7 +128,7 @@ fn a_hand_edited_duplicate_shows_unbound_and_a_pick_fixes_it() {
         &paths,
         "schema_version = 1\n\n[input.buttons]\nconfirm = \"y\"\nfavorite = \"y\"\n",
     );
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     assert_eq!(button(&page, PadAction::Confirm), Some(PadButton::Y));
     assert_eq!(button(&page, PadAction::Favorite), None);
     let texts = page_texts(&page, &paths);
@@ -151,7 +158,7 @@ fn unknown_actions_and_buttons_read_as_unset() {
         &paths,
         "schema_version = 1\n\n[input.buttons]\nteleport = \"a\"\nfavorite = \"zz\"\nmark = \"rs\"\n",
     );
-    let page = global_page(&paths);
+    let page = controller_page(&paths);
     assert_eq!(button(&page, PadAction::Favorite), Some(PadButton::Y));
     assert_eq!(button(&page, PadAction::Mark), Some(PadButton::Rs));
     assert!(
@@ -165,7 +172,7 @@ fn unknown_actions_and_buttons_read_as_unset() {
 #[test]
 fn the_rows_show_each_action_its_button_and_the_waiting_one() {
     let (_root, paths) = setup();
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     let texts = page_texts(&page, &paths);
     for action in PadAction::ALL {
         assert!(
@@ -191,7 +198,7 @@ fn the_rows_show_each_action_its_button_and_the_waiting_one() {
 #[test]
 fn the_same_row_again_stops_waiting_and_a_locked_page_never_waits() {
     let (_root, paths) = setup();
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     capture(&mut page, PadAction::Mark);
     page.toggle_capture(PadAction::Mark, Instant::now() + Duration::from_secs(5));
     assert_eq!(page.capturing(), None);
@@ -199,15 +206,22 @@ fn the_same_row_again_stops_waiting_and_a_locked_page_never_waits() {
     capture(&mut page, PadAction::Mark);
     capture(&mut page, PadAction::Random);
 
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     page.saving = true;
     page.toggle_capture(PadAction::Mark, Instant::now() + CAPTURE_FOR);
     assert_eq!(page.capturing(), None);
 
-    let mut page = global_page(&paths);
-    let _ = page.update(&paths, Event::Tab(Tab::Appearance));
-    page.toggle_capture(PadAction::Mark, Instant::now() + CAPTURE_FOR);
-    assert_eq!(page.capturing(), None);
+    // Only the Controller tab has the rows.
+    for tab in Tab::ALL.into_iter().filter(|tab| *tab != Tab::Controller) {
+        let mut page = controller_page(&paths);
+        if tab == Tab::Advanced {
+            let _ = show_advanced(&mut page, &paths);
+        } else {
+            let _ = page.update(&paths, Event::Tab(tab));
+        }
+        page.toggle_capture(PadAction::Mark, Instant::now() + CAPTURE_FOR);
+        assert_eq!(page.capturing(), None, "{tab:?}");
+    }
 }
 
 #[test]
@@ -227,27 +241,41 @@ fn anything_the_user_does_on_the_page_ends_the_wait() {
         Event::MenuOpened,
     ];
     for event in cancels {
-        let mut page = global_page(&paths);
+        let mut page = controller_page(&paths);
         capture(&mut page, PadAction::Favorite);
         let name = format!("{event:?}");
         let _ = page.update(&paths, event);
         assert_eq!(page.capturing(), None, "{name}");
     }
     // A background answer leaves it waiting.
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     capture(&mut page, PadAction::Favorite);
     let sequence = start_check(&mut page);
     let _ = page.update(
         &paths,
         Event::Checked(1, sequence, load::Texts::read_global(&paths)),
     );
-    let _ = page.update(&paths, Event::Scrolled(Tab::General, 40.0));
+    let _ = page.update(&paths, Event::Scrolled(Tab::Controller, 40.0));
     // A GOG answer that came back on its own, too.
     let _ = page.update(
         &paths,
         Event::Gog(gog::Event::StatusLoaded(1, 0, Ok(gog::Status::LoggedOut))),
     );
     assert_eq!(page.capturing(), Some(PadAction::Favorite));
+    // And where a key row is, which only scrolls.
+    let bounds = crate::grid_motion::CardBounds {
+        card: iced::Rectangle::default(),
+        viewport: iced::Rectangle::default(),
+        offset: iced::Vector::ZERO,
+    };
+    for event in [
+        Event::SteamKeyLocated(1, bounds),
+        Event::SteamGridDbKeyLocated(1, bounds),
+    ] {
+        let name = format!("{event:?}");
+        let _ = page.update(&paths, event);
+        assert_eq!(page.capturing(), Some(PadAction::Favorite), "{name}");
+    }
 }
 
 #[test]
@@ -258,7 +286,7 @@ fn the_holder_of_a_picked_button_takes_its_own_default_when_free() {
         &paths,
         "schema_version = 1\n\n[input.buttons]\nconfirm = \"y\"\nfavorite = \"y\"\nmark = \"rs\"\n",
     );
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     assert_eq!(button(&page, PadAction::Favorite), None);
     form(&mut page).assign(PadAction::Favorite, PadButton::Rs);
     assert_eq!(button(&page, PadAction::Favorite), Some(PadButton::Rs));
@@ -273,7 +301,7 @@ fn a_hand_written_default_is_no_change_after_a_swap_back_or_reset() {
         &paths,
         "schema_version = 1\n\n[input.buttons]\nfavorite = \"y\"\n",
     );
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     assert!(!page.is_dirty());
     form(&mut page).assign(PadAction::Favorite, PadButton::A);
     assert_eq!(page.changes(), 1);
@@ -292,7 +320,7 @@ fn reset_keeps_keys_this_wineo_doesnt_know() {
         &paths,
         "schema_version = 1\n\n[input.buttons]\nteleport = \"a\"\nfavorite = \"rs\"\n",
     );
-    let mut page = global_page(&paths);
+    let mut page = controller_page(&paths);
     let _ = page.update(&paths, Event::ResetButtons);
     assert_eq!(page.changes(), 1);
     assert!(save(&paths, &page).failed.is_none());
@@ -335,6 +363,7 @@ mod app {
             generation,
             load::snapshot_global(paths),
         )));
+        let _ = app.update(Message::Settings(Event::Tab(Tab::Controller)));
         (app, start)
     }
 
@@ -446,6 +475,7 @@ mod app {
             generation,
             load::snapshot_global(&paths),
         )));
+        let _ = app.update(Message::Settings(Event::Tab(Tab::Controller)));
         let texts = page_texts(page(&app), &paths);
         assert!(texts.iter().any(|text| text == "L1"), "{texts:?}");
         assert!(!texts.iter().any(|text| text == "LB"));

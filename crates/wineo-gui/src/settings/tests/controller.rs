@@ -1,4 +1,4 @@
-//! The General tab's Controller section: the switch, saved to
+//! The Controller tab: the switch, saved to
 //! `library.toml`'s `[input]`, and the pads connected now.
 
 use super::*;
@@ -47,9 +47,10 @@ fn saving_with_the_switch_untouched_leaves_the_library_alone() {
 }
 
 #[test]
-fn the_section_lists_the_pads_or_says_none_was_found() {
+fn the_tab_lists_the_pads_or_says_none_was_found() {
     let (_root, paths) = setup();
     let mut page = global_page(&paths);
+    let _ = page.update(&paths, Event::Tab(Tab::Controller));
     let texts = page_texts(&page, &paths);
     assert!(texts.iter().any(|text| text == view::CONTROLLER_SWITCH));
     assert!(texts.iter().any(|text| text == view::NO_CONTROLLER));

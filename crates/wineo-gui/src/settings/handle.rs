@@ -11,6 +11,7 @@ use wineo_core::paths::Paths;
 
 use super::form::Form;
 use super::load::{Content, Current, RunnerChoice, Snapshot};
+use super::tabs::Tab;
 use super::{ChangedFile, Editor, Event, Mode, Page, Pending, Step, View, global, load, view};
 
 impl Page {
@@ -345,8 +346,11 @@ impl Page {
             Event::SteamKeyRemoved(generation, sequence, input_session, result) => {
                 self.steam_key_removed(paths, generation, sequence, input_session, result)
             }
-            Event::SteamKeyLocated(generation, bounds) => {
-                if generation != self.generation {
+            // A switch away before the answer lands leaves the new tab where
+            // it was.
+            Event::SteamKeyLocated(generation, bounds)
+            | Event::SteamGridDbKeyLocated(generation, bounds) => {
+                if generation != self.generation || self.tab != Tab::Stores {
                     return Step::none();
                 }
                 Step::task(view::scroll_to_row(bounds))

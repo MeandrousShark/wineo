@@ -18,15 +18,27 @@ pub(crate) enum Tab {
     #[default]
     General,
     Appearance,
+    Controller,
+    Stores,
+    Advanced,
 }
 
 impl Tab {
-    pub(crate) const ALL: [Self; 2] = [Self::General, Self::Appearance];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::General,
+        Self::Appearance,
+        Self::Controller,
+        Self::Stores,
+        Self::Advanced,
+    ];
 
-    fn index(self) -> usize {
+    pub(super) fn index(self) -> usize {
         match self {
             Self::General => 0,
             Self::Appearance => 1,
+            Self::Controller => 2,
+            Self::Stores => 3,
+            Self::Advanced => 4,
         }
     }
 
@@ -34,6 +46,9 @@ impl Tab {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Controller => "Controller",
+            Self::Stores => "Stores",
+            Self::Advanced => "Advanced",
         }
     }
 
@@ -41,6 +56,9 @@ impl Tab {
         match self {
             Self::General => "settings-tab-general",
             Self::Appearance => "settings-tab-appearance",
+            Self::Controller => "settings-tab-controller",
+            Self::Stores => "settings-tab-stores",
+            Self::Advanced => "settings-tab-advanced",
         }
     }
 }
@@ -78,7 +96,8 @@ impl Page {
 
 /// The tab buttons, each with a 2 px underline along its bottom edge that is
 /// primary on the selected tab and clear on the others, so nothing shifts
-/// when it moves.
+/// when it moves. They wrap onto more lines in a narrow window rather than
+/// cutting a label short.
 /// `active` is false while a prompt covers the page.
 pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'static, Message> {
     let mut tabs = row![].spacing(4);
@@ -86,17 +105,22 @@ pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'sta
     for tab in Tab::ALL {
         let on = tab == selected;
         let press = Message::Settings(Event::Tab(tab));
-        let label = button(text(tab.label()).size(14).center())
-            .height(BUTTON_HEIGHT)
-            .padding([0, 12])
-            .on_press(press.clone())
-            .style(move |_, status| {
-                let mut style = list_row_style(palette, status);
-                if !on && status == button::Status::Active {
-                    style.text_color = palette.muted;
-                }
-                style
-            });
+        let label = button(
+            text(tab.label())
+                .size(14)
+                .center()
+                .wrapping(text::Wrapping::None),
+        )
+        .height(BUTTON_HEIGHT)
+        .padding([0, 12])
+        .on_press(press.clone())
+        .style(move |_, status| {
+            let mut style = list_row_style(palette, status);
+            if !on && status == button::Status::Active {
+                style.text_color = palette.muted;
+            }
+            style
+        });
         // Laid over the button's bottom edge, since a fill-width bar in a
         // shrink-wide column would stretch to the whole row.
         let underline = container(
@@ -123,7 +147,7 @@ pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'sta
         ids.push((Id::new(tab.id()), press));
     }
     Element::new(Arrows {
-        content: tabs.into(),
+        content: tabs.wrap().into(),
         active,
         tabs: ids,
     })

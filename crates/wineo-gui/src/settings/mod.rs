@@ -131,6 +131,8 @@ pub(crate) enum Event {
     SteamKeyRemoved(u64, u64, Option<u64>, Result<steam_key::Removed, String>),
     /// Where the Steam key row is, to scroll it into view.
     SteamKeyLocated(u64, crate::grid_motion::CardBounds),
+    /// Where the SteamGridDB key row is, to scroll it into view.
+    SteamGridDbKeyLocated(u64, crate::grid_motion::CardBounds),
     /// The GOG login row.
     Gog(gog::Event),
     /// An edit on one target's card.
@@ -214,6 +216,7 @@ impl Event {
                 | Event::SteamKeySaved(..)
                 | Event::SteamKeyRemoved(..)
                 | Event::SteamKeyLocated(..)
+                | Event::SteamGridDbKeyLocated(..)
                 | Event::Gog(
                     gog::Event::StatusLoaded(..)
                         | gog::Event::LoginReady(..)
@@ -426,10 +429,11 @@ pub(crate) struct Page {
     pub(crate) name: String,
     global: bool,
     /// Which tab of the global page shows. The page is new each time it
-    /// opens, so it starts on General; a reload keeps it.
+    /// opens, so it starts on General, or on Stores for a reveal; a reload
+    /// keeps it.
     tab: Tab,
     /// Where each tab is scrolled to, by `Tab::index`. A reload keeps them.
-    scroll: [f32; 2],
+    scroll: [f32; Tab::ALL.len()],
     /// Tells this page's worker results from those of a page closed earlier.
     generation: u64,
     pub(crate) view: View,
@@ -474,8 +478,8 @@ pub(crate) struct Page {
     steam_key_input_session: Option<u64>,
     steam_key: steam_key::Settings,
     gog: gog::Settings,
-    /// Scrolls to the Steam key row once the page loads.
-    pub(crate) reveal_steam_key: bool,
+    /// The row to show once the page loads.
+    pub(crate) reveal: Option<Reveal>,
     /// The controllers connected, by name, which the app keeps current.
     pub(crate) pads: Vec<String>,
     /// Whose labels the remap rows show: the last pad pressed, else the
@@ -486,6 +490,13 @@ pub(crate) struct Page {
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
     pub(crate) open_add_after_load: bool,
+}
+
+/// A key row another page opens the global page to, on the Stores tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reveal {
+    SteamKey,
+    SteamGridDbKey,
 }
 
 /// The Steam key save or remove the app owns, so it outlives the page that
@@ -556,7 +567,7 @@ impl Page {
             name,
             global: false,
             tab: Tab::General,
-            scroll: [0.0; 2],
+            scroll: [0.0; Tab::ALL.len()],
             generation,
             view: View::Loading,
             disk: None,
@@ -586,7 +597,7 @@ impl Page {
             steam_key_input_session: None,
             steam_key: steam_key::Settings::default(),
             gog: gog::Settings::default(),
-            reveal_steam_key: false,
+            reveal: None,
             pads: Vec::new(),
             pad_style: crate::pad::Style::default(),
             capture: None,
@@ -729,7 +740,7 @@ impl Page {
         self.capture.map(|capture| capture.action)
     }
     /// Starts waiting on `action`'s row until `until`, or stops when that
-    /// row already waits. Only the global page's General tab has the rows.
+    /// row already waits. Only the global page's Controller tab has the rows.
     pub(crate) fn toggle_capture(
         &mut self,
         action: wineo_core::library::PadAction,
@@ -739,7 +750,7 @@ impl Page {
             || self.draft_controller() != Some(true)
             || self.locked()
             || !matches!(self.view, View::Global(_))
-            || self.tab != Tab::General
+            || self.tab != Tab::Controller
         {
             self.capture = None;
         } else {
@@ -993,9 +1004,13 @@ impl App {
     }
     /// Global settings, scrolled to the Steam Web API key row once loaded.
     pub(crate) fn open_steam_key_settings(&mut self) -> Task<Message> {
+        self.open_settings_at(Reveal::SteamKey)
+    }
+    /// Global settings, scrolled to `reveal`'s row once loaded.
+    pub(crate) fn open_settings_at(&mut self, reveal: Reveal) -> Task<Message> {
         let task = self.navigate_section(crate::sidebar::Section::Settings);
         if let Some(page) = self.settings.as_mut().filter(|page| page.is_global()) {
-            page.reveal_steam_key = true;
+            page.reveal = Some(reveal);
         }
         task
     }
