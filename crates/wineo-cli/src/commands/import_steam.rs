@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Https, Lazy};
+use wineo_core::download::{Https, Lazy, Transport};
 use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
@@ -291,13 +291,21 @@ fn apply(
 ) -> anyhow::Result<()> {
     match steam_import::apply(paths, global, games, plan, cancel)? {
         ApplyOutcome::Imported(applied) => {
-            imported(paths, global, plan, &applied, key, https, cancel)
+            imported(paths, global, plan, &applied, key, &connect(https), cancel)
         }
         ApplyOutcome::AlreadyImported(name) => {
             println!("Already imported as {name}.");
             Ok(())
         }
     }
+}
+
+/// Opens the connection art is fetched over, which a test replaces.
+type Connect<'a> = &'a dyn Fn() -> anyhow::Result<Box<dyn Transport>>;
+
+/// One client for every game's art, shared by each connection it opens.
+fn connect(https: &Lazy<Https>) -> impl Fn() -> anyhow::Result<Box<dyn Transport>> + '_ {
+    move || Ok(Box::new(https.https()?.clone()))
 }
 
 /// Reports an imported game, then fetches its art.
@@ -307,7 +315,7 @@ fn imported(
     plan: &Plan,
     applied: &Applied,
     key: Option<&Key>,
-    https: &Lazy<Https>,
+    connect: Connect<'_>,
     cancel: &Token,
 ) -> anyhow::Result<()> {
     for warning in &applied.warnings {
@@ -318,7 +326,7 @@ fn imported(
         return Err(Canceled.into());
     }
     if let Some(key) = key {
-        fetch_art(paths, global, plan, applied.identity, key, https, cancel)?;
+        fetch_art(paths, global, plan, applied.identity, key, connect, cancel)?;
     }
     Ok(())
 }
@@ -329,14 +337,15 @@ fn fetch_art(
     plan: &Plan,
     identity: Option<EnvironmentIdentity>,
     key: &Key,
-    https: &Lazy<Https>,
+    connect: Connect<'_>,
     cancel: &Token,
 ) -> anyhow::Result<()> {
     if cancel.is_canceled() {
         return Err(Canceled.into());
     }
     let result = (|| {
-        let api = wineo_core::steamgriddb::Api::new(https.https()?, &key.value);
+        let transport = connect()?;
+        let api = wineo_core::steamgriddb::Api::new(&*transport, &key.value);
         let app_id = plan
             .app_id()
             .parse()
@@ -468,9 +477,15 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
                 steam_import::apply_batch(paths, global, games, batch, cancel, |applying| {
                     match applying {
                         Applying::Starting(_) => Ok(()),
-                        Applying::Imported(plan, applied) => {
-                            imported(paths, global, plan, applied, key.as_ref(), &https, cancel)
-                        }
+                        Applying::Imported(plan, applied) => imported(
+                            paths,
+                            global,
+                            plan,
+                            applied,
+                            key.as_ref(),
+                            &connect(&https),
+                            cancel,
+                        ),
                         Applying::AlreadyImported(name) => {
                             println!("Already imported as {name}.");
                             Ok(())

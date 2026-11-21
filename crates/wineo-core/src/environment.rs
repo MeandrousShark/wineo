@@ -344,8 +344,24 @@ impl Environment {
         exe: Option<&str>,
         title: Option<&str>,
         desktop: bool,
-        mut warnings: impl FnMut(String),
+        warnings: impl FnMut(String),
     ) -> Result<Self> {
+        Self::create_native_identified(paths, global, name, exe, title, desktop, warnings)
+            .map(|(environment, _)| environment)
+    }
+
+    /// `create_native_titled`, also returning the config's identity as
+    /// written, read while the config lock was held, for art fetched
+    /// afterwards to check.
+    pub fn create_native_identified(
+        paths: &Paths,
+        global: &GlobalConfig,
+        name: &str,
+        exe: Option<&str>,
+        title: Option<&str>,
+        desktop: bool,
+        mut warnings: impl FnMut(String),
+    ) -> Result<(Self, Option<EnvironmentIdentity>)> {
         Self::plan_native(paths, global, name, exe)?;
         let title = title.map(normalize_env_title).transpose()?;
         let path = paths.environment_config(name);
@@ -371,10 +387,11 @@ impl Environment {
         }
         let _guard = Locks::new(paths).config(&path)?;
         write_new(&path, &doc.to_string())?;
+        let identity = EnvironmentIdentity::read(paths, name);
         if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
             warnings(warning);
         }
-        Self::load(paths, name)
+        Ok((Self::load(paths, name)?, identity))
     }
 
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {

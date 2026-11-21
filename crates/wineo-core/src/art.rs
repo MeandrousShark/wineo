@@ -701,6 +701,9 @@ pub fn remove(
     {
         return Err(Error::InvalidName(target.to_owned()));
     }
+    // Before anything else, so a removed environment reads as changed. The
+    // check under the lock below is the one that decides.
+    check_environment_identity(paths, env, expected_identity)?;
     Environment::ensure_exists(paths, env)?;
     let art_dir = paths.art_dir(env);
     let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;

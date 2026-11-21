@@ -1081,11 +1081,12 @@ pub(crate) mod fake {
     /// A `Fake` that has the environment replaced the first time an image
     /// is asked for, as `rm` and a new `new` would between a pick and the
     /// download that follows.
+    #[derive(Clone)]
     pub(crate) struct Swap {
         pub(crate) fake: Fake,
         pub(crate) paths: Paths,
         pub(crate) name: String,
-        pub(crate) done: std::cell::Cell<bool>,
+        pub(crate) done: Rc<std::cell::Cell<bool>>,
         /// The part of a request's address that triggers the swap.
         pub(crate) at: &'static str,
     }
@@ -1096,7 +1097,7 @@ pub(crate) mod fake {
                 fake,
                 paths: paths.clone(),
                 name: name.to_owned(),
-                done: std::cell::Cell::new(false),
+                done: Rc::new(std::cell::Cell::new(false)),
                 at: "",
             }
         }

@@ -2,9 +2,13 @@ use std::ffi::OsString;
 use std::fs;
 
 use wineo_core::art::Kind;
-use wineo_core::steamgriddb::{self, Api};
+use wineo_core::config::GlobalConfig;
+use wineo_core::download::Transport;
+use wineo_core::environment::Environment;
+use wineo_core::steam::InstallState;
+use wineo_core::steamgriddb::{self, Api, Key, KeySource};
 
-use super::super::art::fake::{Fake, Swap};
+use super::super::art::fake::{Fake, PNG, Swap};
 use super::*;
 
 const CHANGED: &str =
@@ -81,5 +85,79 @@ fn an_environment_replaced_before_the_game_is_saved_gets_nothing() {
 fn an_environment_replaced_during_the_download_gets_no_image_and_one_warning() {
     let (paths, err, _root) = fetch(Some("/icons/"));
     assert_eq!(err, CHANGED);
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+}
+
+/// A game with an icon and a grid, so two kinds have something to store.
+fn two_kinds() -> Fake {
+    let mut fake = hades();
+    fake.page(Kind::Grid, &[2]);
+    fake.0
+        .insert("https://cdn.example/2".into(), (200, PNG.to_vec()));
+    fake
+}
+
+#[test]
+fn a_replacement_that_stops_two_kinds_is_warned_about_once() {
+    let (_root, paths) = imported_environment();
+    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let swap = Swap::new(two_kinds(), &paths, "hades").at("/icons/");
+    let mut err = Vec::new();
+    store_art(
+        (&paths, "hades"),
+        1086940,
+        &[Kind::Icon, Kind::Grid],
+        &Api::new(&swap, "k"),
+        identity,
+        &mut err,
+    );
+    assert_eq!(String::from_utf8(err).unwrap(), CHANGED);
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+    assert!(!paths.art_dir("hades").join("grid.png").exists());
+}
+
+/// Runs `imported` for the game as `applied`, fetching through `fake`.
+fn run_imported(replaced: bool) -> (Paths, tempfile::TempDir) {
+    let (root, paths) = imported_environment();
+    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let applied = Applied {
+        environment: Environment::load(&paths, "hades").unwrap(),
+        identity,
+        art: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let plan = Plan {
+        app_id: "1086940".to_owned(),
+        title: "Hades".to_owned(),
+        name: "hades".to_owned(),
+        size_on_disk: 0,
+        state: InstallState::Installed,
+    };
+    let key = Key {
+        value: "k".to_owned(),
+        source: KeySource::Variable,
+    };
+    let swap = Swap::new(hades(), &paths, "hades");
+    swap.done.set(!replaced);
+    let connect = || -> anyhow::Result<Box<dyn Transport>> { Ok(Box::new(swap.clone())) };
+    imported(
+        &paths,
+        &GlobalConfig::default(),
+        &plan,
+        &applied,
+        Some(&key),
+        &connect,
+        &Token::new(),
+    )
+    .unwrap();
+    (paths, root)
+}
+
+#[test]
+fn an_import_fetches_into_the_environment_it_registered_and_no_other() {
+    let (paths, _root) = run_imported(false);
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    // Replaced between registering and the download, nothing is stored.
+    let (paths, _root) = run_imported(true);
     assert!(!paths.art_dir("hades").join("icon.png").exists());
 }
