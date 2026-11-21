@@ -290,7 +290,7 @@ cleanup unresolved. If a game was picked, `new` then prints one line saying
 the art was not fetched, with `wineo art fetch NAME` to run instead. The
 desktop entry picks up the icon afterwards.
 
-`new` lets go of the runner and its component builds before it fetches, so
+`new` lets go of the runner's build lock before it fetches, so
 removing a build never waits for a slow download. If the environment is
 removed and created again while art is being fetched, such as during an
 installer, none is stored in the new one, and `new` prints a warning and
@@ -300,9 +300,13 @@ carries on:
 warning: art fetch failed: environment `hades` changed before artwork could be written
 ```
 
-`wineo art fetch` and the import commands check the same way. When that
-happens in `art fetch`, it prints the warning and exits 0 without storing
-anything.
+`wineo art fetch` and the import commands check the same way. Imports only
+warn, as above, but `art fetch` fails like its other errors, with exit code
+1 and this line, and stores nothing:
+
+```
+error: environment `hades` changed before artwork could be written
+```
 
 Failures never stop the flow. A rejected key, a failed download, or a
 search with no matches when there's no pick list prints a warning such as

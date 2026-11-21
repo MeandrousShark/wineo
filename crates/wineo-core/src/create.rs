@@ -541,10 +541,11 @@ pub struct Installed<S> {
 }
 
 impl<S> Installed<S> {
-    /// Lets go of the runner and component build locks, which keep a build
-    /// from being removed while it is in use. They are held until this value
-    /// is dropped otherwise, so a caller that goes on to something slow, like
-    /// downloading art, calls this first.
+    /// Lets go of the runner's build lock, which keeps the runner from being
+    /// removed while it is in use. It is held until this value is dropped
+    /// otherwise, so a caller that goes on to something slow, like
+    /// downloading art, calls this first. The component builds are locked
+    /// only while the environment is created, so nothing of theirs is held.
     pub fn release_build_locks(&mut self) {
         self.build_guard = None;
     }

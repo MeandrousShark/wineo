@@ -251,40 +251,20 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
     let transport = Https::new()?;
     let api = Api::new(&transport, &key.value);
-    fetch_with(
-        paths,
-        request,
-        &api,
-        &mut crate::output::stdout(),
-        &mut crate::output::stderr(),
-    )
+    fetch_with(paths, request, &api, &mut crate::output::stdout())
 }
 
 /// `fetch` once there is a connection. Nothing is stored if the environment
-/// is replaced while this runs, which is a warning rather than a failure.
+/// is replaced while this runs, which fails like any other fetch error.
 fn fetch_with(
     paths: &Paths,
     request: &FetchRequest,
     api: &Api,
     out: &mut dyn io::Write,
-    err: &mut dyn io::Write,
 ) -> anyhow::Result<bool> {
     let (env, _) = split(request.spot);
     let identity = EnvironmentIdentity::read(paths, env);
-    match fetch_checked(paths, request, api, identity, out) {
-        Err(error) if environment_changed(&error) => {
-            warn_failed(&error, err);
-            Ok(true)
-        }
-        other => other,
-    }
-}
-
-fn environment_changed(error: &anyhow::Error) -> bool {
-    matches!(
-        error.downcast_ref::<wineo_core::Error>(),
-        Some(wineo_core::Error::ArtEnvironmentChanged(_))
-    )
+    fetch_checked(paths, request, api, identity, out)
 }
 
 fn fetch_checked(
@@ -311,10 +291,16 @@ fn fetch_checked(
     let mut icon = false;
     let fetched = fetch_kinds(&spot, request, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store.
-    if icon {
+    if icon && unchanged(paths, env, identity) {
         apply_desktop(paths, env)?;
     }
     fetched
+}
+
+/// Whether `env` is still the environment `identity` was read from, which
+/// the desktop entries are only updated for. Without one, it can't tell.
+fn unchanged(paths: &Paths, env: &str, identity: Option<EnvironmentIdentity>) -> bool {
+    identity.is_none_or(|identity| EnvironmentIdentity::read(paths, env) == Some(identity))
 }
 
 fn fetch_game(
@@ -750,8 +736,9 @@ fn store_art(
     let language = steamgriddb::language(|var| std::env::var_os(var));
     let mut icon = false;
     let fetched = fetch_kinds(&spot, &fetch, api, game, &language, &mut icon, out);
-    // An icon fetched before a later kind failed is still in the store.
-    if icon {
+    // An icon fetched before a later kind failed is still in the store, but
+    // a replacement environment's entries are not this fetch's to touch.
+    if icon && unchanged(paths, env, identity) {
         apply_desktop(paths, env)?;
     }
     fetched.map(drop)
@@ -1091,6 +1078,8 @@ pub(crate) mod fake {
         pub(crate) paths: Paths,
         pub(crate) name: String,
         pub(crate) done: std::cell::Cell<bool>,
+        /// The part of a request's address that triggers the swap.
+        pub(crate) at: &'static str,
     }
 
     impl Swap {
@@ -1100,11 +1089,18 @@ pub(crate) mod fake {
                 paths: paths.clone(),
                 name: name.to_owned(),
                 done: std::cell::Cell::new(false),
+                at: "",
             }
         }
 
+        /// Replaces the environment at the first request containing `at`.
+        pub(crate) fn at(mut self, at: &'static str) -> Self {
+            self.at = at;
+            self
+        }
+
         fn note(&self, url: &str) {
-            if !url.contains("/search/") && !self.done.replace(true) {
+            if !url.contains("/search/") && url.contains(self.at) && !self.done.replace(true) {
                 replace_environment(&self.paths, &self.name);
             }
         }

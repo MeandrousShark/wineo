@@ -686,8 +686,10 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
     assert!(!paths.art_dir("hades").join("icon.png").exists());
 }
 
+const CHANGED_ERROR: &str = "environment `hades` changed before artwork could be written";
+
 #[test]
-fn art_fetch_warns_instead_of_failing_when_the_environment_is_replaced() {
+fn art_fetch_fails_when_the_environment_is_replaced() {
     for replaced in [false, true] {
         let (_root, paths) = paths();
         let mut fake = Fake::default();
@@ -697,21 +699,107 @@ fn art_fetch_warns_instead_of_failing_when_the_environment_is_replaced() {
         request.game = Some(7);
         // Without a swap the same fetch stores its icon.
         swap.done.set(!replaced);
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out, &mut err);
-        assert!(result.unwrap());
+        let mut out = Vec::new();
+        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out);
         let icon = paths.art_dir("hades").join("icon.png").exists();
         if replaced {
-            assert_eq!(String::from_utf8(err).unwrap(), CHANGED);
+            // `main` prints this as `error: ...` and exits 1.
+            assert_eq!(result.unwrap_err().to_string(), CHANGED_ERROR);
             assert_eq!(String::from_utf8(out).unwrap(), "");
             assert!(!icon);
         } else {
-            assert_eq!(String::from_utf8(err).unwrap(), "");
+            assert!(result.unwrap());
             assert_eq!(
                 String::from_utf8(out).unwrap(),
                 "icon: fetched SteamGridDB 1\n"
             );
             assert!(icon);
+        }
+    }
+}
+
+/// An environment with a desktop target, so reconciling it writes an entry.
+fn desktop_environment(paths: &Paths) {
+    fs::write(
+        paths.environment_config("hades"),
+        "prefix = \"~/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.game]\nexe = \"game.exe\"\ndesktop = true\n",
+    )
+    .unwrap();
+}
+
+fn entry(paths: &Paths) -> std::path::PathBuf {
+    paths.applications_dir().join("wineo-hades-game.desktop")
+}
+
+#[test]
+fn an_environment_replaced_after_the_icon_gets_no_desktop_update() {
+    for replaced in [false, true] {
+        let (_root, paths) = paths();
+        desktop_environment(&paths);
+        let mut fake = Fake::default();
+        fake.search("hades", true);
+        fake.icon_only();
+        // A grid to be downloaded, whose store is refused once replaced.
+        fake.page(Kind::Grid, &[2]);
+        fake.0.insert(
+            "https://cdn.example/2".into(),
+            (200, super::fake::PNG.to_vec()),
+        );
+        let swap = super::fake::Swap::new(fake, &paths, "hades").at("/grids/");
+        swap.done.set(!replaced);
+        let request = AutoFetch {
+            env: "hades",
+            term: "hades",
+            kinds: ArtFetch::All,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = fetch_new(
+            &paths,
+            &swap,
+            &key(),
+            &request,
+            Pick::<Script, Vec<u8>>::Top(&mut out),
+            &mut err,
+        );
+        assert!(result.is_ok());
+        let err = String::from_utf8(err).unwrap();
+        // The icon is in the store either way.
+        assert!(paths.art_dir("hades").join("icon.png").exists());
+        if replaced {
+            assert_eq!(err, CHANGED);
+            assert!(!entry(&paths).exists());
+        } else {
+            assert_eq!(err, "");
+            assert!(entry(&paths).exists());
+        }
+    }
+}
+
+#[test]
+fn art_fetch_leaves_a_replacement_environments_entry_alone() {
+    for replaced in [false, true] {
+        let (_root, paths) = paths();
+        desktop_environment(&paths);
+        let mut fake = Fake::default();
+        fake.icon_only();
+        // A grid to be downloaded, whose store is refused once replaced.
+        fake.page(Kind::Grid, &[2]);
+        fake.0.insert(
+            "https://cdn.example/2".into(),
+            (200, super::fake::PNG.to_vec()),
+        );
+        let swap = super::fake::Swap::new(fake, &paths, "hades").at("/grids/");
+        swap.done.set(!replaced);
+        let mut request = fetch_request();
+        request.game = Some(7);
+        request.only = None;
+        let mut out = Vec::new();
+        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out);
+        assert!(paths.art_dir("hades").join("icon.png").exists());
+        assert_eq!(entry(&paths).exists(), !replaced);
+        match result {
+            Err(error) => assert!(replaced && error.to_string() == CHANGED_ERROR),
+            Ok(found) => assert!(!replaced && found),
         }
     }
 }
