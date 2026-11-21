@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use anyhow::bail;
 use wineo_core::cancel::Token;
-use wineo_core::config::{Arch, GlobalConfig};
+use wineo_core::config::{Arch, ArtFetch, GlobalConfig};
 use wineo_core::create::{
     self, AfterInstall, CreateEvent, CreateRequest, ExeCheck, Hooks, Step, Stepped, TargetOutcome,
 };
@@ -148,7 +148,7 @@ fn new_wine(
     // questions for nothing.
     let picked = if args.art && args.install_exe.is_some() {
         create::plan(paths, request())?;
-        match pick_art(paths, name, access) {
+        match pick_art(paths, name, access, out) {
             Ok(picked) => picked,
             Err(err) if cancel::prompted(&err) => {
                 eprintln!("Canceled. Nothing was created.");
@@ -181,22 +181,68 @@ fn new_wine(
         Err(err) => return Err(err),
     };
     let name = &created.environment.name;
-    let downloaded = Cell::new(false);
-    let result = (|| -> anyhow::Result<ExitCode> {
-        let (outcome, resolved) = match created.step {
+    if let Stepped::None = created.step {
+        // The create lock is already released, so a slow SteamGridDB only
+        // holds up this command.
+        if args.art && fetch_art(paths, &created.global, name, access, out).is_err() {
+            eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
+            return Ok(cancel::exit_code());
+        }
+        if args.exe.is_none() {
+            println!("Add a target with: wineo set {name} targets.<target>.exe=<path>");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let ended = Ended {
+        paths,
+        access,
+        name,
+        prefix: &created.prefix,
+        kinds: created.global.art.fetch,
+        picked: picked.as_ref(),
+    };
+    ended.report(created.step, &mut hooks.cancellation, out)
+}
+
+/// An environment whose installer has ended, and the art picked for it.
+struct Ended<'a> {
+    paths: &'a Paths,
+    access: &'a Access<'a>,
+    name: &'a str,
+    prefix: &'a Path,
+    kinds: ArtFetch,
+    picked: Option<&'a (Key, Picked)>,
+}
+
+impl Ended<'_> {
+    /// Reports how the installer ended and returns the exit code. The art
+    /// picked before creation is downloaded only when the installer finished,
+    /// and otherwise `new` says it wasn't.
+    fn report(
+        &self,
+        step: Stepped<anyhow::Result<ExitCode>>,
+        cancellation: &mut Option<Cancellation>,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<ExitCode> {
+        let downloaded = Cell::new(false);
+        let result = self.report_step(step, cancellation, out, &downloaded);
+        if self.picked.is_some() && !downloaded.get() {
+            let _ = writeln!(out, "{}", art_not_fetched(self.name));
+        }
+        result
+    }
+
+    fn report_step(
+        &self,
+        step: Stepped<anyhow::Result<ExitCode>>,
+        cancellation: &mut Option<Cancellation>,
+        out: &mut dyn Write,
+        downloaded: &Cell<bool>,
+    ) -> anyhow::Result<ExitCode> {
+        let (paths, name) = (self.paths, self.name);
+        let (outcome, resolved) = match step {
             Stepped::Stopped(code) => return code,
-            Stepped::None => {
-                // The create lock is already released, so a slow SteamGridDB only
-                // holds up this command.
-                if args.art && fetch_art(paths, &created.global, name, access).is_err() {
-                    eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-                    return Ok(cancel::exit_code());
-                }
-                if args.exe.is_none() {
-                    println!("Add a target with: wineo set {name} targets.<target>.exe=<path>");
-                }
-                return Ok(ExitCode::SUCCESS);
-            }
+            Stepped::None => unreachable!("an installer always has a step"),
             Stepped::NotPrepared(err) => {
                 note(&format!("error: {:#}", anyhow::Error::from(err)));
                 note(&setup::recovery_message(paths, name));
@@ -230,15 +276,15 @@ fn new_wine(
                 if exit_code != Some(0) {
                     note(&setup::recovery_message(paths, name));
                 }
-                if let Some((key, picked)) = &picked {
+                if let Some((key, picked)) = self.picked {
                     // Nothing listens for the installer's Ctrl+C from here on.
-                    drop(hooks.cancellation.take());
+                    drop(cancellation.take());
                     let request = AutoFetch {
                         env: name,
                         term: name,
-                        kinds: created.global.art.fetch,
+                        kinds: self.kinds,
                     };
-                    access.fetch_picked(
+                    self.access.fetch_picked(
                         paths,
                         key,
                         &request,
@@ -248,7 +294,7 @@ fn new_wine(
                     );
                     downloaded.set(true);
                 }
-                match installed(&created.prefix) {
+                match installed(self.prefix) {
                     Some(listing) => programs::report(name, &listing, false),
                     None => {
                         println!("Add a target with: wineo set {name} targets.<target>.exe=<path>")
@@ -279,11 +325,7 @@ fn new_wine(
                 Ok(ExitCode::FAILURE)
             }
         }
-    })();
-    if picked.is_some() && !downloaded.get() {
-        let _ = writeln!(out, "{}", art_not_fetched(name));
     }
-    result
 }
 
 /// Said when the game picked for an installer's environment gets no art,
@@ -526,7 +568,7 @@ fn new_native(
     }
     desktop::reconcile_native(paths, &global, &environment)?;
     if let Some(access) = art
-        && fetch_art(paths, &global, name, access).is_err()
+        && fetch_art(paths, &global, name, access, &mut crate::output::stdout()).is_err()
     {
         eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
         return Ok(cancel::exit_code());
@@ -598,6 +640,7 @@ fn fetch_art(
     global: &GlobalConfig,
     name: &str,
     access: &Access<'_>,
+    out: &mut dyn Write,
 ) -> Result<(), Canceled> {
     let Some(key) = art_key(global, access) else {
         return Ok(());
@@ -608,10 +651,9 @@ fn fetch_art(
         kinds: global.art.fetch,
     };
     let mut prompt = pick_prompt();
-    let mut stdout = crate::output::stdout();
     let pick = match &mut prompt {
         Some(prompt) => Pick::Ask(prompt),
-        None => Pick::Top(&mut stdout),
+        None => Pick::Top(out),
     };
     access.fetch(paths, &key, &request, pick, &mut crate::output::stderr())
 }
@@ -639,12 +681,13 @@ fn pick_prompt() -> Option<Prompt<Terminal, crate::output::Stream<std::io::Stdou
 }
 
 /// The game for `fetch_art`, picked before the environment exists so the
-/// questions are answered ahead of the installer's wait. `picked_art` fetches
+/// questions are answered ahead of the installer's wait. `Access::fetch_picked` fetches
 /// it once the environment is unlocked.
 fn pick_art(
     paths: &Paths,
     name: &str,
     access: &Access<'_>,
+    out: &mut dyn Write,
 ) -> anyhow::Result<Option<(Key, Picked)>> {
     let global = GlobalConfig::load(paths)?;
     let Some(key) = art_key(&global, access) else {
@@ -656,10 +699,9 @@ fn pick_art(
         kinds: global.art.fetch,
     };
     let mut prompt = pick_prompt();
-    let mut stdout = crate::output::stdout();
     let pick = match &mut prompt {
         Some(prompt) => Pick::Ask(prompt),
-        None => Pick::Top(&mut stdout),
+        None => Pick::Top(out),
     };
     let picked = access.pick(&key, &request, pick, &mut crate::output::stderr())?;
     Ok(picked.map(|picked| (key, picked)))
@@ -884,6 +926,13 @@ mod tests {
         assert!(run.paths.art_dir("hades").join("icon.png").is_file());
         let entry = run.entry();
         assert!(entry.contains("\nIcon=wineo-hades-hades\n"), "{entry}");
+        assert!(
+            run.out.starts_with(&format!(
+                "{TOP_PICK}icon: fetched SteamGridDB 1\ngrid: nothing found\n"
+            )),
+            "{}",
+            run.out
+        );
     }
 
     #[test]
@@ -897,6 +946,7 @@ mod tests {
         );
         let entry = run.entry();
         assert!(!entry.contains("Icon="), "{entry}");
+        assert_eq!(run.out, "");
     }
 
     #[test]
@@ -907,6 +957,8 @@ mod tests {
         assert!(run.seen.borrow().is_empty());
         assert!(!run.paths.environment_config("hades").exists());
     }
+
+    const TOP_PICK: &str = "hades: art from SteamGridDB game 7, Hades (2020)\n";
 
     const NOT_FETCHED: &str = "Art not fetched. Run `wineo art fetch hades` to fetch it.\n";
 
@@ -989,6 +1041,124 @@ mod tests {
             Some(7)
         );
         assert!(run.paths.art_dir("hades").join("icon.png").is_file());
+        // The pick comes first, then what the download stored.
+        assert!(
+            run.out.starts_with(&format!(
+                "{TOP_PICK}icon: fetched SteamGridDB 1\ngrid: nothing found\n"
+            )),
+            "{}",
+            run.out
+        );
+    }
+
+    /// Reports `step` as the end of the installer for `hades`, with a game
+    /// already picked, returning what `new` printed for the art.
+    fn ended(step: Stepped<anyhow::Result<ExitCode>>) -> (ExitCode, String, usize) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let fake = hades();
+        let access = Access {
+            check_key: Box::new(|| {
+                KeyCheck::Found(Key {
+                    value: "k".to_owned(),
+                    source: KeySource::Variable,
+                })
+            }),
+            transport: Box::new(|| {
+                Ok(Box::new(Probe {
+                    fake: fake.clone(),
+                    paths: paths.clone(),
+                    name: "hades".to_owned(),
+                    seen: seen.clone(),
+                }))
+            }),
+        };
+        let mut out = Vec::new();
+        let picked = pick_art(&paths, "hades", &access, &mut out)
+            .unwrap()
+            .expect("a game is picked");
+        // Only the download counts below, so the pick's own line goes.
+        let (before, mut out) = (seen.borrow().len(), Vec::new());
+        let ended = Ended {
+            paths: &paths,
+            access: &access,
+            name: "hades",
+            prefix: root.path(),
+            kinds: ArtFetch::default(),
+            picked: Some(&picked),
+        };
+        let code = ended.report(step, &mut None, &mut out).unwrap();
+        let requests = seen.borrow().len() - before;
+        (code, String::from_utf8(out).unwrap(), requests)
+    }
+
+    fn unsettled() -> wineo_core::Error {
+        wineo_core::Error::Unsettled("it could not be confirmed".to_owned())
+    }
+
+    /// The installer didn't finish, so the art is not downloaded, and the
+    /// hint is the only thing said about it.
+    fn assert_not_fetched((code, out, requests): (ExitCode, String, usize), expected: ExitCode) {
+        assert_eq!(code, expected);
+        assert_eq!(out, NOT_FETCHED);
+        assert_eq!(requests, 0);
+    }
+
+    #[test]
+    fn a_failed_installer_start_says_the_art_was_not_fetched() {
+        assert_not_fetched(
+            ended(Stepped::Ran {
+                outcome: Err(unsettled()),
+                resolved: true,
+            }),
+            ExitCode::FAILURE,
+        );
+    }
+
+    #[test]
+    fn an_unresolved_installer_says_the_art_was_not_fetched() {
+        assert_not_fetched(
+            ended(Stepped::Ran {
+                outcome: Ok(Outcome::Unresolved {
+                    exit_code: None,
+                    canceled: false,
+                    error: unsettled(),
+                }),
+                resolved: true,
+            }),
+            ExitCode::FAILURE,
+        );
+    }
+
+    #[test]
+    fn a_finished_installer_with_unresolved_cleanup_says_the_art_was_not_fetched() {
+        assert_not_fetched(
+            ended(Stepped::Ran {
+                outcome: Ok(Outcome::Finished { exit_code: Some(0) }),
+                resolved: false,
+            }),
+            ExitCode::FAILURE,
+        );
+    }
+
+    #[test]
+    fn a_canceled_installer_report_says_the_art_was_not_fetched() {
+        assert_not_fetched(
+            ended(Stepped::Ran {
+                outcome: Ok(Outcome::Canceled { exit_code: None }),
+                resolved: true,
+            }),
+            cancel::exit_code(),
+        );
+    }
+
+    #[test]
+    fn a_stopped_creation_says_the_art_was_not_fetched() {
+        assert_not_fetched(
+            ended(Stepped::Stopped(Ok(ExitCode::FAILURE))),
+            ExitCode::FAILURE,
+        );
     }
 
     #[test]

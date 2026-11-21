@@ -28,7 +28,7 @@ use wineo_core::templates::{NEWEST_PROTON, Template, Templates};
 use wineo_core::winpath;
 
 use crate::cancel;
-use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick};
+use crate::commands::art::{Access, AutoFetch, KeyCheck, Pick, Picked};
 use crate::commands::setup::{self, Ran};
 use crate::commands::transfer::Cancellation;
 use crate::commands::{components, desktop, external_runners};
@@ -1288,43 +1288,23 @@ fn create<I: Input, W: Write>(
             return Ok(ExitCode::FAILURE);
         }
         (How::Installer(_), Stepped::Ran { outcome, resolved }) => {
-            // Those were the installer's to act on, not a request to leave setup.
-            prompt.input().forget_interrupts();
-            let ran = match (&outcome, create::after_install(&outcome, resolved)) {
-                // Unlike `setup`'s own install, a failing exit still goes on to
-                // what got installed, since the environment is new.
-                (Ok(Outcome::Finished { exit_code }), AfterInstall::Programs)
-                    if *exit_code != Some(0) =>
-                {
-                    setup::report_failed_exit(paths, &name, prompt, *exit_code)?;
-                    Ran::Finished
-                }
-                _ => setup::report_installer(paths, &name, prompt, outcome)?,
-            };
-            drop(install_cancellation);
-            match ran {
-                Ran::Finished => {
-                    if let Some((key, picked)) = &picked {
-                        let request = AutoFetch {
-                            env: &name,
-                            term: &name,
-                            kinds: global.art.fetch,
-                        };
-                        access.fetch_picked(
-                            paths,
-                            key,
-                            &request,
-                            picked,
-                            prompt.writer(),
-                            &mut crate::output::stderr(),
-                        );
-                    }
-                    picker::pick(prompt, &place, &mut batch).map(|_| ())?
-                }
-                Ran::Ended(code) => {
-                    art_not_fetched(prompt, &name, picked.is_some())?;
-                    return Ok(code);
-                }
+            let art = picked.as_ref().map(|(key, picked)| ArtAfter {
+                access,
+                key,
+                picked,
+                kinds: global.art.fetch,
+            });
+            match installer_ended(
+                paths,
+                &name,
+                prompt,
+                outcome,
+                resolved,
+                install_cancellation,
+                art,
+            )? {
+                Ran::Finished => picker::pick(prompt, &place, &mut batch).map(|_| ())?,
+                Ran::Ended(code) => return Ok(code),
                 Ran::Back => unreachable!("an installer that ran never goes back"),
             }
         }
@@ -1347,6 +1327,60 @@ fn create<I: Input, W: Write>(
         // Keeping on editing is what `setup` is for.
         Reply::Back => setup::menu(paths, global, &name, prompt, &place, batch),
     }
+}
+
+/// The art picked before an installer ran, to download once it finished.
+struct ArtAfter<'a> {
+    access: &'a Access<'a>,
+    key: &'a Key,
+    picked: &'a Picked,
+    kinds: ArtFetch,
+}
+
+/// Reports how the installer ended, downloading the art picked for it only
+/// when it finished and saying so when it didn't. `cancellation` was
+/// listening for the installer's Ctrl+C and is let go after the report.
+fn installer_ended<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    outcome: wineo_core::Result<Outcome>,
+    resolved: bool,
+    cancellation: Option<Cancellation>,
+    art: Option<ArtAfter>,
+) -> anyhow::Result<Ran> {
+    // Those were the installer's to act on, not a request to leave setup.
+    prompt.input().forget_interrupts();
+    let ran = match (&outcome, create::after_install(&outcome, resolved)) {
+        // Unlike `setup`'s own install, a failing exit still goes on to
+        // what got installed, since the environment is new.
+        (Ok(Outcome::Finished { exit_code }), AfterInstall::Programs) if *exit_code != Some(0) => {
+            setup::report_failed_exit(paths, name, prompt, *exit_code)?;
+            Ran::Finished
+        }
+        _ => setup::report_installer(paths, name, prompt, outcome)?,
+    };
+    drop(cancellation);
+    match (&ran, art) {
+        (Ran::Finished, Some(art)) => {
+            let request = AutoFetch {
+                env: name,
+                term: name,
+                kinds: art.kinds,
+            };
+            art.access.fetch_picked(
+                paths,
+                art.key,
+                &request,
+                art.picked,
+                prompt.writer(),
+                &mut crate::output::stderr(),
+            );
+        }
+        (Ran::Finished, None) => {}
+        (_, art) => art_not_fetched(prompt, name, art.is_some())?,
+    }
+    Ok(ran)
 }
 
 /// Says a game picked before the installer got no art, because the installer

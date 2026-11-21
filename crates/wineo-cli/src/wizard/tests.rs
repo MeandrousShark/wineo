@@ -512,3 +512,130 @@ fn canceling_the_pick_list_before_an_installer_creates_nothing() {
     );
     assert!(!world.paths.environment_config("hades").exists());
 }
+
+/// Reports `outcome` as the end of the installer for `hades` with a game
+/// already picked, returning the result, the transcript, and how many
+/// requests SteamGridDB got afterwards.
+fn installer_ended_with(
+    outcome: wineo_core::Result<Outcome>,
+    resolved: bool,
+) -> (Ran, String, usize) {
+    use crate::commands::art::fake::Probe;
+    let world = world();
+    // The environment the installer ran in, for the art to be stored in.
+    let config = world.paths.environment_config("hades");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "prefix = 'prefixes/hades'\nrunner = 'fake'\narch = 'win64'\n",
+    )
+    .unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let fake = fake();
+    let access = Access {
+        check_key: Box::new(found),
+        transport: Box::new(|| {
+            Ok(Box::new(Probe {
+                fake: fake.clone(),
+                paths: world.paths.clone(),
+                name: "hades".to_owned(),
+                seen: seen.clone(),
+            }))
+        }),
+    };
+    let key = Key {
+        value: "k".into(),
+        source: KeySource::Variable,
+    };
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: world.global.art.fetch,
+    };
+    let mut ignored = Vec::new();
+    let picked = access
+        .pick(
+            &key,
+            &request,
+            Pick::<Script, Vec<u8>>::Top(&mut ignored),
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .expect("a game is picked");
+    let before = seen.borrow().len();
+    let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+    let art = ArtAfter {
+        access: &access,
+        key: &key,
+        picked: &picked,
+        kinds: world.global.art.fetch,
+    };
+    let ran = installer_ended(
+        &world.paths,
+        "hades",
+        &mut prompt,
+        outcome,
+        resolved,
+        None,
+        Some(art),
+    )
+    .unwrap();
+    let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+    let requests = seen.borrow().len() - before;
+    (ran, transcript, requests)
+}
+
+fn assert_ended_without_art((ran, transcript, requests): (Ran, String, usize)) {
+    assert!(matches!(ran, Ran::Ended(_)));
+    assert_eq!(
+        transcript
+            .matches("Art not fetched. Run `wineo art fetch hades` to fetch it.\n")
+            .count(),
+        1,
+        "{transcript}"
+    );
+    assert!(!transcript.contains("icon:"), "{transcript}");
+    assert_eq!(requests, 0);
+}
+
+fn unsettled() -> wineo_core::Error {
+    wineo_core::Error::Unsettled("it could not be confirmed".to_owned())
+}
+
+#[test]
+fn a_canceled_installer_ends_setup_and_says_the_art_was_not_fetched() {
+    assert_ended_without_art(installer_ended_with(
+        Ok(Outcome::Canceled { exit_code: None }),
+        true,
+    ));
+}
+
+#[test]
+fn a_failed_installer_start_ends_setup_and_says_the_art_was_not_fetched() {
+    assert_ended_without_art(installer_ended_with(Err(unsettled()), true));
+}
+
+#[test]
+fn an_unresolved_installer_ends_setup_and_says_the_art_was_not_fetched() {
+    assert_ended_without_art(installer_ended_with(
+        Ok(Outcome::Unresolved {
+            exit_code: None,
+            canceled: false,
+            error: unsettled(),
+        }),
+        true,
+    ));
+}
+
+#[test]
+fn a_finished_installer_downloads_the_art_and_says_nothing_more() {
+    let (ran, transcript, requests) =
+        installer_ended_with(Ok(Outcome::Finished { exit_code: Some(0) }), true);
+    assert!(matches!(ran, Ran::Finished));
+    assert!(!transcript.contains("Art not fetched"), "{transcript}");
+    assert!(requests > 0);
+    assert!(
+        transcript.contains("icon: fetched SteamGridDB 1\n"),
+        "{transcript}"
+    );
+}
