@@ -698,3 +698,79 @@ fn turning_it_off_with_a_menu_open_lets_navigation_go() {
     assert!(!app.advanced_settings);
     assert!(!page_of(&app).navigation_blocked());
 }
+
+/// Lands the write in flight and runs whatever it starts, handing back the
+/// writes that follow it.
+fn land_and_follow(app: &mut App) -> Vec<Message> {
+    let on = app.view_writes.advanced_settings.expect("a switch write");
+    let written = ViewField::AdvancedSettings(on);
+    let result = sort_control::save(&app.paths, &app.shown, written);
+    let task = app.update(Message::Sort(sort_control::Event::Saved(written, result)));
+    let mut follow = Vec::new();
+    crate::test_tasks::each_action(task, |action| {
+        if let iced_runtime::Action::Output(message) = action {
+            follow.push(message);
+        }
+    });
+    follow
+}
+
+#[test]
+fn a_flip_while_its_write_runs_is_written_once_after() {
+    let (_root, paths) = setup();
+    let mut app = open_advanced(&paths);
+    flip(&mut app, true);
+    flip(&mut app, false);
+    // One write at a time: the first is still the one in flight.
+    assert_eq!(app.view_writes.advanced_settings, Some(true));
+    let follow = land_and_follow(&mut app);
+    assert!(
+        matches!(
+            follow.as_slice(),
+            [Message::Sort(sort_control::Event::Saved(
+                ViewField::AdvancedSettings(false),
+                Ok(())
+            ))]
+        ),
+        "{follow:?}"
+    );
+    for message in follow {
+        let _ = app.update(message);
+    }
+    assert!(app.view_writes.advanced_settings.is_none());
+    assert!(!app.library_writes_pending());
+    assert!(!remembered(&paths));
+    assert!(!app.advanced_settings);
+}
+
+#[test]
+fn an_older_writes_error_clears_when_the_newer_one_lands() {
+    let (_root, paths) = setup();
+    write_library(&paths, BROKEN_LIBRARY);
+    let mut app = open_advanced(&paths);
+    flip(&mut app, true);
+    flip(&mut app, false);
+    // The file is fixed while the first write is refused.
+    let on = app.view_writes.advanced_settings.unwrap();
+    let written = ViewField::AdvancedSettings(on);
+    let refused = sort_control::save(&app.paths, &app.shown, written);
+    assert!(refused.is_err());
+    write_library(&paths, "");
+    let task = app.update(Message::Sort(sort_control::Event::Saved(written, refused)));
+    assert!(app.advanced_settings_error.is_some());
+    assert!(page_of(&app).advanced_error.is_some());
+    let mut follow = Vec::new();
+    crate::test_tasks::each_action(task, |action| {
+        if let iced_runtime::Action::Output(message) = action {
+            follow.push(message);
+        }
+    });
+    assert_eq!(follow.len(), 1, "{follow:?}");
+    for message in follow {
+        let _ = app.update(message);
+    }
+    assert!(app.advanced_settings_error.is_none());
+    assert!(page_of(&app).advanced_error.is_none());
+    assert!(app.view_writes.advanced_settings.is_none());
+    assert!(!remembered(&paths));
+}
