@@ -20,6 +20,10 @@ rows below have the details.
 
 1. Settings in tabs: split the desktop app's settings into more tabs and
    hide advanced settings unless they're turned on (plan 0070).
+2. Stable environment identity: tell "the same environment" apart from "the
+   same config file", so an edit doesn't read as a replacement, and artwork
+   retries and long fetches can keep the environment they started with
+   (plan 0071).
 
 Store imports come after.
 
