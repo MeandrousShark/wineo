@@ -1482,6 +1482,8 @@ struct Call {
     title: String,
     /// What `busy_with` said about the environment's lock.
     lock: String,
+    /// The identity the fetch was told the environment had.
+    identity: Option<EnvironmentIdentity>,
 }
 
 type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
@@ -1491,7 +1493,7 @@ type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, _, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, identity, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -1500,6 +1502,7 @@ fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
             name: name.to_owned(),
             title: title.to_owned(),
             lock,
+            identity,
         });
         if token.is_canceled() {
             return Err("canceled".to_owned());
@@ -1609,9 +1612,12 @@ fn the_fetch_runs_after_creation_outside_the_create_lock() {
                 name: "hollow-knight".to_owned(),
                 title: "Hollow Knight".to_owned(),
                 lock: "Ok(None)".to_owned(),
+                // Read under the create lock, and still what the config is.
+                identity: EnvironmentIdentity::read(&paths, "hollow-knight"),
             }],
             "{kind}"
         );
+        assert!(calls.lock().unwrap()[0].identity.is_some(), "{kind}");
     }
 }
 
@@ -4114,4 +4120,61 @@ fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
         ),
         "a separator parts rows inside a section"
     );
+}
+
+/// Registers a native environment for the page's title, as creating it would
+/// have, returning its identity.
+fn created_environment(page: &Page) -> Option<EnvironmentIdentity> {
+    let name = page.draft.environment_name();
+    let config = page.paths.environment_config(&name);
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    EnvironmentIdentity::read(&page.paths, &name)
+}
+
+/// Swaps the environment's config for a copy, which is a different file as
+/// far as its identity goes.
+fn replace_environment(page: &Page) {
+    let config = page
+        .paths
+        .environment_config(&page.draft.environment_name());
+    let staged = config.with_extension("replacement");
+    std::fs::copy(&config, &staged).unwrap();
+    std::fs::rename(staged, config).unwrap();
+}
+
+#[test]
+fn a_retry_fetches_with_the_identity_the_environment_was_created_with() {
+    let (mut page, calls) = registered(true);
+    let created = created_environment(&page);
+    assert!(created.is_some());
+    page.report.as_mut().unwrap().identity = created;
+    replace_environment(&page);
+    // What a fresh read would now say, which a retry must not use.
+    let name = page.draft.environment_name();
+    assert_ne!(EnvironmentIdentity::read(&page.paths, &name), created);
+    page.stage = Stage::Finished;
+    page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].identity, created);
+}
+
+#[test]
+fn a_replaced_environment_is_only_skipped_never_retried() {
+    let (mut page, calls) = registered(true);
+    page.stage = Stage::Finished;
+    page.report.as_mut().unwrap().art_error =
+        Some("environment `hollow-knight` changed before artwork could be written".to_owned());
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 0);
+    assert!(!page.fetching);
+    assert_eq!(page.stage, Stage::Finished);
+    assert!(page.report.as_ref().unwrap().art_error.is_some());
+    // Skip still clears it.
+    let _ = page.update(Event::SkipArt);
+    assert!(page.report.as_ref().unwrap().art_error.is_none());
 }

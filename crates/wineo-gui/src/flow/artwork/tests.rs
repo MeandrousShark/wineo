@@ -675,6 +675,124 @@ fn apply_stores_nothing_in_an_environment_replaced_since_it_started() {
 }
 
 #[test]
+fn local_tiles_are_stored_only_in_the_environment_they_started_with() {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    for replaced in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            "game",
+            None,
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let identity = EnvironmentIdentity::read(&paths, "game");
+        let picked = root.path().join("mine.png");
+        let poster = root.path().join("poster.png");
+        std::fs::write(&picked, PNG).unwrap();
+        std::fs::write(&poster, PNG).unwrap();
+        let mut draft = Draft::new();
+        // A user-picked hero, and a grid the flow prefilled from Heroic.
+        draft.local.insert(
+            Kind::Hero,
+            Local {
+                path: picked.display().to_string(),
+                ..Local::default()
+            },
+        );
+        draft.local.insert(
+            Kind::Grid,
+            Local {
+                path: poster.display().to_string(),
+                prefilled: Some(Prefilled {
+                    original: "heroic-game.png".to_owned(),
+                    note: "From Heroic",
+                }),
+                ..Local::default()
+            },
+        );
+        if replaced {
+            let config = paths.environment_config("game");
+            let staged = config.with_extension("replacement");
+            std::fs::copy(&config, &staged).unwrap();
+            std::fs::rename(staged, config).unwrap();
+        }
+        let result = draft.apply(&paths, "game", identity);
+        let art = paths.art_dir("game");
+        if replaced {
+            let changed = "environment `game` changed before artwork could be written";
+            assert_eq!(
+                result.unwrap_err(),
+                format!("Could not store grid: {changed}\nCould not store hero: {changed}")
+            );
+            assert!(!art.join("hero.png").exists() && !art.join("grid.png").exists());
+        } else {
+            assert!(result.unwrap().is_empty());
+            assert!(art.join("hero.png").exists() && art.join("grid.png").exists());
+        }
+    }
+}
+
+#[test]
+fn held_art_is_published_only_into_the_environment_it_was_read_from() {
+    for replaced in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            "game",
+            None,
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let identity = EnvironmentIdentity::read(&paths, "game");
+        // Past the game record, which `apply` saves first under the same
+        // check, so this is the publish's own.
+        art::save_game(&paths, "game", 7).unwrap();
+        if replaced {
+            let config = paths.environment_config("game");
+            let staged = config.with_extension("replacement");
+            std::fs::copy(&config, &staged).unwrap();
+            std::fs::rename(staged, config).unwrap();
+        }
+        let draft = draft_with_held_grid();
+        let game = Game {
+            id: 7,
+            name: "game".into(),
+            year: None,
+        };
+        let (mut notes, mut failures) = (Vec::new(), Vec::new());
+        let missing = draft.publish_held(
+            &paths,
+            "game",
+            &game,
+            &[Kind::Grid],
+            identity,
+            (&mut notes, &mut failures),
+        );
+        assert!(missing.is_empty() && notes.is_empty());
+        let grid = paths.art_dir("game").join("grid.png");
+        if replaced {
+            assert_eq!(
+                failures,
+                [
+                    "Could not fetch grid: environment `game` changed before artwork could be written"
+                ]
+            );
+            assert!(!grid.exists());
+        } else {
+            assert!(failures.is_empty());
+            assert!(grid.exists());
+        }
+    }
+}
+
+#[test]
 fn apply_stores_held_art_without_a_request() {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
     let root = tempfile::tempdir().unwrap();
@@ -828,4 +946,47 @@ fn the_fetch_and_the_entry_are_told_apart() {
         fetch_art_parts((&paths, "game"), "Game", None, &token, &failing),
         (Err("offline".to_owned()), Ok(()))
     );
+}
+
+#[test]
+fn the_changed_message_is_the_one_core_says() {
+    let said = wineo_core::Error::ArtEnvironmentChanged("game".to_owned()).to_string();
+    assert!(environment_changed(&said), "{said}");
+    assert!(environment_changed(&format!("Art fetching failed: {said}")));
+    assert!(!environment_changed("offline"));
+}
+
+#[test]
+fn a_replacement_environments_entries_are_left_alone_after_a_fetch() {
+    for replaced in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let exe = root.path().join("notepad");
+        crate::test_script::write_script(&exe, "#!/bin/sh\nexit 0\n");
+        let config = paths.environment_config("game");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            format!(
+                "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = '{}'\ndesktop = true\n",
+                exe.display()
+            ),
+        )
+        .unwrap();
+        let identity = EnvironmentIdentity::read(&paths, "game");
+        if replaced {
+            let staged = config.with_extension("replacement");
+            std::fs::copy(&config, &staged).unwrap();
+            std::fs::rename(staged, &config).unwrap();
+        }
+        let fetcher: Fetcher = Arc::new(|_, _, _, _, _| Ok(Vec::new()));
+        let (fetched, entry) =
+            fetch_art_parts((&paths, "game"), "Game", identity, &Token::new(), &fetcher);
+        assert_eq!((fetched, entry), (Ok(Vec::new()), Ok(())));
+        let written = paths
+            .applications_dir()
+            .join("wineo-game-alt.desktop")
+            .exists();
+        assert_eq!(written, !replaced);
+    }
 }

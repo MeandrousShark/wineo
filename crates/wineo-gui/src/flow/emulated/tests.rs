@@ -698,13 +698,18 @@ fn a_finished_import_adds_play_cards_with_the_emulator_as_source_and_their_art()
     settle(&mut page);
     assert_eq!(page.step, Step::Review);
 
-    let fetched: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+    type Fetched = Vec<(String, String, Option<EnvironmentIdentity>)>;
+    let fetched: Arc<Mutex<Fetched>> = Arc::default();
     let seen = fetched.clone();
     let fetcher: Fetcher = Arc::new(
-        move |_: &Paths, name: &str, title: &str, _: Option<EnvironmentIdentity>, _: &Token| {
+        move |_: &Paths,
+              name: &str,
+              title: &str,
+              identity: Option<EnvironmentIdentity>,
+              _: &Token| {
             seen.lock()
                 .unwrap()
-                .push((name.to_owned(), title.to_owned()));
+                .push((name.to_owned(), title.to_owned(), identity));
             Ok(vec!["No artwork match".to_owned()])
         },
     );
@@ -734,11 +739,21 @@ fn a_finished_import_adds_play_cards_with_the_emulator_as_source_and_their_art()
         report.warnings,
         ["metroid-prime: No artwork match", "zelda: No artwork match"]
     );
+    // Each game's art is fetched against the config its import wrote.
+    let identity = |name: &str| {
+        let read = EnvironmentIdentity::read(&paths, name);
+        assert!(read.is_some());
+        read
+    };
     assert_eq!(
         *fetched.lock().unwrap(),
         [
-            ("metroid-prime".to_owned(), "Metroid Prime".to_owned()),
-            ("zelda".to_owned(), "Zelda".to_owned())
+            (
+                "metroid-prime".to_owned(),
+                "Metroid Prime".to_owned(),
+                identity("metroid-prime")
+            ),
+            ("zelda".to_owned(), "Zelda".to_owned(), identity("zelda"))
         ]
     );
 

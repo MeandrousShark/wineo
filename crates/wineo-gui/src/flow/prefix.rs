@@ -12,7 +12,9 @@ use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
-use super::artwork::{ArtOffer, FetchParts, Fetcher, default_fetcher, fetch_art_parts};
+use super::artwork::{
+    ArtOffer, FetchParts, Fetcher, default_fetcher, environment_changed, fetch_art_parts,
+};
 use super::frame;
 use crate::chips::input_style;
 use crate::runner_label;
@@ -548,16 +550,18 @@ impl Page {
             ]
             .spacing(14)
             .into(),
-            Step::ArtFailed => column![
-                text(self.art_failed_line()).color(palette.warning),
-                row![
-                    secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
-                    secondary_button("Skip artwork", palette).on_press(Event::SkipArt)
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .into(),
+            Step::ArtFailed => {
+                let mut actions = row![].spacing(8);
+                if self.retry_offered() {
+                    actions = actions
+                        .push(secondary_button("Retry artwork", palette).on_press(Event::RetryArt));
+                }
+                actions = actions
+                    .push(secondary_button("Skip artwork", palette).on_press(Event::SkipArt));
+                column![text(self.art_failed_line()).color(palette.warning), actions]
+                    .spacing(12)
+                    .into()
+            }
             Step::Finished => {
                 let mut finished = column![
                     text(format!(
@@ -651,6 +655,12 @@ impl Page {
         matches!(self.step, Step::Working) && !self.fetching
     }
 
+    /// Whether ArtFailed offers Retry. Not when the environment was replaced,
+    /// which a retry can only meet again.
+    fn retry_offered(&self) -> bool {
+        !(self.fetch_failed && self.error.as_deref().is_some_and(environment_changed))
+    }
+
     /// What ArtFailed says, by what failed: the fetch, or the desktop entry.
     fn art_failed_line(&self) -> String {
         format!(
@@ -701,6 +711,7 @@ impl Page {
         match self.step {
             Step::Details => self.begin_review(),
             Step::Review => self.begin_import(key_available),
+            Step::ArtFailed if !self.retry_offered() => self.skip_art(),
             Step::ArtFailed => self.retry_art(),
             Step::Finished => {
                 self.action = Some(super::Action::Library {
@@ -1004,7 +1015,7 @@ impl Page {
     }
 
     fn retry_art(&mut self) -> Task<Event> {
-        if self.step != Step::ArtFailed || self.busy() {
+        if self.step != Step::ArtFailed || self.busy() || !self.retry_offered() {
             return Task::none();
         }
         let Some(name) = self.imported_name.clone() else {

@@ -114,9 +114,15 @@ impl Page {
                 self.finish_art()
             }
             Err(error) => {
-                self.error = Some(format!(
-                    "Artwork failed: {error}. The environment is registered. Retry or skip artwork."
-                ));
+                // A replaced environment can't be written to again, so only
+                // Skip is offered for it.
+                self.error = Some(if crate::flow::artwork::environment_changed(&error) {
+                    format!("Artwork failed: {error}. The environment is registered. Skip artwork.")
+                } else {
+                    format!(
+                        "Artwork failed: {error}. The environment is registered. Retry or skip artwork."
+                    )
+                });
                 self.finish_art()
             }
         }
@@ -126,6 +132,13 @@ impl Page {
         let Some(registered) = &self.registered else {
             return Task::none();
         };
+        if self
+            .error
+            .as_deref()
+            .is_some_and(crate::flow::artwork::environment_changed)
+        {
+            return Task::none();
+        }
         let name = registered.environment.name.clone();
         // The one captured at registration, not a fresh read, so a retry
         // can't write into an environment that replaced it.

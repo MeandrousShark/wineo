@@ -491,34 +491,14 @@ impl Draft {
                 if let Err(error) = art::save_game_for(paths, name, game.0.id, identity, None) {
                     failures.push(format!("Art fetching failed: {error}"));
                 } else {
-                    let mut missing = Vec::new();
-                    for kind in kinds {
-                        if let Some(image) = self
-                            .remote
-                            .get(&kind)
-                            .and_then(|remote| remote.image.as_ref())
-                        {
-                            if let Err(error) = art_fetch::publish_for(
-                                paths,
-                                name,
-                                None,
-                                kind,
-                                image,
-                                Mode::Fill,
-                                identity,
-                            ) {
-                                failures.push(format!("Could not fetch {kind}: {error}"));
-                            }
-                        } else if self
-                            .remote
-                            .get(&kind)
-                            .is_some_and(|remote| remote.none_found)
-                        {
-                            notes.push(format!("No {kind} artwork found for {}", game.0.name));
-                        } else {
-                            missing.push(kind);
-                        }
-                    }
+                    let missing = self.publish_held(
+                        paths,
+                        name,
+                        &game.0,
+                        &kinds,
+                        identity,
+                        (&mut notes, &mut failures),
+                    );
                     if !missing.is_empty() {
                         let fetched = fetch(
                             (paths, name),
@@ -540,6 +520,43 @@ impl Draft {
         } else {
             Err(failures.join("\n"))
         }
+    }
+
+    /// Publishes the kinds already downloaded for the preview, only into the
+    /// environment `identity` was read from, and returns the kinds that still
+    /// need fetching.
+    fn publish_held(
+        &self,
+        paths: &Paths,
+        name: &str,
+        game: &Game,
+        kinds: &[Kind],
+        identity: Option<EnvironmentIdentity>,
+        (notes, failures): (&mut Vec<String>, &mut Vec<String>),
+    ) -> Vec<Kind> {
+        let mut missing = Vec::new();
+        for &kind in kinds {
+            if let Some(image) = self
+                .remote
+                .get(&kind)
+                .and_then(|remote| remote.image.as_ref())
+            {
+                if let Err(error) =
+                    art_fetch::publish_for(paths, name, None, kind, image, Mode::Fill, identity)
+                {
+                    failures.push(format!("Could not fetch {kind}: {error}"));
+                }
+            } else if self
+                .remote
+                .get(&kind)
+                .is_some_and(|remote| remote.none_found)
+            {
+                notes.push(format!("No {kind} artwork found for {}", game.name));
+            } else {
+                missing.push(kind);
+            }
+        }
+        missing
     }
 
     pub(crate) fn view(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
@@ -1097,6 +1114,12 @@ impl ArtOffer {
         };
         Some(text(note).size(12).color(palette.muted).into())
     }
+}
+
+/// Whether an artwork failure is the environment having been replaced. Trying
+/// again can only fail the same way, so a flow offers just Skip for it.
+pub(crate) fn environment_changed(error: &str) -> bool {
+    error.contains(" changed before artwork could be written")
 }
 
 /// What the fetch and the desktop entry reapply after it each came to, apart

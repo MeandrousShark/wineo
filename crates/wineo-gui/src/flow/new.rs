@@ -27,7 +27,7 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
-use super::artwork::{ArtOffer, Fetcher, default_fetcher, fetch_art};
+use super::artwork::{ArtOffer, Fetcher, default_fetcher, environment_changed, fetch_art};
 use super::{Action, frame};
 use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
@@ -1528,7 +1528,11 @@ impl Page {
             }
             Event::RetryArt
                 if self.stage == Stage::Finished
-                    && self.report.as_ref().is_some_and(|r| r.art_error.is_some()) =>
+                    && self.report.as_ref().is_some_and(|r| {
+                        r.art_error
+                            .as_deref()
+                            .is_some_and(|e| !environment_changed(e))
+                    }) =>
             {
                 return self.start_fetch();
             }
@@ -2069,10 +2073,13 @@ impl Page {
                     }
                     if let Some(error) = &report.art_error {
                         body = body.push(text(format!("Artwork: {error}")).color(palette.warning));
-                        body = body.push(
-                            ui::secondary_button("Retry artwork", palette)
-                                .on_press(Event::RetryArt),
-                        );
+                        // A replaced environment can't be fetched into again.
+                        if !environment_changed(error) {
+                            body = body.push(
+                                ui::secondary_button("Retry artwork", palette)
+                                    .on_press(Event::RetryArt),
+                            );
+                        }
                         body = body.push(
                             ui::secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
                         );
@@ -2717,7 +2724,7 @@ fn perform(
             }
         };
         let exe = (draft.source == Source::Executable).then_some(draft.path.as_str());
-        match Environment::create_native_titled(
+        match Environment::create_native_identified(
             paths,
             &global,
             name,
@@ -2726,8 +2733,9 @@ fn perform(
             draft.desktop,
             |warning| report.notes.push(warning),
         ) {
-            Ok(environment) => {
+            Ok((environment, identity)) => {
                 report.registered = true;
+                report.identity = identity;
                 report.playable = exe.is_some();
                 progress("Native environment registered".to_owned());
                 if let Err(error) = desktop::reconcile_native(paths, &global, &environment) {

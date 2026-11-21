@@ -1034,6 +1034,71 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
     assert_eq!(files, saved_files);
 }
 
+/// Runs `write` while the art lock is held elsewhere, replaces the
+/// environment once it is waiting for the lock, and returns what it did after
+/// the lock is let go. A check made before the lock would already have passed.
+fn replaced_while_waiting_for_the_art_lock<R: Send + 'static>(
+    paths: &Paths,
+    write: impl FnOnce() -> R + Send + 'static,
+) -> R {
+    let art_dir = paths.art_dir("game");
+    fs::create_dir_all(&art_dir).unwrap();
+    let held = wineo_core::operation::Locks::new(paths)
+        .config(&art_dir.join(art::ART_FILE))
+        .unwrap();
+    let (started, ready) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        write()
+    });
+    ready
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!worker.is_finished());
+    let config = paths.environment_config("game");
+    let replacement = config.with_extension("replacement");
+    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
+    fs::rename(replacement, config).unwrap();
+    drop(held);
+    worker.join().unwrap()
+}
+
+#[test]
+fn remove_checks_identity_under_the_art_lock() {
+    let (root, paths, page) = fixture();
+    let source = png(root.path());
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    let grid = paths.art_dir("game").join("grid.png");
+    let outcome = replaced_while_waiting_for_the_art_lock(&paths, {
+        let paths = paths.clone();
+        let identity = page.identity;
+        move || write_art_for(&paths, "game", identity, &(None, Kind::Grid), None)
+    });
+    assert!(!outcome.changed());
+    // The page's own words for a changed environment.
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("environment changed before artwork could be removed")
+    );
+    assert!(grid.exists());
+}
+
+#[test]
+fn saving_a_game_checks_identity_under_the_art_lock() {
+    let (_root, paths, page) = fixture();
+    let result = replaced_while_waiting_for_the_art_lock(&paths, {
+        let paths = paths.clone();
+        let identity = page.identity;
+        move || save_game(&paths, "game", 77, identity)
+    });
+    assert_eq!(
+        result,
+        Err("environment changed before its game could be saved".to_owned())
+    );
+    assert_eq!(art::saved_game(&paths, "game").unwrap(), None);
+}
+
 /// Environment plus three long target names is the most the toggle row
 /// shows before it becomes a pick list.
 #[test]

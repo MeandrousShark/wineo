@@ -1473,6 +1473,17 @@ pub(crate) fn write_art(
     write_art_for(paths, name, identity, spot, path)
 }
 
+/// The page's message for an environment that changed under a write, and the
+/// error's own for anything else. `what` is what could not be done to the art.
+fn changed_or(error: wineo_core::Error, what: &str) -> String {
+    match error {
+        wineo_core::Error::ArtEnvironmentChanged(_) => {
+            format!("environment changed before artwork could be {what}")
+        }
+        error => error.to_string(),
+    }
+}
+
 fn write_art_for(
     paths: &Paths,
     name: &str,
@@ -1490,18 +1501,12 @@ fn write_art_for(
             }
             art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, Some(identity))
                 .map(|_| ())
-                .map_err(|error| error.to_string())
+                .map_err(|error| changed_or(error, "written"))
         }),
-        None => {
-            if EnvironmentIdentity::read(paths, name) != Some(identity) {
-                return WriteOutcome::failed(
-                    "environment changed before artwork could be removed".into(),
-                );
-            }
-            art::remove(paths, name, spot.0.as_deref(), spot.1, None)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        }
+        // Checked under the art lock, with the removal.
+        None => art::remove(paths, name, spot.0.as_deref(), spot.1, Some(identity))
+            .map(|_| ())
+            .map_err(|error| changed_or(error, "removed")),
     };
     if let Err(error) = result {
         return WriteOutcome::failed(error);

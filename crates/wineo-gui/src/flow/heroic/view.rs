@@ -591,16 +591,25 @@ impl Page {
                     body = body.push(text(line).size(13));
                 }
                 if self.registered.is_some() && self.error.is_some() && self.token.is_none() {
-                    actions = Some(
-                        row![
-                            secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
-                            secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
-                        ]
-                        .spacing(12)
-                        .wrap()
-                        .vertical_spacing(8)
-                        .into(),
+                    let mut buttons: Vec<Element<'_, Event>> = Vec::new();
+                    // A replaced environment can't be written to again.
+                    if !self
+                        .error
+                        .as_deref()
+                        .is_some_and(crate::flow::artwork::environment_changed)
+                    {
+                        buttons.push(
+                            secondary_button("Retry artwork", palette)
+                                .on_press(Event::RetryArt)
+                                .into(),
+                        );
+                    }
+                    buttons.push(
+                        secondary_button("Skip artwork", palette)
+                            .on_press(Event::SkipArt)
+                            .into(),
                     );
+                    actions = Some(row(buttons).spacing(12).wrap().vertical_spacing(8).into());
                 } else if let Some(token) = &self.token {
                     let (label, event) = if token.is_canceled() {
                         ("Force stop", Event::Force)

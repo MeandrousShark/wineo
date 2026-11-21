@@ -47,6 +47,8 @@ struct Call {
     /// What `busy_with` said about the environment's lock.
     lock: String,
     canceled: bool,
+    /// The identity the fetch was told the environment had.
+    identity: Option<EnvironmentIdentity>,
 }
 
 type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
@@ -57,7 +59,7 @@ type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, _, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, identity, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -68,6 +70,7 @@ fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
             registered: paths.environment_config(name).exists(),
             lock,
             canceled: token.is_canceled(),
+            identity,
         });
         if token.is_canceled() {
             return Err("canceled".to_owned());
@@ -188,8 +191,11 @@ fn the_fetch_runs_after_the_import_and_never_inside_its_worker() {
             registered: true,
             lock: "Ok(None)".to_owned(),
             canceled: false,
+            // Read under the import's config lock, and still the config's.
+            identity: EnvironmentIdentity::read(&page.paths, "imported"),
         }]
     );
+    assert!(calls.lock().unwrap()[0].identity.is_some());
     assert_eq!(page.step, Step::Finished);
     assert_eq!(page.notes, ["No logo artwork found"]);
     assert!(page.error.is_none());
@@ -335,8 +341,10 @@ fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
     page.fetch_art = true;
     page.step = Step::Working;
     let generation = page.generation;
+    native_environment(&page.paths.clone(), root.path(), "hollow-knight");
+    let identity = EnvironmentIdentity::read(&page.paths, "hollow-knight");
     let outcome = ImportOutcome {
-        identity: None,
+        identity,
         name: "hollow-knight".to_owned(),
         entry_error: None,
     };
@@ -349,6 +357,66 @@ fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "hollow-knight");
     assert_eq!(calls[0].title, "Hollow Knight");
+    // What the import registered, handed on to the fetch.
+    assert!(identity.is_some());
+    assert_eq!(calls[0].identity, identity);
+}
+
+/// Swaps the environment's config for a copy, which is a different file as
+/// far as its identity goes.
+fn replace_environment(paths: &Paths, name: &str) {
+    let config = paths.environment_config(name);
+    let staged = config.with_extension("replacement");
+    fs::copy(&config, &staged).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+#[test]
+fn a_retry_fetches_with_the_identity_the_import_registered() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, calls) = reviewed(root.path());
+    page.imported_name = Some("imported".to_owned());
+    page.fetch_art = true;
+    let paths = page.paths.clone();
+    native_environment(&paths, root.path(), "imported");
+    let registered = EnvironmentIdentity::read(&paths, "imported");
+    page.imported_identity = registered;
+    replace_environment(&paths, "imported");
+    // What a fresh read would now say, which a retry must not use.
+    assert_ne!(EnvironmentIdentity::read(&paths, "imported"), registered);
+    page.step = Step::ArtFailed;
+    page.fetch_failed = true;
+    page.error = Some("offline".to_owned());
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].identity, registered);
+}
+
+#[test]
+fn a_replaced_environment_is_only_skipped_never_retried() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, calls) = reviewed(root.path());
+    page.imported_name = Some("imported".to_owned());
+    page.fetch_art = true;
+    page.step = Step::ArtFailed;
+    page.fetch_failed = true;
+    page.error = Some("environment `imported` changed before artwork could be written".to_owned());
+    assert!(!page.retry_offered());
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 0);
+    assert_eq!(page.step, Step::ArtFailed);
+    // Ctrl+Enter takes the one choice there is.
+    let task = page.submit(true);
+    drive(&mut page, task, true);
+    assert_eq!(call_count(&calls), 0);
+    assert_eq!(page.step, Step::Finished);
+    // Any other failure keeps its Retry.
+    page.step = Step::ArtFailed;
+    page.error = Some("offline".to_owned());
+    assert!(page.retry_offered());
 }
 
 /// Registers a native environment `name` with a desktop target. Creation
