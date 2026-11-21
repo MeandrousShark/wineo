@@ -4119,7 +4119,11 @@ fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
 /// SteamGridDB's answers for a game with an icon, and nothing else, by
 /// address.
 #[derive(Clone)]
-struct Canned(Arc<std::collections::HashMap<String, (u16, Vec<u8>)>>);
+struct Canned(
+    Arc<std::collections::HashMap<String, (u16, Vec<u8>)>>,
+    // Runs the first time an image is asked for.
+    Option<Arc<dyn Fn() + Send + Sync>>,
+);
 
 impl wineo_core::download::Transport for Canned {
     fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
@@ -4131,6 +4135,11 @@ impl wineo_core::download::Transport for Canned {
         url: &str,
         _: Option<&str>,
     ) -> anyhow::Result<wineo_core::download::Response> {
+        if url.contains("/icons/")
+            && let Some(hook) = &self.1
+        {
+            hook();
+        }
         let Some((status, body)) = self.0.get(url) else {
             anyhow::bail!("connection to {url} failed");
         };
@@ -4166,7 +4175,7 @@ fn canned_hades() -> Canned {
         "https://cdn.example/1".to_owned(),
         (200, ONE_PIXEL_PNG.to_vec()),
     );
-    Canned(Arc::new(answers))
+    Canned(Arc::new(answers), None)
 }
 
 #[test]
@@ -4216,4 +4225,46 @@ fn art_lands_after_a_target_was_added_to_the_new_environment() {
     let entry = std::fs::read_to_string(paths.applications_dir().join("wineo-hades-hades.desktop"))
         .unwrap();
     assert!(entry.contains("\nIcon=wineo-hades-hades\n"), "{entry}");
+}
+
+#[test]
+fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
+    let (page, _) = registered(true);
+    let paths = page.paths.clone();
+    Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        false,
+        |_| {},
+    )
+    .unwrap();
+    let replace = {
+        let paths = paths.clone();
+        Arc::new(move || {
+            let config = paths.environment_config("hades");
+            let staged = config.with_extension("replacement");
+            std::fs::copy(&config, &staged).unwrap();
+            std::fs::rename(staged, config).unwrap();
+        })
+    };
+    let mut answers = canned_hades();
+    answers.1 = Some(replace);
+    let result = crate::flow::artwork::fetch_default_over(
+        &paths,
+        "hades",
+        "Hades",
+        &Token::new(),
+        &move || Ok((Box::new(answers.clone()), "key".to_owned())),
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.starts_with(
+            "Could not fetch icon: environment `hades` changed before artwork could be written"
+        ),
+        "{error}"
+    );
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
 }
