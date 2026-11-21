@@ -1274,13 +1274,17 @@ fn create<I: Input, W: Write>(
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     match (how, step) {
-        (_, Stepped::Stopped(err)) => return Err(err),
+        (_, Stepped::Stopped(err)) => {
+            art_not_fetched(prompt, &name, picked.is_some())?;
+            return Err(err);
+        }
         (How::Nothing, _) => {
             return setup::finish(paths, global, &name, prompt, &batch);
         }
         (How::Installer(_), Stepped::NotPrepared(err)) => {
             prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
             setup::report_recovery(paths, &name, prompt)?;
+            art_not_fetched(prompt, &name, picked.is_some())?;
             return Ok(ExitCode::FAILURE);
         }
         (How::Installer(_), Stepped::Ran { outcome, resolved }) => {
@@ -1317,7 +1321,10 @@ fn create<I: Input, W: Write>(
                     }
                     picker::pick(prompt, &place, &mut batch).map(|_| ())?
                 }
-                Ran::Ended(code) => return Ok(code),
+                Ran::Ended(code) => {
+                    art_not_fetched(prompt, &name, picked.is_some())?;
+                    return Ok(code);
+                }
                 Ran::Back => unreachable!("an installer that ran never goes back"),
             }
         }
@@ -1340,6 +1347,19 @@ fn create<I: Input, W: Write>(
         // Keeping on editing is what `setup` is for.
         Reply::Back => setup::menu(paths, global, &name, prompt, &place, batch),
     }
+}
+
+/// Says a game picked before the installer got no art, because the installer
+/// didn't finish.
+fn art_not_fetched<I: Input, W: Write>(
+    prompt: &mut Prompt<I, W>,
+    name: &str,
+    picked: bool,
+) -> anyhow::Result<()> {
+    if picked {
+        prompt.say(crate::commands::new::art_not_fetched(name))?;
+    }
+    Ok(())
 }
 
 /// The guided side of creating a Wine environment, and of its installer.

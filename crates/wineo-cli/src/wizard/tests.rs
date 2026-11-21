@@ -269,6 +269,35 @@ fn yes_searches_the_term_after_creating() {
     );
     assert_eq!(saved_game(&world), Some(7));
     assert!(world.paths.art_dir("hades").join("icon.png").exists());
+    assert!(!transcript.contains("Art not fetched"), "{transcript}");
+}
+
+#[test]
+fn an_installer_that_cant_be_prepared_says_the_art_was_not_fetched() {
+    let world = world();
+    install_runner(&world);
+    let program = program(&world);
+    // The installer goes away while the environment is being created.
+    write_script(
+        world._root.path().join("runners/fake/bin/wine"),
+        format!("#!/bin/sh\ncase \"$*\" in\n*reg*) rm -f '{program}' ;;\nesac\nexit 0\n"),
+    );
+    let answers = art_after(&["1", &program], &["1"]);
+    let (result, transcript, seen) = wizard_probed(&world, &borrowed(&answers));
+    assert!(
+        matches!(&result, Ok(code) if *code == ExitCode::FAILURE),
+        "{result:?}\n{transcript}"
+    );
+    assert_eq!(
+        transcript
+            .matches("Art not fetched. Run `wineo art fetch hades` to fetch it.\n")
+            .count(),
+        1,
+        "{transcript}"
+    );
+    // Only the search ran, and nothing was stored.
+    assert_eq!(seen.len(), 1, "{transcript}");
+    assert_eq!(saved_game(&world), None);
 }
 
 #[test]

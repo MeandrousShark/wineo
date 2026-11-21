@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
@@ -108,7 +109,14 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             args.art.then_some(&access),
         );
     }
-    new_wine(paths, args, &name, &access)
+    new_wine(
+        paths,
+        args,
+        &name,
+        &access,
+        &Token::new(),
+        &mut crate::output::stdout(),
+    )
 }
 
 /// Creates a Wine environment, and runs the installer in it when asked.
@@ -117,6 +125,8 @@ fn new_wine(
     args: Args,
     name: &str,
     access: &Access<'_>,
+    install_token: &Token,
+    out: &mut dyn Write,
 ) -> anyhow::Result<ExitCode> {
     // Checked up front so a typo fails before the prefix creation wait.
     if let Some(installer) = &args.install_exe {
@@ -149,11 +159,10 @@ fn new_wine(
     } else {
         None
     };
-    let install_token = Token::new();
     let step = args.install_exe.as_deref().map(|program| Step::Installer {
         program,
         output: Output::Inherit,
-        token: &install_token,
+        token: install_token,
     });
     let mut hooks = WineHooks {
         paths,
@@ -172,99 +181,115 @@ fn new_wine(
         Err(err) => return Err(err),
     };
     let name = &created.environment.name;
-    let (outcome, resolved) = match created.step {
-        Stepped::Stopped(code) => return code,
-        Stepped::None => {
-            // The create lock is already released, so a slow SteamGridDB only
-            // holds up this command.
-            if args.art && fetch_art(paths, &created.global, name, access).is_err() {
-                eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
-                return Ok(cancel::exit_code());
+    let downloaded = Cell::new(false);
+    let result = (|| -> anyhow::Result<ExitCode> {
+        let (outcome, resolved) = match created.step {
+            Stepped::Stopped(code) => return code,
+            Stepped::None => {
+                // The create lock is already released, so a slow SteamGridDB only
+                // holds up this command.
+                if args.art && fetch_art(paths, &created.global, name, access).is_err() {
+                    eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
+                    return Ok(cancel::exit_code());
+                }
+                if args.exe.is_none() {
+                    println!("Add a target with: wineo set {name} targets.<target>.exe=<path>");
+                }
+                return Ok(ExitCode::SUCCESS);
             }
-            if args.exe.is_none() {
-                println!("Add a target with: wineo set {name} targets.<target>.exe=<path>");
-            }
-            return Ok(ExitCode::SUCCESS);
-        }
-        Stepped::NotPrepared(err) => {
-            note(&format!("error: {:#}", anyhow::Error::from(err)));
-            note(&setup::recovery_message(paths, name));
-            return Ok(ExitCode::FAILURE);
-        }
-        Stepped::Ran { outcome, resolved } => (outcome, resolved),
-    };
-
-    let next = create::after_install(&outcome, resolved);
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(err) => {
-            note(&format!("error: {:#}", anyhow::Error::from(err)));
-            note(&setup::recovery_message(paths, name));
-            return Ok(ExitCode::FAILURE);
-        }
-    };
-    match outcome {
-        Outcome::Finished { exit_code } => {
-            let code = exit_code.unwrap_or(1);
-            match exit_code {
-                Some(0) => {}
-                Some(code) => eprintln!("The installer exited with code {code}."),
-                None => eprintln!("The installer's exit code could not be collected"),
-            }
-            if next != AfterInstall::Programs {
-                note("The installer finished, but cleanup is unresolved.");
+            Stepped::NotPrepared(err) => {
+                note(&format!("error: {:#}", anyhow::Error::from(err)));
                 note(&setup::recovery_message(paths, name));
                 return Ok(ExitCode::FAILURE);
             }
-            if exit_code != Some(0) {
+            Stepped::Ran { outcome, resolved } => (outcome, resolved),
+        };
+
+        let next = create::after_install(&outcome, resolved);
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                note(&format!("error: {:#}", anyhow::Error::from(err)));
                 note(&setup::recovery_message(paths, name));
+                return Ok(ExitCode::FAILURE);
             }
-            if let Some((key, picked)) = &picked {
-                // Nothing listens for the installer's Ctrl+C from here on.
-                drop(hooks.cancellation.take());
-                let request = AutoFetch {
-                    env: name,
-                    term: name,
-                    kinds: created.global.art.fetch,
-                };
-                access.fetch_picked(
-                    paths,
-                    key,
-                    &request,
-                    picked,
-                    &mut crate::output::stdout(),
-                    &mut crate::output::stderr(),
-                );
+        };
+        match outcome {
+            Outcome::Finished { exit_code } => {
+                let code = exit_code.unwrap_or(1);
+                match exit_code {
+                    Some(0) => {}
+                    Some(code) => eprintln!("The installer exited with code {code}."),
+                    None => eprintln!("The installer's exit code could not be collected"),
+                }
+                if next != AfterInstall::Programs {
+                    note("The installer finished, but cleanup is unresolved.");
+                    note(&setup::recovery_message(paths, name));
+                    return Ok(ExitCode::FAILURE);
+                }
+                if exit_code != Some(0) {
+                    note(&setup::recovery_message(paths, name));
+                }
+                if let Some((key, picked)) = &picked {
+                    // Nothing listens for the installer's Ctrl+C from here on.
+                    drop(hooks.cancellation.take());
+                    let request = AutoFetch {
+                        env: name,
+                        term: name,
+                        kinds: created.global.art.fetch,
+                    };
+                    access.fetch_picked(
+                        paths,
+                        key,
+                        &request,
+                        picked,
+                        out,
+                        &mut crate::output::stderr(),
+                    );
+                    downloaded.set(true);
+                }
+                match installed(&created.prefix) {
+                    Some(listing) => programs::report(name, &listing, false),
+                    None => {
+                        println!("Add a target with: wineo set {name} targets.<target>.exe=<path>")
+                    }
+                }
+                Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
             }
-            match installed(&created.prefix) {
-                Some(listing) => programs::report(name, &listing, false),
-                None => println!("Add a target with: wineo set {name} targets.<target>.exe=<path>"),
+            Outcome::Canceled { .. } => {
+                note("Installer canceled.");
+                note(&setup::recovery_message(paths, name));
+                Ok(cancel::exit_code())
             }
-            Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+            Outcome::Unresolved {
+                exit_code, error, ..
+            } => {
+                // Both failures are reported, but the one that leaves something
+                // possibly still running decides what to do next.
+                note(&format!(
+                    "error: couldn't confirm the installer's processes stopped: {:#}",
+                    anyhow::Error::from(error)
+                ));
+                match exit_code {
+                    Some(0) => note("The installer itself finished"),
+                    Some(code) => note(&format!("The installer exited with code {code}")),
+                    None => {}
+                }
+                note(&setup::recovery_message(paths, name));
+                Ok(ExitCode::FAILURE)
+            }
         }
-        Outcome::Canceled { .. } => {
-            note("Installer canceled.");
-            note(&setup::recovery_message(paths, name));
-            Ok(cancel::exit_code())
-        }
-        Outcome::Unresolved {
-            exit_code, error, ..
-        } => {
-            // Both failures are reported, but the one that leaves something
-            // possibly still running decides what to do next.
-            note(&format!(
-                "error: couldn't confirm the installer's processes stopped: {:#}",
-                anyhow::Error::from(error)
-            ));
-            match exit_code {
-                Some(0) => note("The installer itself finished"),
-                Some(code) => note(&format!("The installer exited with code {code}")),
-                None => {}
-            }
-            note(&setup::recovery_message(paths, name));
-            Ok(ExitCode::FAILURE)
-        }
+    })();
+    if picked.is_some() && !downloaded.get() {
+        let _ = writeln!(out, "{}", art_not_fetched(name));
     }
+    result
+}
+
+/// Said when the game picked for an installer's environment gets no art,
+/// because the installer didn't finish.
+pub(crate) fn art_not_fetched(name: &str) -> String {
+    format!("Art not fetched. Run `wineo art fetch {name}` to fetch it.")
 }
 
 /// The terminal side of creating a Wine environment, and of its installer.
@@ -741,6 +766,8 @@ mod tests {
         _root: tempfile::TempDir,
         paths: Paths,
         code: anyhow::Result<ExitCode>,
+        /// What went to stdout for the art.
+        out: String,
         seen: Rc<RefCell<Vec<Seen>>>,
     }
 
@@ -764,13 +791,26 @@ mod tests {
     }
 
     fn new_with_runner(fake: Fake, installer: bool, runner: &str) -> Run {
+        let wine = |_: &Path| "#!/bin/sh\nexit 0\n".to_owned();
+        new_with(fake, installer, runner, &wine, &Token::new(), &|_| {})
+    }
+
+    /// `new_with_art` with its own fake wine, which gets the temporary root,
+    /// and a `before` that runs once everything is in place, given the root.
+    fn new_with(
+        fake: Fake,
+        installer: bool,
+        runner: &str,
+        wine: &dyn Fn(&Path) -> String,
+        token: &Token,
+        before: &dyn Fn(&Path),
+    ) -> Run {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         let runner_dir = paths.default_runner_root().join("test-wine/bin");
         fs::create_dir_all(&runner_dir).unwrap();
-        for exe in ["wine", "wineserver"] {
-            write_script(runner_dir.join(exe), "#!/bin/sh\nexit 0\n");
-        }
+        write_script(runner_dir.join("wine"), wine(root.path()));
+        write_script(runner_dir.join("wineserver"), "#!/bin/sh\nexit 0\n");
         let prefix = root.path().join("prefixes/hades");
         fs::create_dir_all(&prefix).unwrap();
         fs::write(prefix.join("system.reg"), "#arch=win64\n").unwrap();
@@ -804,13 +844,16 @@ mod tests {
                 }))
             }),
         };
-        let code = new_wine(&paths, args, "hades", &access);
+        before(root.path());
+        let mut out = Vec::new();
+        let code = new_wine(&paths, args, "hades", &access, token, &mut out);
         drop(access);
         Run {
             _root: root,
             paths,
             code,
             seen,
+            out: String::from_utf8(out).unwrap(),
         }
     }
 
@@ -863,6 +906,70 @@ mod tests {
         assert!(err.to_string().contains("missing-wine"), "{err:#}");
         assert!(run.seen.borrow().is_empty());
         assert!(!run.paths.environment_config("hades").exists());
+    }
+
+    const NOT_FETCHED: &str = "Art not fetched. Run `wineo art fetch hades` to fetch it.\n";
+
+    #[test]
+    fn a_finished_installer_gets_its_art_and_no_hint() {
+        let run = new_with_art(hades(), true);
+        assert!(
+            run.out.contains("icon: fetched SteamGridDB 1\n"),
+            "{}",
+            run.out
+        );
+        assert!(!run.out.contains("Art not fetched"), "{}", run.out);
+    }
+
+    #[test]
+    fn an_installer_that_cant_be_prepared_says_the_art_was_not_fetched() {
+        // The installer goes away while the environment is being created.
+        let wine = |root: &Path| {
+            format!(
+                "#!/bin/sh\nrm -f '{}'\nexit 0\n",
+                root.join("game.exe").display()
+            )
+        };
+        let run = new_with(hades(), true, "test-wine", &wine, &Token::new(), &|_| {});
+        assert_eq!(run.code.as_ref().unwrap(), &ExitCode::FAILURE);
+        assert_eq!(run.out.matches(NOT_FETCHED).count(), 1, "{}", run.out);
+        assert!(!run.out.contains("icon:"), "{}", run.out);
+        assert_eq!(
+            wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_canceled_installer_says_the_art_was_not_fetched() {
+        // The installer runs until wine is asked to end the session, with a
+        // bound so a failed test can't leave it running.
+        let wine = |root: &Path| {
+            let (started, stop) = (root.join("started"), root.join("stop"));
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n*wineboot*) touch '{stop}'; exit 0 ;;\n*game.exe*)\ntouch '{started}'\ni=0\nwhile [ ! -e '{stop}' ] && [ \"$i\" -lt 200 ]; do sleep 0.1; i=$((i + 1)); done\n;;\nesac\nexit 0\n",
+                started = started.display(),
+                stop = stop.display(),
+            )
+        };
+        let token = Token::new();
+        // Stands in for Ctrl+C once the installer is running.
+        let cancel = |root: &Path| {
+            let (marker, token) = (root.join("started"), token.clone());
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if marker.exists() {
+                        token.cancel();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            });
+        };
+        let run = new_with(hades(), true, "test-wine", &wine, &token, &cancel);
+        assert_eq!(run.code.as_ref().unwrap(), &cancel::exit_code());
+        assert_eq!(run.out.matches(NOT_FETCHED).count(), 1, "{}", run.out);
+        assert!(!run.out.contains("icon:"), "{}", run.out);
     }
 
     #[test]

@@ -286,7 +286,9 @@ With an installer the search and pick list run before anything is created, so
 every question still comes before the wait, and the download runs after the
 installer finishes. Ctrl+C at that early pick list creates nothing. The
 download is skipped when the installer is canceled, can't start, or leaves
-cleanup unresolved. The desktop entry picks up the icon afterwards.
+cleanup unresolved. If a game was picked, `new` then prints one line saying
+the art was not fetched, with `wineo art fetch NAME` to run instead. The
+desktop entry picks up the icon afterwards.
 
 Failures never stop the flow. A rejected key, a failed download, or a
 search with no matches when there's no pick list prints a warning such as
