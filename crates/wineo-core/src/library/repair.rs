@@ -1261,7 +1261,7 @@ fn valid_view_field(key: &str, item: &Item) -> bool {
         "random" => item.as_str().and_then(RandomPool::parse).is_some(),
         "layout" => item.as_str().is_some(),
         "group" => item.as_str().and_then(GroupBy::parse).is_some(),
-        "coverflow_fullscreen" => item.as_bool().is_some(),
+        "coverflow_fullscreen" | "advanced_settings" => item.as_bool().is_some(),
         _ => true,
     }
 }
