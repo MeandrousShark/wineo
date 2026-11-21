@@ -426,6 +426,12 @@ pub(crate) struct App {
     fullscreen: fullscreen::Owner,
     /// `[view] coverflow_fullscreen`, as saved.
     coverflow_fullscreen: bool,
+    /// `[view] advanced_settings`: Settings' Show advanced settings switch,
+    /// which both settings pages read. It holds what was flipped even when
+    /// the write is refused.
+    advanced_settings: bool,
+    /// Why the switch's last write was refused, until one lands.
+    advanced_settings_error: Option<sort_control::Refused>,
     close_prompt: bool,
     /// A number key or Esc whose press reached an open flow, so its repeats
     /// are dropped even after the flow closes.
@@ -889,6 +895,8 @@ impl App {
             windowed_size: iced::Size::new(1200.0, 800.0),
             fullscreen: fullscreen::Owner::Nobody,
             coverflow_fullscreen: false,
+            advanced_settings: false,
+            advanced_settings_error: None,
             close_prompt: false,
             flow_held_key: None,
             close_quietly: false,
@@ -942,6 +950,7 @@ impl App {
         app.random_pool = saved.view.random;
         app.layout = saved.view.layout;
         app.coverflow_fullscreen = saved.view.coverflow_fullscreen;
+        app.advanced_settings = saved.view.advanced_settings;
         app.fullscreen = app.fullscreen_at_start();
         app.group = saved.view.group;
         app.list_widths = list_view::Widths::saved(&saved.view.list_columns);

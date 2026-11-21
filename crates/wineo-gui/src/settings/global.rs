@@ -10,7 +10,8 @@ use wineo_core::paths::Paths;
 
 use super::appearance;
 use super::form::{Edits, EnvRow, Switch, env_problem};
-use super::load::RunnerChoice;
+use super::load::{LibraryEdits, RunnerChoice};
+use super::tabs::Tab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Field {
@@ -349,9 +350,22 @@ impl Form {
             + usize::from(self.draft.desktop.on_stop != self.loaded.desktop.on_stop)
             + usize::from(!same_input(&self.draft.input, &self.loaded.input))
     }
+    /// The edits to keys on the Advanced tab, which Show advanced settings
+    /// can't hide.
+    pub(crate) fn advanced_changes(&self) -> usize {
+        let edits = self.edits();
+        edits
+            .pairs
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .chain(edits.unset.iter().map(String::as_str))
+            .chain(library_keys(&self.library_edits()))
+            .filter(|key| tab_of(key) == Some(Tab::Advanced))
+            .count()
+    }
     /// What to save to `library.toml`, if anything changed there.
-    pub(crate) fn library_edits(&self) -> super::load::LibraryEdits {
-        super::load::LibraryEdits {
+    pub(crate) fn library_edits(&self) -> LibraryEdits {
+        LibraryEdits {
             auto_import: self.auto_import_edit(),
             desktop: (self.draft.desktop != self.loaded.desktop).then_some(self.draft.desktop),
             coverflow_fullscreen: self.coverflow_fullscreen_edit(),
@@ -484,6 +498,54 @@ impl Form {
         }
         edits
     }
+}
+
+/// The tab whose controls edit `key`, a key `Form::edits` writes to the
+/// config file or one `library_keys` names. None for a key no tab claims,
+/// which the partition test refuses.
+pub(crate) fn tab_of(key: &str) -> Option<Tab> {
+    match key {
+        "gamemode"
+        | "mangohud"
+        | "wayland"
+        | "art.fetch"
+        | "retroarch.quit_with_game"
+        | "desktop"
+        | "view.coverflow_fullscreen" => Some(Tab::General),
+        "input" => Some(Tab::Controller),
+        "defaults.games_root" | "gog.language" | "steam.auto_import" => Some(Tab::Stores),
+        "defaults.runner"
+        | "defaults.arch"
+        | "defaults.prefix_root"
+        | "defaults.runner_root"
+        | "defaults.dxvk_root"
+        | "defaults.vkd3d_root"
+        | "external_runners"
+        | "stop_timeout"
+        | "log_limit_mb" => Some(Tab::Advanced),
+        _ if key.starts_with("env.") => Some(Tab::Advanced),
+        _ => None,
+    }
+}
+
+/// The `library.toml` parts `edits` changes, named for `tab_of`.
+pub(crate) fn library_keys(edits: &LibraryEdits) -> Vec<&'static str> {
+    // Named in full, so a new part can't be left out.
+    let LibraryEdits {
+        auto_import,
+        desktop,
+        coverflow_fullscreen,
+        input,
+    } = edits;
+    [
+        auto_import.map(|_| "steam.auto_import"),
+        desktop.map(|_| "desktop"),
+        coverflow_fullscreen.map(|_| "view.coverflow_fullscreen"),
+        input.as_ref().map(|_| "input"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Whether two `[input]`s save the same. A remap onto an action's own
