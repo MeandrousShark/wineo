@@ -1468,7 +1468,7 @@ On a settings page:
 | Ctrl+S | Save |
 | Tab, Shift+Tab | Move between the tabs and fields |
 | Left, Right (on the tabs) | Move to the previous or next of General, Appearance, Controller, Stores, and Advanced, and select it |
-| Enter, Space (on Show advanced settings) | Flip the switch, keeping focus on it |
+| Enter, Space (on Show advanced settings) | Flip the switch, keeping focus on it; on an environment's page, show Advanced and move to Prefix |
 | Esc | Leave the field, then an environment's page, asking first if there are edits |
 
 In an Add, import, or clone flow:

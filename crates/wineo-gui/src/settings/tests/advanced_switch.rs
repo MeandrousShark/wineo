@@ -635,3 +635,51 @@ fn the_global_page_ignores_the_button_and_the_environment_page_the_switch() {
     flip(&mut app, true);
     assert!(!app.advanced_settings);
 }
+
+#[test]
+fn tab_reaches_the_environment_pages_button_and_enter_shows_prefix() {
+    let (_root, paths) = setup();
+    let mut app = wine_app(&paths);
+    let button = Id::new(view::SHOW_ADVANCED_ID);
+    let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SIZE);
+    let ids = crate::focus_button::focusables(&mut laid);
+    // The page's last Tab stop.
+    assert_eq!(ids.last(), Some(&id(view::SHOW_ADVANCED_ID)), "{ids:?}");
+    // Tab walks there from the top, as the page's Tab key does.
+    let mut reached = false;
+    for _ in 0..ids.len() {
+        crate::focus_button::run_task(&mut laid, iced::widget::operation::focus_next::<Message>());
+        if laid.focused() == [button.clone()] {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached);
+    let (messages, _) = crate::focus_button::press(&mut laid, Named::Enter, Modifiers::empty());
+    let tree = laid.into_tree();
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [Message::Settings(Event::ShowAdvanced)]
+        ),
+        "{messages:?}"
+    );
+    let mut task = Task::none();
+    for message in messages {
+        task = app.update(message);
+    }
+    let mut laid = relay_out(page_of(&app).view(&paths, Palette::DARK), tree, SIZE);
+    let mut results = Vec::new();
+    crate::test_tasks::each_action(task, |action| match action {
+        iced_runtime::Action::Widget(operation) => laid.run(operation),
+        iced_runtime::Action::Output(message) => results.push(message),
+        _ => {}
+    });
+    assert_eq!(laid.focused(), [Id::new(PREFIX_ID)]);
+    drop(laid);
+    assert!(shows(&app, &paths, "Prefix"));
+    for message in results {
+        let _ = app.update(message);
+    }
+    assert!(remembered(&paths));
+}

@@ -34,6 +34,7 @@ const STEAMGRIDDB_KEY_ID: &str = "settings-steamgriddb-key";
 pub(super) const CHECKUP_ID: &str = "settings-open-checkup";
 pub(super) const ADVANCED_SWITCH_ID: &str = "settings-advanced-switch";
 const ADVANCED_CHECKUP_ID: &str = "settings-advanced-checkup";
+pub(super) const SHOW_ADVANCED_ID: &str = "settings-show-advanced";
 pub(super) const PREFIX_ID: &str = "settings-prefix";
 const GAME_ID_ID: &str = "settings-game-id";
 const STORE_ID: &str = "settings-store";
@@ -394,9 +395,18 @@ fn editor_view<'a>(
         advanced_rows = advanced_rows.push(advanced(editor, locked, palette));
         sections = sections.push(section("Advanced", advanced_rows.into(), palette));
     } else if !info.native {
-        // A native section has nothing to edit, so it only hides.
-        sections = sections
-            .push(secondary_button(ADVANCED_SWITCH, palette).on_press(send(Event::ShowAdvanced)));
+        // A native section has nothing to edit, so it only hides. A plain
+        // button takes no Tab focus, and the section's fields were Tab
+        // stops, so the keyboard reaches it this way.
+        let show = send(Event::ShowAdvanced);
+        sections = sections.push(crate::focus_button::control(
+            secondary_button(ADVANCED_SWITCH, palette)
+                .on_press(show.clone())
+                .into(),
+            true,
+            SHOW_ADVANCED_ID,
+            show,
+        ));
     }
     sections.into()
 }
