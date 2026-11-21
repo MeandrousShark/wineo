@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Https, Lazy};
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -317,7 +318,7 @@ fn imported(
         return Err(Canceled.into());
     }
     if let Some(key) = key {
-        fetch_art(paths, global, plan, key, https, cancel)?;
+        fetch_art(paths, global, plan, applied.identity, key, https, cancel)?;
     }
     Ok(())
 }
@@ -326,6 +327,7 @@ fn fetch_art(
     paths: &Paths,
     global: &GlobalConfig,
     plan: &Plan,
+    identity: Option<EnvironmentIdentity>,
     key: &Key,
     https: &Lazy<Https>,
     cancel: &Token,
@@ -335,32 +337,72 @@ fn fetch_art(
     }
     let result = (|| {
         let api = wineo_core::steamgriddb::Api::new(https.https()?, &key.value);
-        let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
-        wineo_core::art_fetch::fetch_steam(
-            paths,
-            plan.name(),
-            plan.app_id()
-                .parse()
-                .map_err(|_| anyhow::anyhow!("Invalid app_id: not a number."))?,
-            &api,
-            &language,
+        let app_id = plan
+            .app_id()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid app_id: not a number."))?;
+        store_art(
+            (paths, plan.name()),
+            app_id,
             &global.art.fetch.kinds(),
-        )
+            &api,
+            identity,
+            &mut crate::output::stderr(),
+        );
+        Ok::<(), anyhow::Error>(())
     })();
-    match result {
-        Ok(results) => {
-            for (kind, fetched) in results {
-                if let Err(error) = fetched {
-                    eprintln!("warning: {kind} art couldn't be fetched: {error:#}.");
-                }
-            }
-        }
-        Err(error) => eprintln!("warning: SteamGridDB art couldn't be fetched: {error:#}."),
+    if let Err(error) = result {
+        eprintln!("warning: SteamGridDB art couldn't be fetched: {error:#}.");
     }
     if cancel.is_canceled() {
         return Err(Canceled.into());
     }
     Ok(())
+}
+
+/// Fetches the art Steam didn't have cached into `name`, which has to still
+/// be the environment `identity` was read from. Whatever couldn't be fetched
+/// is a warning on `err`, and a replaced environment is one line however many
+/// kinds it stopped.
+fn store_art(
+    (paths, name): (&Paths, &str),
+    app_id: u64,
+    kinds: &[wineo_core::art::Kind],
+    api: &wineo_core::steamgriddb::Api,
+    identity: Option<EnvironmentIdentity>,
+    err: &mut dyn Write,
+) {
+    let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
+    let results =
+        wineo_core::art_fetch::fetch_steam(paths, name, app_id, api, &language, kinds, identity);
+    let mut changed = false;
+    match results {
+        Ok(results) => {
+            for (kind, fetched) in results {
+                match fetched {
+                    Err(error) if art::environment_changed(&error) => changed = true,
+                    Err(error) => {
+                        let _ =
+                            writeln!(err, "warning: {kind} art couldn't be fetched: {error:#}.");
+                    }
+                    Ok(_) => {}
+                }
+            }
+        }
+        Err(error) if art::environment_changed(&error) => changed = true,
+        Err(error) => {
+            let _ = writeln!(
+                err,
+                "warning: SteamGridDB art couldn't be fetched: {error:#}."
+            );
+        }
+    }
+    if changed {
+        art::warn_failed(
+            &wineo_core::Error::ArtEnvironmentChanged(name.to_owned()).into(),
+            err,
+        );
+    }
 }
 
 fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<ExitCode> {
@@ -573,3 +615,6 @@ fn guided<I: Input, W: Write>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

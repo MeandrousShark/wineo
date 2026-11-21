@@ -300,7 +300,8 @@ carries on:
 warning: art fetch failed: environment `hades` changed before artwork could be written
 ```
 
-`wineo art fetch` and the import commands check the same way. Imports only
+`wineo art fetch` and the import commands, `import steam --art` included,
+check the same way. Imports only
 warn, as above, but `art fetch` fails like its other errors, with exit code
 1 and this line, and stores nothing:
 

@@ -73,6 +73,9 @@ art: the poster as Grid, the hero image as Hero, and the logo as Logo. A
 missing art file is skipped, and one that isn't a valid image is skipped
 with a warning. Art never fails an import. `--art` fills in the rest from
 SteamGridDB, looked up by the Steam app id rather than a title search.
+If the environment is removed and imported again while that runs, none of it
+is stored in the new one, and the import warns and carries on (see
+[Art](art.md#fetching-during-new-and-import)).
 
 Steam games can't be imported into a [portable folder](portable.md), since
 the folder would depend on this machine's Steam.

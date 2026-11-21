@@ -156,7 +156,8 @@ pub fn fetch_game(
 
 /// Fetches SteamGridDB art for missing kinds, using Steam's app ID to find the
 /// corresponding SteamGridDB game. A per-kind failure is returned alongside
-/// that kind so later kinds can still be tried.
+/// that kind so later kinds can still be tried. Nothing is written unless
+/// the environment is still the one `expected_identity` was read from.
 pub fn fetch_steam(
     paths: &Paths,
     env: &str,
@@ -164,6 +165,7 @@ pub fn fetch_steam(
     api: &Api<'_>,
     language: &str,
     kinds: &[Kind],
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Vec<(Kind, Result<Fetched>)>> {
     let mut missing = Vec::new();
     for &kind in kinds {
@@ -178,14 +180,25 @@ pub fn fetch_steam(
     let game = api
         .steam_game(app_id)?
         .ok_or_else(|| anyhow!("SteamGridDB has no game for Steam app {app_id}"))?;
-    art::save_game(paths, env, game.id)?;
+    art::save_game_for(paths, env, game.id, expected_identity, None)?;
 
     Ok(missing
         .into_iter()
         .map(|kind| {
             (
                 kind,
-                fetch_kind(paths, env, None, kind, api, game.id, language, Mode::Fill),
+                fetch_kind_for(
+                    paths,
+                    env,
+                    None,
+                    kind,
+                    api,
+                    game.id,
+                    language,
+                    Mode::Fill,
+                    expected_identity,
+                    &Token::new(),
+                ),
             )
         })
         .collect())

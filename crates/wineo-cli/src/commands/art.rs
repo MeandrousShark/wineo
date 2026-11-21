@@ -623,7 +623,15 @@ impl Access<'_> {
     }
 }
 
-fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
+/// Whether the fetch was refused because the environment was replaced.
+pub(crate) fn environment_changed(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<wineo_core::Error>(),
+        Some(wineo_core::Error::ArtEnvironmentChanged(_))
+    )
+}
+
+pub(crate) fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
     let line = format!("warning: art fetch failed: {error:#}");
     let _ = writeln!(err, "{}", style::warning_stderr(line));
 }
