@@ -405,6 +405,7 @@ fn wizard_probed(
                 fake: fake.clone(),
                 paths: world.paths.clone(),
                 name: "hades".to_owned(),
+                runner: "fake".to_owned(),
                 seen: seen.clone(),
             }))
         }),
@@ -472,7 +473,11 @@ fn guided_art_without_an_installer_is_fetched_with_the_lock_free() {
         assert!(result.is_ok(), "{result:?}\n{transcript}");
         assert!(!seen.is_empty(), "{transcript}");
         for request in &seen {
-            assert!(request.exists && request.lock_free, "{}", request.url);
+            assert!(
+                request.exists && request.lock_free && request.build_free,
+                "{}",
+                request.url
+            );
         }
         assert_eq!(saved_game(&world), Some(7));
     }
@@ -494,7 +499,11 @@ fn with_an_installer_the_pick_list_comes_before_creation_and_the_download_after(
     assert!(!search.exists, "nothing exists while the questions run");
     assert!(!downloads.is_empty(), "{transcript}");
     for request in downloads {
-        assert!(request.exists && request.lock_free, "{}", request.url);
+        assert!(
+            request.exists && request.lock_free && request.build_free,
+            "{}",
+            request.url
+        );
     }
     assert_eq!(saved_game(&world), Some(7));
     assert!(world.paths.art_dir("hades").join("icon.png").exists());
@@ -539,6 +548,7 @@ fn installer_ended_with(
                 fake: fake.clone(),
                 paths: world.paths.clone(),
                 name: "hades".to_owned(),
+                runner: "fake".to_owned(),
                 seen: seen.clone(),
             }))
         }),

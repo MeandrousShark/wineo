@@ -1234,7 +1234,7 @@ fn create<I: Input, W: Write>(
     );
     // Kept through the installer's report, like `setup`'s own install.
     let install_cancellation = hooks.cancellation.take();
-    let created = match created {
+    let mut created = match created {
         Ok(created) => created,
         Err(err) => {
             if cancel::core(&err) || prompt.input().interrupted() {
@@ -1250,6 +1250,9 @@ fn create<I: Input, W: Write>(
             return Ok(ExitCode::FAILURE);
         }
     };
+    // The builds are no longer in use, and what follows asks questions and
+    // may download art.
+    created.release_build_locks();
     // What creation read is what the rest of setup goes on with.
     let create::Installed {
         global,

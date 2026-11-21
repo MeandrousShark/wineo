@@ -537,7 +537,17 @@ pub struct Installed<S> {
     /// handed them in with `create_and_install_held`. Lost when the step
     /// couldn't be prepared.
     pub guard: Option<Guard>,
-    _build_guard: Option<build_lock::Guard>,
+    build_guard: Option<build_lock::Guard>,
+}
+
+impl<S> Installed<S> {
+    /// Lets go of the runner and component build locks, which keep a build
+    /// from being removed while it is in use. They are held until this value
+    /// is dropped otherwise, so a caller that goes on to something slow, like
+    /// downloading art, calls this first.
+    pub fn release_build_locks(&mut self) {
+        self.build_guard = None;
+    }
 }
 
 /// Creates an environment, building or adopting its prefix, then runs `step`
@@ -592,7 +602,7 @@ fn create_and_install_with<H: Hooks>(
         created_prefix,
         target,
         guard,
-        _build_guard,
+        _build_guard: build_guard,
     } = created;
     let (step, guard) = match (stopped, step) {
         (Err(stop), _) => (Stepped::Stopped(stop), Some(guard)),
@@ -644,7 +654,7 @@ fn create_and_install_with<H: Hooks>(
         target,
         step,
         guard: guard.filter(|_| keep),
-        _build_guard,
+        build_guard,
     })
 }
 

@@ -892,6 +892,7 @@ pub(crate) mod fake {
 
     use anyhow::bail;
     use wineo_core::art::Kind;
+    use wineo_core::build_lock::Kind as BuildKind;
     use wineo_core::download::{Response, Transport};
     use wineo_core::operation::{Locks, Operation};
     use wineo_core::paths::Paths;
@@ -967,6 +968,9 @@ pub(crate) mod fake {
         pub(crate) exists: bool,
         /// Whether another command could take the environment, as a launch.
         pub(crate) lock_free: bool,
+        /// Whether the runner's build lock was free to take exclusively,
+        /// as removing the runner would.
+        pub(crate) build_free: bool,
     }
 
     /// A `Fake` that notes, per request, whether the environment exists and
@@ -976,6 +980,7 @@ pub(crate) mod fake {
         pub(crate) fake: Fake,
         pub(crate) paths: Paths,
         pub(crate) name: String,
+        pub(crate) runner: String,
         pub(crate) seen: Rc<RefCell<Vec<Seen>>>,
     }
 
@@ -998,10 +1003,14 @@ pub(crate) mod fake {
                 || Locks::new(&self.paths)
                     .acquire(Operation::Launch, &self.name, &[])
                     .is_ok();
+            let build_free =
+                wineo_core::build_lock::try_exclusive(&self.paths, BuildKind::Runner, &self.runner)
+                    .is_ok_and(|guard| guard.is_some());
             self.seen.borrow_mut().push(Seen {
                 url: url.to_owned(),
                 exists,
                 lock_free,
+                build_free,
             });
         }
     }

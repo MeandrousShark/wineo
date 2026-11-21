@@ -172,7 +172,7 @@ fn new_wine(
         install_token: install_token.clone(),
     };
     let token = hooks.cancellation.as_ref().unwrap().token.clone();
-    let created = match create::create_and_install(paths, request(), step, &token, &mut hooks) {
+    let mut created = match create::create_and_install(paths, request(), step, &token, &mut hooks) {
         Ok(created) => created,
         Err(err) if cancel::core(&err) => {
             eprintln!("Canceled. Nothing was created.");
@@ -180,6 +180,9 @@ fn new_wine(
         }
         Err(err) => return Err(err),
     };
+    // Nothing below needs the builds kept from removal, and the art
+    // download that may follow can be slow.
+    created.release_build_locks();
     let name = &created.environment.name;
     if let Stepped::None = created.step {
         // The create lock is already released, so a slow SteamGridDB only
@@ -882,6 +885,7 @@ mod tests {
                     fake: fake.clone(),
                     paths: paths.clone(),
                     name: "hades".to_owned(),
+                    runner: runner.to_owned(),
                     seen: seen.clone(),
                 }))
             }),
@@ -917,7 +921,11 @@ mod tests {
         let seen = run.seen.borrow();
         assert!(!seen.is_empty());
         for request in seen.iter() {
-            assert!(request.exists && request.lock_free, "{}", request.url);
+            assert!(
+                request.exists && request.lock_free && request.build_free,
+                "{}",
+                request.url
+            );
         }
         assert_eq!(
             wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
@@ -939,7 +947,12 @@ mod tests {
     fn a_failed_art_fetch_leaves_the_environment_and_its_entry() {
         let run = new_with_art(Fake::default(), false);
         assert_eq!(run.code.as_ref().unwrap(), &ExitCode::SUCCESS);
-        assert!(run.seen.borrow().iter().all(|request| request.lock_free));
+        assert!(
+            run.seen
+                .borrow()
+                .iter()
+                .all(|request| request.lock_free && request.build_free)
+        );
         assert_eq!(
             wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
             None
@@ -1034,7 +1047,11 @@ mod tests {
         assert!(!search.exists, "nothing exists while the questions run");
         assert!(!downloads.is_empty());
         for request in downloads {
-            assert!(request.exists && request.lock_free, "{}", request.url);
+            assert!(
+                request.exists && request.lock_free && request.build_free,
+                "{}",
+                request.url
+            );
         }
         assert_eq!(
             wineo_core::art::saved_game(&run.paths, "hades").unwrap(),
@@ -1070,6 +1087,7 @@ mod tests {
                     fake: fake.clone(),
                     paths: paths.clone(),
                     name: "hades".to_owned(),
+                    runner: "test-wine".to_owned(),
                     seen: seen.clone(),
                 }))
             }),
