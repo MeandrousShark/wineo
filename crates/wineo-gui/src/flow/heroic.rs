@@ -407,7 +407,11 @@ impl Page {
         (self.step == Step::Sources).then(|| ListRows {
             list: SOURCE_LIST,
             ids: self.sources.iter().map(source_id).collect(),
-            focus: None,
+            // The row that opened the games, when coming back to the list.
+            focus: self
+                .source
+                .and_then(|index| self.sources.get(index))
+                .map(source_id),
         })
     }
 

@@ -2210,6 +2210,63 @@ fn an_answer_with_no_match_opens_the_row_the_typed_folder_now_matches() {
     assert_eq!(page.sources.len(), 2, "nothing was added");
 }
 
+fn heroic_mut(app: &mut crate::App) -> &mut Page {
+    match &mut app.flow {
+        Some(crate::flow::Page::Heroic(page)) => page,
+        _ => panic!("expected the Heroic page"),
+    }
+}
+
+/// The ids focused after Back from the games to the sources.
+fn focused_after_back(app: &mut crate::App) -> Vec<iced::widget::Id> {
+    assert_eq!(heroic_page(app).step, Step::Games);
+    let task = app.update(crate::Message::Flow(
+        app.flow_generation,
+        crate::flow::Event::Back,
+    ));
+    assert_eq!(heroic_page(app).step, Step::Sources);
+    crate::focus_button::landed(app, task).focused()
+}
+
+#[test]
+fn back_lands_on_the_source_that_opened_the_games() {
+    let root = tempdir().unwrap();
+    let row = |dir: &str| iced::widget::Id::from(format!("heroic-source:{dir}"));
+    let heroic = |name: &str| root.path().join(name).display().to_string();
+
+    // First visit: the first row.
+    let (app, tree) = sources_page(root.path(), found(root.path()));
+    let mut laid = crate::layout_probe::relay_out(app.view(), tree, iced::Size::new(1200.0, 800.0));
+    assert_eq!(laid.focused(), [row(&heroic("heroic"))]);
+
+    // A click on the second row.
+    let (mut app, _) = sources_page(root.path(), found(root.path()));
+    let _ = heroic_mut(&mut app).update(Event::Source(1));
+    assert_eq!(
+        focused_after_back(&mut app),
+        [row(&heroic("flatpak-heroic"))],
+        "click"
+    );
+
+    // A typed path that is listed.
+    let (mut app, _) = sources_page(root.path(), found(root.path()));
+    open_typed(heroic_mut(&mut app), &root.path().join("flatpak-heroic"));
+    assert_eq!(
+        focused_after_back(&mut app),
+        [row(&heroic("flatpak-heroic"))],
+        "typed path"
+    );
+
+    // A folder added by typing it.
+    let (mut app, _) = sources_page(root.path(), found(root.path()));
+    open_typed(heroic_mut(&mut app), &root.path().join("elsewhere"));
+    assert_eq!(
+        focused_after_back(&mut app),
+        [row(&heroic("elsewhere"))],
+        "new folder"
+    );
+}
+
 #[test]
 fn a_new_folder_is_still_added() {
     let root = tempdir().unwrap();
