@@ -665,14 +665,19 @@ at the button's full width and the list is closed, shows the whole name in a
 tooltip.
 
 Settings uses grouped sections and a fixed Save/Revert footer with the edit
-count. The global page has General and Appearance tabs in its header,
-between the title and the divider: text buttons 32 px high, 14 px regular
-labels (foreground when selected, muted otherwise), hover and press from
-`list_row_style`, and a 2 px primary underline on the selected tab that sits
-on the divider. The underline is always laid out, transparent when
-unselected, so switching never shifts anything. The tabs are the first Tab
-stops on the page, Left and Right move between them and select, and each tab
-keeps its own scroll position while the page is open. Snapshots uses compact rows and bounded, complete reviews. Downloads
+count. The global page has General, Appearance, Controller, Stores, and
+Advanced tabs in its header, between the title and the divider: text
+buttons 32 px high, 14 px regular labels that never wrap inside their
+button (foreground when selected, muted otherwise), hover and press from
+`list_row_style`, and a 2 px primary underline on the selected tab. The
+underline is always laid out, transparent when unselected, so switching
+never shifts anything. When the tabs don't fit on one line they wrap onto
+more, like other rows of buttons: the divider sits under the last line, and
+the selected tab keeps the underline under its own button, so on an upper
+line it sits mid-header rather than on the divider. The tabs are the first
+Tab stops on the page, Left and Right move between them in order across
+lines and select, and each tab keeps its own scroll position while the
+page is open. Every tab ends with the version line. Snapshots uses compact rows and bounded, complete reviews. Downloads
 groups builds by component and keeps uses and progress visible. Checkup groups
 issues and fix choices, with concise healthy and result states. Trash keeps
 prefix inclusion, retained paths, recovery notices, and confirmations readable.
