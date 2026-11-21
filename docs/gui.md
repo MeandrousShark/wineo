@@ -1312,7 +1312,7 @@ the next time they start. It also shows or hides the environment page's
 It can't be turned off while Advanced has something unsaved: an edit, a
 variable row with a problem (it says "Save or revert advanced changes
 first."), or a new variable typed but not added ("Add or clear the new
-variable first."). It's also off while a save runs and behind the
+variable first."). It's also disabled while a save runs and behind the
 leave prompt. When `library.toml` refuses the write, the switch stays where
 you put it until the app closes, and the error shows under it, with
 **Open Checkup** when Checkup can repair the file. The next write that
