@@ -24,6 +24,7 @@
 #   stats/NAME.jsonl                playtime and last played
 #   art/NAME/                       posters (grid.png and art.toml)
 #   prefixes/NAME                   minimal fake Wine prefixes
+#   custom-prefixes/NAME            a fake prefix outside the prefix root
 #   games/NAME.sh                   native stubs
 #   roms/NAME.EXT                   empty fake ROMs for the emulated games
 #   runners/fake/bin/               a fake Wine runner named "fake"
@@ -258,6 +259,8 @@ daily() {
 #   imported=SECONDS[@LAST_PLAYED]  a Heroic playtime import
 #   art=0..7                 a poster from the embedded list
 #   noprefix                 leave a Wine game's prefix unbuilt
+#   prefix_at=PATH           a Wine game's prefix at PATH under DIR instead
+#                            of prefixes/NAME
 #   run=sleep                a native stub that sleeps 600 s instead of exiting
 #   emulator=ID system=ID rom=FILE   an emulated native game's [emulation]
 #                            table; FILE is made empty under roms/
@@ -268,7 +271,7 @@ add() {
     shift
     local kind=wine title='' tags='' gog_id='' heroic_id='' store='' app_id='' added=''
     local sessions='' imported='' art='' prefix=1 favorite=0 hidden=0 run='' target=''
-    local emulator='' system='' rom=''
+    local emulator='' system='' rom='' prefix_at=''
     local arg tag first
     for arg in "$@"; do
         case $arg in
@@ -289,6 +292,7 @@ add() {
             system=*) system=${arg#system=} ;;
             rom=*) rom=${arg#rom=} ;;
             noprefix) prefix=0 ;;
+            prefix_at=*) prefix_at=${arg#prefix_at=} ;;
             favorite) favorite=1 ;;
             hidden) hidden=1 ;;
             *) die "bug: unknown option for $name: $arg" ;;
@@ -302,13 +306,16 @@ add() {
     [[ -z $emulator || $kind == native ]] || die "bug: $name is emulated, which only a native game can be"
     [[ -z $emulator || -n $rom ]] || die "bug: $name is emulated but has no rom"
     [[ $rom != *[\"\\/]* ]] || die "bug: $name's rom must be a plain file name"
+    [[ -z $prefix_at || $kind == wine ]] || die "bug: $name has a prefix path, which only a Wine game has"
+    [[ -z $prefix_at || $prefix_at =~ ^[A-Za-z0-9_/-]+$ ]] || die "bug: $name's prefix path must be plain"
+    prefix_at=${prefix_at:-prefixes/$name}
     games=$((games + 1))
 
     {
         echo 'schema_version = 1'
         case $kind in
             wine)
-                echo "prefix = \"prefixes/$name\""
+                echo "prefix = \"$prefix_at\""
                 echo 'runner = "wine"'
                 echo 'arch = "win64"'
                 ;;
@@ -372,7 +379,7 @@ add() {
     } >"$config/environments/$name.toml"
 
     if [[ $kind == wine && $prefix == 1 ]]; then
-        local prefix_dir=$root/prefixes/$name
+        local prefix_dir=$root/$prefix_at
         mkdir -p "$prefix_dir/dosdevices" "$prefix_dir/drive_c/Games/$name"
         printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
             >"$prefix_dir/system.reg"
@@ -637,6 +644,9 @@ add wine-added-oldest added=2024-01-15T08:00:00Z
 
 # source: Windows; tags: none; the newest added date; never played
 add wine-added-newest added=2026-11-05T23:30:00Z
+
+# source: Windows; tags: none; a custom prefix path (custom-prefixes/), which its Settings page hides until Show advanced settings, or the page's button, shows Advanced
+add wine-custom-prefix prefix_at=custom-prefixes/wine-custom-prefix added=2026-09-21T09:00:00Z
 
 # source: Windows; tags: none; a 45 second session
 add wine-short-play added=2026-10-30T09:00:00Z sessions="2026-11-01T10:00:00Z@45"

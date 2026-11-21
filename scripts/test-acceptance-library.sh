@@ -69,6 +69,16 @@ for pattern in 'kind = "proxied"' 'kind = "native"' '^gog_id' '^heroic_id' 'stor
     fi
 done
 
+# A Wine game keeps its prefix outside the prefix root (plan 0070), for the
+# environment page's Advanced section, and the prefix is built there.
+custom=$tmp/one/config/environments/wine-custom-prefix.toml
+if grep -qxF 'prefix = "custom-prefixes/wine-custom-prefix"' "$custom" 2>/dev/null &&
+    [[ -f $tmp/one/custom-prefixes/wine-custom-prefix/system.reg ]]; then
+    pass
+else
+    fail "no game with a custom prefix path"
+fi
+
 # The search games (plan 0069): each title is there, and the file holding it
 # has a name that doesn't give the searches away, so a hit comes from the
 # title. Grand Tidal Armada IV carries strategy for the --tag check, and
