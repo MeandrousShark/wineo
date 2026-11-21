@@ -820,6 +820,22 @@ fn prefix_dir(paths: &Paths) -> PathBuf {
 }
 
 #[test]
+fn the_runner_build_stays_locked_until_released() {
+    let root = tempfile::tempdir().unwrap();
+    let (paths, result, _) = create_and_install_with(root.path(), "true", &Token::new(), "");
+    let mut installed = result.unwrap();
+    let removable = || {
+        crate::build_lock::try_exclusive(&paths, crate::build_lock::Kind::Runner, "fake")
+            .unwrap()
+            .is_some()
+    };
+    // Held through the install and after it, so a build in use can't go.
+    assert!(!removable());
+    installed.release_build_locks();
+    assert!(removable());
+}
+
+#[test]
 fn create_and_install_runs_the_installer_under_the_create_lock() {
     let root = tempfile::tempdir().unwrap();
     let (paths, result, events) = create_and_install_with(

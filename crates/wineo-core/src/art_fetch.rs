@@ -70,7 +70,7 @@ pub fn fetch_kind(
 /// the download and anything after it. Both are checked under the art lock,
 /// after the download.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fetch_kind_for(
+pub fn fetch_kind_for(
     paths: &Paths,
     env: &str,
     target: Option<&str>,

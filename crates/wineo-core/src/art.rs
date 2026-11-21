@@ -608,7 +608,7 @@ pub fn save_game(paths: &Paths, env: &str, game: u64) -> Result<()> {
 /// Like `save_game`, but refused unless the environment is still the one
 /// `expected_identity` was read from, or when `cancel` was canceled by the
 /// time the art lock is held.
-pub(crate) fn save_game_for(
+pub fn save_game_for(
     paths: &Paths,
     env: &str,
     game: u64,
