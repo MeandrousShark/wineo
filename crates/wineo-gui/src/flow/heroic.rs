@@ -249,6 +249,9 @@ pub(crate) enum Event {
     OpenExisting(String),
     BrowseSource,
     PickedSource(u64, Result<Option<PathBuf>, String>),
+    /// A typed or picked folder checked against the listed ones on disk: the
+    /// folder, and the listed folder it is the same as, if any.
+    FolderResolved(u64, PathBuf, Option<PathBuf>),
     SourcesLoaded(u64, Result<Vec<HeroicSource>, String>),
     Listed(
         u64,

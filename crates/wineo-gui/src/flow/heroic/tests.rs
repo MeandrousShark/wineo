@@ -1867,16 +1867,19 @@ fn ctrl_enter(app: &mut crate::App, tree: Tree) {
     let key = Key::Named(Named::Enter);
     let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
     let (published, status) = press_key(&mut laid, key.clone(), Modifiers::CTRL);
-    let tree = laid.into_tree();
+    let mut tree = laid.into_tree();
     for message in published {
         let _ = app.update(message);
     }
     let task = app.update(crate::Message::Key(key, Modifiers::CTRL, status));
-    let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
-    let sent = crate::more_menu::tests::drive(&mut laid, task);
-    drop(laid);
-    for message in sent {
-        let _ = app.update(message);
+    // Opening a folder that isn't listed answers after a disk check, so what
+    // the task sends can start a task of its own. Two rounds reach it.
+    let mut task = task;
+    for _ in 0..2 {
+        let mut laid = crate::layout_probe::relay_out(app.view(), tree, size);
+        let sent = crate::more_menu::tests::drive(&mut laid, task);
+        tree = laid.into_tree();
+        task = iced::Task::batch(sent.into_iter().map(|message| app.update(message)));
     }
 }
 
@@ -2028,6 +2031,46 @@ fn a_picked_folder_that_is_already_listed_opens_its_row() {
     assert_eq!(page.sources.len(), 2);
 }
 
+/// Runs `task` to its end on the blocking pool as the runtime would, and
+/// returns what it sent.
+fn sent(task: iced::Task<Event>) -> Vec<Event> {
+    use iced::futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut events = Vec::new();
+    runtime.block_on(async {
+        while let Ok(Some(action)) =
+            tokio::time::timeout(Duration::from_secs(5), stream.next()).await
+        {
+            if let iced_runtime::Action::Output(event) = action {
+                events.push(event);
+            }
+        }
+    });
+    events
+}
+
+/// Opens the typed `path` and hands the page what the task sends back.
+fn open_typed(page: &mut Page, path: &std::path::Path) -> Vec<Event> {
+    let _ = page.update(Event::SourcePath(path.display().to_string()));
+    let events = sent(page.update(Event::OpenSourcePath));
+    for event in events.clone() {
+        let _ = page.update(event);
+    }
+    events
+}
+
+fn resolved(events: &[Event]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, Event::FolderResolved(..)))
+}
+
 #[test]
 fn a_symlink_to_a_listed_folder_opens_its_row() {
     let root = tempdir().unwrap();
@@ -2037,9 +2080,101 @@ fn a_symlink_to_a_listed_folder_opens_its_row() {
     let _ = page.update(Event::SourcePath(
         root.path().join("link").display().to_string(),
     ));
-    let _ = page.update(Event::OpenSourcePath);
+    let task = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Sources, "it waits for the disk check");
+    for event in sent(task) {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.step, Step::Games);
     assert_eq!(page.source, Some(0));
     assert_eq!(page.sources.len(), 2);
+}
+
+#[test]
+fn a_dotdot_path_to_a_listed_folder_opens_its_row() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("heroic")).unwrap();
+    fs::create_dir(root.path().join("flatpak-heroic")).unwrap();
+    let mut page = listed_sources(root.path());
+    open_typed(
+        &mut page,
+        &root.path().join("flatpak-heroic").join("..").join("heroic"),
+    );
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(0));
+    assert_eq!(page.sources.len(), 2);
+}
+
+#[test]
+fn a_home_relative_path_to_a_listed_folder_opens_its_row() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath("~/flatpak-heroic".to_owned()));
+    let task = page.update(Event::OpenSourcePath);
+    // The folders don't exist, so only a spelling match can open it.
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(1));
+    assert_eq!(page.sources.len(), 2);
+    assert!(!resolved(&sent(task)));
+}
+
+#[test]
+fn a_matching_spelling_opens_without_the_disk_check() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(
+        root.path().join("heroic").display().to_string(),
+    ));
+    let task = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Games, "it opened at once");
+    assert!(!resolved(&sent(task)));
+
+    let mut page = listed_sources(root.path());
+    let task = page.update(Event::PickedSource(
+        page.picker_sequence,
+        Ok(Some(root.path().join("flatpak-heroic"))),
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert!(!resolved(&sent(task)));
+
+    // With nothing listed there is nothing to compare, so it adds at once.
+    let (mut page, _) = Page::new(paths(root.path()));
+    page.step = Step::Sources;
+    let _ = page.update(Event::SourcePath(
+        root.path().join("elsewhere").display().to_string(),
+    ));
+    let task = page.update(Event::OpenSourcePath);
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.sources.len(), 1);
+    assert!(!resolved(&sent(task)));
+}
+
+#[test]
+fn an_answer_that_is_stale_or_late_does_nothing() {
+    let root = tempdir().unwrap();
+    let new = root.path().join("elsewhere");
+    let mut page = listed_sources(root.path());
+    let _ = page.update(Event::SourcePath(new.display().to_string()));
+    let events = sent(page.update(Event::OpenSourcePath));
+    assert!(resolved(&events));
+    // Typing again, like any other input, drops the pending answer.
+    let _ = page.update(Event::SourcePath(String::new()));
+    for event in events.clone() {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.step, Step::Sources);
+    assert_eq!(page.sources.len(), 2);
+
+    // An answer that is current but arrives after leaving Sources does
+    // nothing either.
+    let _ = page.update(Event::SourcePath(new.display().to_string()));
+    let events = sent(page.update(Event::OpenSourcePath));
+    page.step = Step::Games;
+    for event in events {
+        let _ = page.update(event);
+    }
+    assert_eq!(page.sources.len(), 2);
+    assert_eq!(page.source, None);
 }
 
 #[test]
@@ -2047,17 +2182,20 @@ fn a_new_folder_is_still_added() {
     let root = tempdir().unwrap();
     let new = root.path().join("elsewhere");
     let mut page = listed_sources(root.path());
-    let _ = page.update(Event::SourcePath(new.display().to_string()));
-    let _ = page.update(Event::OpenSourcePath);
+    open_typed(&mut page, &new);
     assert_eq!(page.sources.len(), 3);
     assert_eq!(page.source, Some(2));
     assert_eq!(page.sources[2].config_dir(), new);
+    assert_eq!(page.step, Step::Games);
 
     let mut page = listed_sources(root.path());
-    let _ = page.update(Event::PickedSource(
+    let task = page.update(Event::PickedSource(
         page.picker_sequence,
         Ok(Some(new.clone())),
     ));
+    for event in sent(task) {
+        let _ = page.update(event);
+    }
     assert_eq!(page.sources.len(), 3);
     assert_eq!(page.source, Some(2));
     assert_eq!(page.step, Step::Games);
