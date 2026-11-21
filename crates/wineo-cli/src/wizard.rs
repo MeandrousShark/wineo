@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -1268,6 +1269,11 @@ fn create<I: Input, W: Write>(
         fetch_art(paths, global, prompt, access, &name, key, term)?;
     }
 
+    let step = match ended_early(paths, &name, prompt, step, picked.is_some())? {
+        ControlFlow::Break(ended) => return ended,
+        ControlFlow::Continue(step) => step,
+    };
+
     let place = Place {
         paths,
         name: &name,
@@ -1277,18 +1283,8 @@ fn create<I: Input, W: Write>(
     };
     let mut batch = Batch::new(environment.config.targets.clone());
     match (how, step) {
-        (_, Stepped::Stopped(err)) => {
-            art_not_fetched(prompt, &name, picked.is_some())?;
-            return Err(err);
-        }
         (How::Nothing, _) => {
             return setup::finish(paths, global, &name, prompt, &batch);
-        }
-        (How::Installer(_), Stepped::NotPrepared(err)) => {
-            prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
-            setup::report_recovery(paths, &name, prompt)?;
-            art_not_fetched(prompt, &name, picked.is_some())?;
-            return Ok(ExitCode::FAILURE);
         }
         (How::Installer(_), Stepped::Ran { outcome, resolved }) => {
             let art = picked.as_ref().map(|(key, picked)| ArtAfter {
@@ -1311,6 +1307,9 @@ fn create<I: Input, W: Write>(
                 Ran::Back => unreachable!("an installer that ran never goes back"),
             }
         }
+        (_, Stepped::Stopped(_) | Stepped::NotPrepared(_)) => {
+            unreachable!("ended before the installer's report above")
+        }
         (How::Installer(_), Stepped::None) => unreachable!("an installer always has a step"),
         (How::Existing(exe), _) => {
             let program = Program {
@@ -1330,6 +1329,30 @@ fn create<I: Input, W: Write>(
         // Keeping on editing is what `setup` is for.
         Reply::Back => setup::menu(paths, global, &name, prompt, &place, batch),
     }
+}
+
+/// Ends setup when a hook stopped the step or the installer couldn't be
+/// prepared, saying so for the art picked before it. Any other step goes on.
+fn ended_early<I: Input, W: Write>(
+    paths: &Paths,
+    name: &str,
+    prompt: &mut Prompt<I, W>,
+    step: Stepped<anyhow::Error>,
+    picked: bool,
+) -> anyhow::Result<ControlFlow<anyhow::Result<ExitCode>, Stepped<anyhow::Error>>> {
+    Ok(match step {
+        Stepped::Stopped(err) => {
+            art_not_fetched(prompt, name, picked)?;
+            ControlFlow::Break(Err(err))
+        }
+        Stepped::NotPrepared(err) => {
+            prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
+            setup::report_recovery(paths, name, prompt)?;
+            art_not_fetched(prompt, name, picked)?;
+            ControlFlow::Break(Ok(ExitCode::FAILURE))
+        }
+        step => ControlFlow::Continue(step),
+    })
 }
 
 /// The art picked before an installer ran, to download once it finished.

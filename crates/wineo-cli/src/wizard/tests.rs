@@ -649,3 +649,46 @@ fn a_finished_installer_downloads_the_art_and_says_nothing_more() {
         "{transcript}"
     );
 }
+
+#[test]
+fn a_finished_installer_with_a_failing_exit_still_downloads_the_art() {
+    let (ran, transcript, requests) =
+        installer_ended_with(Ok(Outcome::Finished { exit_code: Some(1) }), true);
+    assert!(matches!(ran, Ran::Finished));
+    assert!(
+        transcript.contains("The installer exited with code 1.\n"),
+        "{transcript}"
+    );
+    assert!(requests > 0);
+    assert!(
+        transcript.contains("icon: fetched SteamGridDB 1\n"),
+        "{transcript}"
+    );
+    assert!(!transcript.contains("Art not fetched"), "{transcript}");
+}
+
+#[test]
+fn a_stopped_step_ends_setup_and_says_the_art_was_not_fetched() {
+    let world = world();
+    let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+    let step = Stepped::Stopped(anyhow::anyhow!("stopped by a hook"));
+    let ControlFlow::Break(ended) =
+        ended_early(&world.paths, "hades", &mut prompt, step, true).unwrap()
+    else {
+        panic!("a stopped step ends setup");
+    };
+    assert_eq!(ended.unwrap_err().to_string(), "stopped by a hook");
+    let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+    assert_eq!(
+        transcript
+            .matches("Art not fetched. Run `wineo art fetch hades` to fetch it.\n")
+            .count(),
+        1,
+        "{transcript}"
+    );
+    // Without a pick there is nothing to say.
+    let mut prompt = Prompt::new(Script::new(&[]), Vec::new());
+    let step = Stepped::Stopped(anyhow::anyhow!("stopped by a hook"));
+    let _ = ended_early(&world.paths, "hades", &mut prompt, step, false).unwrap();
+    assert_eq!(prompt.output(), b"");
+}
