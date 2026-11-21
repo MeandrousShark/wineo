@@ -12,7 +12,7 @@ use wineo_core::art_fetch::{self, Mode};
 use wineo_core::cancel::Token;
 use wineo_core::config::{ArtFetch, GlobalConfig};
 use wineo_core::desktop;
-use wineo_core::download::{Https, Lazy};
+use wineo_core::download::{Https, Lazy, Transport};
 use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -441,6 +441,17 @@ impl Draft {
     }
 
     pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
+        self.apply_for(paths, name, EnvironmentIdentity::read(paths, name))
+    }
+
+    /// `apply`, storing the fetched art only while the environment is still
+    /// the one `identity` was read from.
+    fn apply_for(
+        &self,
+        paths: &Paths,
+        name: &str,
+        identity: Option<EnvironmentIdentity>,
+    ) -> Result<Vec<String>, String> {
         let mut notes = Vec::new();
         let mut failures = Vec::new();
         for (kind, local) in &self.local {
@@ -449,10 +460,16 @@ impl Draft {
             }
             let result = resolve(Some(paths), &local.path).and_then(|path| {
                 match &local.prefilled {
-                    Some(prefilled) => {
-                        art::set_manual_as(paths, name, None, *kind, &path, &prefilled.original)
-                    }
-                    None => art::set_manual(paths, name, None, *kind, &path, None),
+                    Some(prefilled) => art::set_manual_as(
+                        paths,
+                        name,
+                        None,
+                        *kind,
+                        &path,
+                        &prefilled.original,
+                        identity,
+                    ),
+                    None => art::set_manual(paths, name, None, *kind, &path, identity),
                 }
                 .map_err(|e| e.to_string())
             });
@@ -474,33 +491,26 @@ impl Draft {
                 })
                 .collect();
             if !kinds.is_empty() {
-                if let Err(error) = art::save_game(paths, name, game.0.id) {
+                if let Err(error) = art::save_game_for(paths, name, game.0.id, identity, None) {
                     failures.push(format!("Art fetching failed: {error}"));
                 } else {
-                    let mut missing = Vec::new();
-                    for kind in kinds {
-                        if let Some(image) = self
-                            .remote
-                            .get(&kind)
-                            .and_then(|remote| remote.image.as_ref())
-                        {
-                            if let Err(error) =
-                                art_fetch::publish(paths, name, None, kind, image, Mode::Fill)
-                            {
-                                failures.push(format!("Could not fetch {kind}: {error}"));
-                            }
-                        } else if self
-                            .remote
-                            .get(&kind)
-                            .is_some_and(|remote| remote.none_found)
-                        {
-                            notes.push(format!("No {kind} artwork found for {}", game.0.name));
-                        } else {
-                            missing.push(kind);
-                        }
-                    }
+                    let missing = self.publish_held(
+                        paths,
+                        name,
+                        &game.0,
+                        &kinds,
+                        identity,
+                        (&mut notes, &mut failures),
+                    );
                     if !missing.is_empty() {
-                        match fetch(paths, name, &game.0, &missing, &Lazy::new(), &Token::new()) {
+                        let fetched = fetch(
+                            (paths, name),
+                            &game.0,
+                            &missing,
+                            identity,
+                            (&Lazy::new(), &Token::new()),
+                        );
+                        match fetched {
                             Ok(fetched) => notes.extend(fetched),
                             Err(error) => failures.push(format!("Art fetching failed: {error}")),
                         }
@@ -513,6 +523,43 @@ impl Draft {
         } else {
             Err(failures.join("\n"))
         }
+    }
+
+    /// Publishes the kinds already downloaded for the preview, only into the
+    /// environment `identity` was read from, and returns the kinds that still
+    /// need fetching.
+    fn publish_held(
+        &self,
+        paths: &Paths,
+        name: &str,
+        game: &Game,
+        kinds: &[Kind],
+        identity: Option<EnvironmentIdentity>,
+        (notes, failures): (&mut Vec<String>, &mut Vec<String>),
+    ) -> Vec<Kind> {
+        let mut missing = Vec::new();
+        for &kind in kinds {
+            if let Some(image) = self
+                .remote
+                .get(&kind)
+                .and_then(|remote| remote.image.as_ref())
+            {
+                if let Err(error) =
+                    art_fetch::publish_for(paths, name, None, kind, image, Mode::Fill, identity)
+                {
+                    failures.push(format!("Could not fetch {kind}: {error}"));
+                }
+            } else if self
+                .remote
+                .get(&kind)
+                .is_some_and(|remote| remote.none_found)
+            {
+                notes.push(format!("No {kind} artwork found for {}", game.name));
+            } else {
+                missing.push(kind);
+            }
+        }
+        missing
     }
 
     pub(crate) fn view(&self, palette: Palette, key_available: bool) -> Element<'_, Event> {
@@ -924,12 +971,11 @@ fn search_with(paths: &Paths, term: &str, https: &Lazy<Https>) -> Result<Vec<Gam
 }
 
 fn fetch(
-    paths: &Paths,
-    name: &str,
+    (paths, name): (&Paths, &str),
     game: &Game,
     kinds: &[Kind],
-    https: &Lazy<Https>,
-    token: &Token,
+    identity: Option<EnvironmentIdentity>,
+    (https, token): (&Lazy<Https>, &Token),
 ) -> Result<Vec<String>, String> {
     let key = steamgriddb::require_key(
         paths,
@@ -939,12 +985,21 @@ fn fetch(
     .map_err(|e| e.to_string())?;
     let https = https.https().map_err(|e| e.to_string())?;
     let api = Api::new(https, &key.value);
+    fetch_with((paths, name), &api, game, kinds, identity, token)
+}
+
+fn fetch_with(
+    (paths, name): (&Paths, &str),
+    api: &Api,
+    game: &Game,
+    kinds: &[Kind],
+    identity: Option<EnvironmentIdentity>,
+    token: &Token,
+) -> Result<Vec<String>, String> {
     let language = steamgriddb::language(|key| std::env::var_os(key));
-    let identity = EnvironmentIdentity::read(paths, name);
-    let fetched = art_fetch::fetch_game(
-        paths, name, &api, game.id, kinds, &language, identity, token,
-    )
-    .map_err(|e| e.to_string())?;
+    let fetched =
+        art_fetch::fetch_game(paths, name, api, game.id, kinds, &language, identity, token)
+            .map_err(|e| e.to_string())?;
     let mut notes = Vec::new();
     let mut failures = Vec::new();
     for (kind, result) in fetched {
@@ -973,6 +1028,32 @@ pub(crate) fn fetch_default(
     https: &Lazy<Https>,
     token: &Token,
 ) -> Result<Vec<String>, String> {
+    fetch_default_over(paths, name, title, token, &|| {
+        let key = steamgriddb::require_key(
+            paths,
+            |key| std::env::var_os(key),
+            &SecretServiceKeyring::steamgriddb(),
+        )
+        .map_err(|e| e.to_string())?;
+        let https = https.https().map_err(|e| e.to_string())?;
+        Ok((Box::new(https.clone()) as Box<dyn Transport>, key.value))
+    })
+}
+
+/// The connection art is fetched over and the key to use on it, which tests
+/// replace so nothing reaches SteamGridDB.
+pub(crate) type Connect<'a> = &'a dyn Fn() -> Result<(Box<dyn Transport>, String), String>;
+
+/// `fetch_default` over `connect`. The environment's identity is read just
+/// before the download starts, so a config edit made any time before that
+/// doesn't count as the environment having been replaced.
+pub(crate) fn fetch_default_over(
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    token: &Token,
+    connect: Connect<'_>,
+) -> Result<Vec<String>, String> {
     let loaded = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
     // Reported through the same notes as every other outcome here.
     let mut notes: Vec<String> = loaded
@@ -987,8 +1068,25 @@ pub(crate) fn fetch_default(
     if token.is_canceled() {
         return Err(wineo_core::error::Error::Canceled("artwork").to_string());
     }
-    match search_with(paths, title, https)?.into_iter().next() {
-        Some(game) => notes.extend(fetch(paths, name, &game, &kinds, https, token)?),
+    let (transport, key) = connect()?;
+    let api = Api::new(&*transport, &key);
+    match api
+        .search(title)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+    {
+        Some(game) => {
+            let identity = EnvironmentIdentity::read(paths, name);
+            notes.extend(fetch_with(
+                (paths, name),
+                &api,
+                &game,
+                &kinds,
+                identity,
+                token,
+            )?)
+        }
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)
@@ -1076,9 +1174,15 @@ pub(crate) fn fetch_art_parts(
     token: &Token,
     fetcher: &Fetcher,
 ) -> FetchParts {
+    // As the environment is when the fetch starts, read again when it ends.
+    let identity = EnvironmentIdentity::read(paths, name);
     let fetched = fetcher(paths, name, title, token);
     // Skipped, so nothing more is written; a later launch refreshes the entry.
     if fetched.is_err() && token.is_canceled() {
+        return (fetched, Ok(()));
+    }
+    // A replacement environment's entries are not this fetch's to touch.
+    if identity.is_some_and(|identity| EnvironmentIdentity::read(paths, name) != Some(identity)) {
         return (fetched, Ok(()));
     }
     let entry = desktop::apply(paths, name, false)

@@ -3,6 +3,7 @@ use crate::test_script::write_script;
 use iced::keyboard::key::Named;
 use std::ffi::OsString;
 use std::fs;
+use wineo_core::environment::EnvironmentIdentity;
 
 use tempfile::tempdir;
 
@@ -1454,6 +1455,50 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
             .join(wineo_core::art::ART_FILE)
             .exists()
     );
+}
+
+fn replace_environment(paths: &Paths, name: &str) {
+    let config = paths.environment_config(name);
+    let staged = config.with_extension("replacement");
+    fs::copy(&config, &staged).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+#[test]
+fn a_batch_poster_is_stored_only_in_the_environment_it_was_registered_as() {
+    for replaced in [false, true] {
+        let root = tempdir().unwrap();
+        let page = grid_page(root.path());
+        let posters = page.batch_posters();
+        let paths = page.paths.clone();
+        let name = "dusk";
+        wineo_core::environment::Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            name,
+            None,
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let identity = EnvironmentIdentity::read(&paths, name);
+        if replaced {
+            replace_environment(&paths, name);
+        }
+        let note =
+            super::work::store_heroic_poster_for(&paths, name, name, posters.get(name), identity);
+        let grid = paths.art_dir(name).join("grid.png");
+        if replaced {
+            assert_eq!(
+                note.as_deref(),
+                Some("Heroic poster: environment `dusk` changed before artwork could be written")
+            );
+            assert!(!grid.exists());
+        } else {
+            assert_eq!(note, None);
+            assert!(grid.exists());
+        }
+    }
 }
 
 fn fake_proton(dir: &std::path::Path) {

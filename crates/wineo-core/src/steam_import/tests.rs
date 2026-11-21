@@ -253,6 +253,12 @@ fn apply_uses_the_reselected_install_for_title_and_cached_art() {
             .as_deref(),
         Some("Flatpak Title")
     );
+    // Read under the config lock, for art fetched later to check against.
+    assert!(applied.identity.is_some());
+    assert_eq!(
+        applied.identity,
+        crate::environment::EnvironmentIdentity::read(&paths, planned.name())
+    );
     assert_eq!(
         fs::read(paths.art_dir(planned.name()).join("grid.png")).unwrap(),
         flatpak_art

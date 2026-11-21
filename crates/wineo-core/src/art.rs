@@ -343,6 +343,8 @@ pub fn set_manual(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // First, so a removed environment reads as changed when one is expected.
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
     store_manual(
@@ -366,10 +368,22 @@ pub fn set_manual_as(
     kind: Kind,
     file: &Path,
     original: &str,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Stored> {
+    // First, so a removed environment reads as changed when one is expected.
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
-    store_manual(paths, env, target, kind, &bytes, original, file, None)
+    store_manual(
+        paths,
+        env,
+        target,
+        kind,
+        &bytes,
+        original,
+        file,
+        expected_identity,
+    )
 }
 
 /// Like `set_manual`, for an image already in memory. `original` is the file
@@ -381,7 +395,9 @@ pub fn set_manual_bytes(
     kind: Kind,
     bytes: &[u8],
     original: &str,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Stored> {
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(Error::ArtTooLarge(PathBuf::from(original)));
@@ -394,7 +410,7 @@ pub fn set_manual_bytes(
         bytes,
         original,
         Path::new(original),
-        None,
+        expected_identity,
     )
 }
 
@@ -453,7 +469,7 @@ fn store_manual(
     })
 }
 
-fn check_environment_identity(
+pub(crate) fn check_environment_identity(
     paths: &Paths,
     env: &str,
     expected_identity: Option<EnvironmentIdentity>,
@@ -620,8 +636,10 @@ pub fn save_game_for(
     if cancel.is_some_and(Token::is_canceled) {
         return Err(Error::Canceled("SteamGridDB game"));
     }
-    Environment::ensure_exists(paths, env)?;
+    // Before the existence check, so a removed environment reads as changed
+    // like it does for every other art write.
     check_environment_identity(paths, env, expected_identity)?;
+    Environment::ensure_exists(paths, env)?;
     let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     #[cfg(test)]
     test_hook("art.save_game");
@@ -673,15 +691,28 @@ pub struct Removed {
 /// has and its record. A target's removal never touches the environment's art
 /// it falls back to. The target itself need not exist, so art left behind by
 /// one that was removed can still be cleaned up.
-pub fn remove(paths: &Paths, env: &str, target: Option<&str>, kind: Kind) -> Result<Removed> {
+///
+/// With `expected_identity`, nothing is removed unless the environment is
+/// still the one it was read from, which is checked under the art lock.
+pub fn remove(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<Removed> {
     if let Some(target) = target
         && !name::is_valid(target)
     {
         return Err(Error::InvalidName(target.to_owned()));
     }
+    // Before anything else, so a removed environment reads as changed. The
+    // check under the lock below is the one that decides.
+    check_environment_identity(paths, env, expected_identity)?;
     Environment::ensure_exists(paths, env)?;
     let art_dir = paths.art_dir(env);
     let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
+    check_environment_identity(paths, env, expected_identity)?;
     Environment::ensure_exists(paths, env)?;
     let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     let dir = spot_dir(&art_dir, target);

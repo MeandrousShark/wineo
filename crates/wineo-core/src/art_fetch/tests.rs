@@ -144,6 +144,7 @@ fn fetch_steam_uses_the_app_id_and_only_requests_missing_kinds() {
         &Api::new(&api, "k"),
         "en",
         &[Kind::Grid, Kind::Hero],
+        None,
     )
     .unwrap();
 
@@ -163,6 +164,98 @@ fn fetch_steam_uses_the_app_id_and_only_requests_missing_kinds() {
     );
     assert_eq!(api.urls().len(), 4);
     assert!(!api.urls().iter().any(|url| url.contains("/heroes/")));
+}
+
+#[test]
+fn fetch_steam_stores_nothing_in_a_replaced_environment() {
+    for replaced in [false, true] {
+        let (_root, paths) = setup();
+        let identity = EnvironmentIdentity::read(&paths, "hades");
+        if replaced {
+            // A copy renamed over the config is a different file.
+            let config = paths.environment_config("hades");
+            let staged = config.with_extension("toml.new");
+            fs::copy(&config, &staged).unwrap();
+            fs::rename(&staged, &config).unwrap();
+        }
+        let api = FakeApi::default();
+        api.json(
+            format!("{}/games/steam/1086940", crate::steamgriddb::API),
+            json!({ "id": 77, "name": "Baldur's Gate 3" }),
+        );
+        api.json(
+            Api::images_url(77, Kind::Grid, 0, Filters::Ranked),
+            json!([{ "id": 9, "url": "https://cdn.example/9.png" }]),
+        );
+        api.json(
+            Api::images_url(77, Kind::Grid, 1, Filters::Ranked),
+            json!([]),
+        );
+        api.bytes("https://cdn.example/9.png", PNG);
+        let result = fetch_steam(
+            &paths,
+            "hades",
+            1086940,
+            &Api::new(&api, "k"),
+            "en",
+            &[Kind::Grid],
+            identity,
+        );
+        if replaced {
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<Error>(),
+                Some(Error::ArtEnvironmentChanged(_))
+            ));
+            assert!(!paths.art_dir("hades").join("grid.png").exists());
+            assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+        } else {
+            assert!(matches!(
+                &result.unwrap()[0].1,
+                Ok(Fetched::Stored { asset: 9, .. })
+            ));
+            assert!(paths.art_dir("hades").join("grid.png").exists());
+        }
+    }
+}
+
+#[test]
+fn publish_for_stores_only_in_the_environment_it_was_read_from() {
+    for replaced in [false, true] {
+        let (_root, paths) = setup();
+        let identity = EnvironmentIdentity::read(&paths, "hades");
+        if replaced {
+            let config = paths.environment_config("hades");
+            let staged = config.with_extension("toml.new");
+            fs::copy(&config, &staged).unwrap();
+            fs::rename(&staged, &config).unwrap();
+        }
+        let image = Downloaded {
+            asset: 3,
+            bytes: PNG.to_vec(),
+            format: Format::Png,
+        };
+        let result = publish_for(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &image,
+            Mode::Fill,
+            identity,
+        );
+        let grid = paths.art_dir("hades").join("grid.png");
+        if replaced {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<Error>(),
+                Some(Error::ArtEnvironmentChanged(_))
+            ));
+            assert!(!grid.exists());
+        } else {
+            assert!(matches!(result.unwrap(), Fetched::Stored { asset: 3, .. }));
+            assert!(grid.exists());
+        }
+    }
 }
 
 #[test]
@@ -190,6 +283,7 @@ fn fetch_steam_keeps_trying_after_a_kind_fails() {
         &Api::new(&api, "k"),
         "en",
         &[Kind::Icon, Kind::Grid],
+        None,
     )
     .unwrap();
 
@@ -880,4 +974,29 @@ fn fetch_game_canceled_during_its_last_kind_says_so() {
         Some(Error::Canceled(_))
     ));
     assert_eq!(names(&paths.art_dir("hades")), ["art.toml"]);
+}
+
+#[test]
+fn fetch_kind_for_reads_a_removed_environment_as_changed() {
+    let (_root, paths) = setup();
+    let identity = EnvironmentIdentity::read(&paths, "hades");
+    fs::remove_file(paths.environment_config("hades")).unwrap();
+    let api = FakeApi::default();
+    let error = fetch_kind_for(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &Api::new(&api, "k"),
+        7,
+        "en",
+        Mode::Fill,
+        identity,
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<Error>(),
+        Some(Error::ArtEnvironmentChanged(_))
+    ));
 }

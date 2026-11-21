@@ -761,12 +761,7 @@ impl Page {
                 let identity = self.identity;
                 let paths = paths.clone();
                 Step::task(task::blocking(
-                    move || {
-                        if EnvironmentIdentity::read(&paths, &name) != Some(identity) {
-                            return Err("environment changed before its game could be saved".into());
-                        }
-                        art::save_game(&paths, &name, game.id).map_err(|error| error.to_string())
-                    },
+                    move || save_game(&paths, &name, game.id, identity),
                     move |result| Event::GameSaved(sequence, game.clone(), result),
                 ))
             }
@@ -1448,6 +1443,23 @@ pub(crate) fn canceled_use_outcome() -> WriteOutcome {
     WriteOutcome::failed("download canceled".into())
 }
 
+/// Records the environment's SteamGridDB game, refusing once the environment
+/// is not the one `identity` was read from. That is checked under the art
+/// lock, together with the write.
+fn save_game(
+    paths: &Paths,
+    name: &str,
+    game: u64,
+    identity: EnvironmentIdentity,
+) -> Result<(), String> {
+    art::save_game_for(paths, name, game, Some(identity), None).map_err(|error| match error {
+        wineo_core::Error::ArtEnvironmentChanged(_) => {
+            "environment changed before its game could be saved".into()
+        }
+        error => error.to_string(),
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn write_art(
     paths: &Paths,
@@ -1459,6 +1471,17 @@ pub(crate) fn write_art(
         return WriteOutcome::failed("environment no longer exists".into());
     };
     write_art_for(paths, name, identity, spot, path)
+}
+
+/// The page's message for an environment that changed under a write, and the
+/// error's own for anything else. `what` is what could not be done to the art.
+fn changed_or(error: wineo_core::Error, what: &str) -> String {
+    match error {
+        wineo_core::Error::ArtEnvironmentChanged(_) => {
+            format!("environment changed before artwork could be {what}")
+        }
+        error => error.to_string(),
+    }
 }
 
 fn write_art_for(
@@ -1478,18 +1501,12 @@ fn write_art_for(
             }
             art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, Some(identity))
                 .map(|_| ())
-                .map_err(|error| error.to_string())
+                .map_err(|error| changed_or(error, "written"))
         }),
-        None => {
-            if EnvironmentIdentity::read(paths, name) != Some(identity) {
-                return WriteOutcome::failed(
-                    "environment changed before artwork could be removed".into(),
-                );
-            }
-            art::remove(paths, name, spot.0.as_deref(), spot.1)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        }
+        // Checked under the art lock, with the removal.
+        None => art::remove(paths, name, spot.0.as_deref(), spot.1, Some(identity))
+            .map(|_| ())
+            .map_err(|error| changed_or(error, "removed")),
     };
     if let Err(error) = result {
         return WriteOutcome::failed(error);

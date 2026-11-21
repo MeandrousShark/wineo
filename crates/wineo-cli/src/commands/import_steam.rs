@@ -3,7 +3,8 @@ use std::process::ExitCode;
 
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Https, Lazy};
+use wineo_core::download::{Https, Lazy, Transport};
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::key_store::Keyring;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -290,13 +291,21 @@ fn apply(
 ) -> anyhow::Result<()> {
     match steam_import::apply(paths, global, games, plan, cancel)? {
         ApplyOutcome::Imported(applied) => {
-            imported(paths, global, plan, &applied, key, https, cancel)
+            imported(paths, global, plan, &applied, key, &connect(https), cancel)
         }
         ApplyOutcome::AlreadyImported(name) => {
             println!("Already imported as {name}.");
             Ok(())
         }
     }
+}
+
+/// Opens the connection art is fetched over, which a test replaces.
+type Connect<'a> = &'a dyn Fn() -> anyhow::Result<Box<dyn Transport>>;
+
+/// One client for every game's art, shared by each connection it opens.
+fn connect(https: &Lazy<Https>) -> impl Fn() -> anyhow::Result<Box<dyn Transport>> + '_ {
+    move || Ok(Box::new(https.https()?.clone()))
 }
 
 /// Reports an imported game, then fetches its art.
@@ -306,7 +315,7 @@ fn imported(
     plan: &Plan,
     applied: &Applied,
     key: Option<&Key>,
-    https: &Lazy<Https>,
+    connect: Connect<'_>,
     cancel: &Token,
 ) -> anyhow::Result<()> {
     for warning in &applied.warnings {
@@ -317,7 +326,7 @@ fn imported(
         return Err(Canceled.into());
     }
     if let Some(key) = key {
-        fetch_art(paths, global, plan, key, https, cancel)?;
+        fetch_art(paths, global, plan, applied.identity, key, connect, cancel)?;
     }
     Ok(())
 }
@@ -326,41 +335,83 @@ fn fetch_art(
     paths: &Paths,
     global: &GlobalConfig,
     plan: &Plan,
+    identity: Option<EnvironmentIdentity>,
     key: &Key,
-    https: &Lazy<Https>,
+    connect: Connect<'_>,
     cancel: &Token,
 ) -> anyhow::Result<()> {
     if cancel.is_canceled() {
         return Err(Canceled.into());
     }
     let result = (|| {
-        let api = wineo_core::steamgriddb::Api::new(https.https()?, &key.value);
-        let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
-        wineo_core::art_fetch::fetch_steam(
-            paths,
-            plan.name(),
-            plan.app_id()
-                .parse()
-                .map_err(|_| anyhow::anyhow!("Invalid app_id: not a number."))?,
-            &api,
-            &language,
+        let transport = connect()?;
+        let api = wineo_core::steamgriddb::Api::new(&*transport, &key.value);
+        let app_id = plan
+            .app_id()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid app_id: not a number."))?;
+        store_art(
+            (paths, plan.name()),
+            app_id,
             &global.art.fetch.kinds(),
-        )
+            &api,
+            identity,
+            &mut crate::output::stderr(),
+        );
+        Ok::<(), anyhow::Error>(())
     })();
-    match result {
-        Ok(results) => {
-            for (kind, fetched) in results {
-                if let Err(error) = fetched {
-                    eprintln!("warning: {kind} art couldn't be fetched: {error:#}.");
-                }
-            }
-        }
-        Err(error) => eprintln!("warning: SteamGridDB art couldn't be fetched: {error:#}."),
+    if let Err(error) = result {
+        eprintln!("warning: SteamGridDB art couldn't be fetched: {error:#}.");
     }
     if cancel.is_canceled() {
         return Err(Canceled.into());
     }
     Ok(())
+}
+
+/// Fetches the art Steam didn't have cached into `name`, which has to still
+/// be the environment `identity` was read from. Whatever couldn't be fetched
+/// is a warning on `err`, and a replaced environment is one line however many
+/// kinds it stopped.
+fn store_art(
+    (paths, name): (&Paths, &str),
+    app_id: u64,
+    kinds: &[wineo_core::art::Kind],
+    api: &wineo_core::steamgriddb::Api,
+    identity: Option<EnvironmentIdentity>,
+    err: &mut dyn Write,
+) {
+    let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
+    let results =
+        wineo_core::art_fetch::fetch_steam(paths, name, app_id, api, &language, kinds, identity);
+    let mut changed = false;
+    match results {
+        Ok(results) => {
+            for (kind, fetched) in results {
+                match fetched {
+                    Err(error) if art::environment_changed(&error) => changed = true,
+                    Err(error) => {
+                        let _ =
+                            writeln!(err, "warning: {kind} art couldn't be fetched: {error:#}.");
+                    }
+                    Ok(_) => {}
+                }
+            }
+        }
+        Err(error) if art::environment_changed(&error) => changed = true,
+        Err(error) => {
+            let _ = writeln!(
+                err,
+                "warning: SteamGridDB art couldn't be fetched: {error:#}."
+            );
+        }
+    }
+    if changed {
+        art::warn_failed(
+            &wineo_core::Error::ArtEnvironmentChanged(name.to_owned()).into(),
+            err,
+        );
+    }
 }
 
 fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<ExitCode> {
@@ -426,9 +477,15 @@ fn bulk(paths: &Paths, global: &GlobalConfig, args: &Args) -> anyhow::Result<Exi
                 steam_import::apply_batch(paths, global, games, batch, cancel, |applying| {
                     match applying {
                         Applying::Starting(_) => Ok(()),
-                        Applying::Imported(plan, applied) => {
-                            imported(paths, global, plan, applied, key.as_ref(), &https, cancel)
-                        }
+                        Applying::Imported(plan, applied) => imported(
+                            paths,
+                            global,
+                            plan,
+                            applied,
+                            key.as_ref(),
+                            &connect(&https),
+                            cancel,
+                        ),
                         Applying::AlreadyImported(name) => {
                             println!("Already imported as {name}.");
                             Ok(())
@@ -573,3 +630,6 @@ fn guided<I: Input, W: Write>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

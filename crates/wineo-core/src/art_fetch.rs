@@ -85,6 +85,9 @@ pub fn fetch_kind_for(
     if cancel.is_canceled() {
         return Err(crate::Error::Canceled("download").into());
     }
+    // First, so a removed environment reads as changed when one is expected,
+    // as it does under the art lock.
+    art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?
@@ -156,7 +159,8 @@ pub fn fetch_game(
 
 /// Fetches SteamGridDB art for missing kinds, using Steam's app ID to find the
 /// corresponding SteamGridDB game. A per-kind failure is returned alongside
-/// that kind so later kinds can still be tried.
+/// that kind so later kinds can still be tried. Nothing is written unless
+/// the environment is still the one `expected_identity` was read from.
 pub fn fetch_steam(
     paths: &Paths,
     env: &str,
@@ -164,6 +168,7 @@ pub fn fetch_steam(
     api: &Api<'_>,
     language: &str,
     kinds: &[Kind],
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Vec<(Kind, Result<Fetched>)>> {
     let mut missing = Vec::new();
     for &kind in kinds {
@@ -178,14 +183,25 @@ pub fn fetch_steam(
     let game = api
         .steam_game(app_id)?
         .ok_or_else(|| anyhow!("SteamGridDB has no game for Steam app {app_id}"))?;
-    art::save_game(paths, env, game.id)?;
+    art::save_game_for(paths, env, game.id, expected_identity, None)?;
 
     Ok(missing
         .into_iter()
         .map(|kind| {
             (
                 kind,
-                fetch_kind(paths, env, None, kind, api, game.id, language, Mode::Fill),
+                fetch_kind_for(
+                    paths,
+                    env,
+                    None,
+                    kind,
+                    api,
+                    game.id,
+                    language,
+                    Mode::Fill,
+                    expected_identity,
+                    &Token::new(),
+                ),
             )
         })
         .collect())
@@ -280,6 +296,30 @@ fn choose_for(
     Ok(Choice::NoneFound)
 }
 
+/// Like `publish`, except that nothing is written unless the environment is
+/// still the one `expected_identity` was read from, which is checked under
+/// the art lock.
+pub fn publish_for(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    image: &Downloaded,
+    mode: Mode,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<Fetched> {
+    publish_with_cancel(
+        paths,
+        env,
+        target,
+        kind,
+        image,
+        mode,
+        None,
+        expected_identity,
+    )
+}
+
 /// Publishes a downloaded image, keeping existing art in Fill mode.
 pub fn publish(
     paths: &Paths,
@@ -303,6 +343,7 @@ fn publish_with_cancel(
     cancel: Option<&Token>,
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Fetched> {
+    art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
         && let Some(skipped) = existing(paths, env, target, kind)?

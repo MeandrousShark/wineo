@@ -13,7 +13,7 @@ use toml_edit::{Array, value};
 use crate::art::{self, Kind};
 use crate::cancel::Token;
 use crate::config::{self, GlobalConfig, Launcher};
-use crate::environment::{self, Environment};
+use crate::environment::{self, Environment, EnvironmentIdentity};
 use crate::heroic_import::default_name;
 use crate::key_store::Keyring;
 use crate::operation::Locks;
@@ -223,6 +223,9 @@ impl PlanOutcome {
 #[derive(Debug)]
 pub struct Applied {
     pub environment: Environment,
+    /// The config as written, read while the config lock was held. Art
+    /// fetched afterwards is stored only while it is still the same one.
+    pub identity: Option<EnvironmentIdentity>,
     pub art: Vec<Kind>,
     pub warnings: Vec<String>,
 }
@@ -481,6 +484,7 @@ pub fn apply(
     crate::import::check_cancelled(cancel)?;
     write_new(&path, &document.to_string())?;
     let environment = Environment::load(paths, &plan.name)?;
+    let identity = EnvironmentIdentity::read(paths, &plan.name);
     let mut art = Vec::new();
     let mut warnings = Vec::new();
     if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &plan.name) {
@@ -504,6 +508,7 @@ pub fn apply(
     }
     Ok(ApplyOutcome::Imported(Applied {
         environment,
+        identity,
         art,
         warnings,
     }))
@@ -740,7 +745,7 @@ fn store_cached_art(paths: &Paths, name: &str, kind: Kind, source: &Path) -> any
             .to_string_lossy(),
         source.file_name().unwrap_or_default().to_string_lossy()
     );
-    art::set_manual_bytes(paths, name, None, kind, &bytes, &original)?;
+    art::set_manual_bytes(paths, name, None, kind, &bytes, &original, None)?;
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Client, Provider};
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSource, SettingsReview,
 };
@@ -427,6 +428,24 @@ pub(super) fn store_heroic_poster(
     app: &str,
     poster: Option<&BatchPoster>,
 ) -> Option<String> {
+    store_heroic_poster_for(
+        paths,
+        name,
+        app,
+        poster,
+        EnvironmentIdentity::read(paths, name),
+    )
+}
+
+/// `store_heroic_poster`, stored only while the environment is still the one
+/// `identity` was read from, which is checked under the art lock.
+pub(super) fn store_heroic_poster_for(
+    paths: &Paths,
+    name: &str,
+    app: &str,
+    poster: Option<&BatchPoster>,
+    identity: Option<EnvironmentIdentity>,
+) -> Option<String> {
     let poster = poster?;
     // Core only checks the signature, so the image has to decode first.
     if !poster.decoded
@@ -435,7 +454,7 @@ pub(super) fn store_heroic_poster(
     {
         return None;
     }
-    heroic_import::store_poster(paths, name, app, &poster.path)
+    heroic_import::store_poster(paths, name, app, &poster.path, identity)
         .err()
         .map(|error| format!("Heroic poster: {error}"))
 }

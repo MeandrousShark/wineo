@@ -147,7 +147,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
-            art::remove(paths, env, target, kind)?;
+            art::remove(paths, env, target, kind, None)?;
             println!("Removed {kind} from {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;
@@ -623,7 +623,15 @@ impl Access<'_> {
     }
 }
 
-fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
+/// Whether the fetch was refused because the environment was replaced.
+pub(crate) fn environment_changed(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<wineo_core::Error>(),
+        Some(wineo_core::Error::ArtEnvironmentChanged(_))
+    )
+}
+
+pub(crate) fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
     let line = format!("warning: art fetch failed: {error:#}");
     let _ = writeln!(err, "{}", style::warning_stderr(line));
 }
@@ -1073,11 +1081,12 @@ pub(crate) mod fake {
     /// A `Fake` that has the environment replaced the first time an image
     /// is asked for, as `rm` and a new `new` would between a pick and the
     /// download that follows.
+    #[derive(Clone)]
     pub(crate) struct Swap {
         pub(crate) fake: Fake,
         pub(crate) paths: Paths,
         pub(crate) name: String,
-        pub(crate) done: std::cell::Cell<bool>,
+        pub(crate) done: Rc<std::cell::Cell<bool>>,
         /// The part of a request's address that triggers the swap.
         pub(crate) at: &'static str,
     }
@@ -1088,7 +1097,7 @@ pub(crate) mod fake {
                 fake,
                 paths: paths.clone(),
                 name: name.to_owned(),
-                done: std::cell::Cell::new(false),
+                done: Rc::new(std::cell::Cell::new(false)),
                 at: "",
             }
         }

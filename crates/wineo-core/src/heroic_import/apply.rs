@@ -14,7 +14,7 @@ use crate::art::{self, Kind};
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::desktop::{self, Change};
-use crate::environment::Environment;
+use crate::environment::{Environment, EnvironmentIdentity};
 use crate::heroic::HeroicSource;
 use crate::import::{self, ImportProgress};
 use crate::paths::Paths;
@@ -144,6 +144,7 @@ pub fn store_poster(
     env: &str,
     app_name: &str,
     poster: &Path,
+    expected_identity: Option<EnvironmentIdentity>,
 ) -> crate::Result<Option<art::Stored>> {
     let mut bytes = Vec::new();
     let read = fs::File::open(poster)
@@ -172,6 +173,7 @@ pub fn store_poster(
         Kind::Grid,
         &bytes,
         &poster_name(app_name, format),
+        expected_identity,
     )
     .map(Some)
 }

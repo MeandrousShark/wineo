@@ -4115,3 +4115,156 @@ fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
         "a separator parts rows inside a section"
     );
 }
+
+/// SteamGridDB's answers for a game with an icon, and nothing else, by
+/// address.
+#[derive(Clone)]
+struct Canned(
+    Arc<std::collections::HashMap<String, (u16, Vec<u8>)>>,
+    // Runs the first time an image is asked for.
+    Option<Arc<dyn Fn() + Send + Sync>>,
+);
+
+impl wineo_core::download::Transport for Canned {
+    fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+        anyhow::bail!("unexpected request to {url}")
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        _: Option<&str>,
+    ) -> anyhow::Result<wineo_core::download::Response> {
+        if url.contains("/icons/")
+            && let Some(hook) = &self.1
+        {
+            hook();
+        }
+        let Some((status, body)) = self.0.get(url) else {
+            anyhow::bail!("connection to {url} failed");
+        };
+        Ok(wineo_core::download::Response {
+            status: *status,
+            body: Box::new(std::io::Cursor::new(body.clone())),
+        })
+    }
+}
+
+/// A one pixel PNG, which the desktop entry can decode as its icon.
+const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9c\x63\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99\x3d\x1d\0\0\0\0IEND\xaeB`\x82";
+
+fn canned_hades() -> Canned {
+    use wineo_core::steamgriddb::{API, Api, Filters};
+    let mut answers = std::collections::HashMap::new();
+    let json = |body: &str| (200, body.as_bytes().to_vec());
+    answers.insert(
+        format!("{API}/search/autocomplete/Hades"),
+        json(r#"{"success":true,"data":[{"id":7,"name":"Hades"}]}"#),
+    );
+    for kind in wineo_core::art::Kind::ALL {
+        let page = |number| Api::images_url(7, kind, number, Filters::Ranked);
+        let first = if kind == wineo_core::art::Kind::Icon {
+            r#"{"success":true,"data":[{"id":1,"url":"https://cdn.example/1"}]}"#
+        } else {
+            r#"{"success":true,"data":[]}"#
+        };
+        answers.insert(page(0), json(first));
+        answers.insert(page(1), json(r#"{"success":true,"data":[]}"#));
+    }
+    answers.insert(
+        "https://cdn.example/1".to_owned(),
+        (200, ONE_PIXEL_PNG.to_vec()),
+    );
+    Canned(Arc::new(answers), None)
+}
+
+#[test]
+fn art_lands_after_a_target_was_added_to_the_new_environment() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let name = page.draft.environment_name();
+    let paths = page.paths.clone();
+    Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        &name,
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let created = wineo_core::environment::EnvironmentIdentity::read(&paths, &name);
+    // Everything after creation runs the production fetch, over canned answers.
+    let answers = canned_hades();
+    page.fetcher = Arc::new(move |paths, name, title, token| {
+        let answers = answers.clone();
+        crate::flow::artwork::fetch_default_over(paths, name, title, token, &move || {
+            Ok((Box::new(answers.clone()), "key".to_owned()))
+        })
+    });
+    // Adding the target rewrites the config, which the environment survives.
+    let program = page.paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    page.target_desktop = true;
+    let task = page.update(Event::AddTarget);
+    drive(&mut page, task, true);
+    assert_ne!(
+        wineo_core::environment::EnvironmentIdentity::read(&paths, &name),
+        created,
+        "the config was rewritten"
+    );
+    assert_eq!(page.stage, Stage::Finished);
+    let report = page.report.as_ref().unwrap();
+    assert_eq!(report.art_error, None, "{:?}", report.notes);
+    // The art landed, and the desktop entry was refreshed to use it.
+    assert!(paths.art_dir(&name).join("icon.png").exists());
+    assert_eq!(wineo_core::art::saved_game(&paths, &name).unwrap(), Some(7));
+    let entry = std::fs::read_to_string(paths.applications_dir().join("wineo-hades-hades.desktop"))
+        .unwrap();
+    assert!(entry.contains("\nIcon=wineo-hades-hades\n"), "{entry}");
+}
+
+#[test]
+fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
+    let (page, _) = registered(true);
+    let paths = page.paths.clone();
+    Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        false,
+        |_| {},
+    )
+    .unwrap();
+    let replace = {
+        let paths = paths.clone();
+        Arc::new(move || {
+            let config = paths.environment_config("hades");
+            let staged = config.with_extension("replacement");
+            std::fs::copy(&config, &staged).unwrap();
+            std::fs::rename(staged, config).unwrap();
+        })
+    };
+    let mut answers = canned_hades();
+    answers.1 = Some(replace);
+    let result = crate::flow::artwork::fetch_default_over(
+        &paths,
+        "hades",
+        "Hades",
+        &Token::new(),
+        &move || Ok((Box::new(answers.clone()), "key".to_owned())),
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.starts_with(
+            "Could not fetch icon: environment `hades` changed before artwork could be written"
+        ),
+        "{error}"
+    );
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+}
