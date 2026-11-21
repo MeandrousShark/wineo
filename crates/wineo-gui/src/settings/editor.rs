@@ -191,6 +191,8 @@ impl Editor {
             Event::BuildPicked(component, _) => self.build_enabled(name, *component),
             Event::BuildRemoved(component) => self.form.draft.build(*component).is_some(),
             Event::GameId(_) | Event::Store(_) => self.protonfixes_shown(),
+            // Only a Wine environment's section has a field to show.
+            Event::ShowAdvanced => !self.info.native && self.form.draft.proxied.is_none(),
             // Turning one off stays possible, so a hand-written one can go.
             Event::Target(_, TargetEdit::Desktop(true)) => self.desktop_refusal().is_none(),
             _ => true,

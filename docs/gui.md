@@ -1191,6 +1191,13 @@ button, and the page reloads once the file is fixed.
   be renamed, and a removed name can be used again after saving.
 - **Advanced:** the prefix path, and the game id and store protonfixes use
   (Proton only). The Heroic id and the kind are shown but can't change.
+  It shows only with **Show advanced settings** on (see
+  [Global settings](#global-settings)). With the switch off, a Wine
+  environment's page ends with a **Show advanced settings** button, which
+  turns the switch on, shows the section, and puts the cursor in
+  **Prefix**. A native environment's section only has text to read, so it
+  hides with no button. A refused write of the switch shows its error under
+  the section's heading.
 
 Native environments only show what they can use. A Steam game's page has
 only **Tags**, **Title**, and **Desktop entry**, since Steam owns
@@ -1281,7 +1288,9 @@ Steam key's, checked with SteamGridDB and saved like `wineo art key`. With
 `WINEO_STEAMGRIDDB_KEY` set, the row says it overrides the saved key. See
 [The SteamGridDB key](art.md#the-steamgriddb-key).
 
-**Advanced** holds:
+**Advanced** starts with **Show advanced settings**, off by default. With
+it off, the tab shows only the switch and what it covers. With it on, it
+holds:
 
 - **New environments:** the runner and arch `wineo new` uses, whether to
   use **Builds from Steam, Heroic, and Lutris**, and where prefixes, runners,
@@ -1291,6 +1300,23 @@ Steam key's, checked with SteamGridDB and saved like `wineo art key`. With
 - **Runs:** how long `stop` waits before killing a game, and how big a log
   gets.
 - **Environment variables** for every launch.
+
+The switch applies at once, outside the Save bar, and doesn't count as an
+edit, so **Revert** and **Reload** leave it alone. It's saved as
+`[view] advanced_settings` in `library.toml` (see
+[config files](config-files.md)), the way the Library's sort and zoom are,
+and closing the window waits for the write. Other open windows pick it up
+the next time they start. It also shows or hides the environment page's
+**Advanced** section.
+
+It can't be turned off while Advanced has something unsaved: an edit, a
+variable row with a problem (it says "Save or revert advanced changes
+first."), or a new variable typed but not added ("Add or clear the new
+variable first."). It's also disabled while a save runs and behind the
+leave prompt. When `library.toml` refuses the write, the switch stays where
+you put it until the app closes, and the error shows under it, with
+**Open Checkup** when Checkup can repair the file. The next write that
+lands clears it.
 
 Every tab ends with the version, like `wineo 1.5.0`, the same line
 `wineo --version` prints. A build that isn't a tagged release adds which
@@ -1442,6 +1468,7 @@ On a settings page:
 | Ctrl+S | Save |
 | Tab, Shift+Tab | Move between the tabs and fields |
 | Left, Right (on the tabs) | Move to the previous or next of General, Appearance, Controller, Stores, and Advanced, and select it |
+| Enter, Space (on Show advanced settings) | Flip the switch, keeping focus on it; on an environment's page, show Advanced and move to Prefix |
 | Esc | Leave the field, then an environment's page, asking first if there are edits |
 
 In an Add, import, or clone flow:

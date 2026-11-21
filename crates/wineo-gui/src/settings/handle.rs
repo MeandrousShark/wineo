@@ -26,6 +26,8 @@ impl Page {
             }
             Event::Back => self.go_back(),
             Event::Tab(tab) => self.select_tab(tab),
+            Event::AdvancedSettings(on) => self.flip_advanced(on),
+            Event::ShowAdvanced => self.show_advanced_section(),
             Event::Scrolled(tab, offset) => {
                 self.scrolled(tab, offset);
                 Step::none()
@@ -518,8 +520,12 @@ impl Page {
                     | Event::ResetButtons
                     | Event::CaptureButton(_)
                     | Event::Appearance(_)
+                    | Event::AdvancedSettings(_)
             )
         {
+            return true;
+        }
+        if self.global && matches!(event, Event::ShowAdvanced) {
             return true;
         }
         if let Some(editor) = self.editor()
@@ -528,6 +534,36 @@ impl Page {
             return true;
         }
         false
+    }
+    /// The switch moves only when it takes a flip; the app writes it.
+    fn flip_advanced(&mut self, on: bool) -> Step {
+        if on == self.advanced_settings || !self.advanced_switch_enabled() {
+            return Step::none();
+        }
+        self.advanced_settings = on;
+        if !on {
+            // Runner's and Arch's pick lists go with the sections, so an
+            // open one's close never arrives, as on a tab switch.
+            self.menu_open = false;
+            self.close_font_picker();
+        }
+        Step {
+            advanced: Some(on),
+            ..Step::none()
+        }
+    }
+    /// The section shows in place, with focus on its first field.
+    fn show_advanced_section(&mut self) -> Step {
+        if self.advanced_settings {
+            return Step::none();
+        }
+        self.advanced_settings = true;
+        Step {
+            advanced: Some(true),
+            ..Step::task(iced::widget::operation::focus(iced::widget::Id::new(
+                view::PREFIX_ID,
+            )))
+        }
     }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;

@@ -22,6 +22,8 @@ fn global_page(paths: &Paths) -> Page {
 /// environments, Runs, or Environment variables on screen comes through
 /// here, so whatever it takes to show them changes in one place.
 fn show_advanced(page: &mut Page, paths: &Paths) -> Task<Message> {
+    let _ = page.update(paths, Event::AdvancedSettings(true));
+    assert!(page.advanced_settings);
     page.update(paths, Event::Tab(Tab::Advanced)).task
 }
 
@@ -3902,6 +3904,8 @@ mod remap;
 mod narrow_rows;
 
 mod reveal;
+
+mod advanced_switch;
 
 #[test]
 fn retroarch_quit_switch_defaults_on_and_saves_through_set() {

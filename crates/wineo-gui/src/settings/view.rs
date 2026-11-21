@@ -32,6 +32,15 @@ pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
 const STEAMGRIDDB_KEY_ID: &str = "settings-steamgriddb-key";
 pub(super) const CHECKUP_ID: &str = "settings-open-checkup";
+pub(super) const ADVANCED_SWITCH_ID: &str = "settings-advanced-switch";
+const ADVANCED_CHECKUP_ID: &str = "settings-advanced-checkup";
+pub(super) const SHOW_ADVANCED_ID: &str = "settings-show-advanced";
+pub(super) const PREFIX_ID: &str = "settings-prefix";
+const GAME_ID_ID: &str = "settings-game-id";
+const STORE_ID: &str = "settings-store";
+pub(super) const ADVANCED_SWITCH: &str = "Show advanced settings";
+pub(super) const ADVANCED_NOTE: &str =
+    "Defaults for new environments, run limits, and environment variables.";
 
 fn send(event: Event) -> Message {
     Message::Settings(event)
@@ -90,9 +99,7 @@ impl Page {
                 }
                 content.into()
             }
-            View::Form(editor) => {
-                editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
-            }
+            View::Form(editor) => editor_view(&self.name, editor, self, palette),
             View::Global(editor) => {
                 global_view(self.tab, editor, self, paths, self.locked(), palette)
             }
@@ -140,25 +147,7 @@ impl Page {
             bar = bar.push(text(note).size(13).color(palette.muted));
         }
         if let Some(error) = &self.error {
-            let error = text(error).size(13).color(palette.danger);
-            bar = bar.push(if self.error_checkup {
-                let open = Message::Section(crate::sidebar::Section::Checkup);
-                crate::ends::ends(
-                    error.width(Fill),
-                    crate::focus_button::control(
-                        secondary_button("Open Checkup", palette)
-                            .on_press(open.clone())
-                            .into(),
-                        true,
-                        CHECKUP_ID,
-                        open,
-                    ),
-                    12.0,
-                    crate::ends::MIN_LEFT,
-                )
-            } else {
-                error.into()
-            });
+            bar = bar.push(refusal(error, self.error_checkup, CHECKUP_ID, palette));
         }
         if let Some(problem) = self.problem().filter(|_| self.is_dirty()) {
             bar = bar.push(text(problem).size(13).color(palette.danger));
@@ -212,6 +201,42 @@ impl Page {
     }
 }
 
+/// An error, with Open Checkup beside it when Checkup can repair what
+/// caused it.
+fn refusal<'a>(
+    error: &'a str,
+    checkup: bool,
+    id: &'static str,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let error = text(error).size(13).color(palette.danger);
+    if !checkup {
+        return error.into();
+    }
+    let open = Message::Section(crate::sidebar::Section::Checkup);
+    crate::ends::ends(
+        error.width(Fill),
+        crate::focus_button::control(
+            secondary_button("Open Checkup", palette)
+                .on_press(open.clone())
+                .into(),
+            true,
+            id,
+            open,
+        ),
+        12.0,
+        crate::ends::MIN_LEFT,
+    )
+}
+
+/// Why Show advanced settings won't be remembered, under the switch or the
+/// environment page's Advanced heading.
+fn advanced_refusal<'a>(page: &'a Page, palette: Palette) -> Option<Element<'a, Message>> {
+    page.advanced_error
+        .as_ref()
+        .map(|error| refusal(&error.text, error.checkup, ADVANCED_CHECKUP_ID, palette))
+}
+
 /// Pending with the maintainer: the status names `library.toml` or a theme
 /// file when one of those changed under the Appearance tab's edits.
 fn changed_status(file: super::ChangedFile) -> &'static str {
@@ -225,10 +250,10 @@ fn changed_status(file: super::ChangedFile) -> &'static str {
 fn editor_view<'a>(
     name: &'a str,
     editor: &'a Editor,
-    locked: bool,
-    resolving: bool,
+    page: &'a Page,
     palette: Palette,
 ) -> Element<'a, Message> {
+    let (locked, resolving) = (page.locked(), page.resolving());
     let info = &editor.info;
     let draft = &editor.form.draft;
     if let Some(proxied) = &draft.proxied {
@@ -362,11 +387,27 @@ fn editor_view<'a>(
         targets(name, editor, locked, resolving, palette),
         palette,
     ));
-    sections = sections.push(section(
-        "Advanced",
-        advanced(editor, locked, palette),
-        palette,
-    ));
+    if page.advanced_settings {
+        let mut advanced_rows = column![].spacing(12);
+        if let Some(error) = advanced_refusal(page, palette) {
+            advanced_rows = advanced_rows.push(error);
+        }
+        advanced_rows = advanced_rows.push(advanced(editor, locked, palette));
+        sections = sections.push(section("Advanced", advanced_rows.into(), palette));
+    } else if !info.native {
+        // A native section has nothing to edit, so it only hides. A plain
+        // button takes no Tab focus, and the section's fields were Tab
+        // stops, so the keyboard reaches it this way.
+        let show = send(Event::ShowAdvanced);
+        sections = sections.push(crate::focus_button::control(
+            secondary_button(ADVANCED_SWITCH, palette)
+                .on_press(show.clone())
+                .into(),
+            true,
+            SHOW_ADVANCED_ID,
+            show,
+        ));
+    }
     sections.into()
 }
 
@@ -453,7 +494,7 @@ pub(super) fn global_view<'a>(
         )
         .into(),
         tabs::Tab::Stores => stores_tab(editor, page, paths, locked, palette),
-        tabs::Tab::Advanced => advanced_tab(editor, paths, locked, palette),
+        tabs::Tab::Advanced => advanced_tab(editor, page, paths, locked, palette),
     };
     column![
         content,
@@ -573,7 +614,65 @@ fn stores_tab<'a>(
     .into()
 }
 
+/// The switch first, then, with it on, the sections it shows. The switch
+/// keeps its place either way, so flipping it keeps its focus.
 fn advanced_tab<'a>(
+    editor: &'a global::Editor,
+    page: &'a Page,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let tab = column![grouped_section(advanced_switch(page, palette), palette)]
+        .spacing(24)
+        .width(Fill);
+    if !page.advanced_settings {
+        return tab.into();
+    }
+    tab.push(advanced_sections(editor, paths, locked, palette))
+        .into()
+}
+
+/// Show advanced settings, with its note, why it can't be turned off now,
+/// or why it won't be remembered.
+fn advanced_switch<'a>(page: &'a Page, palette: Palette) -> Element<'a, Message> {
+    let on = page.advanced_settings;
+    let enabled = page.advanced_switch_enabled();
+    // iced's toggler takes no focus, so the row's control does, and Enter
+    // or Space flips it.
+    let toggle = container(
+        toggler(on).on_toggle_maybe(enabled.then_some(|on| send(Event::AdvancedSettings(on)))),
+    )
+    .width(64);
+    let control = crate::focus_button::control(
+        toggle.into(),
+        enabled,
+        ADVANCED_SWITCH_ID,
+        send(Event::AdvancedSettings(!on)),
+    );
+    let mut rows = column![
+        row![
+            text(ADVANCED_SWITCH)
+                .color(palette.foreground)
+                .width(LABEL_WIDTH),
+            control,
+        ]
+        .spacing(12)
+        .align_y(Center)
+    ]
+    .spacing(12);
+    if !on {
+        rows = rows.push(text(ADVANCED_NOTE).size(13).color(palette.muted));
+    } else if let Some(hold) = page.advanced_hold() {
+        rows = rows.push(text(hold).size(13).color(palette.muted));
+    }
+    if let Some(error) = advanced_refusal(page, palette) {
+        rows = rows.push(error);
+    }
+    rows.into()
+}
+
+fn advanced_sections<'a>(
     editor: &'a global::Editor,
     paths: &Paths,
     locked: bool,
@@ -2171,8 +2270,9 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     let muted = |value: &str| -> Element<'_, Message> {
         text(value.to_owned()).color(palette.muted).into()
     };
-    let field = |value: &str, on_input: fn(String) -> Event| -> Element<'_, Message> {
+    let field = |value: &str, id: &'static str, on_input: fn(String) -> Event| {
         text_input("unset", value)
+            .id(id)
             .on_input_maybe((!locked).then_some(move |value| send(on_input(value))))
             .width(Fill)
             .padding([6, 10])
@@ -2184,7 +2284,7 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     if !info.native {
         rows = rows.push(setting_row(
             "Prefix",
-            field(&draft.prefix, Event::Prefix),
+            field(&draft.prefix, PREFIX_ID, Event::Prefix),
             None,
             palette,
         ));
@@ -2195,13 +2295,13 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     if editor.protonfixes_shown() {
         rows = rows.push(setting_row(
             "Game id",
-            field(&draft.gameid, Event::GameId),
+            field(&draft.gameid, GAME_ID_ID, Event::GameId),
             None,
             palette,
         ));
         rows = rows.push(setting_row(
             "Store",
-            field(&draft.store, Event::Store),
+            field(&draft.store, STORE_ID, Event::Store),
             None,
             palette,
         ));
