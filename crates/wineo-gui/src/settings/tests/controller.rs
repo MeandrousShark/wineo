@@ -54,6 +54,17 @@ fn the_tab_lists_the_pads_or_says_none_was_found() {
     let texts = page_texts(&page, &paths);
     assert!(texts.iter().any(|text| text == view::CONTROLLER_SWITCH));
     assert!(texts.iter().any(|text| text == view::NO_CONTROLLER));
+    // No heading repeats the tab's name: the switch follows the tab labels.
+    assert_eq!(
+        texts.iter().filter(|text| *text == "Controller").count(),
+        1,
+        "{texts:?}"
+    );
+    let after_tabs = texts
+        .iter()
+        .position(|text| text == Tab::Advanced.label())
+        .unwrap();
+    assert_eq!(texts[after_tabs + 1], view::CONTROLLER_SWITCH, "{texts:?}");
 
     page.pads = vec!["Xbox Wireless Controller".to_owned()];
     let texts = page_texts(&page, &paths);

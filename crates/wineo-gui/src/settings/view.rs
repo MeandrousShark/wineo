@@ -445,11 +445,13 @@ pub(super) fn global_view<'a>(
         tabs::Tab::Appearance => {
             super::appearance::tab(&editor.appearance, locked, palette, page.system_mode)
         }
-        tabs::Tab::Controller => section(
-            "Controller",
+        // The tab names it, so the rows' surface starts the tab without a
+        // heading, as Appearance's first row does.
+        tabs::Tab::Controller => grouped_section(
             controller_rows(&editor.form.draft.input, page, locked, palette),
             palette,
-        ),
+        )
+        .into(),
         tabs::Tab::Stores => stores_tab(editor, page, paths, locked, palette),
         tabs::Tab::Advanced => advanced_tab(editor, paths, locked, palette),
     };
