@@ -2178,6 +2178,39 @@ fn an_answer_that_is_stale_or_late_does_nothing() {
 }
 
 #[test]
+fn an_answer_matching_a_folder_no_longer_listed_adds_the_typed_one_once() {
+    let root = tempdir().unwrap();
+    let new = root.path().join("elsewhere");
+    let mut page = listed_sources(root.path());
+    // Discovery replaced the list after the check started, so the folder it
+    // matched is gone.
+    let _ = page.update(Event::FolderResolved(
+        page.picker_sequence,
+        new.clone(),
+        Some(root.path().join("gone")),
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.sources.len(), 3);
+    assert_eq!(page.source, Some(2));
+    assert_eq!(page.sources[2].config_dir(), new);
+}
+
+#[test]
+fn an_answer_with_no_match_opens_the_row_the_typed_folder_now_matches() {
+    let root = tempdir().unwrap();
+    let mut page = listed_sources(root.path());
+    // The check found nothing, but the list now holds the typed spelling.
+    let _ = page.update(Event::FolderResolved(
+        page.picker_sequence,
+        root.path().join("flatpak-heroic"),
+        None,
+    ));
+    assert_eq!(page.step, Step::Games);
+    assert_eq!(page.source, Some(1));
+    assert_eq!(page.sources.len(), 2, "nothing was added");
+}
+
+#[test]
 fn a_new_folder_is_still_added() {
     let root = tempdir().unwrap();
     let new = root.path().join("elsewhere");
