@@ -1120,11 +1120,16 @@ impl Page {
                                     &name,
                                     app,
                                     posters.get(app),
+                                    registered.identity,
                                 ));
                                 if fetch_batch_art {
                                     notes.extend(art_notes(
                                         artwork::fetch_default(
-                                            &paths, &name, &title, &https, &token,
+                                            (&paths, &name),
+                                            &title,
+                                            registered.identity,
+                                            &https,
+                                            &token,
                                         ),
                                         &token,
                                     ));

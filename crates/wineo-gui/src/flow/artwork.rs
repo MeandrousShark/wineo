@@ -440,13 +440,10 @@ impl Draft {
         Ok(())
     }
 
-    pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
-        self.apply_for(paths, name, EnvironmentIdentity::read(paths, name))
-    }
-
-    /// `apply`, storing the fetched art only while the environment is still
-    /// the one `identity` was read from.
-    fn apply_for(
+    /// Stores what the draft holds in `name`, only while the environment is
+    /// still the one `identity` was read from. A flow captures that when it
+    /// registers the environment and passes the same one on every retry.
+    pub(crate) fn apply(
         &self,
         paths: &Paths,
         name: &str,
@@ -467,9 +464,9 @@ impl Draft {
                         *kind,
                         &path,
                         &prefilled.original,
-                        None,
+                        identity,
                     ),
-                    None => art::set_manual(paths, name, None, *kind, &path, None),
+                    None => art::set_manual(paths, name, None, *kind, &path, identity),
                 }
                 .map_err(|e| e.to_string())
             });
@@ -995,9 +992,9 @@ fn fetch(
 /// nothing once `token` is canceled. A batch passes the same `https` for
 /// every game, so they share one client.
 pub(crate) fn fetch_default(
-    paths: &Paths,
-    name: &str,
+    (paths, name): (&Paths, &str),
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     https: &Lazy<Https>,
     token: &Token,
 ) -> Result<Vec<String>, String> {
@@ -1016,29 +1013,31 @@ pub(crate) fn fetch_default(
         return Err(wineo_core::error::Error::Canceled("artwork").to_string());
     }
     match search_with(paths, title, https)?.into_iter().next() {
-        Some(game) => {
-            let identity = EnvironmentIdentity::read(paths, name);
-            notes.extend(fetch(
-                (paths, name),
-                &game,
-                &kinds,
-                identity,
-                (https, token),
-            )?)
-        }
+        Some(game) => notes.extend(fetch(
+            (paths, name),
+            &game,
+            &kinds,
+            identity,
+            (https, token),
+        )?),
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)
 }
 
 /// Fetches art for an environment, from its name, the title to search for,
-/// and the token that stops it. Tests swap in their own, so nothing they run
-/// reaches SteamGridDB.
-pub(crate) type Fetcher =
-    Arc<dyn Fn(&Paths, &str, &str, &Token) -> Result<Vec<String>, String> + Send + Sync>;
+/// the identity it was registered with, and the token that stops it. Tests
+/// swap in their own, so nothing they run reaches SteamGridDB.
+pub(crate) type Fetcher = Arc<
+    dyn Fn(&Paths, &str, &str, Option<EnvironmentIdentity>, &Token) -> Result<Vec<String>, String>
+        + Send
+        + Sync,
+>;
 
 pub(crate) fn default_fetcher() -> Fetcher {
-    Arc::new(|paths, name, title, token| fetch_default(paths, name, title, &Lazy::new(), token))
+    Arc::new(|paths, name, title, identity, token| {
+        fetch_default((paths, name), title, identity, &Lazy::new(), token)
+    })
 }
 
 /// What a flow's Details offers for fetching art after the environment
@@ -1107,15 +1106,19 @@ pub(crate) type FetchParts = (Result<Vec<String>, String>, Result<(), String>);
 /// The fetch after an environment registers, then the desktop entry again,
 /// since its icon comes from the art.
 pub(crate) fn fetch_art_parts(
-    paths: &Paths,
-    name: &str,
+    (paths, name): (&Paths, &str),
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     token: &Token,
     fetcher: &Fetcher,
 ) -> FetchParts {
-    let fetched = fetcher(paths, name, title, token);
+    let fetched = fetcher(paths, name, title, identity, token);
     // Skipped, so nothing more is written; a later launch refreshes the entry.
     if fetched.is_err() && token.is_canceled() {
+        return (fetched, Ok(()));
+    }
+    // A replacement environment's entries are not this fetch's to touch.
+    if identity.is_some_and(|identity| EnvironmentIdentity::read(paths, name) != Some(identity)) {
         return (fetched, Ok(()));
     }
     let entry = desktop::apply(paths, name, false)
@@ -1126,13 +1129,13 @@ pub(crate) fn fetch_art_parts(
 
 /// `fetch_art_parts` as one result, for a page that shows a single error.
 pub(crate) fn fetch_art(
-    paths: &Paths,
-    name: &str,
+    (paths, name): (&Paths, &str),
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     token: &Token,
     fetcher: &Fetcher,
 ) -> Result<Vec<String>, String> {
-    match fetch_art_parts(paths, name, title, token, fetcher) {
+    match fetch_art_parts((paths, name), title, identity, token, fetcher) {
         (Ok(notes), Ok(())) => Ok(notes),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(art_error), Err(desktop_error)) => {

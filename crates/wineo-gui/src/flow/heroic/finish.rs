@@ -55,11 +55,12 @@ impl Page {
                 };
                 self.status = format!("Imported {title}. Adding artwork...");
                 let name = registered.environment.name.clone();
+                let identity = registered.identity;
                 self.registered = Some(registered);
                 let art = self.art.clone();
                 let paths = self.paths.clone();
                 task::blocking(
-                    move || art.apply(&paths, &name),
+                    move || art.apply(&paths, &name, identity),
                     move |result| Event::ArtFinished(generation, result),
                 )
             }
@@ -126,13 +127,16 @@ impl Page {
             return Task::none();
         };
         let name = registered.environment.name.clone();
+        // The one captured at registration, not a fresh read, so a retry
+        // can't write into an environment that replaced it.
+        let identity = registered.identity;
         let art = self.art.clone();
         let paths = self.paths.clone();
         let generation = self.generation;
         self.token = Some(Token::new());
         self.error = None;
         task::blocking(
-            move || art.apply(&paths, &name),
+            move || art.apply(&paths, &name, identity),
             move |result| Event::ArtFinished(generation, result),
         )
     }

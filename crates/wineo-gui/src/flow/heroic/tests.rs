@@ -3,6 +3,7 @@ use crate::test_script::write_script;
 use iced::keyboard::key::Named;
 use std::ffi::OsString;
 use std::fs;
+use wineo_core::environment::EnvironmentIdentity;
 
 use tempfile::tempdir;
 
@@ -1333,7 +1334,9 @@ fn a_heroic_poster_is_prefilled_and_stored_as_grid_art() {
     )
     .unwrap();
     let name = registered.environment.name.as_str();
-    page.art.apply(&paths, name).unwrap();
+    page.art
+        .apply(&paths, name, EnvironmentIdentity::read(&paths, name))
+        .unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1366,7 +1369,10 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
         |_| {},
     )
     .unwrap();
-    assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
+    assert_eq!(
+        store_heroic_poster(&paths, "dawn", "dawn", None, None),
+        None
+    );
     let art = artwork::Draft::with_fetched(
         Kind::Grid,
         7,
@@ -1376,7 +1382,8 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
             format: wineo_core::art::Format::Jpeg,
         },
     );
-    art.apply(&paths, "dawn").unwrap();
+    art.apply(&paths, "dawn", EnvironmentIdentity::read(&paths, "dawn"))
+        .unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dawn")).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1439,7 +1446,7 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
         )
         .unwrap();
         assert_eq!(
-            store_heroic_poster(&paths, name, name, posters.get(name)),
+            store_heroic_poster(&paths, name, name, posters.get(name), None),
             None
         );
     }

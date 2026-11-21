@@ -57,7 +57,7 @@ type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, _, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -336,6 +336,7 @@ fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
     page.step = Step::Working;
     let generation = page.generation;
     let outcome = ImportOutcome {
+        identity: None,
         name: "hollow-knight".to_owned(),
         entry_error: None,
     };
@@ -479,6 +480,7 @@ fn a_failed_entry_refresh_in_the_worker_lands_on_art_failed_and_retry_fetches_fi
     assert!(page.fetch_art);
     let generation = page.generation;
     let outcome = ImportOutcome {
+        identity: None,
         name: "imported".to_owned(),
         entry_error: Some("no applications folder".to_owned()),
     };

@@ -1491,7 +1491,7 @@ type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, _, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -1674,13 +1674,13 @@ fn the_desktop_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
     let token = Token::new();
     token.cancel();
     assert_eq!(
-        fetch_art(&paths, "game", "Game", &token, &fetcher),
+        fetch_art((&paths, "game"), "Game", None, &token, &fetcher),
         Err("canceled".to_owned())
     );
     assert!(entries().is_empty(), "a skip writes nothing more");
 
     assert_eq!(
-        fetch_art(&paths, "game", "Game", &Token::new(), &fetcher),
+        fetch_art((&paths, "game"), "Game", None, &Token::new(), &fetcher),
         Ok(Vec::new())
     );
     assert_eq!(entries().len(), 1);

@@ -227,7 +227,12 @@ fn local_art_works_without_fetching_and_preserves_source_bytes() {
     assert!(draft.kinds.is_empty());
     assert!(draft.validate().is_ok());
     assert!(preview(&source, Kind::Icon).is_ok());
-    assert!(draft.apply(&paths, "game").unwrap().is_empty());
+    assert!(
+        draft
+            .apply(&paths, "game", EnvironmentIdentity::read(&paths, "game"))
+            .unwrap()
+            .is_empty()
+    );
     draft.fetch = true;
     draft.kinds = vec![Kind::Icon];
     draft.selected = Some(Match(Game {
@@ -235,7 +240,12 @@ fn local_art_works_without_fetching_and_preserves_source_bytes() {
         name: "game".into(),
         year: None,
     }));
-    assert!(draft.apply(&paths, "game").unwrap().is_empty());
+    assert!(
+        draft
+            .apply(&paths, "game", EnvironmentIdentity::read(&paths, "game"))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(std::fs::read(&source).unwrap(), bytes);
     assert_eq!(
         std::fs::read(paths.art_dir("game").join("icon.svg")).unwrap(),
@@ -337,7 +347,11 @@ fn failed_art_does_not_remove_registration() {
             ..Local::default()
         },
     );
-    assert!(draft.apply(&paths, "game").is_err());
+    assert!(
+        draft
+            .apply(&paths, "game", EnvironmentIdentity::read(&paths, "game"))
+            .is_err()
+    );
     assert!(Environment::load(&paths, "game").is_ok());
 }
 
@@ -445,7 +459,9 @@ fn none_found_preview_skips_fetch_and_reports_note() {
     assert!(draft.remote[&Kind::Grid].none_found);
     assert!(!draft.remote[&Kind::Grid].loading);
     assert_eq!(
-        draft.apply(&paths, "game").unwrap(),
+        draft
+            .apply(&paths, "game", EnvironmentIdentity::read(&paths, "game"))
+            .unwrap(),
         vec!["No grid artwork found for game"]
     );
 }
@@ -641,7 +657,7 @@ fn apply_stores_nothing_in_an_environment_replaced_since_it_started() {
             std::fs::copy(&config, &staged).unwrap();
             std::fs::rename(staged, config).unwrap();
         }
-        let result = draft_with_held_grid().apply_for(&paths, "game", identity);
+        let result = draft_with_held_grid().apply(&paths, "game", identity);
         let grid = paths.art_dir("game").join("grid.png");
         if replaced {
             assert_eq!(
@@ -691,7 +707,12 @@ fn apply_stores_held_art_without_a_request() {
             ..Remote::default()
         },
     );
-    assert!(draft.apply(&paths, "game").unwrap().is_empty());
+    assert!(
+        draft
+            .apply(&paths, "game", EnvironmentIdentity::read(&paths, "game"))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         std::fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
         PNG
@@ -750,7 +771,9 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
         draft.notes(Kind::Grid),
         [Note::Info("From Heroic".to_owned())]
     );
-    draft.apply(&paths, "kept").unwrap();
+    draft
+        .apply(&paths, "kept", EnvironmentIdentity::read(&paths, "kept"))
+        .unwrap();
     assert_eq!(grid("kept"), art::Source::Manual("heroic-a.png".into()));
     assert!(!paths.art_dir("kept").join("grid.jpg").exists());
 
@@ -758,14 +781,26 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
     prefill(&mut draft);
     let _ = draft.update(Event::Clear(Kind::Grid));
     assert!(!draft.is_selected(Kind::Grid));
-    draft.apply(&paths, "removed").unwrap();
+    draft
+        .apply(
+            &paths,
+            "removed",
+            EnvironmentIdentity::read(&paths, "removed"),
+        )
+        .unwrap();
     assert_eq!(grid("removed"), art::Source::SteamGridDb(42));
 
     let mut draft = fetched();
     prefill(&mut draft);
     let _ = draft.update(Event::Path(Kind::Grid, mine.to_string_lossy().into_owned()));
     assert_eq!(draft.prefilled(Kind::Grid), None);
-    draft.apply(&paths, "replaced").unwrap();
+    draft
+        .apply(
+            &paths,
+            "replaced",
+            EnvironmentIdentity::read(&paths, "replaced"),
+        )
+        .unwrap();
     assert_eq!(grid("replaced"), art::Source::Manual("mine.png".into()));
 }
 
@@ -775,22 +810,22 @@ fn the_fetch_and_the_entry_are_told_apart() {
     let paths = paths(root.path());
     let notes = vec!["No logo artwork found".to_owned()];
     let answer = notes.clone();
-    let fetcher: Fetcher = Arc::new(move |_, _, _, _| Ok(answer.clone()));
+    let fetcher: Fetcher = Arc::new(move |_, _, _, _, _| Ok(answer.clone()));
     // Nothing to refresh for an environment that isn't there.
     assert_eq!(
-        fetch_art_parts(&paths, "game", "Game", &Token::new(), &fetcher),
+        fetch_art_parts((&paths, "game"), "Game", None, &Token::new(), &fetcher),
         (Ok(notes), Ok(()))
     );
-    let failing: Fetcher = Arc::new(|_, _, _, _| Err("offline".to_owned()));
+    let failing: Fetcher = Arc::new(|_, _, _, _, _| Err("offline".to_owned()));
     assert_eq!(
-        fetch_art_parts(&paths, "game", "Game", &Token::new(), &failing),
+        fetch_art_parts((&paths, "game"), "Game", None, &Token::new(), &failing),
         (Err("offline".to_owned()), Ok(()))
     );
     // A skipped fetch leaves the entry alone and reports it as fine.
     let token = Token::new();
     token.cancel();
     assert_eq!(
-        fetch_art_parts(&paths, "game", "Game", &token, &failing),
+        fetch_art_parts((&paths, "game"), "Game", None, &token, &failing),
         (Err("offline".to_owned()), Ok(()))
     );
 }

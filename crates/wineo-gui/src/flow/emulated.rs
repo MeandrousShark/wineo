@@ -14,6 +14,7 @@ use iced::keyboard::{self, Key};
 use wineo_core::cancel::Token;
 use wineo_core::download::Lazy;
 use wineo_core::emulator::{Core, Emulator};
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::paths::Paths;
 use wineo_core::rom_import::{
     Batch, BatchReport, Emulating, Entry, EntryState, EntrySystem, Listing,
@@ -554,9 +555,13 @@ impl Page {
                 // The games are fetched one at a time, so the lock never waits.
                 let https = std::sync::Mutex::new(Lazy::new());
                 let fetcher: Fetcher = Arc::new(
-                    move |paths: &Paths, name: &str, title: &str, token: &Token| {
+                    move |paths: &Paths,
+                          name: &str,
+                          title: &str,
+                          identity: Option<EnvironmentIdentity>,
+                          token: &Token| {
                         let https = https.lock().unwrap_or_else(|poison| poison.into_inner());
-                        artwork::fetch_default(paths, name, title, &https, token)
+                        artwork::fetch_default((paths, name), title, identity, &https, token)
                     },
                 );
                 fetcher

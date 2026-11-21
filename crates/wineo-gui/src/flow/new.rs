@@ -12,7 +12,7 @@ use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Provider};
-use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::environment::{Environment, EnvironmentIdentity, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
 use wineo_core::installer::{self, Outcome, Output};
@@ -239,6 +239,10 @@ pub(crate) struct Report {
     notes: Vec<String>,
     programs: Vec<(String, String)>,
     art_error: Option<String>,
+    /// The environment as created, read while the create lock was held. Art
+    /// is fetched, and fetched again on a retry, only while it is still this
+    /// one.
+    identity: Option<EnvironmentIdentity>,
 }
 
 impl Report {
@@ -251,6 +255,7 @@ impl Report {
             notes: Vec::new(),
             programs: Vec::new(),
             art_error: None,
+            identity: None,
         }
     }
 }
@@ -1043,8 +1048,9 @@ impl Page {
         let name = self.draft.environment_name();
         let title = self.draft.target_title().unwrap_or_else(|| name.clone());
         let fetcher = self.fetcher.clone();
+        let identity = self.report.as_ref().and_then(|report| report.identity);
         task::blocking(
-            move || fetch_art(&paths, &name, &title, &token, &fetcher),
+            move || fetch_art((&paths, &name), &title, identity, &token, &fetcher),
             move |result| Event::ArtFetched(generation, result),
         )
     }
@@ -2856,6 +2862,7 @@ impl<P: FnMut(String), L: FnMut(String)> create::Hooks for Hooks<'_, P, L> {
     fn created(&mut self, created: &create::Created) -> Result<(), String> {
         let report = &mut *self.report;
         report.registered = true;
+        report.identity = EnvironmentIdentity::read(self.paths, &created.environment.name);
         report.playable = created.target == TargetOutcome::Added;
         if created.target == TargetOutcome::ExeNotFound {
             report

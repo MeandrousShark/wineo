@@ -700,12 +700,14 @@ fn a_finished_import_adds_play_cards_with_the_emulator_as_source_and_their_art()
 
     let fetched: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let seen = fetched.clone();
-    let fetcher: Fetcher = Arc::new(move |_: &Paths, name: &str, title: &str, _: &Token| {
-        seen.lock()
-            .unwrap()
-            .push((name.to_owned(), title.to_owned()));
-        Ok(vec!["No artwork match".to_owned()])
-    });
+    let fetcher: Fetcher = Arc::new(
+        move |_: &Paths, name: &str, title: &str, _: Option<EnvironmentIdentity>, _: &Token| {
+            seen.lock()
+                .unwrap()
+                .push((name.to_owned(), title.to_owned()));
+            Ok(vec!["No artwork match".to_owned()])
+        },
+    );
     page.fetcher = Some(fetcher);
     let task = page.update(Event::Import, true);
     assert_eq!(page.step, Step::Working);
