@@ -293,6 +293,30 @@ fn choose_for(
     Ok(Choice::NoneFound)
 }
 
+/// Like `publish`, except that nothing is written unless the environment is
+/// still the one `expected_identity` was read from, which is checked under
+/// the art lock.
+pub fn publish_for(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    image: &Downloaded,
+    mode: Mode,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<Fetched> {
+    publish_with_cancel(
+        paths,
+        env,
+        target,
+        kind,
+        image,
+        mode,
+        None,
+        expected_identity,
+    )
+}
+
 /// Publishes a downloaded image, keeping existing art in Fill mode.
 pub fn publish(
     paths: &Paths,

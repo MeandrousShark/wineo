@@ -595,6 +595,69 @@ fn local_selection_hides_fetch_status() {
     );
 }
 
+/// A draft with a game chosen and a grid already downloaded for it.
+fn draft_with_held_grid() -> Draft {
+    let mut draft = Draft::new();
+    draft.fetch = true;
+    draft.kinds = vec![Kind::Grid];
+    draft.selected = Some(Match(Game {
+        id: 7,
+        name: "game".into(),
+        year: None,
+    }));
+    draft.remote.insert(
+        Kind::Grid,
+        Remote {
+            image: Some(Arc::new(art::Downloaded {
+                asset: 42,
+                bytes: b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec(),
+                format: art::Format::Png,
+            })),
+            ..Remote::default()
+        },
+    );
+    draft
+}
+
+#[test]
+fn apply_stores_nothing_in_an_environment_replaced_since_it_started() {
+    for replaced in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        Environment::create_native(
+            &paths,
+            &GlobalConfig::default(),
+            "game",
+            None,
+            false,
+            |_| {},
+        )
+        .unwrap();
+        let identity = EnvironmentIdentity::read(&paths, "game");
+        if replaced {
+            // A copy renamed over the config is a different file.
+            let config = paths.environment_config("game");
+            let staged = config.with_extension("replacement");
+            std::fs::copy(&config, &staged).unwrap();
+            std::fs::rename(staged, config).unwrap();
+        }
+        let result = draft_with_held_grid().apply_for(&paths, "game", identity);
+        let grid = paths.art_dir("game").join("grid.png");
+        if replaced {
+            assert_eq!(
+                result.unwrap_err(),
+                "Art fetching failed: environment `game` changed before artwork could be written"
+            );
+            assert!(!grid.exists());
+            assert_eq!(art::saved_game(&paths, "game").unwrap(), None);
+        } else {
+            assert!(result.unwrap().is_empty());
+            assert!(grid.exists());
+            assert_eq!(art::saved_game(&paths, "game").unwrap(), Some(7));
+        }
+    }
+}
+
 #[test]
 fn apply_stores_held_art_without_a_request() {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";

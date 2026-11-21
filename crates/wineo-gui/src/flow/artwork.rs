@@ -441,6 +441,17 @@ impl Draft {
     }
 
     pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
+        self.apply_for(paths, name, EnvironmentIdentity::read(paths, name))
+    }
+
+    /// `apply`, storing the fetched art only while the environment is still
+    /// the one `identity` was read from.
+    fn apply_for(
+        &self,
+        paths: &Paths,
+        name: &str,
+        identity: Option<EnvironmentIdentity>,
+    ) -> Result<Vec<String>, String> {
         let mut notes = Vec::new();
         let mut failures = Vec::new();
         for (kind, local) in &self.local {
@@ -474,7 +485,7 @@ impl Draft {
                 })
                 .collect();
             if !kinds.is_empty() {
-                if let Err(error) = art::save_game(paths, name, game.0.id) {
+                if let Err(error) = art::save_game_for(paths, name, game.0.id, identity, None) {
                     failures.push(format!("Art fetching failed: {error}"));
                 } else {
                     let mut missing = Vec::new();
@@ -484,9 +495,15 @@ impl Draft {
                             .get(&kind)
                             .and_then(|remote| remote.image.as_ref())
                         {
-                            if let Err(error) =
-                                art_fetch::publish(paths, name, None, kind, image, Mode::Fill)
-                            {
+                            if let Err(error) = art_fetch::publish_for(
+                                paths,
+                                name,
+                                None,
+                                kind,
+                                image,
+                                Mode::Fill,
+                                identity,
+                            ) {
                                 failures.push(format!("Could not fetch {kind}: {error}"));
                             }
                         } else if self
@@ -500,7 +517,14 @@ impl Draft {
                         }
                     }
                     if !missing.is_empty() {
-                        match fetch(paths, name, &game.0, &missing, &Lazy::new(), &Token::new()) {
+                        let fetched = fetch(
+                            (paths, name),
+                            &game.0,
+                            &missing,
+                            identity,
+                            (&Lazy::new(), &Token::new()),
+                        );
+                        match fetched {
                             Ok(fetched) => notes.extend(fetched),
                             Err(error) => failures.push(format!("Art fetching failed: {error}")),
                         }
@@ -924,12 +948,11 @@ fn search_with(paths: &Paths, term: &str, https: &Lazy<Https>) -> Result<Vec<Gam
 }
 
 fn fetch(
-    paths: &Paths,
-    name: &str,
+    (paths, name): (&Paths, &str),
     game: &Game,
     kinds: &[Kind],
-    https: &Lazy<Https>,
-    token: &Token,
+    identity: Option<EnvironmentIdentity>,
+    (https, token): (&Lazy<Https>, &Token),
 ) -> Result<Vec<String>, String> {
     let key = steamgriddb::require_key(
         paths,
@@ -940,7 +963,6 @@ fn fetch(
     let https = https.https().map_err(|e| e.to_string())?;
     let api = Api::new(https, &key.value);
     let language = steamgriddb::language(|key| std::env::var_os(key));
-    let identity = EnvironmentIdentity::read(paths, name);
     let fetched = art_fetch::fetch_game(
         paths, name, &api, game.id, kinds, &language, identity, token,
     )
@@ -988,7 +1010,16 @@ pub(crate) fn fetch_default(
         return Err(wineo_core::error::Error::Canceled("artwork").to_string());
     }
     match search_with(paths, title, https)?.into_iter().next() {
-        Some(game) => notes.extend(fetch(paths, name, &game, &kinds, https, token)?),
+        Some(game) => {
+            let identity = EnvironmentIdentity::read(paths, name);
+            notes.extend(fetch(
+                (paths, name),
+                &game,
+                &kinds,
+                identity,
+                (https, token),
+            )?)
+        }
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)

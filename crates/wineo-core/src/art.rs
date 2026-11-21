@@ -620,8 +620,10 @@ pub fn save_game_for(
     if cancel.is_some_and(Token::is_canceled) {
         return Err(Error::Canceled("SteamGridDB game"));
     }
-    Environment::ensure_exists(paths, env)?;
+    // Before the existence check, so a removed environment reads as changed
+    // like it does for every other art write.
     check_environment_identity(paths, env, expected_identity)?;
+    Environment::ensure_exists(paths, env)?;
     let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     #[cfg(test)]
     test_hook("art.save_game");

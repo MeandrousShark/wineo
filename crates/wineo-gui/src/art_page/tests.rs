@@ -352,6 +352,36 @@ fn changed_game_saves_and_uses_its_name_immediately() {
 }
 
 #[test]
+fn a_game_is_saved_only_in_the_environment_it_was_picked_for() {
+    for case in ["unchanged", "replaced", "removed"] {
+        let (_root, paths, page) = fixture();
+        let config = paths.environment_config("game");
+        match case {
+            "replaced" => {
+                // A copy renamed over the config is a different file.
+                let staged = config.with_extension("replacement");
+                fs::copy(&config, &staged).unwrap();
+                fs::rename(staged, &config).unwrap();
+            }
+            "removed" => fs::remove_file(&config).unwrap(),
+            _ => {}
+        }
+        let result = save_game(&paths, "game", 77, page.identity);
+        if case == "unchanged" {
+            result.unwrap();
+            assert_eq!(art::saved_game(&paths, "game").unwrap(), Some(77));
+        } else {
+            // The message the page already showed for a changed environment.
+            assert_eq!(
+                result.unwrap_err(),
+                "environment changed before its game could be saved"
+            );
+            assert_eq!(art::saved_game(&paths, "game").unwrap_or(None), None);
+        }
+    }
+}
+
+#[test]
 fn preview_reports_original_pixel_size() {
     let (root, _paths, _page) = fixture();
     let path = png(root.path());

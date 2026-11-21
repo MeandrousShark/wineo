@@ -220,6 +220,45 @@ fn fetch_steam_stores_nothing_in_a_replaced_environment() {
 }
 
 #[test]
+fn publish_for_stores_only_in_the_environment_it_was_read_from() {
+    for replaced in [false, true] {
+        let (_root, paths) = setup();
+        let identity = EnvironmentIdentity::read(&paths, "hades");
+        if replaced {
+            let config = paths.environment_config("hades");
+            let staged = config.with_extension("toml.new");
+            fs::copy(&config, &staged).unwrap();
+            fs::rename(&staged, &config).unwrap();
+        }
+        let image = Downloaded {
+            asset: 3,
+            bytes: PNG.to_vec(),
+            format: Format::Png,
+        };
+        let result = publish_for(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &image,
+            Mode::Fill,
+            identity,
+        );
+        let grid = paths.art_dir("hades").join("grid.png");
+        if replaced {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<Error>(),
+                Some(Error::ArtEnvironmentChanged(_))
+            ));
+            assert!(!grid.exists());
+        } else {
+            assert!(matches!(result.unwrap(), Fetched::Stored { asset: 3, .. }));
+            assert!(grid.exists());
+        }
+    }
+}
+
+#[test]
 fn fetch_steam_keeps_trying_after_a_kind_fails() {
     let (_root, paths) = setup();
     let api = FakeApi::default();

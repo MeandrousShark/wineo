@@ -761,12 +761,7 @@ impl Page {
                 let identity = self.identity;
                 let paths = paths.clone();
                 Step::task(task::blocking(
-                    move || {
-                        if EnvironmentIdentity::read(&paths, &name) != Some(identity) {
-                            return Err("environment changed before its game could be saved".into());
-                        }
-                        art::save_game(&paths, &name, game.id).map_err(|error| error.to_string())
-                    },
+                    move || save_game(&paths, &name, game.id, identity),
                     move |result| Event::GameSaved(sequence, game.clone(), result),
                 ))
             }
@@ -1446,6 +1441,23 @@ fn lookup_game(paths: &Paths, id: u64) -> Result<Option<Game>, String> {
 #[cfg(test)]
 pub(crate) fn canceled_use_outcome() -> WriteOutcome {
     WriteOutcome::failed("download canceled".into())
+}
+
+/// Records the environment's SteamGridDB game, refusing once the environment
+/// is not the one `identity` was read from. That is checked under the art
+/// lock, together with the write.
+fn save_game(
+    paths: &Paths,
+    name: &str,
+    game: u64,
+    identity: EnvironmentIdentity,
+) -> Result<(), String> {
+    art::save_game_for(paths, name, game, Some(identity), None).map_err(|error| match error {
+        wineo_core::Error::ArtEnvironmentChanged(_) => {
+            "environment changed before its game could be saved".into()
+        }
+        error => error.to_string(),
+    })
 }
 
 #[cfg(test)]
