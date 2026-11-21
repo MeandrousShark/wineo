@@ -12,7 +12,7 @@ use toml_edit::{Array, Item, Table, Value, value};
 use crate::cancel::Token;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::emulator::{self, Core, Emulator, ExtSystem, Install, TargetCommand};
-use crate::environment::{self, Environment, EnvironmentIdentity};
+use crate::environment::{self, Environment};
 use crate::launch::{self, WINDOWS_EXTENSIONS};
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -721,9 +721,6 @@ fn free_name(paths: &Paths, batch: &HashSet<String>, title: &str, system: Option
 #[derive(Debug)]
 pub struct Applied {
     pub environment: Environment,
-    /// The config as written, read while the config lock was held. Art
-    /// fetched afterwards is stored only while it is still the same one.
-    pub identity: Option<EnvironmentIdentity>,
     pub warnings: Vec<String>,
 }
 
@@ -825,13 +822,12 @@ fn apply_with(
     let text = config_text(paths, plan, &name)?;
     let _operation = locks.acquire(Operation::Create, &name, &[])?;
     crate::import::check_cancelled(cancel)?;
-    let (environment, identity) = crate::import::write_native_config(paths, &name, &text)?;
+    let environment = crate::import::write_native_config(paths, &name, &text)?;
     let warnings = crate::library_lifecycle::fresh_warning(paths, &name)
         .into_iter()
         .collect();
     Ok(ApplyOutcome::Imported(Applied {
         environment,
-        identity,
         warnings,
     }))
 }

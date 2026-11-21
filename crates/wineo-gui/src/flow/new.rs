@@ -12,7 +12,7 @@ use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Provider};
-use wineo_core::environment::{Environment, EnvironmentIdentity, NewEnvironment};
+use wineo_core::environment::{Environment, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
 use wineo_core::installer::{self, Outcome, Output};
@@ -27,7 +27,7 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
-use super::artwork::{ArtOffer, Fetcher, default_fetcher, environment_changed, fetch_art};
+use super::artwork::{ArtOffer, Fetcher, default_fetcher, fetch_art};
 use super::{Action, frame};
 use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
@@ -239,10 +239,6 @@ pub(crate) struct Report {
     notes: Vec<String>,
     programs: Vec<(String, String)>,
     art_error: Option<String>,
-    /// The environment as created, read while the create lock was held. Art
-    /// is fetched, and fetched again on a retry, only while it is still this
-    /// one.
-    identity: Option<EnvironmentIdentity>,
 }
 
 impl Report {
@@ -255,7 +251,6 @@ impl Report {
             notes: Vec::new(),
             programs: Vec::new(),
             art_error: None,
-            identity: None,
         }
     }
 }
@@ -1048,9 +1043,8 @@ impl Page {
         let name = self.draft.environment_name();
         let title = self.draft.target_title().unwrap_or_else(|| name.clone());
         let fetcher = self.fetcher.clone();
-        let identity = self.report.as_ref().and_then(|report| report.identity);
         task::blocking(
-            move || fetch_art((&paths, &name), &title, identity, &token, &fetcher),
+            move || fetch_art(&paths, &name, &title, &token, &fetcher),
             move |result| Event::ArtFetched(generation, result),
         )
     }
@@ -1528,11 +1522,7 @@ impl Page {
             }
             Event::RetryArt
                 if self.stage == Stage::Finished
-                    && self.report.as_ref().is_some_and(|r| {
-                        r.art_error
-                            .as_deref()
-                            .is_some_and(|e| !environment_changed(e))
-                    }) =>
+                    && self.report.as_ref().is_some_and(|r| r.art_error.is_some()) =>
             {
                 return self.start_fetch();
             }
@@ -2073,13 +2063,10 @@ impl Page {
                     }
                     if let Some(error) = &report.art_error {
                         body = body.push(text(format!("Artwork: {error}")).color(palette.warning));
-                        // A replaced environment can't be fetched into again.
-                        if !environment_changed(error) {
-                            body = body.push(
-                                ui::secondary_button("Retry artwork", palette)
-                                    .on_press(Event::RetryArt),
-                            );
-                        }
+                        body = body.push(
+                            ui::secondary_button("Retry artwork", palette)
+                                .on_press(Event::RetryArt),
+                        );
                         body = body.push(
                             ui::secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
                         );
@@ -2724,7 +2711,7 @@ fn perform(
             }
         };
         let exe = (draft.source == Source::Executable).then_some(draft.path.as_str());
-        match Environment::create_native_identified(
+        match Environment::create_native_titled(
             paths,
             &global,
             name,
@@ -2733,9 +2720,8 @@ fn perform(
             draft.desktop,
             |warning| report.notes.push(warning),
         ) {
-            Ok((environment, identity)) => {
+            Ok(environment) => {
                 report.registered = true;
-                report.identity = identity;
                 report.playable = exe.is_some();
                 progress("Native environment registered".to_owned());
                 if let Err(error) = desktop::reconcile_native(paths, &global, &environment) {
@@ -2870,7 +2856,6 @@ impl<P: FnMut(String), L: FnMut(String)> create::Hooks for Hooks<'_, P, L> {
     fn created(&mut self, created: &create::Created) -> Result<(), String> {
         let report = &mut *self.report;
         report.registered = true;
-        report.identity = EnvironmentIdentity::read(self.paths, &created.environment.name);
         report.playable = created.target == TargetOutcome::Added;
         if created.target == TargetOutcome::ExeNotFound {
             report

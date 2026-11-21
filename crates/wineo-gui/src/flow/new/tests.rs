@@ -1482,8 +1482,6 @@ struct Call {
     title: String,
     /// What `busy_with` said about the environment's lock.
     lock: String,
-    /// The identity the fetch was told the environment had.
-    identity: Option<EnvironmentIdentity>,
 }
 
 type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
@@ -1493,7 +1491,7 @@ type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, identity, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -1502,7 +1500,6 @@ fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
             name: name.to_owned(),
             title: title.to_owned(),
             lock,
-            identity,
         });
         if token.is_canceled() {
             return Err("canceled".to_owned());
@@ -1612,12 +1609,9 @@ fn the_fetch_runs_after_creation_outside_the_create_lock() {
                 name: "hollow-knight".to_owned(),
                 title: "Hollow Knight".to_owned(),
                 lock: "Ok(None)".to_owned(),
-                // Read under the create lock, and still what the config is.
-                identity: EnvironmentIdentity::read(&paths, "hollow-knight"),
             }],
             "{kind}"
         );
-        assert!(calls.lock().unwrap()[0].identity.is_some(), "{kind}");
     }
 }
 
@@ -1680,13 +1674,13 @@ fn the_desktop_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
     let token = Token::new();
     token.cancel();
     assert_eq!(
-        fetch_art((&paths, "game"), "Game", None, &token, &fetcher),
+        fetch_art(&paths, "game", "Game", &token, &fetcher),
         Err("canceled".to_owned())
     );
     assert!(entries().is_empty(), "a skip writes nothing more");
 
     assert_eq!(
-        fetch_art((&paths, "game"), "Game", None, &Token::new(), &fetcher),
+        fetch_art(&paths, "game", "Game", &Token::new(), &fetcher),
         Ok(Vec::new())
     );
     assert_eq!(entries().len(), 1);
@@ -4122,59 +4116,104 @@ fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
     );
 }
 
-/// Registers a native environment for the page's title, as creating it would
-/// have, returning its identity.
-fn created_environment(page: &Page) -> Option<EnvironmentIdentity> {
-    let name = page.draft.environment_name();
-    let config = page.paths.environment_config(&name);
-    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
-    EnvironmentIdentity::read(&page.paths, &name)
+/// SteamGridDB's answers for a game with an icon, and nothing else, by
+/// address.
+#[derive(Clone)]
+struct Canned(Arc<std::collections::HashMap<String, (u16, Vec<u8>)>>);
+
+impl wineo_core::download::Transport for Canned {
+    fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+        anyhow::bail!("unexpected request to {url}")
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        _: Option<&str>,
+    ) -> anyhow::Result<wineo_core::download::Response> {
+        let Some((status, body)) = self.0.get(url) else {
+            anyhow::bail!("connection to {url} failed");
+        };
+        Ok(wineo_core::download::Response {
+            status: *status,
+            body: Box::new(std::io::Cursor::new(body.clone())),
+        })
+    }
 }
 
-/// Swaps the environment's config for a copy, which is a different file as
-/// far as its identity goes.
-fn replace_environment(page: &Page) {
-    let config = page
-        .paths
-        .environment_config(&page.draft.environment_name());
-    let staged = config.with_extension("replacement");
-    std::fs::copy(&config, &staged).unwrap();
-    std::fs::rename(staged, config).unwrap();
+/// A one pixel PNG, which the desktop entry can decode as its icon.
+const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9c\x63\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99\x3d\x1d\0\0\0\0IEND\xaeB`\x82";
+
+fn canned_hades() -> Canned {
+    use wineo_core::steamgriddb::{API, Api, Filters};
+    let mut answers = std::collections::HashMap::new();
+    let json = |body: &str| (200, body.as_bytes().to_vec());
+    answers.insert(
+        format!("{API}/search/autocomplete/Hades"),
+        json(r#"{"success":true,"data":[{"id":7,"name":"Hades"}]}"#),
+    );
+    for kind in wineo_core::art::Kind::ALL {
+        let page = |number| Api::images_url(7, kind, number, Filters::Ranked);
+        let first = if kind == wineo_core::art::Kind::Icon {
+            r#"{"success":true,"data":[{"id":1,"url":"https://cdn.example/1"}]}"#
+        } else {
+            r#"{"success":true,"data":[]}"#
+        };
+        answers.insert(page(0), json(first));
+        answers.insert(page(1), json(r#"{"success":true,"data":[]}"#));
+    }
+    answers.insert(
+        "https://cdn.example/1".to_owned(),
+        (200, ONE_PIXEL_PNG.to_vec()),
+    );
+    Canned(Arc::new(answers))
 }
 
 #[test]
-fn a_retry_fetches_with_the_identity_the_environment_was_created_with() {
-    let (mut page, calls) = registered(true);
-    let created = created_environment(&page);
-    assert!(created.is_some());
-    page.report.as_mut().unwrap().identity = created;
-    replace_environment(&page);
-    // What a fresh read would now say, which a retry must not use.
+fn art_lands_after_a_target_was_added_to_the_new_environment() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
     let name = page.draft.environment_name();
-    assert_ne!(EnvironmentIdentity::read(&page.paths, &name), created);
-    page.stage = Stage::Finished;
-    page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
-    let task = page.update(Event::RetryArt);
+    let paths = page.paths.clone();
+    Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        &name,
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let created = wineo_core::environment::EnvironmentIdentity::read(&paths, &name);
+    // Everything after creation runs the production fetch, over canned answers.
+    let answers = canned_hades();
+    page.fetcher = Arc::new(move |paths, name, title, token| {
+        let answers = answers.clone();
+        crate::flow::artwork::fetch_default_over(paths, name, title, token, &move || {
+            Ok((Box::new(answers.clone()), "key".to_owned()))
+        })
+    });
+    // Adding the target rewrites the config, which the environment survives.
+    let program = page.paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    page.target_desktop = true;
+    let task = page.update(Event::AddTarget);
     drive(&mut page, task, true);
-    let calls = calls.lock().unwrap();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].identity, created);
-}
-
-#[test]
-fn a_replaced_environment_is_only_skipped_never_retried() {
-    let (mut page, calls) = registered(true);
-    page.stage = Stage::Finished;
-    page.report.as_mut().unwrap().art_error =
-        Some("environment `hollow-knight` changed before artwork could be written".to_owned());
-    let task = page.update(Event::RetryArt);
-    drive(&mut page, task, true);
-    assert_eq!(call_count(&calls), 0);
-    assert!(!page.fetching);
+    assert_ne!(
+        wineo_core::environment::EnvironmentIdentity::read(&paths, &name),
+        created,
+        "the config was rewritten"
+    );
     assert_eq!(page.stage, Stage::Finished);
-    assert!(page.report.as_ref().unwrap().art_error.is_some());
-    // Skip still clears it.
-    let _ = page.update(Event::SkipArt);
-    assert!(page.report.as_ref().unwrap().art_error.is_none());
+    let report = page.report.as_ref().unwrap();
+    assert_eq!(report.art_error, None, "{:?}", report.notes);
+    // The art landed, and the desktop entry was refreshed to use it.
+    assert!(paths.art_dir(&name).join("icon.png").exists());
+    assert_eq!(wineo_core::art::saved_game(&paths, &name).unwrap(), Some(7));
+    let entry = std::fs::read_to_string(paths.applications_dir().join("wineo-hades-hades.desktop"))
+        .unwrap();
+    assert!(entry.contains("\nIcon=wineo-hades-hades\n"), "{entry}");
 }

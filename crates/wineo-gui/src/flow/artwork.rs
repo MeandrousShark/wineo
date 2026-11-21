@@ -12,7 +12,7 @@ use wineo_core::art_fetch::{self, Mode};
 use wineo_core::cancel::Token;
 use wineo_core::config::{ArtFetch, GlobalConfig};
 use wineo_core::desktop;
-use wineo_core::download::{Https, Lazy};
+use wineo_core::download::{Https, Lazy, Transport};
 use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -440,10 +440,13 @@ impl Draft {
         Ok(())
     }
 
-    /// Stores what the draft holds in `name`, only while the environment is
-    /// still the one `identity` was read from. A flow captures that when it
-    /// registers the environment and passes the same one on every retry.
-    pub(crate) fn apply(
+    pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
+        self.apply_for(paths, name, EnvironmentIdentity::read(paths, name))
+    }
+
+    /// `apply`, storing the fetched art only while the environment is still
+    /// the one `identity` was read from.
+    fn apply_for(
         &self,
         paths: &Paths,
         name: &str,
@@ -982,11 +985,21 @@ fn fetch(
     .map_err(|e| e.to_string())?;
     let https = https.https().map_err(|e| e.to_string())?;
     let api = Api::new(https, &key.value);
+    fetch_with((paths, name), &api, game, kinds, identity, token)
+}
+
+fn fetch_with(
+    (paths, name): (&Paths, &str),
+    api: &Api,
+    game: &Game,
+    kinds: &[Kind],
+    identity: Option<EnvironmentIdentity>,
+    token: &Token,
+) -> Result<Vec<String>, String> {
     let language = steamgriddb::language(|key| std::env::var_os(key));
-    let fetched = art_fetch::fetch_game(
-        paths, name, &api, game.id, kinds, &language, identity, token,
-    )
-    .map_err(|e| e.to_string())?;
+    let fetched =
+        art_fetch::fetch_game(paths, name, api, game.id, kinds, &language, identity, token)
+            .map_err(|e| e.to_string())?;
     let mut notes = Vec::new();
     let mut failures = Vec::new();
     for (kind, result) in fetched {
@@ -1009,11 +1022,37 @@ fn fetch(
 /// nothing once `token` is canceled. A batch passes the same `https` for
 /// every game, so they share one client.
 pub(crate) fn fetch_default(
-    (paths, name): (&Paths, &str),
+    paths: &Paths,
+    name: &str,
     title: &str,
-    identity: Option<EnvironmentIdentity>,
     https: &Lazy<Https>,
     token: &Token,
+) -> Result<Vec<String>, String> {
+    fetch_default_over(paths, name, title, token, &|| {
+        let key = steamgriddb::require_key(
+            paths,
+            |key| std::env::var_os(key),
+            &SecretServiceKeyring::steamgriddb(),
+        )
+        .map_err(|e| e.to_string())?;
+        let https = https.https().map_err(|e| e.to_string())?;
+        Ok((Box::new(https.clone()) as Box<dyn Transport>, key.value))
+    })
+}
+
+/// The connection art is fetched over and the key to use on it, which tests
+/// replace so nothing reaches SteamGridDB.
+pub(crate) type Connect<'a> = &'a dyn Fn() -> Result<(Box<dyn Transport>, String), String>;
+
+/// `fetch_default` over `connect`. The environment's identity is read just
+/// before the download starts, so a config edit made any time before that
+/// doesn't count as the environment having been replaced.
+pub(crate) fn fetch_default_over(
+    paths: &Paths,
+    name: &str,
+    title: &str,
+    token: &Token,
+    connect: Connect<'_>,
 ) -> Result<Vec<String>, String> {
     let loaded = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
     // Reported through the same notes as every other outcome here.
@@ -1029,32 +1068,38 @@ pub(crate) fn fetch_default(
     if token.is_canceled() {
         return Err(wineo_core::error::Error::Canceled("artwork").to_string());
     }
-    match search_with(paths, title, https)?.into_iter().next() {
-        Some(game) => notes.extend(fetch(
-            (paths, name),
-            &game,
-            &kinds,
-            identity,
-            (https, token),
-        )?),
+    let (transport, key) = connect()?;
+    let api = Api::new(&*transport, &key);
+    match api
+        .search(title)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+    {
+        Some(game) => {
+            let identity = EnvironmentIdentity::read(paths, name);
+            notes.extend(fetch_with(
+                (paths, name),
+                &api,
+                &game,
+                &kinds,
+                identity,
+                token,
+            )?)
+        }
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)
 }
 
 /// Fetches art for an environment, from its name, the title to search for,
-/// the identity it was registered with, and the token that stops it. Tests
-/// swap in their own, so nothing they run reaches SteamGridDB.
-pub(crate) type Fetcher = Arc<
-    dyn Fn(&Paths, &str, &str, Option<EnvironmentIdentity>, &Token) -> Result<Vec<String>, String>
-        + Send
-        + Sync,
->;
+/// and the token that stops it. Tests swap in their own, so nothing they run
+/// reaches SteamGridDB.
+pub(crate) type Fetcher =
+    Arc<dyn Fn(&Paths, &str, &str, &Token) -> Result<Vec<String>, String> + Send + Sync>;
 
 pub(crate) fn default_fetcher() -> Fetcher {
-    Arc::new(|paths, name, title, identity, token| {
-        fetch_default((paths, name), title, identity, &Lazy::new(), token)
-    })
+    Arc::new(|paths, name, title, token| fetch_default(paths, name, title, &Lazy::new(), token))
 }
 
 /// What a flow's Details offers for fetching art after the environment
@@ -1116,12 +1161,6 @@ impl ArtOffer {
     }
 }
 
-/// Whether an artwork failure is the environment having been replaced. Trying
-/// again can only fail the same way, so a flow offers just Skip for it.
-pub(crate) fn environment_changed(error: &str) -> bool {
-    error.contains(" changed before artwork could be written")
-}
-
 /// What the fetch and the desktop entry reapply after it each came to, apart
 /// so a caller can tell which half failed.
 pub(crate) type FetchParts = (Result<Vec<String>, String>, Result<(), String>);
@@ -1129,13 +1168,15 @@ pub(crate) type FetchParts = (Result<Vec<String>, String>, Result<(), String>);
 /// The fetch after an environment registers, then the desktop entry again,
 /// since its icon comes from the art.
 pub(crate) fn fetch_art_parts(
-    (paths, name): (&Paths, &str),
+    paths: &Paths,
+    name: &str,
     title: &str,
-    identity: Option<EnvironmentIdentity>,
     token: &Token,
     fetcher: &Fetcher,
 ) -> FetchParts {
-    let fetched = fetcher(paths, name, title, identity, token);
+    // As the environment is when the fetch starts, read again when it ends.
+    let identity = EnvironmentIdentity::read(paths, name);
+    let fetched = fetcher(paths, name, title, token);
     // Skipped, so nothing more is written; a later launch refreshes the entry.
     if fetched.is_err() && token.is_canceled() {
         return (fetched, Ok(()));
@@ -1152,13 +1193,13 @@ pub(crate) fn fetch_art_parts(
 
 /// `fetch_art_parts` as one result, for a page that shows a single error.
 pub(crate) fn fetch_art(
-    (paths, name): (&Paths, &str),
+    paths: &Paths,
+    name: &str,
     title: &str,
-    identity: Option<EnvironmentIdentity>,
     token: &Token,
     fetcher: &Fetcher,
 ) -> Result<Vec<String>, String> {
-    match fetch_art_parts((paths, name), title, identity, token, fetcher) {
+    match fetch_art_parts(paths, name, title, token, fetcher) {
         (Ok(notes), Ok(())) => Ok(notes),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(art_error), Err(desktop_error)) => {

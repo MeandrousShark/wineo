@@ -1390,11 +1390,6 @@ fn a_retroarch_import_writes_its_target_and_the_quit_file() {
         panic!("not imported");
     };
     assert!(applied.warnings.is_empty(), "{:?}", applied.warnings);
-    assert!(applied.identity.is_some());
-    assert_eq!(
-        applied.identity,
-        crate::environment::EnvironmentIdentity::read(&paths, &applied.environment.name)
-    );
     assert_eq!(fs::read_to_string(&quit).unwrap(), "");
     fs::remove_file(&quit).unwrap();
     fs::create_dir(&quit).unwrap();

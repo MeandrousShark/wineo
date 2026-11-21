@@ -427,6 +427,23 @@ pub(super) fn store_heroic_poster(
     name: &str,
     app: &str,
     poster: Option<&BatchPoster>,
+) -> Option<String> {
+    store_heroic_poster_for(
+        paths,
+        name,
+        app,
+        poster,
+        EnvironmentIdentity::read(paths, name),
+    )
+}
+
+/// `store_heroic_poster`, stored only while the environment is still the one
+/// `identity` was read from, which is checked under the art lock.
+pub(super) fn store_heroic_poster_for(
+    paths: &Paths,
+    name: &str,
+    app: &str,
+    poster: Option<&BatchPoster>,
     identity: Option<EnvironmentIdentity>,
 ) -> Option<String> {
     let poster = poster?;

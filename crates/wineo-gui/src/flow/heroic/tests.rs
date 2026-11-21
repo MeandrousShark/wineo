@@ -1334,9 +1334,7 @@ fn a_heroic_poster_is_prefilled_and_stored_as_grid_art() {
     )
     .unwrap();
     let name = registered.environment.name.as_str();
-    page.art
-        .apply(&paths, name, EnvironmentIdentity::read(&paths, name))
-        .unwrap();
+    page.art.apply(&paths, name).unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1369,10 +1367,7 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
         |_| {},
     )
     .unwrap();
-    assert_eq!(
-        store_heroic_poster(&paths, "dawn", "dawn", None, None),
-        None
-    );
+    assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
     let art = artwork::Draft::with_fetched(
         Kind::Grid,
         7,
@@ -1382,8 +1377,7 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
             format: wineo_core::art::Format::Jpeg,
         },
     );
-    art.apply(&paths, "dawn", EnvironmentIdentity::read(&paths, "dawn"))
-        .unwrap();
+    art.apply(&paths, "dawn").unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dawn")).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1446,7 +1440,7 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
         )
         .unwrap();
         assert_eq!(
-            store_heroic_poster(&paths, name, name, posters.get(name), None),
+            store_heroic_poster(&paths, name, name, posters.get(name)),
             None
         );
     }
@@ -1463,115 +1457,11 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
     );
 }
 
-/// A page with Dusk imported as a single game, whose Heroic poster is the
-/// Grid tile art waiting to be stored. Returns the registered game.
-fn registered_dusk(root: &std::path::Path) -> (Page, Arc<heroic_import::Registered>) {
-    let mut page = grid_page(root);
-    decode_posters(&mut page);
-    open_single(&mut page, DUSK);
-    let listing = page.listing.clone().unwrap();
-    let Review::Single { game, .. } =
-        plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap()
-    else {
-        panic!("expected a single review");
-    };
-    let paths = page.paths.clone();
-    let global = GlobalConfig::load(&paths).unwrap();
-    let registered = Arc::new(
-        apply_game(
-            &paths,
-            &global,
-            &listing.source,
-            &game,
-            &Token::new(),
-            |_| {},
-        )
-        .unwrap(),
-    );
-    page.registered = Some(registered.clone());
-    (page, registered)
-}
-
 fn replace_environment(paths: &Paths, name: &str) {
     let config = paths.environment_config(name);
     let staged = config.with_extension("replacement");
     fs::copy(&config, &staged).unwrap();
     fs::rename(staged, config).unwrap();
-}
-
-/// What the artwork task for `page` sends back.
-fn art_result(page: &mut Page, task: iced::Task<Event>) -> Result<Vec<String>, String> {
-    let generation = page.generation;
-    let mut result = None;
-    for event in sent(task) {
-        if let Event::ArtFinished(sent_generation, found) = &event {
-            assert_eq!(*sent_generation, generation);
-            result = Some(found.clone());
-        }
-    }
-    result.expect("the artwork task finished")
-}
-
-#[test]
-fn the_first_apply_and_every_retry_use_the_identity_the_game_registered_with() {
-    let root = tempdir().unwrap();
-    let (mut page, registered) = registered_dusk(root.path());
-    let paths = page.paths.clone();
-    let name = registered.environment.name.clone();
-    assert!(registered.identity.is_some());
-    replace_environment(&paths, &name);
-    // The tile is a user-picked or prefilled one, which is stored with the
-    // same check as the downloaded kinds.
-    let expected = format!(
-        "Could not store grid: environment `{name}` changed before artwork could be written"
-    );
-    // The first apply, as registering lands it, and then every retry.
-    let task = page.single_registered(page.generation, Ok(registered.clone()));
-    assert_eq!(art_result(&mut page, task), Err(expected.clone()));
-    let task = page.retry_art();
-    assert_eq!(art_result(&mut page, task), Err(expected.clone()));
-    assert!(!paths.art_dir(&name).join("grid.png").exists());
-    // Again, and still not into the replacement.
-    let task = page.retry_art();
-    assert_eq!(art_result(&mut page, task), Err(expected));
-}
-
-#[test]
-fn an_unchanged_environment_gets_its_poster_on_a_retry() {
-    let root = tempdir().unwrap();
-    let (mut page, registered) = registered_dusk(root.path());
-    let name = registered.environment.name.clone();
-    let task = page.retry_art();
-    assert_eq!(art_result(&mut page, task), Ok(Vec::new()));
-    assert!(page.paths.art_dir(&name).join("grid.png").exists());
-}
-
-#[test]
-fn a_replaced_environment_offers_only_skip() {
-    let root = tempdir().unwrap();
-    let (mut page, registered) = registered_dusk(root.path());
-    let name = registered.environment.name.clone();
-    let changed = format!("environment `{name}` changed before artwork could be written");
-    let _ = page.art_finished(Err(changed.clone()));
-    assert_eq!(
-        page.error.as_deref(),
-        Some(
-            format!("Artwork failed: {changed}. The environment is registered. Skip artwork.")
-                .as_str()
-        )
-    );
-    // Retry does nothing; Skip finishes.
-    assert!(sent(page.retry_art()).is_empty());
-    let _ = page.update(Event::SkipArt);
-    assert_eq!(page.step, Step::Finished);
-    assert!(page.error.is_none());
-    // Any other failure keeps both choices.
-    let _ = page.art_finished(Err("offline".to_owned()));
-    assert_eq!(
-        page.error.as_deref(),
-        Some("Artwork failed: offline. The environment is registered. Retry or skip artwork.")
-    );
-    assert!(!sent(page.retry_art()).is_empty());
 }
 
 #[test]
@@ -1595,7 +1485,8 @@ fn a_batch_poster_is_stored_only_in_the_environment_it_was_registered_as() {
         if replaced {
             replace_environment(&paths, name);
         }
-        let note = store_heroic_poster(&paths, name, name, posters.get(name), identity);
+        let note =
+            super::work::store_heroic_poster_for(&paths, name, name, posters.get(name), identity);
         let grid = paths.art_dir(name).join("grid.png");
         if replaced {
             assert_eq!(

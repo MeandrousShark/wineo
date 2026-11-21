@@ -5,16 +5,13 @@ use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::desktop;
-use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::external_runners::Source;
 use wineo_core::import::{self, ImportRequest, Inspection};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
-use super::artwork::{
-    ArtOffer, FetchParts, Fetcher, default_fetcher, environment_changed, fetch_art_parts,
-};
+use super::artwork::{ArtOffer, FetchParts, Fetcher, default_fetcher, fetch_art_parts};
 use super::frame;
 use crate::chips::input_style;
 use crate::runner_label;
@@ -98,8 +95,6 @@ pub(crate) struct Review {
 #[derive(Debug, Clone)]
 pub(crate) struct ImportOutcome {
     name: String,
-    /// The environment as registered, read while its config lock was held.
-    identity: Option<EnvironmentIdentity>,
     /// Why the desktop entry couldn't be refreshed after the import.
     entry_error: Option<String>,
 }
@@ -155,9 +150,6 @@ pub(crate) struct Page {
     fetch_done: bool,
     notes: Vec<String>,
     imported_name: Option<String>,
-    /// What `imported_name` was registered as, which art is fetched into, and
-    /// fetched again on a retry, only while it is still the same environment.
-    imported_identity: Option<EnvironmentIdentity>,
     recovery_path: Option<PathBuf>,
 }
 
@@ -194,7 +186,6 @@ impl Page {
             fetch_done: false,
             notes: Vec::new(),
             imported_name: None,
-            imported_identity: None,
             recovery_path: None,
         };
         let load = task::blocking(
@@ -364,7 +355,6 @@ impl Page {
                     Ok(outcome) => {
                         let outcome = *outcome;
                         self.imported_name = Some(outcome.name);
-                        self.imported_identity = outcome.identity;
                         if let Some(error) = outcome.entry_error {
                             self.error = Some(error);
                             self.fetch_failed = false;
@@ -550,18 +540,16 @@ impl Page {
             ]
             .spacing(14)
             .into(),
-            Step::ArtFailed => {
-                let mut actions = row![].spacing(8);
-                if self.retry_offered() {
-                    actions = actions
-                        .push(secondary_button("Retry artwork", palette).on_press(Event::RetryArt));
-                }
-                actions = actions
-                    .push(secondary_button("Skip artwork", palette).on_press(Event::SkipArt));
-                column![text(self.art_failed_line()).color(palette.warning), actions]
-                    .spacing(12)
-                    .into()
-            }
+            Step::ArtFailed => column![
+                text(self.art_failed_line()).color(palette.warning),
+                row![
+                    secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
+                    secondary_button("Skip artwork", palette).on_press(Event::SkipArt)
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .into(),
             Step::Finished => {
                 let mut finished = column![
                     text(format!(
@@ -655,12 +643,6 @@ impl Page {
         matches!(self.step, Step::Working) && !self.fetching
     }
 
-    /// Whether ArtFailed offers Retry. Not when the environment was replaced,
-    /// which a retry can only meet again.
-    fn retry_offered(&self) -> bool {
-        !(self.fetch_failed && self.error.as_deref().is_some_and(environment_changed))
-    }
-
     /// What ArtFailed says, by what failed: the fetch, or the desktop entry.
     fn art_failed_line(&self) -> String {
         format!(
@@ -711,7 +693,6 @@ impl Page {
         match self.step {
             Step::Details => self.begin_review(),
             Step::Review => self.begin_import(key_available),
-            Step::ArtFailed if !self.retry_offered() => self.skip_art(),
             Step::ArtFailed => self.retry_art(),
             Step::Finished => {
                 self.action = Some(super::Action::Library {
@@ -967,7 +948,7 @@ impl Page {
                 task::join(
                     move || {
                         let global = GlobalConfig::load(&paths)?;
-                        let (imported, identity) = import::execute_reviewed_identified(
+                        let imported = import::execute_reviewed(
                             &paths,
                             &global,
                             request,
@@ -1000,7 +981,6 @@ impl Page {
                         let entry_error = refresh_entry(&paths, &imported.name).err();
                         Ok::<_, anyhow::Error>(ImportOutcome {
                             name: imported.name,
-                            identity,
                             entry_error,
                         })
                     },
@@ -1015,7 +995,7 @@ impl Page {
     }
 
     fn retry_art(&mut self) -> Task<Event> {
-        if self.step != Step::ArtFailed || self.busy() || !self.retry_offered() {
+        if self.step != Step::ArtFailed || self.busy() {
             return Task::none();
         }
         let Some(name) = self.imported_name.clone() else {
@@ -1060,9 +1040,8 @@ impl Page {
         // The Name as typed, since Import prefix has no separate title.
         let title = self.name.clone();
         let fetcher = self.fetcher.clone();
-        let identity = self.imported_identity;
         task::blocking_value(
-            move || fetch_art_parts((&paths, &name), &title, identity, &token, &fetcher),
+            move || fetch_art_parts(&paths, &name, &title, &token, &fetcher),
             // A worker that panicked counts as a failed fetch.
             move |result| {
                 Event::ArtFetched(

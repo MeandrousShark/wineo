@@ -55,12 +55,11 @@ impl Page {
                 };
                 self.status = format!("Imported {title}. Adding artwork...");
                 let name = registered.environment.name.clone();
-                let identity = registered.identity;
                 self.registered = Some(registered);
                 let art = self.art.clone();
                 let paths = self.paths.clone();
                 task::blocking(
-                    move || art.apply(&paths, &name, identity),
+                    move || art.apply(&paths, &name),
                     move |result| Event::ArtFinished(generation, result),
                 )
             }
@@ -114,15 +113,9 @@ impl Page {
                 self.finish_art()
             }
             Err(error) => {
-                // A replaced environment can't be written to again, so only
-                // Skip is offered for it.
-                self.error = Some(if crate::flow::artwork::environment_changed(&error) {
-                    format!("Artwork failed: {error}. The environment is registered. Skip artwork.")
-                } else {
-                    format!(
-                        "Artwork failed: {error}. The environment is registered. Retry or skip artwork."
-                    )
-                });
+                self.error = Some(format!(
+                    "Artwork failed: {error}. The environment is registered. Retry or skip artwork."
+                ));
                 self.finish_art()
             }
         }
@@ -132,24 +125,14 @@ impl Page {
         let Some(registered) = &self.registered else {
             return Task::none();
         };
-        if self
-            .error
-            .as_deref()
-            .is_some_and(crate::flow::artwork::environment_changed)
-        {
-            return Task::none();
-        }
         let name = registered.environment.name.clone();
-        // The one captured at registration, not a fresh read, so a retry
-        // can't write into an environment that replaced it.
-        let identity = registered.identity;
         let art = self.art.clone();
         let paths = self.paths.clone();
         let generation = self.generation;
         self.token = Some(Token::new());
         self.error = None;
         task::blocking(
-            move || art.apply(&paths, &name, identity),
+            move || art.apply(&paths, &name),
             move |result| Event::ArtFinished(generation, result),
         )
     }

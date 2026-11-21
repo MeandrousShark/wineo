@@ -315,7 +315,7 @@ pub(super) fn run_import(
             Applying::Imported(plan, applied) => {
                 if let Some(fetch) = fetch {
                     let name = &applied.environment.name;
-                    let fetched = match fetch(paths, name, &plan.title, applied.identity, token) {
+                    let fetched = match fetch(paths, name, &plan.title, token) {
                         Ok(fetched) => fetched,
                         Err(_) if token.is_canceled() => vec!["Artwork canceled".to_owned()],
                         Err(error) => vec![format!("Artwork: {error}")],

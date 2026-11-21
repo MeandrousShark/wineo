@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, HooksSetting, Target};
-use crate::environment::{Environment, EnvironmentIdentity};
+use crate::environment::Environment;
 use crate::error::Error;
 use crate::gamescope::GamescopeSetting;
 use crate::install::{self, Wanted};
@@ -33,9 +33,9 @@ mod copy;
 mod fingerprint;
 mod runner_copy;
 
+pub use config_text::register_native;
 use config_text::{config_text, stored_settings};
 pub(crate) use config_text::{native_config, write_config_once, write_native_config};
-pub use config_text::{register_native, register_native_identified};
 #[cfg(test)]
 pub(crate) use copy::{ARMED_DROPS, copy_tree_strict_reflink};
 pub(crate) use copy::{
@@ -368,23 +368,8 @@ pub fn execute_reviewed(
     reviewed: Option<&Inspection>,
     settings: Option<&ImportedSettings>,
     cancel: &Token,
-    progress: impl FnMut(ImportProgress),
-) -> Result<Environment> {
-    execute_reviewed_identified(paths, global, request, reviewed, settings, cancel, progress)
-        .map(|(environment, _)| environment)
-}
-
-/// `execute_reviewed`, also returning the config's identity as written, read
-/// while the config lock was held, for art fetched afterwards to check.
-pub fn execute_reviewed_identified(
-    paths: &Paths,
-    global: &GlobalConfig,
-    request: ImportRequest,
-    reviewed: Option<&Inspection>,
-    settings: Option<&ImportedSettings>,
-    cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
-) -> Result<(Environment, Option<EnvironmentIdentity>)> {
+) -> Result<Environment> {
     if !name::is_valid(&request.name) {
         bail!("invalid environment name `{}`", request.name);
     }
@@ -552,7 +537,6 @@ pub fn execute_reviewed_identified(
             config_path.display()
         );
     }
-    let identity = EnvironmentIdentity::read(paths, &request.name);
     let environment = Environment::load(paths, &request.name).map_err(|err| {
         anyhow!(
             "prefix {} and config {} are ready, but the config could not be reloaded: {err}",
@@ -563,7 +547,7 @@ pub fn execute_reviewed_identified(
     if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &request.name) {
         progress(ImportProgress::Warning(warning));
     }
-    Ok((environment, identity))
+    Ok(environment)
 }
 
 pub(crate) fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> Result<()> {
