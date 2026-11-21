@@ -541,6 +541,12 @@ impl Page {
             return Step::none();
         }
         self.advanced_settings = on;
+        if !on {
+            // Runner's and Arch's pick lists go with the sections, so an
+            // open one's close never arrives, as on a tab switch.
+            self.menu_open = false;
+            self.close_font_picker();
+        }
         Step {
             advanced: Some(on),
             ..Step::none()

@@ -683,3 +683,18 @@ fn tab_reaches_the_environment_pages_button_and_enter_shows_prefix() {
     }
     assert!(remembered(&paths));
 }
+
+#[test]
+fn turning_it_off_with_a_menu_open_lets_navigation_go() {
+    let (_root, paths) = setup();
+    let mut app = open_advanced(&paths);
+    flip(&mut app, true);
+    finish_write(&mut app);
+    // Arch's list opens, then Shift+Tab and Space flip the switch off,
+    // which takes the list away before its close arrives.
+    let _ = send(&mut app, Event::MenuOpened);
+    assert!(page_of(&app).navigation_blocked());
+    flip(&mut app, false);
+    assert!(!app.advanced_settings);
+    assert!(!page_of(&app).navigation_blocked());
+}
