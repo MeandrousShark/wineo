@@ -47,10 +47,6 @@ pub enum Playtime {
 #[derive(Debug)]
 pub struct Registered {
     pub environment: Environment,
-    /// The config as written, read while the config lock was held. Art
-    /// stored or fetched afterwards, and on a retry, is written only while
-    /// the environment is still this one.
-    pub identity: Option<EnvironmentIdentity>,
     pub playtime: Playtime,
     pub warnings: Vec<String>,
     runner: Option<Runner>,
@@ -93,7 +89,7 @@ pub fn apply(
 ) -> anyhow::Result<Registered> {
     ensure_unchanged(source, &plan.heroic().id, &plan.heroic().fingerprint)?;
     let settings = plan.settings();
-    let (environment, identity) = import::execute_reviewed_identified(
+    let environment = import::execute_reviewed(
         paths,
         global,
         plan.request().clone(),
@@ -105,7 +101,6 @@ pub fn apply(
     let playtime = import_playtime(paths, source, &plan.heroic().id, &environment.name);
     Ok(Registered {
         environment,
-        identity,
         playtime,
         warnings: Vec::new(),
         runner: Some(plan.runner().clone()),
@@ -123,14 +118,12 @@ pub fn apply_native(
 ) -> anyhow::Result<Registered> {
     ensure_unchanged(source, &plan.heroic().id, &plan.heroic().fingerprint)?;
     let mut warnings = Vec::new();
-    let (environment, identity) =
-        import::register_native_identified(paths, plan.name(), &plan.settings(), |warning| {
-            warnings.push(warning)
-        })?;
+    let environment = import::register_native(paths, plan.name(), &plan.settings(), |warning| {
+        warnings.push(warning)
+    })?;
     let playtime = import_playtime(paths, source, &plan.heroic().id, &environment.name);
     Ok(Registered {
         environment,
-        identity,
         playtime,
         warnings,
         runner: None,

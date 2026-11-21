@@ -256,11 +256,6 @@ fn apply_can_adopt_and_leaves_the_prefix_where_it_is() {
     .unwrap();
     let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
     assert_eq!(registered.playtime, Playtime::None);
-    assert!(registered.identity.is_some());
-    assert_eq!(
-        registered.identity,
-        crate::environment::EnvironmentIdentity::read(&paths, "mine")
-    );
     assert_eq!(
         registered.destination(),
         Some(root.path().join("heroic-prefix").as_path())

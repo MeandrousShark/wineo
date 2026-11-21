@@ -1017,3 +1017,31 @@ fn every_manual_write_and_removal_refuses_a_replaced_environment() {
     remove(&paths, "hades", None, Kind::Logo, None).unwrap();
     assert!(!art.join("logo.png").exists());
 }
+
+#[test]
+fn a_removed_environment_reads_as_changed_before_anything_else() {
+    let (root, paths) = store();
+    let file = source(root.path(), "grid.png", PNG);
+    let identity = EnvironmentIdentity::read(&paths, "hades");
+    fs::remove_file(paths.environment_config("hades")).unwrap();
+    let changed =
+        |error: Error| matches!(error, Error::ArtEnvironmentChanged(name) if name == "hades");
+    assert!(changed(
+        set_manual(&paths, "hades", None, Kind::Grid, &file, identity).unwrap_err()
+    ));
+    assert!(changed(
+        set_manual_as(
+            &paths,
+            "hades",
+            None,
+            Kind::Grid,
+            &file,
+            "mine.png",
+            identity
+        )
+        .unwrap_err()
+    ));
+    assert!(changed(
+        set_manual_bytes(&paths, "hades", None, Kind::Grid, PNG, "grid.png", identity).unwrap_err()
+    ));
+}

@@ -343,6 +343,8 @@ pub fn set_manual(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // First, so a removed environment reads as changed when one is expected.
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
     store_manual(
@@ -368,6 +370,8 @@ pub fn set_manual_as(
     original: &str,
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Stored> {
+    // First, so a removed environment reads as changed when one is expected.
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
     store_manual(
@@ -393,6 +397,7 @@ pub fn set_manual_bytes(
     original: &str,
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<Stored> {
+    check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(Error::ArtTooLarge(PathBuf::from(original)));
