@@ -488,7 +488,10 @@ newer wineo survives it. `coverflow_fullscreen` makes the window fill the
 screen whenever the library switches to coverflow, and defaults to
 `false`. `advanced_settings` shows the advanced sections of Settings and
 of an environment's page (plan 0070), and defaults to `false`; the app
-writes it as soon as the switch is flipped. `group` is how the library
+writes it as soon as the switch is flipped. Anything but a boolean reads as
+`false` with a `validate` warning, and repair drops it. An older wineo
+ignores the key, `validate` there reports it as unknown, and repair keeps
+it. `group` is how the library
 splits into sections, `none`, the default, `recent`, `tag`, `source`, or `state`; collapsed sections aren't
 saved. The
 window's filters and Show hidden aren't saved in `[view]`, only in a preset.
