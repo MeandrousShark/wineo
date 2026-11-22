@@ -205,6 +205,45 @@ fn cached_art_is_checked_and_a_bad_file_only_warns() {
 }
 
 #[test]
+fn cached_art_is_not_stored_in_an_environment_replaced_during_the_import() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = paths(temp.path(), false);
+    let root = steam_root(&paths, false);
+    manifest(&root, "42", "My Game", 4, 1);
+    let cache = root.join("appcache/librarycache/42");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("library_600x900.jpg"), png()).unwrap();
+    let planned = ready(&paths, &GlobalConfig::default(), "42", None);
+    // The art lock is held until the import waits on it, then the config is
+    // renamed over, which the import's own config lock can't stop.
+    let held = Locks::new(&paths)
+        .config(&paths.art_dir(&planned.name).join(art::ART_FILE))
+        .unwrap();
+    let replace = {
+        let config = paths.environment_config(&planned.name);
+        move || {
+            let staged = config.with_extension("replacement");
+            fs::copy(&config, &staged).unwrap();
+            fs::rename(staged, &config).unwrap();
+            drop(held);
+        }
+    };
+    crate::operation::lock_wait_hooks::on_wait(replace);
+    let applied = imported(&paths, &planned);
+    assert_eq!(applied.art, Vec::<Kind>::new());
+    assert_eq!(applied.warnings.len(), 1, "{:?}", applied.warnings);
+    assert!(
+        applied.warnings[0].contains("changed before artwork could be written"),
+        "{}",
+        applied.warnings[0]
+    );
+    let stored: Vec<_> = fs::read_dir(paths.art_dir(&planned.name))
+        .map(|dir| dir.map(|entry| entry.unwrap().path()).collect())
+        .unwrap_or_default();
+    assert!(stored.is_empty(), "{stored:?}");
+}
+
+#[test]
 fn apply_uses_the_reselected_install_for_title_and_cached_art() {
     let temp = tempfile::tempdir().unwrap();
     let paths = paths(temp.path(), false);
