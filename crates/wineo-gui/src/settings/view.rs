@@ -32,7 +32,6 @@ pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
 const STEAMGRIDDB_KEY_ID: &str = "settings-steamgriddb-key";
 pub(super) const CHECKUP_ID: &str = "settings-open-checkup";
-pub(super) const ADVANCED_SWITCH_ID: &str = "settings-advanced-switch";
 const ADVANCED_CHECKUP_ID: &str = "settings-advanced-checkup";
 pub(super) const SHOW_ADVANCED_ID: &str = "settings-show-advanced";
 pub(super) const PREFIX_ID: &str = "settings-prefix";
@@ -638,28 +637,16 @@ fn advanced_tab<'a>(
 fn advanced_switch<'a>(page: &'a Page, palette: Palette) -> Element<'a, Message> {
     let on = page.advanced_settings;
     let enabled = page.advanced_switch_enabled();
-    // iced's toggler takes no focus, so the row's control does, and Enter
-    // or Space flips it.
-    let toggle = container(
-        toggler(on).on_toggle_maybe(enabled.then_some(|on| send(Event::AdvancedSettings(on)))),
-    )
-    .width(64);
-    let control = crate::focus_button::control(
-        toggle.into(),
-        enabled,
-        ADVANCED_SWITCH_ID,
-        send(Event::AdvancedSettings(!on)),
-    );
-    let mut rows = column![
-        row![
-            text(ADVANCED_SWITCH)
-                .color(palette.foreground)
-                .width(LABEL_WIDTH),
-            control,
-        ]
-        .spacing(12)
-        .align_y(Center)
-    ]
+    // A bare switch like the others: no Tab stop, and a click flips it.
+    let mut rows = column![switch_row(
+        ADVANCED_SWITCH,
+        on,
+        None,
+        |on| send(Event::AdvancedSettings(on)),
+        None,
+        !enabled,
+        palette,
+    )]
     .spacing(12);
     if !on {
         rows = rows.push(text(ADVANCED_NOTE).size(13).color(palette.muted));
