@@ -398,11 +398,14 @@ fn editor_view<'a>(
         // button takes no Tab focus, and the section's fields were Tab
         // stops, so the keyboard reaches it this way.
         let show = send(Event::ShowAdvanced);
+        // Like the global switch, it waits while the leave prompt covers
+        // the page.
+        let enabled = !page.leave_prompt;
         sections = sections.push(crate::focus_button::control(
             secondary_button(ADVANCED_SWITCH, palette)
-                .on_press(show.clone())
+                .on_press_maybe(enabled.then(|| show.clone()))
                 .into(),
-            true,
+            enabled,
             SHOW_ADVANCED_ID,
             show,
         ));

@@ -550,7 +550,7 @@ impl Page {
     }
     /// The section shows in place, with focus on its first field.
     fn show_advanced_section(&mut self) -> Step {
-        if self.advanced_settings {
+        if self.advanced_settings || self.leave_prompt {
             return Step::none();
         }
         self.advanced_settings = true;

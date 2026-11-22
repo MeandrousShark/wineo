@@ -712,6 +712,30 @@ fn the_global_page_ignores_the_button_and_the_environment_page_the_switch() {
 }
 
 #[test]
+fn the_environment_pages_button_waits_behind_the_leave_prompt() {
+    let (_root, paths) = setup();
+    let mut app = wine_app(&paths);
+    app.settings.as_mut().unwrap().leave_prompt = true;
+    // Neither a click nor the keyboard reaches it, and the event itself does
+    // nothing.
+    assert!(click_label(&app, &paths, ADVANCED_SWITCH).is_empty());
+    let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SIZE);
+    assert!(!crate::focus_button::focusables(&mut laid).contains(&id(view::SHOW_ADVANCED_ID)));
+    drop(laid);
+    let task = send(&mut app, Event::ShowAdvanced);
+    assert_eq!(task.units(), 0);
+    assert!(!app.advanced_settings && !page_of(&app).advanced_settings);
+    assert!(app.view_writes.advanced_settings.is_none());
+    assert!(!shows(&app, &paths, "Prefix"));
+    assert!(shows(&app, &paths, ADVANCED_SWITCH));
+    // With the prompt gone it works again.
+    app.settings.as_mut().unwrap().leave_prompt = false;
+    assert_eq!(click_label(&app, &paths, ADVANCED_SWITCH).len(), 1);
+    let _ = send(&mut app, Event::ShowAdvanced);
+    assert!(app.advanced_settings && page_of(&app).advanced_settings);
+}
+
+#[test]
 fn tab_reaches_the_environment_pages_button_and_enter_shows_prefix() {
     let (_root, paths) = setup();
     let mut app = wine_app(&paths);
