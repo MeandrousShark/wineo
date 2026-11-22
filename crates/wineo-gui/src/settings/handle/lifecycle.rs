@@ -99,9 +99,8 @@ impl Page {
                 let generation = self.generation;
                 let reveal = match self.reveal.take() {
                     Some(reveal) => {
-                        // Both key rows are on Stores, so it shows before
-                        // the row is looked for.
-                        self.tab = Tab::Stores;
+                        // The row's tab shows before the row is looked for.
+                        self.tab = reveal.tab();
                         match reveal {
                             Reveal::SteamKey => view::locate_steam_key().map(move |bounds| {
                                 Message::Settings(Event::SteamKeyLocated(generation, bounds))

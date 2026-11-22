@@ -195,6 +195,21 @@ fn a_filling_field_beside_its_label_keeps_a_wide_window_unchanged() {
 }
 
 #[test]
+fn the_steamgriddb_key_label_stays_on_one_line_in_a_narrow_window() {
+    let (_root, paths) = setup();
+    let general = global(&paths, Tab::General);
+    let stores = global(&paths, Tab::Stores);
+    // The Steam key's one-word label is one line, so a wrapped longer one
+    // would be taller.
+    let line = rows(&stores, &paths, "Key", NARROW)[0][0];
+    for width in [WIDE, crate::app_window::live_min_size().width, NARROW] {
+        let label = rows(&general, &paths, "SteamGridDB key", width)[0][0];
+        assert_eq!(label.height, line.height, "{width}");
+        assert_eq!(label.width, line.width, "{width}");
+    }
+}
+
+#[test]
 fn an_environments_title_field_folds() {
     let (_root, paths) = setup();
     write(&paths, GAME);

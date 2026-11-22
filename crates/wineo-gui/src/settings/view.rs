@@ -482,7 +482,7 @@ pub(super) fn global_view<'a>(
     palette: Palette,
 ) -> Element<'a, Message> {
     let content = match tab {
-        tabs::Tab::General => general_tab(editor, locked, palette),
+        tabs::Tab::General => general_tab(editor, page, paths, locked, palette),
         tabs::Tab::Appearance => {
             super::appearance::tab(&editor.appearance, locked, palette, page.system_mode)
         }
@@ -509,6 +509,8 @@ pub(super) fn global_view<'a>(
 
 fn general_tab<'a>(
     editor: &'a global::Editor,
+    page: &'a Page,
+    paths: &Paths,
     locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
@@ -543,6 +545,11 @@ fn general_tab<'a>(
             palette,
         ));
     }
+    // Only the key row, so a reveal puts the key at the top.
+    art = art.push(
+        container(key_row(steamgriddb_row(&page.steamgriddb, paths), palette))
+            .id(iced::widget::Id::new(STEAMGRIDDB_KEY_ID)),
+    );
     column![
         section(
             "Desktop",
@@ -574,7 +581,7 @@ fn stores_tab<'a>(
     locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
-    let (steamgriddb, steam_key, gog) = (&page.steamgriddb, &page.steam_key, &page.gog);
+    let (steam_key, gog) = (&page.steam_key, &page.gog);
     let portable = paths.portable_root().is_some();
     let steam = column![
         auto_import_rows(
@@ -600,13 +607,6 @@ fn stores_tab<'a>(
             .spacing(12)
             .into(),
             palette
-        ),
-        section(
-            "SteamGridDB",
-            container(key_row(steamgriddb_row(steamgriddb, paths), palette))
-                .id(iced::widget::Id::new(STEAMGRIDDB_KEY_ID))
-                .into(),
-            palette,
         ),
     ]
     .spacing(24)
@@ -1078,6 +1078,7 @@ fn auto_import_rows<'a>(
 /// and Steam keys share it, so both behave the same. Nothing here ever holds
 /// a saved key; the typed one only reaches a secure input.
 pub(super) struct KeyRow<'a> {
+    label: &'static str,
     status: String,
     override_note: Option<String>,
     warning: Option<String>,
@@ -1120,6 +1121,7 @@ fn status_or_checking(label: Option<String>, failed: bool) -> String {
 
 /// What differs between the key rows: the copy and the events they send.
 struct KeyRowParts {
+    label: &'static str,
     /// Said when a variable's key overrides the saved one.
     override_note: String,
     hint: Option<String>,
@@ -1137,6 +1139,7 @@ fn provider_row<'a, S: KeyStatus>(
     parts: KeyRowParts,
 ) -> KeyRow<'a> {
     KeyRow {
+        label: parts.label,
         status: status_or_checking(
             settings.status.as_ref().map(|status| status.label(paths)),
             settings.status_error.is_some(),
@@ -1180,6 +1183,7 @@ pub(super) fn steamgriddb_row<'a>(
         settings,
         paths,
         KeyRowParts {
+            label: "SteamGridDB key",
             override_note: "WINEO_STEAMGRIDDB_KEY is set and overrides the saved key".to_owned(),
             hint: None,
             placeholder: "SteamGridDB API key",
@@ -1200,6 +1204,7 @@ pub(super) fn steam_key_row<'a>(
         settings,
         paths,
         KeyRowParts {
+            label: "Key",
             override_note: format!(
                 "{} is set and overrides the saved key",
                 wineo_core::steam::key::KEY_VAR
@@ -1226,7 +1231,7 @@ impl KeyRow<'_> {
     /// Every piece of text the row shows, in order.
     #[cfg(test)]
     pub(super) fn texts(&self) -> Vec<String> {
-        let mut texts = vec!["Key".to_owned(), self.status.clone()];
+        let mut texts = vec![self.label.to_owned(), self.status.clone()];
         texts.extend(self.override_note.clone());
         texts.extend(self.warning.clone());
         texts.extend(
@@ -1254,6 +1259,7 @@ impl KeyRow<'_> {
 fn key_row<'a>(row_data: KeyRow<'a>, palette: Palette) -> Element<'a, Message> {
     let busy_label = row_data.busy_label();
     let KeyRow {
+        label,
         status,
         override_note,
         warning,
@@ -1273,7 +1279,7 @@ fn key_row<'a>(row_data: KeyRow<'a>, palette: Palette) -> Element<'a, Message> {
         text: on_text,
     } = row_data;
     let mut rows = column![setting_row(
-        "Key",
+        label,
         text(status).color(palette.foreground).into(),
         None,
         palette,
