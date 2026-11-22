@@ -435,7 +435,7 @@ pub(crate) struct Page {
     pub(crate) name: String,
     global: bool,
     /// Which tab of the global page shows. The page is new each time it
-    /// opens, so it starts on General, or on Stores for a reveal; a reload
+    /// opens, so it starts on General, or on the revealed row's tab; a reload
     /// keeps it.
     tab: Tab,
     /// Where each tab is scrolled to, by `Tab::index`. A reload keeps them.
@@ -509,11 +509,22 @@ pub(crate) const HOLD_EDITS: &str = "Save or revert advanced changes first.";
 /// Why it can't while a new variable is typed but not added.
 pub(crate) const HOLD_NEW_ENV: &str = "Add or clear the new variable first.";
 
-/// A key row another page opens the global page to, on the Stores tab.
+/// A key row another page opens the global page to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reveal {
     SteamKey,
     SteamGridDbKey,
+}
+
+impl Reveal {
+    /// The tab the row is on: the Steam key with the stores, the art key
+    /// with the art settings.
+    fn tab(self) -> Tab {
+        match self {
+            Reveal::SteamKey => Tab::Stores,
+            Reveal::SteamGridDbKey => Tab::General,
+        }
+    }
 }
 
 /// The Steam key save or remove the app owns, so it outlives the page that

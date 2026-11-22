@@ -670,8 +670,9 @@ Advanced tabs in its header, between the title and the divider: text
 buttons 32 px high, 14 px regular labels that never wrap inside their
 button (foreground when selected, muted otherwise), hover and press from
 `list_row_style`, and a 2 px primary underline on the selected tab. The
-underline is always laid out, transparent when unselected, so switching
-never shifts anything. When the tabs don't fit on one line they wrap onto
+underline is as wide as the label, not the button, so it stays clear of the
+focus ring's rounded corners. It is always laid out, transparent when
+unselected, so switching never shifts anything. When the tabs don't fit on one line they wrap onto
 more, like other rows of buttons: the divider sits under the last line, and
 the selected tab keeps the underline under its own button, so on an upper
 line it sits mid-header rather than on the divider. The tabs are the first
@@ -680,18 +681,18 @@ lines and select, and each tab keeps its own scroll position while the
 page is open. Every tab ends with the version line.
 
 Advanced's first row is the **Show advanced settings** switch on a grouped
-surface with no heading, like Controller's first row. A settings switch is
-normally a bare toggler, which takes no Tab focus; this one is wrapped in a
-`focus_button::control` with an id, so it's a Tab stop and Enter or Space
-flips it. With it off, a muted note under it says what it covers and the
-tab shows nothing else; with it on, the sections follow on their own
-surfaces. The switch stays at the same tree path either way, so flipping it
-from the keyboard keeps its focus. While it can't be turned off, it's
-disabled with a muted note saying why. A refused write shows in the danger
+surface with no heading, like Controller's first row. Like every settings
+switch it is a bare toggler, which takes no Tab focus and has no focus
+ring; a click flips it. With it off, a muted note under it says what it
+covers and the tab shows nothing else; with it on, the sections follow on
+their own surfaces. While it can't be turned off, it's disabled with a
+muted note saying why. A refused write shows in the danger
 color under it, with **Open Checkup** beside it (through `ends`) when
 Checkup can repair the file. On the environment page the hidden Advanced
 section gives way to a secondary **Show advanced settings** button at the
-bottom, which focuses the Prefix field once the section shows.
+bottom, which focuses the Prefix field once the section shows. It is a
+button, so it is a Tab stop, and like the switch it waits while the leave
+prompt covers the page.
 
 Snapshots uses compact rows and bounded, complete reviews. Downloads
 groups builds by component and keeps uses and progress visible. Checkup groups

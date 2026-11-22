@@ -11,7 +11,6 @@ use wineo_core::paths::Paths;
 
 use super::form::Form;
 use super::load::{Content, Current, RunnerChoice, Snapshot};
-use super::tabs::Tab;
 use super::{ChangedFile, Editor, Event, Mode, Page, Pending, Step, View, global, load, view};
 
 impl Page {
@@ -348,14 +347,11 @@ impl Page {
             Event::SteamKeyRemoved(generation, sequence, input_session, result) => {
                 self.steam_key_removed(paths, generation, sequence, input_session, result)
             }
-            // A switch away before the answer lands leaves the new tab where
-            // it was.
-            Event::SteamKeyLocated(generation, bounds)
-            | Event::SteamGridDbKeyLocated(generation, bounds) => {
-                if generation != self.generation || self.tab != Tab::Stores {
-                    return Step::none();
-                }
-                Step::task(view::scroll_to_row(bounds))
+            Event::SteamKeyLocated(generation, bounds) => {
+                self.scroll_to_located(generation, super::Reveal::SteamKey, bounds)
+            }
+            Event::SteamGridDbKeyLocated(generation, bounds) => {
+                self.scroll_to_located(generation, super::Reveal::SteamGridDbKey, bounds)
             }
             Event::Prefix(value) => {
                 self.edited();
@@ -554,7 +550,7 @@ impl Page {
     }
     /// The section shows in place, with focus on its first field.
     fn show_advanced_section(&mut self) -> Step {
-        if self.advanced_settings {
+        if self.advanced_settings || self.leave_prompt {
             return Step::none();
         }
         self.advanced_settings = true;
@@ -564,6 +560,19 @@ impl Page {
                 view::PREFIX_ID,
             )))
         }
+    }
+    /// Scrolls to a revealed key row, unless a switch away before the answer
+    /// landed left its tab, or the answer is for a page closed earlier.
+    fn scroll_to_located(
+        &self,
+        generation: u64,
+        reveal: super::Reveal,
+        bounds: crate::grid_motion::CardBounds,
+    ) -> Step {
+        if generation != self.generation || self.tab != reveal.tab() {
+            return Step::none();
+        }
+        Step::task(view::scroll_to_row(bounds))
     }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;

@@ -77,6 +77,7 @@ const SECTIONS: [(Tab, &[&str]); 5] = [
             "Gamemode",
             "Art to fetch",
             "Hero",
+            "SteamGridDB key",
             "RetroArch",
             "Quit RetroArch when its game closes",
         ],
@@ -103,7 +104,6 @@ const SECTIONS: [(Tab, &[&str]); 5] = [
             "GOG",
             "Games folder",
             "GOG language",
-            "SteamGridDB",
         ],
     ),
     (
@@ -153,13 +153,18 @@ fn each_section_shows_on_its_tab_and_no_other() {
     assert!(at("Get a key at https://steamcommunity.com/dev/apikey.") < at("GOG"));
     assert!(at("GOG") < at("Games folder"));
     assert!(at("Games folder") < at("GOG language"));
-    assert!(at("GOG language") < at("SteamGridDB"));
     let (_, general) = &shown[Tab::General.index()];
     let at = |wanted: &str| general.iter().position(|text| text == wanted).unwrap();
     assert!(at("Desktop") < at("Coverflow"));
     assert!(at("Coverflow") < at("Launch defaults"));
     assert!(at("Launch defaults") < at("Art to fetch"));
-    assert!(at("Art to fetch") < at("RetroArch"));
+    // The key row closes the art section, below its four switches.
+    assert!(at("Art to fetch") < at("Icon"));
+    assert!(at("Icon") < at("Grid"));
+    assert!(at("Grid") < at("Hero"));
+    assert!(at("Hero") < at("Logo"));
+    assert!(at("Logo") < at("SteamGridDB key"));
+    assert!(at("SteamGridDB key") < at("RetroArch"));
     let (_, advanced) = &shown[Tab::Advanced.index()];
     let at = |wanted: &str| advanced.iter().position(|text| text == wanted).unwrap();
     assert!(at("New environments") < at("Runs"));
@@ -531,7 +536,7 @@ fn a_reload_keeps_the_tab() {
 const BARS: [iced::Size; 2] = [SIZE, iced::Size::new(228.0, 700.0)];
 
 #[test]
-fn each_underline_spans_its_tab_along_the_bottom_edge() {
+fn each_underline_spans_its_label_along_the_bottom_edge() {
     for size in BARS {
         let laid = lay_out(
             crate::settings::tabs::bar(Tab::General, true, Palette::DARK),
@@ -545,7 +550,10 @@ fn each_underline_spans_its_tab_along_the_bottom_edge() {
             assert!(label.bounds().width < 200.0, "{:?}", label.bounds());
             assert_eq!(cover.bounds(), label.bounds());
             let underline = cover.children()[0].bounds();
-            assert_eq!(underline.width, label.bounds().width);
+            // Inside the cover, so its x is the inset from the tab's edge.
+            let inset = crate::settings::tabs::LABEL_PADDING;
+            assert_eq!(underline.x, inset);
+            assert_eq!(underline.width, label.bounds().width - 2.0 * inset);
             assert_eq!(underline.height, 2.0);
             assert_eq!(
                 underline.y + underline.height,

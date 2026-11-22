@@ -1,4 +1,3 @@
-use iced::advanced::widget::operation::focusable;
 use iced::keyboard::{Modifiers, key::Named};
 use iced::widget::Id;
 
@@ -6,7 +5,7 @@ use super::*;
 use crate::layout_probe::{lay_out, relay_out};
 use crate::sort_control::{self, Field as ViewField};
 use crate::theme::Palette;
-use view::{ADVANCED_NOTE, ADVANCED_SWITCH, ADVANCED_SWITCH_ID, PREFIX_ID};
+use view::{ADVANCED_NOTE, ADVANCED_SWITCH, PREFIX_ID};
 
 const SIZE: iced::Size = iced::Size::new(900.0, 3000.0);
 
@@ -120,7 +119,8 @@ fn the_switch_starts_off_with_only_itself_on_advanced() {
     for label in SECTIONS {
         assert!(!shown.iter().any(|text| text == label), "{label}");
     }
-    assert_eq!(page_ids(&app, &paths), [id(ADVANCED_SWITCH_ID)]);
+    // Nothing below the tabs takes a Tab stop, the switch included.
+    assert_eq!(page_ids(&app, &paths), []);
 }
 
 #[test]
@@ -347,10 +347,8 @@ fn a_refused_write_keeps_the_switch_and_says_why_on_both_pages() {
     let _ = send(&mut app, Event::GlobalSwitch(Switch::Gamemode, true));
     assert!(shows(&app, &paths, &error.text));
     assert!(shows(&app, &paths, "Open Checkup"));
-    assert_eq!(
-        page_ids(&app, &paths)[..2],
-        [id(ADVANCED_SWITCH_ID), id("settings-advanced-checkup")]
-    );
+    // The switch isn't a Tab stop, so Open Checkup comes first.
+    assert_eq!(page_ids(&app, &paths)[0], id("settings-advanced-checkup"));
     let _ = send(&mut app, Event::Revert);
 
     // The environment page shows it under its Advanced heading.
@@ -401,20 +399,50 @@ fn the_environment_pages_button_refused_says_so_under_advanced() {
     assert_eq!(shown[heading + 2], "Open Checkup");
 }
 
+/// What a press and release at the toggler of the row labelled `label` sends.
+fn click_toggler(app: &App, paths: &Paths, label: &str) -> Vec<Message> {
+    use iced::advanced::widget::Operation;
+    use std::sync::{Arc, Mutex};
+
+    struct Find(String, Arc<Mutex<Option<iced::Rectangle>>>);
+    impl Operation for Find {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _id: Option<&Id>, bounds: iced::Rectangle, text: &str) {
+            if text == self.0 {
+                *self.1.lock().unwrap() = Some(bounds);
+            }
+        }
+    }
+    let found = Arc::new(Mutex::new(None));
+    let mut laid = lay_out(page_of(app).view(paths, Palette::DARK), SIZE);
+    laid.run(Box::new(Find(label.to_owned(), found.clone())));
+    let bounds = found.lock().unwrap().expect(label);
+    // The toggler sits at the left of its 64 wide box, 12 after the 180 wide
+    // label.
+    let cursor = iced::mouse::Cursor::Available(iced::Point::new(
+        bounds.x + 192.0 + 10.0,
+        bounds.center_y(),
+    ));
+    let left = iced::mouse::Button::Left;
+    let mut messages = laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+        cursor,
+    );
+    messages.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+        cursor,
+    ));
+    messages
+}
+
 #[test]
-fn the_keyboard_flips_it_and_focus_stays_on_it() {
+fn a_click_flips_it_and_the_keyboard_never_reaches_it() {
     let (_root, paths) = setup();
     let mut app = open_advanced(&paths);
-    let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SIZE);
-    laid.run(Box::new(focusable::focus::<()>(Id::new(
-        ADVANCED_SWITCH_ID,
-    ))));
-    let mut tree = laid.into_tree();
     for on in [true, false, true] {
-        let mut laid = relay_out(page_of(&app).view(&paths, Palette::DARK), tree, SIZE);
-        assert_eq!(laid.focused(), [Id::new(ADVANCED_SWITCH_ID)], "before {on}");
-        let (messages, _) = crate::focus_button::press(&mut laid, Named::Space, Modifiers::empty());
-        tree = laid.into_tree();
+        let messages = click_toggler(&app, &paths, ADVANCED_SWITCH);
         assert!(
             matches!(
                 messages.as_slice(),
@@ -429,8 +457,55 @@ fn the_keyboard_flips_it_and_focus_stays_on_it() {
         assert_eq!(app.advanced_settings, on);
         assert_eq!(shows(&app, &paths, "Runs"), on);
     }
-    let mut laid = relay_out(page_of(&app).view(&paths, Palette::DARK), tree, SIZE);
-    assert_eq!(laid.focused(), [Id::new(ADVANCED_SWITCH_ID)]);
+    // Tab never lands on it, and Space and Enter with nothing focused send
+    // nothing, with its sections shown or hidden.
+    for on in [false, true] {
+        flip(&mut app, on);
+        finish_write(&mut app);
+        let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SIZE);
+        for _ in 0..=page_ids(&app, &paths).len() + Tab::ALL.len() {
+            crate::focus_button::run_task(
+                &mut laid,
+                iced::widget::operation::focus_next::<Message>(),
+            );
+            let focused = laid.focused();
+            assert!(
+                focused.iter().all(|id| {
+                    let id = format!("{id:?}");
+                    !id.contains("advanced-switch") && !id.contains("settings-advanced")
+                }),
+                "{focused:?}"
+            );
+            for key in [Named::Space, Named::Enter] {
+                let (messages, _) = crate::focus_button::press(&mut laid, key, Modifiers::empty());
+                assert!(
+                    messages.iter().all(|message| !matches!(
+                        message,
+                        Message::Settings(Event::AdvancedSettings(_))
+                    )),
+                    "{messages:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_click_does_nothing_while_it_is_held_on_or_behind_the_leave_prompt() {
+    let (_root, paths) = setup();
+    let mut app = open_advanced(&paths);
+    flip(&mut app, true);
+    finish_write(&mut app);
+    let _ = send(
+        &mut app,
+        Event::GlobalField(global::Field::PrefixRoot, "~/prefixes".into()),
+    );
+    assert!(!page_of(&app).advanced_switch_enabled());
+    assert_eq!(click_toggler(&app, &paths, ADVANCED_SWITCH).len(), 0);
+    let _ = send(&mut app, Event::Revert);
+    assert_eq!(click_toggler(&app, &paths, ADVANCED_SWITCH).len(), 1);
+    app.settings.as_mut().unwrap().leave_prompt = true;
+    assert_eq!(click_toggler(&app, &paths, ADVANCED_SWITCH).len(), 0);
 }
 
 #[test]
@@ -634,6 +709,30 @@ fn the_global_page_ignores_the_button_and_the_environment_page_the_switch() {
     let mut app = wine_app(&paths);
     flip(&mut app, true);
     assert!(!app.advanced_settings);
+}
+
+#[test]
+fn the_environment_pages_button_waits_behind_the_leave_prompt() {
+    let (_root, paths) = setup();
+    let mut app = wine_app(&paths);
+    app.settings.as_mut().unwrap().leave_prompt = true;
+    // Neither a click nor the keyboard reaches it, and the event itself does
+    // nothing.
+    assert!(click_label(&app, &paths, ADVANCED_SWITCH).is_empty());
+    let mut laid = lay_out(page_of(&app).view(&paths, Palette::DARK), SIZE);
+    assert!(!crate::focus_button::focusables(&mut laid).contains(&id(view::SHOW_ADVANCED_ID)));
+    drop(laid);
+    let task = send(&mut app, Event::ShowAdvanced);
+    assert_eq!(task.units(), 0);
+    assert!(!app.advanced_settings && !page_of(&app).advanced_settings);
+    assert!(app.view_writes.advanced_settings.is_none());
+    assert!(!shows(&app, &paths, "Prefix"));
+    assert!(shows(&app, &paths, ADVANCED_SWITCH));
+    // With the prompt gone it works again.
+    app.settings.as_mut().unwrap().leave_prompt = false;
+    assert_eq!(click_label(&app, &paths, ADVANCED_SWITCH).len(), 1);
+    let _ = send(&mut app, Event::ShowAdvanced);
+    assert!(app.advanced_settings && page_of(&app).advanced_settings);
 }
 
 #[test]

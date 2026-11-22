@@ -99,7 +99,7 @@ fn rows_show_the_same_pieces_in_the_same_order() {
 
     // Nothing saved, nothing said.
     let (griddb, steam) = rows_with(&paths, None, |_, _, _, _| {});
-    assert_eq!(griddb, ["Key", "No key", "Set key..."]);
+    assert_eq!(griddb, ["SteamGridDB key", "No key", "Set key..."]);
     assert_eq!(steam, ["Key", "No key", hint.as_str(), "Set key..."]);
 
     // A variable names itself, says it overrides, and leaves both buttons.
@@ -107,7 +107,7 @@ fn rows_show_the_same_pieces_in_the_same_order() {
     assert_eq!(
         griddb,
         [
-            "Key",
+            "SteamGridDB key",
             "From WINEO_STEAMGRIDDB_KEY",
             "WINEO_STEAMGRIDDB_KEY is set and overrides the saved key",
             "Set key...",
@@ -139,7 +139,7 @@ fn rows_show_the_same_pieces_in_the_same_order() {
     assert_eq!(
         griddb,
         [
-            "Key",
+            "SteamGridDB key",
             "Saved in the keyring",
             "careful",
             "Saved it",
@@ -164,7 +164,13 @@ fn rows_show_the_same_pieces_in_the_same_order() {
     let (griddb, steam) = rows_with(&paths, None, |open, _, _, _| *open = true);
     assert_eq!(
         griddb,
-        ["Key", "No key", "SteamGridDB API key", "Save", "Cancel"]
+        [
+            "SteamGridDB key",
+            "No key",
+            "SteamGridDB API key",
+            "Save",
+            "Cancel"
+        ]
     );
     assert_eq!(
         steam,
@@ -192,13 +198,16 @@ fn rows_show_checking_then_failed_status_and_busy_labels() {
     page.steamgriddb.status = None;
     page.steam_key.status = None;
     let (griddb, steam) = texts(&page);
-    assert_eq!(griddb[..2], ["Key", "Checking..."]);
+    assert_eq!(griddb[..2], ["SteamGridDB key", "Checking..."]);
     assert_eq!(steam[..2], ["Key", "Checking..."]);
 
     page.steamgriddb.status_error = Some("no bus".to_owned());
     page.steam_key.status_error = Some("no bus".to_owned());
     let (griddb, steam) = texts(&page);
-    assert_eq!(griddb[..3], ["Key", "Key status unavailable", "no bus"]);
+    assert_eq!(
+        griddb[..3],
+        ["SteamGridDB key", "Key status unavailable", "no bus"]
+    );
     assert_eq!(steam[..3], ["Key", "Key status unavailable", "no bus"]);
 
     for (busy, label) in [

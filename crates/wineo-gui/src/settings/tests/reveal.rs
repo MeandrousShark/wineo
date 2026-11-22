@@ -1,6 +1,7 @@
 //! Pages that open global settings at a key row: the import flow's Steam
-//! key action and the art page's Settings. Both rows are on Stores, so the
-//! page lands there before it looks for the row.
+//! key action and the art page's Settings. The page lands on the row's tab
+//! (Stores for the Steam key, General for the SteamGridDB key) before it
+//! looks for the row.
 
 use std::sync::{Arc, Mutex};
 
@@ -85,7 +86,7 @@ fn text_bounds(page: &Page, paths: &Paths, wanted: &str) -> Rectangle {
 }
 
 #[test]
-fn each_reveal_opens_stores_and_scrolls_to_its_row() {
+fn each_reveal_opens_its_tab_and_scrolls_to_its_row() {
     for reveal in [Reveal::SteamKey, Reveal::SteamGridDbKey] {
         let (_root, paths) = setup();
         let mut app = App::boot(paths.clone()).0;
@@ -103,7 +104,11 @@ fn each_reveal_opens_stores_and_scrolls_to_its_row() {
             load::snapshot_global(&paths),
         )));
         let page = app.settings.as_ref().unwrap();
-        assert_eq!(page.tab, Tab::Stores, "{reveal:?}");
+        let tab = match reveal {
+            Reveal::SteamKey => Tab::Stores,
+            Reveal::SteamGridDbKey => Tab::General,
+        };
+        assert_eq!(page.tab, tab, "{reveal:?}");
         assert_eq!(page.reveal, None);
         let found = located(page, &paths, task);
         assert_eq!(found.len(), 1, "{reveal:?}");
@@ -150,39 +155,81 @@ fn the_steam_key_id_marks_only_the_key_row() {
 }
 
 #[test]
-fn a_reload_with_a_reveal_moves_another_tab_to_stores() {
+fn a_reload_with_a_reveal_moves_another_tab_to_the_rows_tab() {
     let (_root, paths) = setup();
     let mut page = global_page(&paths);
-    let _ = page.update(&paths, Event::Tab(Tab::Appearance));
-    page.reveal = Some(Reveal::SteamGridDbKey);
-    let _ = page.reload(&paths, Mode::Replace);
-    let step = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
-    assert_eq!(page.tab, Tab::Stores);
-    let found = located(&page, &paths, step.task);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].0, Reveal::SteamGridDbKey);
+    for (reveal, tab) in [
+        (Reveal::SteamGridDbKey, Tab::General),
+        (Reveal::SteamKey, Tab::Stores),
+    ] {
+        let _ = page.update(&paths, Event::Tab(Tab::Appearance));
+        page.reveal = Some(reveal);
+        let _ = page.reload(&paths, Mode::Replace);
+        let step = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+        assert_eq!(page.tab, tab, "{reveal:?}");
+        let found = located(&page, &paths, step.task);
+        assert_eq!(found.len(), 1, "{reveal:?}");
+        assert_eq!(found[0].0, reveal);
+    }
 }
 
 #[test]
-fn a_located_row_scrolls_only_while_stores_shows() {
+fn a_located_row_scrolls_only_while_its_tab_shows() {
     let (_root, paths) = setup();
-    for reveal in [Reveal::SteamKey, Reveal::SteamGridDbKey] {
+    for (reveal, home, other) in [
+        (Reveal::SteamKey, Tab::Stores, Tab::General),
+        (Reveal::SteamGridDbKey, Tab::General, Tab::Stores),
+    ] {
         let mut page = Page::new_global(1);
         page.reveal = Some(reveal);
         let _ = page.reload(&paths, Mode::Replace);
         let step = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
         let (_, bounds) = located(&page, &paths, step.task)[0];
         // Switched away before the answer came back.
-        let _ = page.update(&paths, Event::Tab(Tab::General));
+        let _ = page.update(&paths, Event::Tab(other));
         let step = page.update(&paths, answer(1, reveal, bounds));
         assert_eq!(step.task.units(), 0, "{reveal:?}");
-        let _ = page.update(&paths, Event::Tab(Tab::Stores));
+        let _ = page.update(&paths, Event::Tab(home));
         let step = page.update(&paths, answer(1, reveal, bounds));
         assert!(step.task.units() > 0, "{reveal:?}");
         // An answer for a page closed earlier does nothing.
         let step = page.update(&paths, answer(0, reveal, bounds));
         assert_eq!(step.task.units(), 0, "{reveal:?}");
     }
+}
+
+#[test]
+fn the_steamgriddb_key_row_is_last_in_art_to_fetch_and_not_on_stores() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let texts = page_texts(&page, &paths);
+    let at = |wanted: &str| texts.iter().position(|text| text == wanted).unwrap();
+    assert!(at("Logo") < at("SteamGridDB key"));
+    assert!(at("SteamGridDB key") < at("RetroArch"));
+    // Nothing between the row's own pieces and the next section's heading
+    // is another switch.
+    assert_eq!(texts[at("SteamGridDB key") + 1], "Checking...");
+    let _ = page.update(&paths, Event::Tab(Tab::Stores));
+    let texts = page_texts(&page, &paths);
+    assert!(!texts.iter().any(|text| text == "SteamGridDB key"));
+    assert!(!texts.iter().any(|text| text == "SteamGridDB"));
+    // The Steam key row keeps its plain label.
+    assert!(texts.iter().any(|text| text == "Key"));
+}
+
+#[test]
+fn the_steamgriddb_key_id_marks_only_the_key_row() {
+    let (_root, paths) = setup();
+    let mut page = Page::new_global(1);
+    page.reveal = Some(Reveal::SteamGridDbKey);
+    let _ = page.reload(&paths, Mode::Replace);
+    let step = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    let (_, bounds) = located(&page, &paths, step.task)[0];
+    // The Logo switch is above the row, outside it.
+    let logo = text_bounds(&page, &paths, "Logo");
+    assert!(logo.y + logo.height <= bounds.card.y, "{logo:?} {bounds:?}");
+    let label = text_bounds(&page, &paths, "SteamGridDB key");
+    assert!(label.y >= bounds.card.y, "{label:?} {bounds:?}");
 }
 
 #[test]

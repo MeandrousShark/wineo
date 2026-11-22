@@ -1214,8 +1214,9 @@ Hover the selected runner to see its full name.
 The global page has five tabs under its title: **General**,
 **Appearance**, **Controller**, **Stores**, and **Advanced**. It opens on
 General, except when another page sends you to a key row, which opens it on
-Stores with the row in view: **Open Settings** from the Steam import's
-missing key, and **Settings** on the Art page. Switching tabs keeps your
+that row's tab with the row in view: **Open Settings** from the Steam
+import's missing key opens Stores, and **Settings** on the Art page opens
+General at the SteamGridDB key. Switching tabs keeps your
 edits, and one Save and Revert footer covers every tab. Each tab remembers
 how far it's scrolled while the page is open. In a narrow window the tabs
 wrap onto more lines.
@@ -1234,6 +1235,11 @@ wrap onto more lines.
   environment that doesn't set its own.
 - **Art to fetch:** independent Icon, Grid, Hero, and Logo switches for
   `new` and `import`. Turn all four off to disable automatic fetching.
+  Below them, the **SteamGridDB key** row holds the art API key. It works
+  the same way as the Steam key's row on Stores,
+  checked with SteamGridDB and saved like `wineo art key`, outside the Save
+  bar. With `WINEO_STEAMGRIDDB_KEY` set, the row says it overrides the
+  saved key. See [The SteamGridDB key](art.md#the-steamgriddb-key).
 - **RetroArch:** **Quit RetroArch when its game closes** (on by default),
   so a RetroArch game's playtime ends when you close the game. See
   [Quitting with the game](native.md#quitting-with-the-game) for the trade-off.
@@ -1249,7 +1255,7 @@ defaults** puts every button back. The rows save with the Save bar to
 `[input.buttons]` in `library.toml` (see [config files](config-files.md)).
 See [Controller](#controller).
 
-**Stores** holds the Steam, GOG, and SteamGridDB sections.
+**Stores** holds the Steam and GOG sections.
 
 **Steam**: **Import new Steam games automatically**, off by default, skips the
 [banner](#new-steam-games) and imports new installs with the same defaults as
@@ -1282,11 +1288,6 @@ masked **Address** field for the address of the page you land on, like
 out**, shown while you're logged in, removes the login and that account's
 owned-games list. Both run outside the Save bar, and their result shows if
 you leave and come back. The section works in a portable folder too.
-
-**SteamGridDB**: the art API key's row, which works the same way as the
-Steam key's, checked with SteamGridDB and saved like `wineo art key`. With
-`WINEO_STEAMGRIDDB_KEY` set, the row says it overrides the saved key. See
-[The SteamGridDB key](art.md#the-steamgriddb-key).
 
 **Advanced** starts with **Show advanced settings**, off by default. With
 it off, the tab shows only the switch and what it covers. With it on, it
@@ -1468,7 +1469,7 @@ On a settings page:
 | Ctrl+S | Save |
 | Tab, Shift+Tab | Move between the tabs and fields |
 | Left, Right (on the tabs) | Move to the previous or next of General, Appearance, Controller, Stores, and Advanced, and select it |
-| Enter, Space (on Show advanced settings) | Flip the switch, keeping focus on it; on an environment's page, show Advanced and move to Prefix |
+| Enter, Space (on an environment's Show advanced settings button) | Show Advanced and move to Prefix |
 | Esc | Leave the field, then an environment's page, asking first if there are edits |
 
 In an Add, import, or clone flow:

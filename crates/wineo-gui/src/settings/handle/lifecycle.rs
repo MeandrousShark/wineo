@@ -6,7 +6,6 @@ use wineo_core::paths::Paths;
 use crate::Message;
 use crate::settings::form::EnvRow;
 use crate::settings::load::{self, Report, Scan, Snapshot, Texts};
-use crate::settings::tabs::Tab;
 use crate::settings::{ChangedFile, Event, Mode, Page, Reveal, Step, View, unfocus, view};
 
 impl Page {
@@ -99,9 +98,8 @@ impl Page {
                 let generation = self.generation;
                 let reveal = match self.reveal.take() {
                     Some(reveal) => {
-                        // Both key rows are on Stores, so it shows before
-                        // the row is looked for.
-                        self.tab = Tab::Stores;
+                        // The row's tab shows before the row is looked for.
+                        self.tab = reveal.tab();
                         match reveal {
                             Reveal::SteamKey => view::locate_steam_key().map(move |bounds| {
                                 Message::Settings(Event::SteamKeyLocated(generation, bounds))
