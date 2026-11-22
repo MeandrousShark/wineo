@@ -11,7 +11,6 @@ use wineo_core::paths::Paths;
 
 use super::form::Form;
 use super::load::{Content, Current, RunnerChoice, Snapshot};
-use super::tabs::Tab;
 use super::{ChangedFile, Editor, Event, Mode, Page, Pending, Step, View, global, load, view};
 
 impl Page {

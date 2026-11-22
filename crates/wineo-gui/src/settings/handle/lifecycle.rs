@@ -6,7 +6,6 @@ use wineo_core::paths::Paths;
 use crate::Message;
 use crate::settings::form::EnvRow;
 use crate::settings::load::{self, Report, Scan, Snapshot, Texts};
-use crate::settings::tabs::Tab;
 use crate::settings::{ChangedFile, Event, Mode, Page, Reveal, Step, View, unfocus, view};
 
 impl Page {
