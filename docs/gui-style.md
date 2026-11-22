@@ -670,8 +670,9 @@ Advanced tabs in its header, between the title and the divider: text
 buttons 32 px high, 14 px regular labels that never wrap inside their
 button (foreground when selected, muted otherwise), hover and press from
 `list_row_style`, and a 2 px primary underline on the selected tab. The
-underline is always laid out, transparent when unselected, so switching
-never shifts anything. When the tabs don't fit on one line they wrap onto
+underline is as wide as the label, not the button, so it stays clear of the
+focus ring's rounded corners. It is always laid out, transparent when
+unselected, so switching never shifts anything. When the tabs don't fit on one line they wrap onto
 more, like other rows of buttons: the divider sits under the last line, and
 the selected tab keeps the underline under its own button, so on an upper
 line it sits mid-header rather than on the divider. The tabs are the first

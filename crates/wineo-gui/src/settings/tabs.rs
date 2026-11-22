@@ -13,6 +13,9 @@ use crate::theme::Palette;
 use crate::ui::{BUTTON_HEIGHT, list_row_style};
 use crate::{Message, focus_button};
 
+/// The space on each side of a tab's label, which its underline keeps too.
+pub(super) const LABEL_PADDING: f32 = 12.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Tab {
     #[default]
@@ -94,9 +97,9 @@ impl Page {
     }
 }
 
-/// The tab buttons, each with a 2 px underline along its bottom edge that is
-/// primary on the selected tab and clear on the others, so nothing shifts
-/// when it moves. They wrap onto more lines in a narrow window rather than
+/// The tab buttons, each with a 2 px underline along its bottom edge, as
+/// wide as the label, that is primary on the selected tab and clear on the
+/// others, so nothing shifts when it moves. They wrap onto more lines in a narrow window rather than
 /// cutting a label short.
 /// `active` is false while a prompt covers the page.
 pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'static, Message> {
@@ -112,7 +115,7 @@ pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'sta
                 .wrapping(text::Wrapping::None),
         )
         .height(BUTTON_HEIGHT)
-        .padding([0, 12])
+        .padding([0.0, LABEL_PADDING])
         .on_press(press.clone())
         .style(move |_, status| {
             let mut style = list_row_style(palette, status);
@@ -122,7 +125,9 @@ pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'sta
             style
         });
         // Laid over the button's bottom edge, since a fill-width bar in a
-        // shrink-wide column would stretch to the whole row.
+        // shrink-wide column would stretch to the whole row. It stops at the
+        // label's padding: at full width its square ends ran into the
+        // rounded corners of the focus ring.
         let underline = container(
             container(Space::new())
                 .width(Fill)
@@ -137,6 +142,7 @@ pub(super) fn bar(selected: Tab, active: bool, palette: Palette) -> Element<'sta
         )
         .width(Fill)
         .height(Fill)
+        .padding([0.0, LABEL_PADDING])
         .align_y(Bottom);
         tabs = tabs.push(focus_button::control(
             stack![label, underline].into(),

@@ -531,7 +531,7 @@ fn a_reload_keeps_the_tab() {
 const BARS: [iced::Size; 2] = [SIZE, iced::Size::new(228.0, 700.0)];
 
 #[test]
-fn each_underline_spans_its_tab_along_the_bottom_edge() {
+fn each_underline_spans_its_label_along_the_bottom_edge() {
     for size in BARS {
         let laid = lay_out(
             crate::settings::tabs::bar(Tab::General, true, Palette::DARK),
@@ -545,7 +545,10 @@ fn each_underline_spans_its_tab_along_the_bottom_edge() {
             assert!(label.bounds().width < 200.0, "{:?}", label.bounds());
             assert_eq!(cover.bounds(), label.bounds());
             let underline = cover.children()[0].bounds();
-            assert_eq!(underline.width, label.bounds().width);
+            // Inside the cover, so its x is the inset from the tab's edge.
+            let inset = crate::settings::tabs::LABEL_PADDING;
+            assert_eq!(underline.x, inset);
+            assert_eq!(underline.width, label.bounds().width - 2.0 * inset);
             assert_eq!(underline.height, 2.0);
             assert_eq!(
                 underline.y + underline.height,
