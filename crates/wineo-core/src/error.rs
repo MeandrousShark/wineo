@@ -186,11 +186,10 @@ pub enum Error {
     ArtEnvironmentChanged(String),
 
     /// The environment's id couldn't be confirmed, which isn't the same as
-    /// it having been replaced.
-    #[error(
-        "can't tell whether environment `{0}` is the one artwork was meant for: library.toml can't be read"
-    )]
-    ArtLibraryUnreadable(String),
+    /// it having been replaced. `outcome` is what didn't happen to the
+    /// artwork, like "stored".
+    #[error("library.toml can't be read. Artwork for `{env}` wasn't {outcome}.")]
+    ArtLibraryUnreadable { env: String, outcome: &'static str },
 
     #[error("environment `{0}` already exists")]
     EnvironmentExists(String),

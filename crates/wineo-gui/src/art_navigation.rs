@@ -37,11 +37,11 @@ impl App {
         self.portable_page = None;
         // Checked against what the cached page holds, not the new peek, so a
         // page holding a fingerprint survives another process giving the
-        // environment an id.
+        // environment an id. A library that can't be read keeps the page.
         if self
             .art_pages
             .get(&name)
-            .is_some_and(|page| !page.identity.is_current(&self.paths, &name).is_current())
+            .is_some_and(|page| page.identity.is_current(&self.paths, &name).is_changed())
         {
             self.close_missing_art(&name);
         }
@@ -109,7 +109,7 @@ impl App {
             self.close_missing_art(&name);
             return Task::none();
         };
-        if !cards.iter().any(|card| card.name == name) || !page.still_current(&self.paths) {
+        if !cards.iter().any(|card| card.name == name) || page.replaced(&self.paths) {
             self.close_missing_art(&name);
             return Task::none();
         }
@@ -197,7 +197,7 @@ impl App {
                 completion,
             );
         }
-        if !page.still_current(&self.paths) {
+        if page.replaced(&self.paths) {
             self.close_missing_art(&name);
             return self.drop_stale_art_event(
                 &name,

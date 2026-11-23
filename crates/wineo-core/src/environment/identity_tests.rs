@@ -362,8 +362,17 @@ fn an_id_holder_whose_library_breaks_is_told_so_not_that_it_changed() {
     );
     let error = store(&paths, identity).unwrap_err();
     assert!(
-        matches!(&error, Error::ArtLibraryUnreadable(name) if name == "game"),
+        matches!(&error, Error::ArtLibraryUnreadable { env, .. } if env == "game"),
         "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "library.toml can't be read. Artwork for `game` wasn't stored."
+    );
+    let error = art::remove(&paths, "game", None, Kind::Grid, Some(identity)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "library.toml can't be read. Artwork for `game` wasn't removed."
     );
     assert!(!paths.art_dir("game").join("grid.png").exists());
 }

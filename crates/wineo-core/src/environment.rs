@@ -82,6 +82,12 @@ impl Currency {
     pub fn is_current(self) -> bool {
         self == Self::Current
     }
+
+    /// Not the same as `!is_current()`: a library that can't be read hasn't
+    /// shown the environment to be another one.
+    pub fn is_changed(self) -> bool {
+        self == Self::Changed
+    }
 }
 
 /// What `EnvironmentIdentity::observe` saw, for comparing later with

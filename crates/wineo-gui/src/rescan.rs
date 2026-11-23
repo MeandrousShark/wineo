@@ -271,7 +271,7 @@ impl Watch {
                 .as_ref()
                 .is_some_and(|(name, identity, snapshot)| {
                     *name == art.name
-                        && (!identity.matches(&art.observed).is_current()
+                        && (identity.matches(&art.observed).is_changed()
                             || *snapshot != art.snapshot)
                 })
         });

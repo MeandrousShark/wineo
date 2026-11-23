@@ -479,8 +479,26 @@ pub(crate) fn check_environment_identity(
     match expected_identity.map(|expected| expected.is_current(paths, env)) {
         None | Some(Currency::Current) => Ok(()),
         Some(Currency::Changed) => Err(Error::ArtEnvironmentChanged(env.to_owned())),
-        Some(Currency::LibraryUnreadable) => Err(Error::ArtLibraryUnreadable(env.to_owned())),
+        Some(Currency::LibraryUnreadable) => Err(Error::ArtLibraryUnreadable {
+            env: env.to_owned(),
+            outcome: "stored",
+        }),
     }
+}
+
+/// `check_environment_identity` for a removal, whose error says so.
+fn check_environment_identity_to_remove(
+    paths: &Paths,
+    env: &str,
+    expected_identity: Option<EnvironmentIdentity>,
+) -> Result<()> {
+    check_environment_identity(paths, env, expected_identity).map_err(|error| match error {
+        Error::ArtLibraryUnreadable { env, .. } => Error::ArtLibraryUnreadable {
+            env,
+            outcome: "removed",
+        },
+        error => error,
+    })
 }
 
 /// A SteamGridDB image, downloaded and identified.
@@ -709,11 +727,11 @@ pub fn remove(
     }
     // Before anything else, so a removed environment reads as changed. The
     // check under the lock below is the one that decides.
-    check_environment_identity(paths, env, expected_identity)?;
+    check_environment_identity_to_remove(paths, env, expected_identity)?;
     Environment::ensure_exists(paths, env)?;
     let art_dir = paths.art_dir(env);
     let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
-    check_environment_identity(paths, env, expected_identity)?;
+    check_environment_identity_to_remove(paths, env, expected_identity)?;
     Environment::ensure_exists(paths, env)?;
     let mut art = ArtFile::open_locked(&art_dir, &guard)?;
     let dir = spot_dir(&art_dir, target);

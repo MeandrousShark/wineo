@@ -1578,9 +1578,17 @@ fn leaving_clears_a_failed_decode_so_reopening_retries() {
     assert_eq!(reload_units(&mut page, &paths), 1);
 }
 
-/// Core's words for an identity `library.toml` can't confirm.
-fn library_unreadable() -> String {
-    wineo_core::Error::ArtLibraryUnreadable("game".to_owned()).to_string()
+/// What a write says when `library.toml` can't confirm the identity.
+fn library_unreadable(outcome: &str) -> String {
+    format!("library.toml can't be read. Artwork for `game` wasn't {outcome}.")
+}
+
+#[test]
+fn skipped_desktop_entries_say_the_library_couldnt_be_read() {
+    assert_eq!(
+        Guarded::Entries.unreadable("game"),
+        "library.toml can't be read. The desktop entries for `game` weren't updated."
+    );
 }
 
 fn break_library(paths: &Paths) {
@@ -1602,7 +1610,8 @@ fn a_write_says_the_library_couldnt_be_read_rather_than_that_it_changed() {
             path,
         );
         assert!(!outcome.changed());
-        assert_eq!(outcome.error, Some(library_unreadable()), "{path:?}");
+        let outcome_word = if path.is_some() { "stored" } else { "removed" };
+        assert_eq!(outcome.error, Some(library_unreadable(outcome_word)));
     }
     let transport = ImageApi {
         bytes: fs::read(&source).unwrap(),
@@ -1619,7 +1628,7 @@ fn a_write_says_the_library_couldnt_be_read_rather_than_that_it_changed() {
         &Token::new(),
     );
     assert!(!outcome.changed());
-    assert_eq!(outcome.error, Some(library_unreadable()));
+    assert_eq!(outcome.error, Some(library_unreadable("stored")));
     assert!(transport.urls.borrow().is_empty(), "it downloaded anyway");
 }
 
@@ -1651,6 +1660,6 @@ fn a_library_breaking_mid_download_says_so() {
     );
     assert!(calls >= 2, "{calls}");
     assert!(!outcome.changed());
-    assert_eq!(outcome.error, Some(library_unreadable()));
+    assert_eq!(outcome.error, Some(library_unreadable("stored")));
     assert!(!paths.art_dir("game").join("grid.png").exists());
 }

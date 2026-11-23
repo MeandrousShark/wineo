@@ -264,9 +264,11 @@ impl Page {
         self.writing
     }
 
-    /// Whether the page's identity is still current, through its cache.
-    pub(crate) fn still_current(&self, paths: &Paths) -> bool {
-        currency(paths, &self.name, (self.identity, &self.identity_cache)).is_current()
+    /// Whether the environment is no longer the one the page opened on,
+    /// through its cache. A library that can't be read doesn't say so, so
+    /// the page stays and its next write reports the library.
+    pub(crate) fn replaced(&self, paths: &Paths) -> bool {
+        currency(paths, &self.name, (self.identity, &self.identity_cache)).is_changed()
     }
 
     #[cfg(test)]
@@ -1497,21 +1499,53 @@ fn currency(
     identity.is_current_with(paths, name, &mut cache)
 }
 
-/// Why an early check stops a write, or None to go on. `what` says what
-/// could not happen, like "artwork could be written". A library that can't
-/// be read says so in core's words, since it isn't a replacement.
+/// What an early check is about to let happen.
+#[derive(Clone, Copy)]
+enum Guarded {
+    Store,
+    Remove,
+    /// The desktop entries, after an icon is already stored or removed.
+    Entries,
+}
+
+impl Guarded {
+    /// The message for a library that can't be read, which isn't a
+    /// replacement. Artwork's is in core's words.
+    fn unreadable(self, name: &str) -> String {
+        let outcome = match self {
+            Self::Store => "stored",
+            Self::Remove => "removed",
+            Self::Entries => {
+                return format!(
+                    "library.toml can't be read. The desktop entries for `{name}` weren't updated."
+                );
+            }
+        };
+        wineo_core::Error::ArtLibraryUnreadable {
+            env: name.to_owned(),
+            outcome,
+        }
+        .to_string()
+    }
+}
+
+/// Why an early check stops `step`, or None to go on.
 fn refused(
     paths: &Paths,
     name: &str,
     held: (EnvironmentIdentity, &Mutex<library::Cache>),
-    what: &str,
+    step: Guarded,
 ) -> Option<String> {
     match currency(paths, name, held) {
         Currency::Current => None,
-        Currency::Changed => Some(format!("environment changed before {what}")),
-        Currency::LibraryUnreadable => {
-            Some(wineo_core::Error::ArtLibraryUnreadable(name.to_owned()).to_string())
-        }
+        Currency::Changed => Some(format!(
+            "environment changed before {}",
+            match step {
+                Guarded::Store | Guarded::Remove => "artwork could be written",
+                Guarded::Entries => "desktop entries could be reconciled",
+            }
+        )),
+        Currency::LibraryUnreadable => Some(step.unreadable(name)),
     }
 }
 
@@ -1534,12 +1568,17 @@ fn write_art_for(
     path: Option<&Path>,
 ) -> WriteOutcome {
     let identity = held.0;
-    if let Some(error) = refused(paths, name, held, "artwork could be written") {
+    let step = if path.is_some() {
+        Guarded::Store
+    } else {
+        Guarded::Remove
+    };
+    if let Some(error) = refused(paths, name, held, step) {
         return WriteOutcome::failed(error);
     }
     let result = match path {
         Some(path) => flow_artwork::preview_with_format(path, spot.1).and_then(|_| {
-            if let Some(error) = refused(paths, name, held, "artwork could be written") {
+            if let Some(error) = refused(paths, name, held, step) {
                 return Err(error);
             }
             art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, Some(identity))
@@ -1555,7 +1594,7 @@ fn write_art_for(
         return WriteOutcome::failed(error);
     }
     let error = if spot.1 == Kind::Icon {
-        match refused(paths, name, held, "desktop entries could be reconciled") {
+        match refused(paths, name, held, Guarded::Entries) {
             None => reconcile_desktop(paths, name).err(),
             refusal => refusal,
         }
@@ -1580,7 +1619,7 @@ fn use_image_for(
     token: &Token,
 ) -> WriteOutcome {
     let identity = held.0;
-    if let Some(error) = refused(paths, name, held, "artwork could be written") {
+    if let Some(error) = refused(paths, name, held, Guarded::Store) {
         return WriteOutcome::failed(error);
     }
     // Why a check during the download canceled it, which the cancel's own
@@ -1595,7 +1634,7 @@ fn use_image_for(
         image,
         |received, total| {
             if stopped.is_none() {
-                stopped = refused(paths, name, held, "artwork could be written");
+                stopped = refused(paths, name, held, Guarded::Store);
                 if stopped.is_some() {
                     token.cancel();
                 }
@@ -1610,9 +1649,7 @@ fn use_image_for(
     }
     let error = match (spot.1, currency(paths, name, held)) {
         (Kind::Icon, Currency::Current) => reconcile_desktop(paths, name).err(),
-        (Kind::Icon, Currency::LibraryUnreadable) => {
-            refused(paths, name, held, "desktop entries could be reconciled")
-        }
+        (Kind::Icon, Currency::LibraryUnreadable) => Some(Guarded::Entries.unreadable(name)),
         _ => None,
     };
     WriteOutcome {

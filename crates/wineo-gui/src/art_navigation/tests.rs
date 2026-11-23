@@ -265,6 +265,29 @@ fn refresh_closes_and_drops_art_after_external_removal() {
 }
 
 #[test]
+fn an_unreadable_library_keeps_the_art_page_open() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::ContextArt("game".into()));
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let generation = app.art_pages["game"].generation;
+    fs::write(app.paths.library_file(), "[broken\n").unwrap();
+
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    let _ = app.update(Message::ArtPage(
+        "game".into(),
+        generation,
+        art_page::Event::Back,
+    ));
+    assert!(app.art_pages.contains_key("game"));
+
+    // Reopening looks at the library itself, not the page's cache.
+    let _ = app.update(Message::ContextArt("game".into()));
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert!(app.art_pages.contains_key("game"));
+}
+
+#[test]
 fn refresh_closes_art_after_external_rename() {
     let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
