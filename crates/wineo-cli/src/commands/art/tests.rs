@@ -1065,3 +1065,31 @@ fn art_fetch_warns_about_entries_skipped_because_the_library_cant_be_read() {
     assert!(!entry(&paths).exists());
     assert_eq!(String::from_utf8(err).unwrap(), ENTRIES_SKIPPED);
 }
+
+#[test]
+fn a_fetch_without_a_creation_identity_writes_nothing_until_a_game_is_picked() {
+    let (_root, paths) = paths();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::Icon,
+    };
+    // A failed search, then a skipped pick.
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    for answers in [None, Some(&["4"][..])] {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
+        let pick = match &mut prompt {
+            Some(prompt) => Pick::Ask(prompt),
+            None => Pick::Top(&mut out),
+        };
+        let transport: &dyn Transport = match answers {
+            Some(_) => &fake,
+            None => &Fake::default(),
+        };
+        let result = fetch_new(&paths, transport, &key(), &request, None, pick, &mut err);
+        assert!(result.is_ok());
+        assert!(!paths.library_file().exists(), "{answers:?}");
+    }
+}

@@ -97,8 +97,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.command {
         Command::Set { spot, kind, file } => {
             let (env, target) = split(&spot);
-            let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
-            art::set_manual(paths, env, target, kind, &file, identity)?;
+            art::set_manual_acquiring(paths, env, target, kind, &file)?;
             println!("Set {kind} for {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;
@@ -148,15 +147,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
-            // Before the environment's own checks, as `art::remove` makes
-            // them, so a spot with both names invalid keeps its error.
-            if let Some(target) = target
-                && !wineo_core::name::is_valid(target)
-            {
-                return Err(wineo_core::Error::InvalidName(target.to_owned()).into());
-            }
-            let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
-            art::remove(paths, env, target, kind, identity)?;
+            art::remove_acquiring(paths, env, target, kind)?;
             println!("Removed {kind} from {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;
@@ -712,12 +703,32 @@ fn try_fetch_new<I: Input, W: Write>(
     err: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let api = Api::new(transport, &key.value);
-    // Before the pick, so a replacement while the questions are asked counts.
-    let identity = created_or_acquired(paths, request.env, identity)?;
+    // Without one from creation, only looked at before the pick, so a
+    // replacement while the questions are asked counts and a pick that
+    // ends with nothing writes nothing.
+    let seen = match identity {
+        Some(identity) => Held::Created(identity),
+        None => Held::Seen(
+            EnvironmentIdentity::peek(paths, request.env)
+                .ok_or_else(|| wineo_core::Error::UnknownEnvironment(request.env.to_owned()))?,
+        ),
+    };
     let Some((game, term, out)) = choose_game(&api, request, pick)? else {
         return Ok(());
     };
+    let identity = match seen {
+        Held::Created(identity) => identity,
+        Held::Seen(seen) => seen.upgrade(paths, request.env)?,
+    };
     store_art(paths, &api, request, (game, &term), identity, (out, err))
+}
+
+/// The identity a fetch holds through its pick.
+enum Held {
+    /// What creation returned, used as it is.
+    Created(EnvironmentIdentity),
+    /// What was there before the pick, upgraded once something is picked.
+    Seen(EnvironmentIdentity),
 }
 
 /// Picks the game from the search results, naming a skipped pick. `out` is

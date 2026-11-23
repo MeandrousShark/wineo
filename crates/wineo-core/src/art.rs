@@ -359,6 +359,30 @@ pub fn set_manual(
     )
 }
 
+/// `set_manual` for a caller holding no identity yet, like `wineo art set`.
+/// The spot and the file are checked first, so a set that can't write
+/// never gives an environment from before ids one; only then is an
+/// identity acquired, and the check under the art lock still decides.
+/// Returns the identity too, for what the caller does after.
+pub fn set_manual_acquiring(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+    file: &Path,
+) -> Result<(Stored, EnvironmentIdentity)> {
+    let original = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    check_spot(paths, env, target)?;
+    let bytes = read_art(file)?;
+    manual_format(kind, &bytes, file)?;
+    let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
+    let stored = store_manual(paths, env, target, kind, &bytes, &original, file, identity)?;
+    Ok((stored, identity))
+}
+
 /// Like `set_manual`, but records `original` as the source's name instead of
 /// the file's own.
 pub fn set_manual_as(
@@ -425,12 +449,7 @@ fn store_manual(
     file: &Path,
     expected_identity: EnvironmentIdentity,
 ) -> Result<Stored> {
-    let format = detect(bytes)
-        .filter(|format| kind.accepts(*format))
-        .ok_or_else(|| Error::ArtFormat {
-            path: file.to_owned(),
-            accepted: accepted(kind),
-        })?;
+    let format = manual_format(kind, bytes, file)?;
 
     let art_dir = paths.art_dir(env);
     let guard = Locks::new(paths).config(&art_dir.join(ART_FILE))?;
@@ -467,6 +486,16 @@ fn store_manual(
         format,
         removed,
     })
+}
+
+/// The format `bytes` are stored as for `kind`, refusing one it can't be.
+fn manual_format(kind: Kind, bytes: &[u8], file: &Path) -> Result<Format> {
+    detect(bytes)
+        .filter(|format| kind.accepts(*format))
+        .ok_or_else(|| Error::ArtFormat {
+            path: file.to_owned(),
+            accepted: accepted(kind),
+        })
 }
 
 pub(crate) fn check_environment_identity(
@@ -754,6 +783,41 @@ pub fn remove(
         let _ = fs::remove_dir(&dir);
     }
     Ok(Removed { files, record })
+}
+
+/// `remove` for a caller holding no identity yet, like `wineo art rm`. When
+/// there is plainly nothing to remove, that is said before an identity is
+/// acquired, so an environment from before ids isn't given one for
+/// nothing; the check under the art lock still decides. Returns the
+/// identity too, for what the caller does after.
+pub fn remove_acquiring(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+) -> Result<(Removed, EnvironmentIdentity)> {
+    if let Some(target) = target
+        && !name::is_valid(target)
+    {
+        return Err(Error::InvalidName(target.to_owned()));
+    }
+    Environment::ensure_exists(paths, env)?;
+    let art_dir = paths.art_dir(env);
+    let dir = spot_dir(&art_dir, target);
+    // An art.toml that can't be read here is left to the locked read, which
+    // reports it as it always has.
+    if let Ok(config) = ArtConfig::load(&art_dir)
+        && config.record(target, kind).is_none()
+        && matches!(find(&dir, kind, None), Ok(None))
+    {
+        return Err(Error::NoArt {
+            spot: spot_name(env, target),
+            kind,
+        });
+    }
+    let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
+    let removed = remove(paths, env, target, kind, identity)?;
+    Ok((removed, identity))
 }
 
 /// Drops the record of `kind` for `target`, or the environment for None, if

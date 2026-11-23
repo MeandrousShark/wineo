@@ -478,6 +478,15 @@ fn an_interrupted_restore_with_its_config_missing_does_not_exist_for_art() {
         &f.run(&["art", "set", "hades", "grid", &png]),
         "environment `hades` does not exist",
     );
+    // A target's spot reads the environment, which says the restore first,
+    // as it always has.
+    let target = f.run(&["art", "set", "hades.server", "icon", &png]);
+    assert_eq!(target.status.code(), Some(1));
+    assert!(
+        stderr(&target).contains("interrupted snapshot restore"),
+        "{}",
+        stderr(&target)
+    );
     assert_refused(
         &f.run(&["art", "rm", "hades", "grid"]),
         "environment `hades` does not exist",
@@ -507,5 +516,82 @@ fn set_and_rm_give_an_environment_from_before_ids_one() {
         assert_eq!(id(), None);
         assert_success(&f.run(&args));
         assert!(id().is_some(), "{name}");
+    }
+}
+
+/// What `art set` said before it took an identity: the same checks, made
+/// with one that is only looked at.
+fn set_error(f: &Fixture, spot: &str, kind: wineo_core::art::Kind, file: &str) -> String {
+    let paths = f.paths();
+    let (env, target) = match spot.split_once('.') {
+        Some((env, target)) => (env, Some(target)),
+        None => (spot, None),
+    };
+    let identity = wineo_core::test_support::identity(&paths, env);
+    let error = wineo_core::art::set_manual(
+        &paths,
+        env,
+        target,
+        kind,
+        std::path::Path::new(file),
+        identity,
+    )
+    .unwrap_err();
+    format!("{:#}", anyhow::Error::from(error))
+}
+
+#[test]
+fn a_set_that_cant_write_gives_an_old_environment_no_id() {
+    use wineo_core::art::Kind;
+    let f = Fixture::new();
+    f.environment("hades", "[targets.server]\nexe = \"server.exe\"\n");
+    let png = image(&f, "a.png", PNG);
+    let text = image(&f, "notes.png", b"just notes");
+    let missing = f.root.path().join("missing.png").display().to_string();
+    let folder = f.root.path().join("folder.png");
+    fs::create_dir_all(&folder).unwrap();
+    let folder = folder.display().to_string();
+    let big = f.root.path().join("big.png");
+    fs::File::create(&big)
+        .unwrap()
+        .set_len(wineo_core::art::MAX_BYTES + 1)
+        .unwrap();
+    let big = big.display().to_string();
+    for (spot, kind, file) in [
+        ("hades.nope", Kind::Icon, png.as_str()),
+        ("hades.bad name", Kind::Icon, png.as_str()),
+        ("hades", Kind::Icon, missing.as_str()),
+        ("hades", Kind::Icon, folder.as_str()),
+        ("hades", Kind::Hero, big.as_str()),
+        ("hades", Kind::Icon, text.as_str()),
+    ] {
+        let expected = set_error(&f, spot, kind, file);
+        let set = f.run(&["art", "set", spot, kind.as_str(), file]);
+        assert_refused(&set, &expected);
+        assert_eq!(library(&f), None, "{spot} {file}");
+    }
+
+    // A target whose config doesn't parse.
+    let config = f.paths().environment_config("hades");
+    fs::write(&config, "this isn't toml [").unwrap();
+    let expected = set_error(&f, "hades.server", Kind::Icon, &png);
+    assert_refused(
+        &f.run(&["art", "set", "hades.server", "icon", &png]),
+        &expected,
+    );
+    assert_eq!(library(&f), None);
+}
+
+#[test]
+fn an_rm_with_nothing_to_remove_gives_an_old_environment_no_id() {
+    let f = Fixture::new();
+    f.environment("hades", "[targets.server]\nexe = \"server.exe\"\n");
+    for (spot, error) in [
+        ("hades", "`hades` has no grid art"),
+        ("hades.server", "`hades.server` has no grid art"),
+        ("hades.nope", "`hades.nope` has no grid art"),
+    ] {
+        assert_refused(&f.run(&["art", "rm", spot, "grid"]), error);
+        assert_eq!(library(&f), None, "{spot}");
     }
 }
