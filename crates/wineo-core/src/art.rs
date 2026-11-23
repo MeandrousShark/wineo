@@ -383,6 +383,14 @@ pub fn set_manual_acquiring(
     Ok((stored, identity))
 }
 
+/// The checks `set_manual` makes of `file` itself: it can be read, isn't too
+/// large, and is a format `kind` takes. For a caller to make before it takes
+/// an identity, so a file that can't be stored mints none.
+pub fn check_manual_file(file: &Path, kind: Kind) -> Result<()> {
+    let bytes = read_art(file)?;
+    manual_format(kind, &bytes, file).map(drop)
+}
+
 /// Like `set_manual`, but records `original` as the source's name instead of
 /// the file's own.
 pub fn set_manual_as(
@@ -785,6 +793,35 @@ pub fn remove(
     Ok(Removed { files, record })
 }
 
+/// Says `NoArt` when `kind` for `target` has plainly nothing to remove: no
+/// record and no file. An `art.toml` or a folder that can't be read fails
+/// with its own error, the one the locked removal would give, so a caller
+/// can check this before taking an identity and mint none for a removal
+/// that can't happen. The check under the art lock still decides.
+pub fn check_something_to_remove(
+    paths: &Paths,
+    env: &str,
+    target: Option<&str>,
+    kind: Kind,
+) -> Result<()> {
+    if let Some(target) = target
+        && !name::is_valid(target)
+    {
+        return Err(Error::InvalidName(target.to_owned()));
+    }
+    let art_dir = paths.art_dir(env);
+    let config = ArtConfig::load(&art_dir)?;
+    if config.record(target, kind).is_none()
+        && find(&spot_dir(&art_dir, target), kind, None)?.is_none()
+    {
+        return Err(Error::NoArt {
+            spot: spot_name(env, target),
+            kind,
+        });
+    }
+    Ok(())
+}
+
 /// `remove` for a caller holding no identity yet, like `wineo art rm`. When
 /// there is plainly nothing to remove, that is said before an identity is
 /// acquired, so an environment from before ids isn't given one for
@@ -802,17 +839,7 @@ pub fn remove_acquiring(
         return Err(Error::InvalidName(target.to_owned()));
     }
     Environment::ensure_exists(paths, env)?;
-    let art_dir = paths.art_dir(env);
-    let dir = spot_dir(&art_dir, target);
-    // An art.toml that can't be read fails here with the error the locked
-    // read would give, so a removal that can't happen mints no id.
-    let config = ArtConfig::load(&art_dir)?;
-    if config.record(target, kind).is_none() && matches!(find(&dir, kind, None), Ok(None)) {
-        return Err(Error::NoArt {
-            spot: spot_name(env, target),
-            kind,
-        });
-    }
+    check_something_to_remove(paths, env, target, kind)?;
     let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
     let removed = remove(paths, env, target, kind, identity)?;
     Ok((removed, identity))

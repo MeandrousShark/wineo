@@ -1305,3 +1305,22 @@ fn an_acquiring_removal_with_an_unreadable_art_file_mints_nothing() {
     assert_eq!(crate::error::chain(&error), locked);
     assert_eq!(fs::read(&library).unwrap(), before);
 }
+
+#[test]
+fn an_acquiring_removal_that_cant_look_mints_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    let spot = paths.art_dir("hades").join("server");
+    fs::create_dir_all(&spot).unwrap();
+    fs::set_permissions(&spot, fs::Permissions::from_mode(0o000)).unwrap();
+    let error = remove_acquiring(&paths, "hades", Some("server"), Kind::Grid);
+    fs::set_permissions(&spot, fs::Permissions::from_mode(0o755)).unwrap();
+    let error = error.unwrap_err();
+    assert!(!matches!(error, Error::NoArt { .. }), "{error}");
+    assert!(
+        crate::error::chain(&error).contains("Permission denied"),
+        "{error}"
+    );
+    assert_eq!(fs::read(&library).unwrap(), before);
+}
