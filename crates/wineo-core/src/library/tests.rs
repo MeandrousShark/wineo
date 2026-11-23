@@ -2056,6 +2056,7 @@ fn set_input_writes_only_what_changes() {
 
     let remapped = Input {
         controller: false,
+        gamecube_adapter: false,
         buttons: BTreeMap::from([(PadAction::Favorite, PadButton::Rb)]),
     };
     assert!(set_input(&fixture.paths, &remapped).unwrap());
@@ -2072,6 +2073,97 @@ fn set_input_writes_only_what_changes() {
         "schema_version = 1\n\n[input]\ncontroller = true\n"
     );
     assert_eq!(load(&fixture.paths).input, Input::default());
+}
+
+#[test]
+fn the_gamecube_adapter_defaults_to_off_and_an_absent_key_reads_as_off() {
+    // controller defaults to on; this one must not follow it.
+    assert!(!Input::default().gamecube_adapter);
+    let fixture = Fixture::new();
+    assert!(!load(&fixture.paths).input.gamecube_adapter);
+    fixture.write("schema_version = 1\n");
+    assert!(!load(&fixture.paths).input.gamecube_adapter);
+    fixture.write("schema_version = 1\n[input]\ncontroller = false\n");
+    let input = load(&fixture.paths).input;
+    assert!(!input.gamecube_adapter);
+    assert!(!input.controller);
+    fixture.write("schema_version = 1\n[input]\ngamecube_adapter = true\n");
+    let input = load(&fixture.paths).input;
+    assert!(input.gamecube_adapter);
+    assert!(input.controller);
+}
+
+#[test]
+fn a_gamecube_adapter_value_of_the_wrong_type_reads_as_off() {
+    let fixture = Fixture::new();
+    // The string "true" is the case that catches a default of on: a stored
+    // false and a bad value both read as off.
+    for bad in ["\"true\"", "\"yes\"", "1", "[true]", "{ on = true }"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[input]\ncontroller = false\ngamecube_adapter = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(!library.input.gamecube_adapter, "{bad}");
+        assert!(!library.input.controller, "{bad}");
+    }
+    fixture.write("schema_version = 1\n[input]\ngamecube_adapter = true\n");
+    assert!(load(&fixture.paths).input.gamecube_adapter);
+}
+
+#[test]
+fn set_input_stores_the_gamecube_adapter_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let on = Input {
+        gamecube_adapter: true,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &on).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ngamecube_adapter = true\n"
+    );
+    assert_eq!(load(&fixture.paths).input, on);
+    assert!(!set_input(&fixture.paths, &on).unwrap());
+
+    // Off again is written as false, not removed, like controller.
+    assert!(set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ngamecube_adapter = false\n"
+    );
+    assert_eq!(load(&fixture.paths).input, Input::default());
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+}
+
+#[test]
+fn a_no_op_gamecube_adapter_edit_leaves_the_file_alone_and_a_change_keeps_comments() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[input]\ncontroller = false # no pads\n# adapter\ngamecube_adapter   =   true\nfuture = 1\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).input;
+    assert!(read.gamecube_adapter);
+    assert!(!set_input(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    let off = Input {
+        gamecube_adapter: false,
+        ..read
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        text.replace("true\nfuture", "false\nfuture")
+    );
+
+    // A bad value reads as off, so asking for off writes nothing.
+    let bad = "schema_version = 1\n[input]\ngamecube_adapter = \"true\"\n";
+    fixture.write(bad);
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(fixture.read(), bad);
 }
 
 #[test]
