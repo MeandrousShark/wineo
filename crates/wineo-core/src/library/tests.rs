@@ -71,6 +71,7 @@ future_entry = "kept"
             favorite: true,
             hidden: true,
             added: Some("2026-10-17T19:20:05Z".parse().unwrap()),
+            id: None,
         }
     );
     assert_eq!(library.problem, None);
@@ -415,16 +416,18 @@ fn missing_schema_version_reads_as_one_and_is_added_on_a_real_edit() {
 fn lifecycle_helpers_replace_stamp_and_remove_entries() {
     let fixture = Fixture::new();
     fixture.write("schema_version = 1\n[environments.hades]\nfavorite = true\nhidden = true\n");
-    assert!(fresh(&fixture.paths, "hades").unwrap());
+    let id = fresh(&fixture.paths, "hades").unwrap();
     let fresh_entry = &load(&fixture.paths).environments["hades"];
     assert!(!fresh_entry.favorite);
     assert!(!fresh_entry.hidden);
     assert!(fresh_entry.added.is_some());
+    assert_eq!(fresh_entry.id, Some(id));
 
     let replacement = Entry {
         favorite: true,
         hidden: false,
         added: Some("2026-10-17T19:20:05Z".parse().unwrap()),
+        id: None,
     };
     assert!(put(&fixture.paths, "hades", Some(&replacement)).unwrap());
     assert_eq!(load(&fixture.paths).environments["hades"], replacement);

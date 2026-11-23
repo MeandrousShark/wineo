@@ -21,7 +21,7 @@ use super::apply::{Located, free_space, remove_packages};
 use crate::cancel::Token;
 use crate::config::GlobalConfig;
 use crate::create::{self, CreateEvent, CreateRequest, Hooks, Step, Stepped};
-use crate::environment::Environment;
+use crate::environment::{Environment, EnvironmentIdentity};
 use crate::gog::folder::{
     Committed, FolderLock, Platform, ProductStatus, Target, Track, failpoint,
 };
@@ -29,6 +29,7 @@ use crate::gog::language;
 use crate::gog::migrate;
 use crate::gog::package::{self, PackageError, SpaceNeeded};
 use crate::installer::{self, Installer, Outcome, Output};
+use crate::library::Id;
 use crate::operation::Guard;
 use crate::paths::Paths;
 use crate::supervisor::Watched;
@@ -320,6 +321,8 @@ pub(super) struct Done {
     pub(super) target: Option<PathBuf>,
     /// GOG's code for the language the game's info file reports.
     pub(super) reported_language: Option<String>,
+    /// The new environment's identity when this install created it.
+    pub(super) identity: Option<EnvironmentIdentity>,
 }
 
 /// Runs every installer in `job`, reads the game's info file, adds a default
@@ -352,6 +355,8 @@ pub(super) fn install(
     // Passed through creation and each installer and back, so the
     // environment and its prefix stay reserved until the commit.
     let mut guard = Some(guard);
+    // The id creation stamped, when this install created the environment.
+    let mut stamped: Option<Option<Id>> = None;
     let folder = lock.folder().to_owned();
     let global = GlobalConfig::load(paths)?;
     let logs = paths.runtime_dir(name);
@@ -399,7 +404,7 @@ pub(super) fn install(
         let held = guard.take().expect("each run hands the locks back");
         let (outcome, resolved) = match created {
             Some(request) => {
-                let (outcome, resolved, back) = run_created(
+                let (outcome, resolved, back, identity) = run_created(
                     paths,
                     request,
                     held,
@@ -410,6 +415,7 @@ pub(super) fn install(
                     installing(),
                 )?;
                 guard = Some(back);
+                stamped = Some(identity.and_then(|identity| identity.id()));
                 (outcome?, resolved)
             }
             None => {
@@ -583,6 +589,8 @@ pub(super) fn install(
         (Some(launch), None) => add_target(paths, name, title, launch, desktop)?,
         _ => None,
     };
+    // After the target's write, so a fingerprint isn't already stale.
+    let identity = stamped.and_then(|stamped| EnvironmentIdentity::created(paths, name, stamped));
     // What the installers wrote reaches the disk before a state saying it's
     // installed does; a failure here leaves the journal.
     crate::import::sync_filesystem(&folder)?;
@@ -616,6 +624,7 @@ pub(super) fn install(
     Ok(Done {
         target: added,
         reported_language: reported.map(|(code, _)| code),
+        identity,
     })
 }
 
@@ -669,7 +678,12 @@ fn run_created(
     token: &Token,
     events: &mut dyn FnMut(Event),
     installing: Event,
-) -> Result<(crate::Result<Outcome>, bool, Guard)> {
+) -> Result<(
+    crate::Result<Outcome>,
+    bool,
+    Guard,
+    Option<EnvironmentIdentity>,
+)> {
     let step = Step::GogInstaller {
         program: exe,
         args,
@@ -691,7 +705,7 @@ fn run_created(
     let guard = installed
         .guard
         .ok_or_else(|| anyhow::anyhow!("the installer let go of the environment's locks"))?;
-    Ok((outcome.0, outcome.1, guard))
+    Ok((outcome.0, outcome.1, guard, installed.identity))
 }
 
 /// Passes creation's events on.

@@ -600,7 +600,7 @@ pub(crate) fn import_reviewed(
     );
     // A completed registration is retained even if cancellation arrives at the end.
     match result {
-        Ok(environment) => Ok(environment),
+        Ok((environment, _)) => Ok(environment),
         Err(error) => cancellation.result(Err(error)),
     }
 }

@@ -183,24 +183,37 @@ pub fn import_with(
             }
             .into());
         }
-        // Writes below only land on this config, not one that replaced it
-        // while GOG was answering.
-        EnvironmentIdentity::read(paths, name)
-            .ok_or_else(|| crate::Error::UnknownEnvironment(name.to_owned()))?
+        // Writes below only land on this environment, not one that replaced
+        // it while GOG was answering. Nothing to write takes no identity,
+        // so it never gives an old environment an id.
+        if session.is_none() && (request.kinds.is_empty() || client.is_err()) {
+            None
+        } else {
+            Some(
+                EnvironmentIdentity::acquire(paths, name)?
+                    .ok_or_else(|| crate::Error::UnknownEnvironment(name.to_owned()))?,
+            )
+        }
     };
 
     let mut report = Report::default();
-    match session {
-        Some(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
-        Some(session) => playtime(paths, request, session, identity, token, &mut report),
-        None => report
+    match (session, identity) {
+        (Some(_), _) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
+        (Some(session), Some(identity)) => {
+            playtime(paths, request, session, identity, token, &mut report)
+        }
+        _ => report
             .notes
             .push("Skipped GOG playtime: not logged in to GOG.".to_owned()),
     }
-    match client {
-        Ok(_) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
-        Ok(client) => artwork(paths, request, client, identity, token, &mut report),
-        Err(error) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
+    match (client, identity) {
+        (Ok(_), _) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
+        (Ok(client), Some(identity)) => {
+            artwork(paths, request, client, identity, token, &mut report)
+        }
+        // No kinds were asked for.
+        (Ok(_), None) => {}
+        (Err(error), _) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
     }
     Ok(report)
 }
@@ -278,7 +291,7 @@ fn raise_baseline(
     if token.is_canceled() {
         return Err(crate::Error::Canceled("playtime import"));
     }
-    if EnvironmentIdentity::read(paths, name) != Some(identity) {
+    if !identity.is_current(paths, name).is_current() {
         return Ok(None);
     }
     let existing = stats::read(&paths.stats_log(name))?.imported;

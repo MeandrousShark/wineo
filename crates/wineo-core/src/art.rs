@@ -17,7 +17,7 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::cancel::Token;
 use crate::config;
-use crate::environment::{Environment, EnvironmentIdentity};
+use crate::environment::{Currency, Environment, EnvironmentIdentity};
 use crate::error::{Error, IoContext, Result};
 use crate::files;
 use crate::name;
@@ -474,12 +474,13 @@ pub(crate) fn check_environment_identity(
     env: &str,
     expected_identity: Option<EnvironmentIdentity>,
 ) -> Result<()> {
-    if expected_identity
-        .is_some_and(|expected| EnvironmentIdentity::read(paths, env) != Some(expected))
-    {
-        return Err(Error::ArtEnvironmentChanged(env.to_owned()));
+    // Reads library.toml itself, never a cache, since this is the check
+    // that decides.
+    match expected_identity.map(|expected| expected.is_current(paths, env)) {
+        None | Some(Currency::Current) => Ok(()),
+        Some(Currency::Changed) => Err(Error::ArtEnvironmentChanged(env.to_owned())),
+        Some(Currency::LibraryUnreadable) => Err(Error::ArtLibraryUnreadable(env.to_owned())),
     }
-    Ok(())
 }
 
 /// A SteamGridDB image, downloaded and identified.

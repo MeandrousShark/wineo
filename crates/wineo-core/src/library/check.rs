@@ -53,6 +53,7 @@ pub(crate) struct Inspection {
 const BOOL: &str = "expected true or false";
 const DATETIME: &str = "expected a date and time with an offset, like 2026-10-17T18:00:00Z";
 const TABLE: &str = "expected a table";
+const ID: &str = "expected 32 lowercase hex characters, which wineo writes itself";
 
 pub(crate) fn inspect(paths: &Paths) -> Inspection {
     let path = paths.library_file();
@@ -603,6 +604,8 @@ fn inspect_entry(name: &str, item: &Item, inspection: &mut Inspection) {
             "favorite" | "hidden" => BOOL,
             "added" if is_offset_datetime(value) => continue,
             "added" => DATETIME,
+            "id" if is_id(value) => continue,
+            "id" => ID,
             _ => {
                 inspection
                     .findings
@@ -614,6 +617,10 @@ fn inspect_entry(name: &str, item: &Item, inspection: &mut Inspection) {
             .findings
             .push(invalid(environment.clone(), &path, expected, value));
     }
+}
+
+pub(super) fn is_id(item: &Item) -> bool {
+    item.as_str().and_then(super::Id::parse).is_some()
 }
 
 pub(super) fn is_offset_datetime(item: &Item) -> bool {

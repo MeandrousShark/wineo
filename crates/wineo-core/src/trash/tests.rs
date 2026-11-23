@@ -2537,6 +2537,8 @@ fn library_entry() -> crate::library::Entry {
         favorite: true,
         hidden: true,
         added: Some("2026-10-17T18:00:00Z".parse().unwrap()),
+        // So a removal and restore are seen to keep the id.
+        id: crate::library::Id::parse("3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5"),
     }
 }
 

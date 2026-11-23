@@ -2678,7 +2678,7 @@ fn completed_save_drops_an_older_status_result() {
     let mut app = open_global_app(&paths);
     let old_generation = app.settings.as_ref().unwrap().generation;
     let old_status_sequence = app.settings.as_ref().unwrap().steamgriddb_sequence;
-    let identity = crate::art_page::EnvironmentIdentity::read(&paths, "game").unwrap();
+    let identity = crate::art_page::EnvironmentIdentity::peek(&paths, "game").unwrap();
     app.art_pages.insert(
         "game".to_owned(),
         crate::art_page::Page::new("game".to_owned(), 1, identity),

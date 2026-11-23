@@ -426,14 +426,11 @@ fn a_total_too_large_to_hold_is_a_note() {
 fn an_environment_replaced_while_fetching_gets_no_playtime() {
     let fixture = Fixture::new();
     fixture.login();
-    let config = fixture.paths.environment_config("rimworld");
+    let paths = fixture.paths.clone();
     let art = art_body(&[]);
     let server = Scripted::start(move |line| {
         if line.contains("/sessions") {
-            // A new file renamed over the old one has another inode.
-            let next = config.with_extension("next");
-            fs::write(&next, fs::read(&config).unwrap()).unwrap();
-            fs::rename(&next, &config).unwrap();
+            crate::test_support::replace_environment(&paths, "rimworld").unwrap();
         }
         gog(Some(30), art.clone())(line)
     });
@@ -915,8 +912,7 @@ impl crate::download::Transport for Hooked<'_> {
     }
 }
 
-/// Puts a different game's config in place of the environment's, as a new
-/// file so it has another identity.
+/// Replaces the environment with one that runs a different game.
 fn replace_environment(fixture: &Fixture) {
     let config = fixture.paths.environment_config("rimworld");
     let next = config.with_extension("next");
@@ -926,6 +922,7 @@ fn replace_environment(fixture: &Fixture) {
     )
     .unwrap();
     fs::rename(&next, &config).unwrap();
+    crate::test_support::replace_environment(&fixture.paths, "rimworld").unwrap();
 }
 
 #[test]

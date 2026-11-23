@@ -77,7 +77,7 @@ fn steam_fetch_uses_the_app_id_even_with_a_saved_game() {
         paths: &paths,
         env: "hades",
         target: None,
-        identity: EnvironmentIdentity::read(&paths, "hades"),
+        identity: EnvironmentIdentity::acquire(&paths, "hades").unwrap(),
     };
     let mut icon = false;
     let mut out = Vec::new();
@@ -187,7 +187,7 @@ fn run(paths: &Paths, fake: &Fake, only: Option<Kind>) -> (anyhow::Result<bool>,
         paths,
         env: "hades",
         target: None,
-        identity: EnvironmentIdentity::read(paths, "hades"),
+        identity: EnvironmentIdentity::acquire(paths, "hades").unwrap(),
     };
     let mut out = Vec::new();
     let mut icon = false;

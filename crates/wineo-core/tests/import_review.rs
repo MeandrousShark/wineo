@@ -23,6 +23,7 @@ fn execute(
     progress: impl FnMut(ImportProgress),
 ) -> anyhow::Result<Environment> {
     execute_reviewed(paths, global, request, None, None, cancel, progress)
+        .map(|(environment, _)| environment)
 }
 
 fn copy_runner(

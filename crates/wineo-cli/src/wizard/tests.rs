@@ -590,7 +590,7 @@ fn installer_ended_replacing(
         key: &key,
         picked: &picked,
         kinds: world.global.art.fetch,
-        identity: EnvironmentIdentity::read(&world.paths, "hades"),
+        identity: EnvironmentIdentity::acquire(&world.paths, "hades").unwrap(),
     };
     if replace {
         crate::commands::art::fake::replace_environment(&world.paths, "hades");
@@ -727,12 +727,11 @@ fn guided_art_is_not_stored_in_an_environment_replaced_during_the_installer() {
     let world = world();
     install_runner(&world);
     let program = program(&world);
-    // The installer swaps the config for a copy, as removing the environment
-    // and creating another of the same name would.
-    let config = world.paths.environment_config("hades");
+    // The installer replaces the environment, as removing it and creating
+    // another of the same name would.
     let swap = format!(
-        "#!/bin/sh\ncase \"$*\" in\n*game.exe*) cp '{0}' '{0}.new' && mv '{0}.new' '{0}' ;;\nesac\nexit 0\n",
-        config.display()
+        "#!/bin/sh\ncase \"$*\" in\n*game.exe*) {} ;;\nesac\nexit 0\n",
+        crate::commands::art::fake::replace_environment_command(&world.paths, "hades")
     );
     for root in [
         world.paths.default_runner_root(),

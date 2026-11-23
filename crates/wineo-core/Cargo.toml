@@ -12,6 +12,7 @@ test-support = []
 anyhow.workspace = true
 filetime.workspace = true
 flate2.workspace = true
+getrandom.workspace = true
 image.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

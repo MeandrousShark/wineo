@@ -38,7 +38,7 @@ use super::{Check, SavedAside, UpdateError};
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig, Target as TargetConfig};
 use crate::create::{self, CreateRequest};
-use crate::environment;
+use crate::environment::{self, EnvironmentIdentity};
 use crate::gog::account::{AccountError, Session};
 use crate::gog::folder::{
     self, AdoptionLock, Attempted, EntryType, FolderLock, FolderState, Journal, JournalKind,
@@ -377,6 +377,9 @@ pub struct Installed {
     /// Redistributables a Galaxy install set up that asked for a restart,
     /// by id. Wine has nothing to restart, so they're only listed.
     pub needs_restart: Vec<String>,
+    /// The new environment's identity, for its art step to carry. None when
+    /// this install didn't create the environment.
+    pub identity: Option<EnvironmentIdentity>,
 }
 
 /// Works out what installing `request.gog_id` natively does. Reads only: it
@@ -1285,6 +1288,7 @@ fn run(
             target: done.target,
             reported_language: done.reported_language,
             needs_restart: Vec::new(),
+            identity: done.identity,
         });
     }
 
@@ -1292,13 +1296,19 @@ fn run(
     // before the config leaves a journal that installing again finishes,
     // never a config whose state is lost.
     let mut library_warning = None;
+    let mut identity = None;
     if !plan.has_config {
         let config = import::native_config(paths, &settings(plan))?;
         import::write_native_config(paths, name, &config)?;
-        if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
-            warnings.push(warning.clone());
-            library_warning = Some(warning);
-        }
+        let stamped = match crate::library_lifecycle::fresh_warning(paths, name) {
+            Ok(id) => Some(id),
+            Err(warning) => {
+                warnings.push(warning.clone());
+                library_warning = Some(warning);
+                None
+            }
+        };
+        identity = EnvironmentIdentity::created(paths, name, stamped);
         failpoint("install.config.after").map_err(|error| match &library_warning {
             Some(warning) => anyhow::anyhow!("{error:#}; {warning}"),
             None => error,
@@ -1345,6 +1355,7 @@ fn run(
         target: None,
         reported_language: None,
         needs_restart: Vec::new(),
+        identity,
     })
 }
 

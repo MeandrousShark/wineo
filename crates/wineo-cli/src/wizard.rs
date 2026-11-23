@@ -1122,7 +1122,7 @@ fn create_native<I: Input, W: Write>(
         match Environment::create_native(paths, global, name, None, false, |warning| {
             eprintln!("warning: {warning}")
         }) {
-            Ok(environment) => environment,
+            Ok((environment, _)) => environment,
             Err(err) => {
                 prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
                 prompt.say(format!(
@@ -1217,7 +1217,6 @@ fn create<I: Input, W: Write>(
         shown: &shown,
         cancellation: Some(Cancellation::new()?),
         install_token: install_token.clone(),
-        paths,
         identity: None,
     };
     let token = hooks.cancellation.as_ref().unwrap().token.clone();
@@ -1439,8 +1438,7 @@ struct WizardHooks<'a, I: Input, W: Write> {
     /// again while the installer runs.
     cancellation: Option<Cancellation>,
     install_token: Token,
-    paths: &'a Paths,
-    /// The environment as created, read while the create lock is held.
+    /// The identity creation returned.
     identity: Option<EnvironmentIdentity>,
 }
 
@@ -1484,7 +1482,7 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
     }
 
     fn created(&mut self, created: &create::Created) -> anyhow::Result<()> {
-        self.identity = EnvironmentIdentity::read(self.paths, &created.environment.name);
+        self.identity = created.identity;
         Ok(())
     }
 

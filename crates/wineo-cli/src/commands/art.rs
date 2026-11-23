@@ -263,7 +263,7 @@ fn fetch_with(
     out: &mut dyn io::Write,
 ) -> anyhow::Result<bool> {
     let (env, _) = split(request.spot);
-    let identity = EnvironmentIdentity::read(paths, env);
+    let identity = EnvironmentIdentity::acquire(paths, env)?;
     fetch_checked(paths, request, api, identity, out)
 }
 
@@ -300,7 +300,7 @@ fn fetch_checked(
 /// Whether `env` is still the environment `identity` was read from, which
 /// the desktop entries are only updated for. Without one, it can't tell.
 fn unchanged(paths: &Paths, env: &str, identity: Option<EnvironmentIdentity>) -> bool {
-    identity.is_none_or(|identity| EnvironmentIdentity::read(paths, env) == Some(identity))
+    identity.is_none_or(|identity| identity.is_current(paths, env).is_current())
 }
 
 fn fetch_game(
@@ -670,7 +670,7 @@ fn try_fetch_new<I: Input, W: Write>(
 ) -> anyhow::Result<()> {
     let api = Api::new(transport, &key.value);
     // Before the pick, so a replacement while the questions are asked counts.
-    let identity = EnvironmentIdentity::read(paths, request.env);
+    let identity = EnvironmentIdentity::acquire(paths, request.env)?;
     let Some((game, term, out)) = choose_game(&api, request, pick)? else {
         return Ok(());
     };
@@ -1069,13 +1069,21 @@ pub(crate) mod fake {
         }
     }
 
-    /// Replaces the environment's config with a copy of itself, which is a
-    /// different file as far as its identity goes.
     pub(crate) fn replace_environment(paths: &Paths, name: &str) {
-        let config = paths.environment_config(name);
-        let staged = config.with_extension("toml.new");
-        std::fs::copy(&config, &staged).unwrap();
-        std::fs::rename(&staged, &config).unwrap();
+        wineo_core::test_support::replace_environment(paths, name).unwrap();
+    }
+
+    /// `replace_environment` as a shell command, for a fake program to run
+    /// while wineo waits on it: a new config file, and the environment's
+    /// library entry holding another id, as a new one's would. The library
+    /// is expected to have only this environment's entry.
+    pub(crate) fn replace_environment_command(paths: &Paths, name: &str) -> String {
+        format!(
+            "cp '{0}' '{0}.new' && mv '{0}.new' '{0}' && sed -i 's/^id = \".*\"$/id = \"{1}\"/' '{2}'",
+            paths.environment_config(name).display(),
+            "0123456789abcdef0123456789abcdef",
+            paths.library_file().display(),
+        )
     }
 
     /// A `Fake` that has the environment replaced the first time an image

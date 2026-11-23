@@ -441,7 +441,10 @@ impl Draft {
     }
 
     pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
-        self.apply_for(paths, name, EnvironmentIdentity::read(paths, name))
+        // A name core would refuse gets no identity, and core's own error
+        // for each kind.
+        let identity = EnvironmentIdentity::acquire(paths, name).ok().flatten();
+        self.apply_for(paths, name, identity)
     }
 
     /// `apply`, storing the fetched art only while the environment is still
@@ -1077,7 +1080,7 @@ pub(crate) fn fetch_default_over(
         .next()
     {
         Some(game) => {
-            let identity = EnvironmentIdentity::read(paths, name);
+            let identity = EnvironmentIdentity::acquire(paths, name).ok().flatten();
             notes.extend(fetch_with(
                 (paths, name),
                 &api,
@@ -1174,15 +1177,16 @@ pub(crate) fn fetch_art_parts(
     token: &Token,
     fetcher: &Fetcher,
 ) -> FetchParts {
-    // As the environment is when the fetch starts, read again when it ends.
-    let identity = EnvironmentIdentity::read(paths, name);
+    // As the environment is when the fetch starts, checked again when it
+    // ends. Only looked at, since the fetch itself takes what it writes with.
+    let identity = EnvironmentIdentity::peek(paths, name);
     let fetched = fetcher(paths, name, title, token);
     // Skipped, so nothing more is written; a later launch refreshes the entry.
     if fetched.is_err() && token.is_canceled() {
         return (fetched, Ok(()));
     }
     // A replacement environment's entries are not this fetch's to touch.
-    if identity.is_some_and(|identity| EnvironmentIdentity::read(paths, name) != Some(identity)) {
+    if identity.is_some_and(|identity| !identity.is_current(paths, name).is_current()) {
         return (fetched, Ok(()));
     }
     let entry = desktop::apply(paths, name, false)

@@ -353,7 +353,7 @@ struct WineHooks<'a> {
     /// Listens for Ctrl+C until the config is saved.
     cancellation: Option<Cancellation>,
     install_token: Token,
-    /// The environment as created, read while the create lock is held.
+    /// The identity creation returned.
     identity: Option<EnvironmentIdentity>,
 }
 
@@ -423,7 +423,7 @@ impl Hooks for WineHooks<'_> {
             }
             return Err(Ok(ExitCode::FAILURE));
         }
-        self.identity = EnvironmentIdentity::read(self.paths, name);
+        self.identity = created.identity;
         Ok(())
     }
 
@@ -570,9 +570,10 @@ fn new_native(
     art: Option<&Access<'_>>,
 ) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
-    let environment = Environment::create_native(paths, &global, name, exe, desktop, |warning| {
-        eprintln!("warning: {warning}")
-    })?;
+    let (environment, _) =
+        Environment::create_native(paths, &global, name, exe, desktop, |warning| {
+            eprintln!("warning: {warning}")
+        })?;
     match exe {
         Some(_) => println!("Created native environment {name} with target {name}"),
         None => {
@@ -1130,7 +1131,7 @@ mod tests {
             prefix: root.path(),
             kinds: ArtFetch::default(),
             picked: Some(&picked),
-            identity: EnvironmentIdentity::read(&paths, "hades"),
+            identity: EnvironmentIdentity::acquire(&paths, "hades").unwrap(),
         };
         let code = ended
             .report(step, &mut None, &mut out, &mut Vec::new())
@@ -1153,13 +1154,12 @@ mod tests {
 
     #[test]
     fn art_is_not_stored_in_an_environment_replaced_during_the_installer() {
-        // The installer swaps the config for a copy, as removing the
-        // environment and creating another of the same name would.
+        // The installer replaces the environment, as removing it and
+        // creating another of the same name would.
         let wine = |root: &Path| {
-            let config = paths(root).environment_config("hades");
             format!(
-                "#!/bin/sh\ncase \"$*\" in\n*game.exe*) cp '{0}' '{0}.new' && mv '{0}.new' '{0}' ;;\nesac\nexit 0\n",
-                config.display()
+                "#!/bin/sh\ncase \"$*\" in\n*game.exe*) {} ;;\nesac\nexit 0\n",
+                crate::commands::art::fake::replace_environment_command(&paths(root), "hades")
             )
         };
         let run = new_with(hades(), true, "test-wine", &wine, &Token::new(), &|_| {});

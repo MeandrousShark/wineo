@@ -2720,7 +2720,7 @@ fn perform(
             draft.desktop,
             |warning| report.notes.push(warning),
         ) {
-            Ok(environment) => {
+            Ok((environment, _)) => {
                 report.registered = true;
                 report.playable = exe.is_some();
                 progress("Native environment registered".to_owned());

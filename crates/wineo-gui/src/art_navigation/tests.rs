@@ -285,21 +285,11 @@ fn refresh_closes_art_after_external_rename() {
 
 #[test]
 fn same_name_recreation_gets_a_fresh_art_page() {
-    let (root, mut app) = fixture();
+    let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
     let old_generation = app.art_pages["game"].generation;
     let old_identity = app.art_pages["game"].identity;
-    let retained = root.path().join("retained-game.toml");
-    fs::rename(app.paths.environment_config("game"), retained).unwrap();
-    Environment::create_native(
-        &app.paths,
-        &GlobalConfig::default(),
-        "game",
-        None,
-        false,
-        |_| {},
-    )
-    .unwrap();
+    wineo_core::test_support::replace_environment(&app.paths, "game").unwrap();
 
     let cards = crate::library::load_library(&app.paths).unwrap();
     let _ = app.update(Message::Loaded(Ok(cards)));
