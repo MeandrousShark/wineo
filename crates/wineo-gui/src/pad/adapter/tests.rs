@@ -1082,6 +1082,19 @@ async fn an_unplug_while_reading_lets_go_until_it_comes_back() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn with_none_plugged_in_it_waits_for_one_to_arrive() {
+    let mut reader = harness(Seen::Absent, true, |_| {});
+    reader.wait(5000).await;
+    assert_eq!(reader.claims(), 0);
+    assert_eq!(reader.states(), [State::Absent]);
+    reader.shared.with(|bus| bus.seen = Seen::Found);
+    reader.hotplug.send(Hotplug::Arrived).unwrap();
+    reader.settle().await;
+    assert!(reader.held());
+    assert_eq!(reader.claim_times(), [5000]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_want_right_after_the_let_go_takes_it_again() {
     let mut reader = harness(Seen::Found, true, |_| {});
     reader.settle().await;
