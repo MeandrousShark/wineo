@@ -501,7 +501,7 @@ pub fn apply(
         if cancel.is_canceled() {
             break;
         }
-        match store_cached_art(paths, &plan.name, kind, &source) {
+        match store_cached_art(paths, &plan.name, kind, &source, identity) {
             Ok(()) => art.push(kind),
             Err(error) => warnings.push(format!("Could not import {} art: {error:#}.", kind)),
         }
@@ -708,7 +708,15 @@ fn write_new(path: &Path, contents: &str) -> anyhow::Result<()> {
     crate::import::write_config_once(path, contents)
 }
 
-fn store_cached_art(paths: &Paths, name: &str, kind: Kind, source: &Path) -> anyhow::Result<()> {
+/// Stores `source` as `kind`, only while the environment is still the one
+/// `identity` was read from.
+fn store_cached_art(
+    paths: &Paths,
+    name: &str,
+    kind: Kind,
+    source: &Path,
+    identity: Option<EnvironmentIdentity>,
+) -> anyhow::Result<()> {
     let mut bytes = Vec::new();
     fs::File::open(source)
         .with_context(|| format!("failed to read {}", source.display()))?
@@ -745,7 +753,7 @@ fn store_cached_art(paths: &Paths, name: &str, kind: Kind, source: &Path) -> any
             .to_string_lossy(),
         source.file_name().unwrap_or_default().to_string_lossy()
     );
-    art::set_manual_bytes(paths, name, None, kind, &bytes, &original, None)?;
+    art::set_manual_bytes(paths, name, None, kind, &bytes, &original, identity)?;
     Ok(())
 }
 

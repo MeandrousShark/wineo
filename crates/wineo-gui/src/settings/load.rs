@@ -681,15 +681,7 @@ pub(crate) fn save_global_page(
 
 fn library_refused(paths: &Paths, error: &Error, report: &mut Report) {
     report.failed = Some(crate::sort_control::error_text(paths, error));
-    // Like the library's banner: a newer wineo's file has nothing for
-    // Checkup to repair, and the error already says to update.
-    report.checkup = matches!(
-        error,
-        Error::LibraryUnreadable {
-            newer_version: false,
-            ..
-        }
-    );
+    report.checkup = crate::sort_control::repairable(error);
 }
 
 fn kind_of(kind: PresetKind) -> ThemeKind {

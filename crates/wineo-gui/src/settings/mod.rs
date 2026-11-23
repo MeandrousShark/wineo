@@ -131,6 +131,14 @@ pub(crate) enum Event {
     SteamKeyRemoved(u64, u64, Option<u64>, Result<steam_key::Removed, String>),
     /// Where the Steam key row is, to scroll it into view.
     SteamKeyLocated(u64, crate::grid_motion::CardBounds),
+    /// Where the SteamGridDB key row is, to scroll it into view.
+    SteamGridDbKeyLocated(u64, crate::grid_motion::CardBounds),
+    /// The Advanced tab's Show advanced settings switch, which the app
+    /// writes at once, outside the draft.
+    AdvancedSettings(bool),
+    /// The environment page's Show advanced settings button, which turns
+    /// the switch on and puts focus on Prefix.
+    ShowAdvanced,
     /// The GOG login row.
     Gog(gog::Event),
     /// An edit on one target's card.
@@ -214,6 +222,7 @@ impl Event {
                 | Event::SteamKeySaved(..)
                 | Event::SteamKeyRemoved(..)
                 | Event::SteamKeyLocated(..)
+                | Event::SteamGridDbKeyLocated(..)
                 | Event::Gog(
                     gog::Event::StatusLoaded(..)
                         | gog::Event::LoginReady(..)
@@ -426,10 +435,11 @@ pub(crate) struct Page {
     pub(crate) name: String,
     global: bool,
     /// Which tab of the global page shows. The page is new each time it
-    /// opens, so it starts on General; a reload keeps it.
+    /// opens, so it starts on General, or on the revealed row's tab; a reload
+    /// keeps it.
     tab: Tab,
     /// Where each tab is scrolled to, by `Tab::index`. A reload keeps them.
-    scroll: [f32; 2],
+    scroll: [f32; Tab::ALL.len()],
     /// Tells this page's worker results from those of a page closed earlier.
     generation: u64,
     pub(crate) view: View,
@@ -474,8 +484,8 @@ pub(crate) struct Page {
     steam_key_input_session: Option<u64>,
     steam_key: steam_key::Settings,
     gog: gog::Settings,
-    /// Scrolls to the Steam key row once the page loads.
-    pub(crate) reveal_steam_key: bool,
+    /// The row to show once the page loads.
+    pub(crate) reveal: Option<Reveal>,
     /// The controllers connected, by name, which the app keeps current.
     pub(crate) pads: Vec<String>,
     /// Whose labels the remap rows show: the last pad pressed, else the
@@ -486,6 +496,35 @@ pub(crate) struct Page {
     /// The add target form as it was sent to be checked.
     resolving: Option<NewTarget>,
     pub(crate) open_add_after_load: bool,
+    /// Show advanced settings as the app has it, set when the page opens
+    /// and whenever it's flipped. It isn't part of the draft, so Revert
+    /// and Reload leave it alone.
+    pub(crate) advanced_settings: bool,
+    /// Why the switch's last write was refused, which the app keeps.
+    pub(crate) advanced_error: Option<crate::sort_control::Refused>,
+}
+
+/// Why the switch can't turn off while Advanced holds edits or a problem.
+pub(crate) const HOLD_EDITS: &str = "Save or revert advanced changes first.";
+/// Why it can't while a new variable is typed but not added.
+pub(crate) const HOLD_NEW_ENV: &str = "Add or clear the new variable first.";
+
+/// A key row another page opens the global page to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reveal {
+    SteamKey,
+    SteamGridDbKey,
+}
+
+impl Reveal {
+    /// The tab the row is on: the Steam key with the stores, the art key
+    /// with the art settings.
+    fn tab(self) -> Tab {
+        match self {
+            Reveal::SteamKey => Tab::Stores,
+            Reveal::SteamGridDbKey => Tab::General,
+        }
+    }
 }
 
 /// The Steam key save or remove the app owns, so it outlives the page that
@@ -525,22 +564,25 @@ impl GogWork {
 pub(crate) struct Step {
     task: Task<Message>,
     close: bool,
+    /// Show advanced settings was flipped to this, which the app writes.
+    advanced: Option<bool>,
 }
 
 impl Step {
     fn none() -> Self {
-        Self {
-            task: Task::none(),
-            close: false,
-        }
+        Self::task(Task::none())
     }
     fn task(task: Task<Message>) -> Self {
-        Self { task, close: false }
+        Self {
+            task,
+            close: false,
+            advanced: None,
+        }
     }
     fn close() -> Self {
         Self {
-            task: Task::none(),
             close: true,
+            ..Self::none()
         }
     }
 }
@@ -556,7 +598,7 @@ impl Page {
             name,
             global: false,
             tab: Tab::General,
-            scroll: [0.0; 2],
+            scroll: [0.0; Tab::ALL.len()],
             generation,
             view: View::Loading,
             disk: None,
@@ -586,12 +628,14 @@ impl Page {
             steam_key_input_session: None,
             steam_key: steam_key::Settings::default(),
             gog: gog::Settings::default(),
-            reveal_steam_key: false,
+            reveal: None,
             pads: Vec::new(),
             pad_style: crate::pad::Style::default(),
             capture: None,
             resolving: None,
             open_add_after_load: false,
+            advanced_settings: false,
+            advanced_error: None,
         }
     }
     fn new_global(generation: u64) -> Self {
@@ -729,7 +773,7 @@ impl Page {
         self.capture.map(|capture| capture.action)
     }
     /// Starts waiting on `action`'s row until `until`, or stops when that
-    /// row already waits. Only the global page's General tab has the rows.
+    /// row already waits. Only the global page's Controller tab has the rows.
     pub(crate) fn toggle_capture(
         &mut self,
         action: wineo_core::library::PadAction,
@@ -739,7 +783,7 @@ impl Page {
             || self.draft_controller() != Some(true)
             || self.locked()
             || !matches!(self.view, View::Global(_))
-            || self.tab != Tab::General
+            || self.tab != Tab::Controller
         {
             self.capture = None;
         } else {
@@ -792,6 +836,37 @@ impl Page {
     }
     pub(crate) fn navigation_blocked(&self) -> bool {
         self.leave_prompt || self.any_menu_open() || self.locked()
+    }
+    /// Why Show advanced settings can't be turned off now, if it can't:
+    /// the Advanced tab holds something unsaved that hiding would put out
+    /// of sight.
+    pub(crate) fn advanced_hold(&self) -> Option<&'static str> {
+        let View::Global(editor) = &self.view else {
+            return None;
+        };
+        let form = &editor.form;
+        // A duplicate row with the same value edits nothing, so only its
+        // problem tells.
+        if form.advanced_changes() != 0 || form.draft.env_problems().iter().any(Option::is_some) {
+            Some(HOLD_EDITS)
+        } else if !editor.new_env.key.is_empty() || !editor.new_env.value.is_empty() {
+            // Save and Revert leave it, so it gets its own way out.
+            Some(HOLD_NEW_ENV)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn advanced_held(&self) -> bool {
+        self.advanced_hold().is_some()
+    }
+    /// Whether the switch takes a flip now. Turning it on always works,
+    /// except while a save is in flight or the leave prompt is up.
+    pub(crate) fn advanced_switch_enabled(&self) -> bool {
+        self.global
+            && matches!(self.view, View::Global(_))
+            && !self.locked()
+            && !self.leave_prompt
+            && !(self.advanced_settings && self.advanced_held())
     }
     pub(crate) fn changes(&self) -> usize {
         match &self.view {
@@ -930,6 +1005,7 @@ impl App {
         let mut page = Page::new(name, self.settings_generation);
         let task = page.reload(&self.paths, Mode::Replace);
         self.settings = Some(page);
+        self.sync_advanced_settings();
         task
     }
     pub(crate) fn open_global_settings(&mut self) -> Task<Message> {
@@ -989,13 +1065,31 @@ impl App {
             .steamgriddb_input_session_sequence
             .max(page.steamgriddb_input_session_sequence);
         self.settings = Some(page);
+        self.sync_advanced_settings();
         task
+    }
+    /// Hands the switch and its error to the open page.
+    fn sync_advanced_settings(&mut self) {
+        if let Some(page) = &mut self.settings {
+            page.advanced_settings = self.advanced_settings;
+            page.advanced_error = self.advanced_settings_error.clone();
+        }
+    }
+    /// The switch's write landed, or was refused with `error`, which shows
+    /// until a later write lands.
+    pub(crate) fn advanced_settings_saved(&mut self, error: Option<crate::sort_control::Refused>) {
+        self.advanced_settings_error = error;
+        self.sync_advanced_settings();
     }
     /// Global settings, scrolled to the Steam Web API key row once loaded.
     pub(crate) fn open_steam_key_settings(&mut self) -> Task<Message> {
+        self.open_settings_at(Reveal::SteamKey)
+    }
+    /// Global settings, scrolled to `reveal`'s row once loaded.
+    pub(crate) fn open_settings_at(&mut self, reveal: Reveal) -> Task<Message> {
         let task = self.navigate_section(crate::sidebar::Section::Settings);
         if let Some(page) = self.settings.as_mut().filter(|page| page.is_global()) {
-            page.reveal_steam_key = true;
+            page.reveal = Some(reveal);
         }
         task
     }
@@ -1130,7 +1224,7 @@ impl App {
                 return key_presence_task(self.paths.clone(), self.steamgriddb_sequence);
             }
         }
-        let (step, generation, previous_sequence, current_sequence, leave_prompt) = {
+        let (mut step, generation, previous_sequence, current_sequence, leave_prompt) = {
             let Some(page) = &mut self.settings else {
                 return Task::none();
             };
@@ -1145,6 +1239,13 @@ impl App {
                 page.leave_prompt,
             )
         };
+        // Only the app reaches the `[view]` writes, so the flip is written
+        // here.
+        if let Some(on) = step.advanced.take() {
+            self.advanced_settings = on;
+            let write = self.save_field(crate::sort_control::Field::AdvancedSettings(on));
+            step.task = Task::batch([std::mem::replace(&mut step.task, Task::none()), write]);
+        }
         if current_sequence != previous_sequence {
             self.steamgriddb_sequence = self.steamgriddb_sequence.max(current_sequence);
             self.track_steamgriddb(generation, current_sequence);

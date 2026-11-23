@@ -146,14 +146,20 @@ fn inspect_view(item: &Item, inspection: &mut Inspection) {
                 Some(name) if SortKey::from_str(name).is_some() => continue,
                 _ => sort_expected(),
             },
-            "descending" | "favorites_first" | "poster_only" | "coverflow_fullscreen"
+            "descending"
+            | "favorites_first"
+            | "poster_only"
+            | "coverflow_fullscreen"
+            | "advanced_settings"
                 if value.as_bool().is_some() =>
             {
                 continue;
             }
-            "descending" | "favorites_first" | "poster_only" | "coverflow_fullscreen" => {
-                BOOL.to_owned()
-            }
+            "descending"
+            | "favorites_first"
+            | "poster_only"
+            | "coverflow_fullscreen"
+            | "advanced_settings" => BOOL.to_owned(),
             "random" => match value.as_str() {
                 Some(name) if RandomPool::parse(name).is_some() => continue,
                 _ => random_expected(),

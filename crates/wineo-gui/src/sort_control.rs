@@ -52,7 +52,15 @@ pub(crate) enum Event {
     /// A Group by submenu row.
     Group(GroupBy),
     /// A write finished, with the value it wrote.
-    Saved(Field, Result<(), String>),
+    Saved(Field, Result<(), Refused>),
+}
+
+/// A `library.toml` write that didn't land: how it reads, and whether
+/// Checkup can repair the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Refused {
+    pub(crate) text: String,
+    pub(crate) checkup: bool,
 }
 
 impl Event {
@@ -80,6 +88,8 @@ pub(crate) enum Field {
     Group(GroupBy),
     /// A list column's width, in whole pixels.
     Column(ListColumn, u16),
+    /// Settings' Show advanced settings switch.
+    AdvancedSettings(bool),
 }
 
 /// The value each field's write in flight is writing. One write per field
@@ -96,6 +106,7 @@ pub(crate) struct Writes {
     pub(crate) group: Option<GroupBy>,
     /// One write per list column, so dragging another column doesn't wait.
     pub(crate) columns: std::collections::BTreeMap<ListColumn, u16>,
+    pub(crate) advanced_settings: Option<bool>,
     /// Fields whose write in flight a preset overtook. Applying a preset
     /// writes nothing (plan 0062, decision 16), so when the write lands it
     /// doesn't follow up with the preset's value, unless a control changed
@@ -115,6 +126,7 @@ impl Writes {
             Field::Layout(_) => self.layout.is_some(),
             Field::Group(_) => self.group.is_some(),
             Field::Column(column, _) => self.columns.contains_key(&column),
+            Field::AdvancedSettings(_) => self.advanced_settings.is_some(),
         }
     }
 
@@ -149,6 +161,7 @@ impl Writes {
             Field::Column(column, width) => {
                 self.columns.insert(column, width);
             }
+            Field::AdvancedSettings(value) => self.advanced_settings = Some(value),
         }
     }
 
@@ -163,6 +176,7 @@ impl Writes {
             || self.layout.is_some()
             || self.group.is_some()
             || !self.columns.is_empty()
+            || self.advanced_settings.is_some()
     }
 
     fn finish(&mut self, field: Field) {
@@ -178,6 +192,7 @@ impl Writes {
             Field::Column(column, _) => {
                 self.columns.remove(&column);
             }
+            Field::AdvancedSettings(_) => self.advanced_settings = None,
         }
     }
 }
@@ -254,7 +269,7 @@ fn group_ids() -> Vec<&'static str> {
 }
 
 /// Writes one field, then rereads the rescan's cache whatever happened.
-pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result<(), String> {
+pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result<(), Refused> {
     let result = match field {
         Field::Sort(sort, descending) => library::set_order(paths, sort, descending),
         Field::Descending(descending) => library::set_descending(paths, descending),
@@ -265,11 +280,13 @@ pub(crate) fn save(paths: &Paths, watch: &rescan::Watch, field: Field) -> Result
         Field::Layout(layout) => library::set_layout(paths, layout),
         Field::Group(group) => library::set_group(paths, group),
         Field::Column(column, width) => library::set_list_column(paths, column, Some(width)),
+        Field::AdvancedSettings(on) => library::set_advanced_settings(paths, on),
     };
     watch.refresh_library(paths);
-    result
-        .map(|_| ())
-        .map_err(|error| error_text(paths, &error))
+    result.map(|_| ()).map_err(|error| Refused {
+        text: error_text(paths, &error),
+        checkup: repairable(&error),
+    })
 }
 
 /// How a failed `library.toml` write reads in a notice.
@@ -280,6 +297,19 @@ pub(crate) fn error_text(paths: &Paths, error: &wineo_core::error::Error) -> Str
         wineo_core::error::Error::LibraryUnreadable { .. } => error.to_string(),
         _ => paths.contract_text(&wineo_core::error::chain(error)),
     }
+}
+
+/// Whether Checkup can repair the file behind a refused write. Like the
+/// library's banner: a newer wineo's file has nothing for Checkup to
+/// repair, and the error already says to update.
+pub(crate) fn repairable(error: &wineo_core::error::Error) -> bool {
+    matches!(
+        error,
+        wineo_core::error::Error::LibraryUnreadable {
+            newer_version: false,
+            ..
+        }
+    )
 }
 
 impl App {
@@ -303,6 +333,7 @@ impl App {
             Field::Layout(_) => Field::Layout(self.layout),
             Field::Group(_) => Field::Group(self.group),
             Field::Column(column, _) => Field::Column(column, self.list_widths.saved_width(column)),
+            Field::AdvancedSettings(_) => Field::AdvancedSettings(self.advanced_settings),
         }
     }
 
@@ -320,7 +351,15 @@ impl App {
         let watch = self.shown.clone();
         crate::task::blocking_value(
             move || save(&paths, &watch, field),
-            move |result| Message::Sort(Event::Saved(field, result.and_then(|saved| saved))),
+            move |result| {
+                let result = result
+                    .map_err(|text| Refused {
+                        text,
+                        checkup: false,
+                    })
+                    .and_then(|saved| saved);
+                Message::Sort(Event::Saved(field, result))
+            },
         )
     }
 
@@ -437,7 +476,11 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             if app.exiting {
                 return Task::none();
             }
-            if let Err(error) = result {
+            if let Field::AdvancedSettings(_) = written {
+                // The switch keeps what was flipped for this session, and
+                // its own row says why it won't be remembered.
+                app.advanced_settings_saved(result.err());
+            } else if let Err(error) = result {
                 // The window keeps the view it chose.
                 let what = match written {
                     Field::Zoom(_)
@@ -445,11 +488,12 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
                     | Field::Random(_)
                     | Field::Layout(_)
                     | Field::Group(_)
-                    | Field::Column(..) => "view",
-                    _ => "sort",
+                    | Field::Column(..)
+                    | Field::AdvancedSettings(_) => "view",
+                    Field::Sort(..) | Field::Descending(_) | Field::FavoritesFirst(_) => "sort",
                 };
                 app.feature_notice = Some((
-                    format!("Couldn't save the {what}: {error}"),
+                    format!("Couldn't save the {what}: {}", error.text),
                     std::time::Instant::now() + NOTICE_TIME,
                 ));
             }

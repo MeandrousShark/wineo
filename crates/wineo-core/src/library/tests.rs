@@ -654,6 +654,7 @@ fn a_bad_zoom_reads_as_the_default_and_touches_no_other_field() {
             layout: ViewLayout::Grid,
             group: GroupBy::None,
             coverflow_fullscreen: false,
+            advanced_settings: false,
             list_columns: BTreeMap::new(),
         }
     );
@@ -1060,6 +1061,7 @@ fn zoom_and_poster_only_edits_leave_the_other_view_keys_alone() {
             layout: ViewLayout::Grid,
             group: GroupBy::None,
             coverflow_fullscreen: false,
+            advanced_settings: false,
             list_columns: BTreeMap::new(),
         }
     );
@@ -1744,6 +1746,59 @@ fn set_coverflow_fullscreen_writes_one_line_and_skips_no_ops() {
 
     assert!(set_coverflow_fullscreen(&fixture.paths, false).unwrap());
     assert!(!load(&fixture.paths).view.coverflow_fullscreen);
+}
+
+#[test]
+fn advanced_settings_defaults_off_and_bad_values_read_as_off() {
+    let fixture = Fixture::new();
+    assert!(!load(&fixture.paths).view.advanced_settings);
+    fixture.write("schema_version = 1\n\n[view]\nsort = \"added\"\n");
+    assert!(!load(&fixture.paths).view.advanced_settings);
+    fixture.write("schema_version = 1\n\n[view]\nadvanced_settings = true\n");
+    assert!(load(&fixture.paths).view.advanced_settings);
+    for bad in ["\"yes\"", "1", "[]"] {
+        fixture.write(&format!(
+            "schema_version = 1\n\n[view]\nadvanced_settings = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(!library.view.advanced_settings, "{bad}");
+    }
+}
+
+#[test]
+fn set_advanced_settings_writes_one_line_and_skips_no_ops() {
+    let fixture = Fixture::new();
+    assert!(!set_advanced_settings(&fixture.paths, false).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+
+    let before = "# mine\nschema_version = 1\n\n[view]\n# newest first\ndescending = true\n";
+    fixture.write(before);
+    assert!(set_advanced_settings(&fixture.paths, true).unwrap());
+    let after = fixture.read();
+    assert_eq!(after, format!("{before}advanced_settings = true\n"));
+    assert!(load(&fixture.paths).view.advanced_settings);
+
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    assert!(!set_advanced_settings(&fixture.paths, true).unwrap());
+    assert_eq!(fixture.read(), after);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    assert!(set_advanced_settings(&fixture.paths, false).unwrap());
+    assert!(!load(&fixture.paths).view.advanced_settings);
+}
+
+#[test]
+fn set_advanced_settings_keeps_comments_when_it_flips_an_existing_key() {
+    let fixture = Fixture::new();
+    let before = "# top\nschema_version = 1\n\n[view]\n# shown in Settings\nadvanced_settings = false # was off\n\n# the rest\n[appearance]\ndark = \"cellar\"\n";
+    fixture.write(before);
+    assert!(set_advanced_settings(&fixture.paths, true).unwrap());
+    assert_eq!(
+        fixture.read(),
+        before.replace("advanced_settings = false", "advanced_settings = true")
+    );
 }
 
 #[test]

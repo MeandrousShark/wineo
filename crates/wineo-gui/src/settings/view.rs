@@ -30,7 +30,16 @@ pub(super) const CONTROL_WIDTH: f32 = 260.0;
 const PAGE_WIDTH: f32 = 760.0;
 pub(super) const SCROLL_ID: &str = "settings-scroll";
 const STEAM_KEY_ID: &str = "settings-steam-key";
+const STEAMGRIDDB_KEY_ID: &str = "settings-steamgriddb-key";
 pub(super) const CHECKUP_ID: &str = "settings-open-checkup";
+const ADVANCED_CHECKUP_ID: &str = "settings-advanced-checkup";
+pub(super) const SHOW_ADVANCED_ID: &str = "settings-show-advanced";
+pub(super) const PREFIX_ID: &str = "settings-prefix";
+const GAME_ID_ID: &str = "settings-game-id";
+const STORE_ID: &str = "settings-store";
+pub(super) const ADVANCED_SWITCH: &str = "Show advanced settings";
+pub(super) const ADVANCED_NOTE: &str =
+    "Defaults for new environments, run limits, and environment variables.";
 
 fn send(event: Event) -> Message {
     Message::Settings(event)
@@ -89,18 +98,10 @@ impl Page {
                 }
                 content.into()
             }
-            View::Form(editor) => {
-                editor_view(&self.name, editor, self.locked(), self.resolving(), palette)
+            View::Form(editor) => editor_view(&self.name, editor, self, palette),
+            View::Global(editor) => {
+                global_view(self.tab, editor, self, paths, self.locked(), palette)
             }
-            View::Global(editor) => match self.tab {
-                tabs::Tab::General => global_view(editor, self, paths, self.locked(), palette),
-                tabs::Tab::Appearance => super::appearance::tab(
-                    &editor.appearance,
-                    self.locked(),
-                    palette,
-                    self.system_mode,
-                ),
-            },
         };
         let scroll = scrollable(
             container(container(body).max_width(PAGE_WIDTH).width(Fill))
@@ -145,25 +146,7 @@ impl Page {
             bar = bar.push(text(note).size(13).color(palette.muted));
         }
         if let Some(error) = &self.error {
-            let error = text(error).size(13).color(palette.danger);
-            bar = bar.push(if self.error_checkup {
-                let open = Message::Section(crate::sidebar::Section::Checkup);
-                crate::ends::ends(
-                    error.width(Fill),
-                    crate::focus_button::control(
-                        secondary_button("Open Checkup", palette)
-                            .on_press(open.clone())
-                            .into(),
-                        true,
-                        CHECKUP_ID,
-                        open,
-                    ),
-                    12.0,
-                    crate::ends::MIN_LEFT,
-                )
-            } else {
-                error.into()
-            });
+            bar = bar.push(refusal(error, self.error_checkup, CHECKUP_ID, palette));
         }
         if let Some(problem) = self.problem().filter(|_| self.is_dirty()) {
             bar = bar.push(text(problem).size(13).color(palette.danger));
@@ -217,6 +200,42 @@ impl Page {
     }
 }
 
+/// An error, with Open Checkup beside it when Checkup can repair what
+/// caused it.
+fn refusal<'a>(
+    error: &'a str,
+    checkup: bool,
+    id: &'static str,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let error = text(error).size(13).color(palette.danger);
+    if !checkup {
+        return error.into();
+    }
+    let open = Message::Section(crate::sidebar::Section::Checkup);
+    crate::ends::ends(
+        error.width(Fill),
+        crate::focus_button::control(
+            secondary_button("Open Checkup", palette)
+                .on_press(open.clone())
+                .into(),
+            true,
+            id,
+            open,
+        ),
+        12.0,
+        crate::ends::MIN_LEFT,
+    )
+}
+
+/// Why Show advanced settings won't be remembered, under the switch or the
+/// environment page's Advanced heading.
+fn advanced_refusal<'a>(page: &'a Page, palette: Palette) -> Option<Element<'a, Message>> {
+    page.advanced_error
+        .as_ref()
+        .map(|error| refusal(&error.text, error.checkup, ADVANCED_CHECKUP_ID, palette))
+}
+
 /// Pending with the maintainer: the status names `library.toml` or a theme
 /// file when one of those changed under the Appearance tab's edits.
 fn changed_status(file: super::ChangedFile) -> &'static str {
@@ -230,10 +249,10 @@ fn changed_status(file: super::ChangedFile) -> &'static str {
 fn editor_view<'a>(
     name: &'a str,
     editor: &'a Editor,
-    locked: bool,
-    resolving: bool,
+    page: &'a Page,
     palette: Palette,
 ) -> Element<'a, Message> {
+    let (locked, resolving) = (page.locked(), page.resolving());
     let info = &editor.info;
     let draft = &editor.form.draft;
     if let Some(proxied) = &draft.proxied {
@@ -367,11 +386,30 @@ fn editor_view<'a>(
         targets(name, editor, locked, resolving, palette),
         palette,
     ));
-    sections = sections.push(section(
-        "Advanced",
-        advanced(editor, locked, palette),
-        palette,
-    ));
+    if page.advanced_settings {
+        let mut advanced_rows = column![].spacing(12);
+        if let Some(error) = advanced_refusal(page, palette) {
+            advanced_rows = advanced_rows.push(error);
+        }
+        advanced_rows = advanced_rows.push(advanced(editor, locked, palette));
+        sections = sections.push(section("Advanced", advanced_rows.into(), palette));
+    } else if !info.native {
+        // A native section has nothing to edit, so it only hides. A plain
+        // button takes no Tab focus, and the section's fields were Tab
+        // stops, so the keyboard reaches it this way.
+        let show = send(Event::ShowAdvanced);
+        // Like the global switch, it waits while the leave prompt covers
+        // the page.
+        let enabled = !page.leave_prompt;
+        sections = sections.push(crate::focus_button::control(
+            secondary_button(ADVANCED_SWITCH, palette)
+                .on_press_maybe(enabled.then(|| show.clone()))
+                .into(),
+            enabled,
+            SHOW_ADVANCED_ID,
+            show,
+        ));
+    }
     sections.into()
 }
 
@@ -436,14 +474,48 @@ pub(super) const AUTO_IMPORT_NOTE: &str = "New installs, and any games the libra
      are imported with the same defaults as importing them all. Games you already have aren't \
      touched, and nothing is launched or downloaded.";
 
+/// One tab of the global page, ending with the version.
 pub(super) fn global_view<'a>(
+    tab: tabs::Tab,
     editor: &'a global::Editor,
     page: &'a Page,
     paths: &Paths,
     locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
-    let (steamgriddb, steam_key, gog) = (&page.steamgriddb, &page.steam_key, &page.gog);
+    let content = match tab {
+        tabs::Tab::General => general_tab(editor, page, paths, locked, palette),
+        tabs::Tab::Appearance => {
+            super::appearance::tab(&editor.appearance, locked, palette, page.system_mode)
+        }
+        // The tab names it, so the rows' surface starts the tab without a
+        // heading, as Appearance's first row does.
+        tabs::Tab::Controller => grouped_section(
+            controller_rows(&editor.form.draft.input, page, locked, palette),
+            palette,
+        )
+        .into(),
+        tabs::Tab::Stores => stores_tab(editor, page, paths, locked, palette),
+        tabs::Tab::Advanced => advanced_tab(editor, page, paths, locked, palette),
+    };
+    column![
+        content,
+        // The same string as `wineo --version`, so a problem report can name
+        // the exact build.
+        text(version_line()).size(12).color(palette.muted),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
+}
+
+fn general_tab<'a>(
+    editor: &'a global::Editor,
+    page: &'a Page,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
     let draft = &editor.form.draft;
     let mut launch = column![].spacing(12);
     for key in Switch::ALL {
@@ -457,6 +529,146 @@ pub(super) fn global_view<'a>(
             palette,
         ));
     }
+    let mut art = column![].spacing(12);
+    for kind in Kind::ALL {
+        let label = match kind {
+            Kind::Icon => "Icon",
+            Kind::Grid => "Grid",
+            Kind::Hero => "Hero",
+            Kind::Logo => "Logo",
+        };
+        art = art.push(switch_row(
+            label,
+            draft.art_fetch.kinds().contains(&kind),
+            None,
+            move |on| send(Event::GlobalArtKind(kind, on)),
+            None,
+            locked,
+            palette,
+        ));
+    }
+    // Only the key row, so a reveal puts the key at the top.
+    art = art.push(
+        container(key_row(steamgriddb_row(&page.steamgriddb, paths), palette))
+            .id(iced::widget::Id::new(STEAMGRIDDB_KEY_ID)),
+    );
+    column![
+        section(
+            "Desktop",
+            desktop_rows(draft.desktop, locked, palette),
+            palette
+        ),
+        section(
+            "Coverflow",
+            coverflow_rows(draft.coverflow_fullscreen, locked, palette),
+            palette
+        ),
+        section("Launch defaults", launch.into(), palette),
+        section("Art to fetch", art.into(), palette),
+        section(
+            "RetroArch",
+            retroarch_rows(draft.retroarch_quit.unwrap_or(true), locked, palette),
+            palette
+        ),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
+}
+
+fn stores_tab<'a>(
+    editor: &'a global::Editor,
+    page: &'a Page,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let (steam_key, gog) = (&page.steam_key, &page.gog);
+    let portable = paths.portable_root().is_some();
+    let steam = column![
+        auto_import_rows(
+            editor.form.draft.auto_import,
+            editor.steam_found,
+            portable,
+            locked,
+            palette,
+        ),
+        // Only the key row, so a reveal puts the key at the top.
+        container(key_row(steam_key_row(steam_key, paths), palette))
+            .id(iced::widget::Id::new(STEAM_KEY_ID)),
+    ]
+    .spacing(12);
+    column![
+        section("Steam", steam.into(), palette),
+        section(
+            "GOG",
+            column![
+                gog_install_rows(editor, paths, locked, palette),
+                gog_row(gog, locked, palette)
+            ]
+            .spacing(12)
+            .into(),
+            palette
+        ),
+    ]
+    .spacing(24)
+    .width(Fill)
+    .into()
+}
+
+/// The switch first, then, with it on, the sections it shows. The switch
+/// keeps its place either way, so flipping it keeps its focus.
+fn advanced_tab<'a>(
+    editor: &'a global::Editor,
+    page: &'a Page,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let tab = column![grouped_section(advanced_switch(page, palette), palette)]
+        .spacing(24)
+        .width(Fill);
+    if !page.advanced_settings {
+        return tab.into();
+    }
+    tab.push(advanced_sections(editor, paths, locked, palette))
+        .into()
+}
+
+/// Show advanced settings, with its note, why it can't be turned off now,
+/// or why it won't be remembered.
+fn advanced_switch<'a>(page: &'a Page, palette: Palette) -> Element<'a, Message> {
+    let on = page.advanced_settings;
+    let enabled = page.advanced_switch_enabled();
+    // A bare switch like the others: no Tab stop, and a click flips it.
+    let mut rows = column![switch_row(
+        ADVANCED_SWITCH,
+        on,
+        None,
+        |on| send(Event::AdvancedSettings(on)),
+        None,
+        !enabled,
+        palette,
+    )]
+    .spacing(12);
+    if !on {
+        rows = rows.push(text(ADVANCED_NOTE).size(13).color(palette.muted));
+    } else if let Some(hold) = page.advanced_hold() {
+        rows = rows.push(text(hold).size(13).color(palette.muted));
+    }
+    if let Some(error) = advanced_refusal(page, palette) {
+        rows = rows.push(error);
+    }
+    rows.into()
+}
+
+fn advanced_sections<'a>(
+    editor: &'a global::Editor,
+    paths: &Paths,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    let draft = &editor.form.draft;
     let runner = super::runner_picker::picker(
         &editor.runners,
         &draft.runner,
@@ -545,78 +757,9 @@ pub(super) fn global_view<'a>(
             palette,
         ));
     }
-    let mut art = column![].spacing(12);
-    for kind in Kind::ALL {
-        let label = match kind {
-            Kind::Icon => "Icon",
-            Kind::Grid => "Grid",
-            Kind::Hero => "Hero",
-            Kind::Logo => "Logo",
-        };
-        art = art.push(switch_row(
-            label,
-            draft.art_fetch.kinds().contains(&kind),
-            None,
-            move |on| send(Event::GlobalArtKind(kind, on)),
-            None,
-            locked,
-            palette,
-        ));
-    }
-    let steam = auto_import_rows(
-        draft.auto_import,
-        editor.steam_found,
-        portable,
-        locked,
-        palette,
-    );
     column![
-        section("Launch defaults", launch.into(), palette),
         section("New environments", new_env.into(), palette),
         section("Runs", runs.into(), palette),
-        section(
-            "RetroArch",
-            retroarch_rows(draft.retroarch_quit.unwrap_or(true), locked, palette),
-            palette
-        ),
-        section(
-            "Desktop",
-            desktop_rows(draft.desktop, locked, palette),
-            palette
-        ),
-        section(
-            "Coverflow",
-            coverflow_rows(draft.coverflow_fullscreen, locked, palette),
-            palette
-        ),
-        section(
-            "Controller",
-            controller_rows(&draft.input, page, locked, palette),
-            palette
-        ),
-        section("Art to fetch", art.into(), palette),
-        section(
-            "SteamGridDB",
-            key_row(steamgriddb_row(steamgriddb, paths), palette),
-            palette,
-        ),
-        section("Steam", steam, palette),
-        container(section(
-            "Steam Web API",
-            key_row(steam_key_row(steam_key, paths), palette),
-            palette,
-        ))
-        .id(iced::widget::Id::new(STEAM_KEY_ID)),
-        section(
-            "GOG",
-            column![
-                gog_install_rows(editor, paths, locked, palette),
-                gog_row(gog, locked, palette)
-            ]
-            .spacing(12)
-            .into(),
-            palette
-        ),
         section(
             "Environment variables",
             env_rows(
@@ -629,9 +772,6 @@ pub(super) fn global_view<'a>(
             ),
             palette
         ),
-        // The same string as `wineo --version`, so a problem report can name
-        // the exact build.
-        text(version_line()).size(12).color(palette.muted),
     ]
     .spacing(24)
     .width(Fill)
@@ -928,6 +1068,7 @@ fn auto_import_rows<'a>(
 /// and Steam keys share it, so both behave the same. Nothing here ever holds
 /// a saved key; the typed one only reaches a secure input.
 pub(super) struct KeyRow<'a> {
+    label: &'static str,
     status: String,
     override_note: Option<String>,
     warning: Option<String>,
@@ -970,6 +1111,7 @@ fn status_or_checking(label: Option<String>, failed: bool) -> String {
 
 /// What differs between the key rows: the copy and the events they send.
 struct KeyRowParts {
+    label: &'static str,
     /// Said when a variable's key overrides the saved one.
     override_note: String,
     hint: Option<String>,
@@ -987,6 +1129,7 @@ fn provider_row<'a, S: KeyStatus>(
     parts: KeyRowParts,
 ) -> KeyRow<'a> {
     KeyRow {
+        label: parts.label,
         status: status_or_checking(
             settings.status.as_ref().map(|status| status.label(paths)),
             settings.status_error.is_some(),
@@ -1030,6 +1173,7 @@ pub(super) fn steamgriddb_row<'a>(
         settings,
         paths,
         KeyRowParts {
+            label: "SteamGridDB key",
             override_note: "WINEO_STEAMGRIDDB_KEY is set and overrides the saved key".to_owned(),
             hint: None,
             placeholder: "SteamGridDB API key",
@@ -1050,6 +1194,7 @@ pub(super) fn steam_key_row<'a>(
         settings,
         paths,
         KeyRowParts {
+            label: "Key",
             override_note: format!(
                 "{} is set and overrides the saved key",
                 wineo_core::steam::key::KEY_VAR
@@ -1076,7 +1221,7 @@ impl KeyRow<'_> {
     /// Every piece of text the row shows, in order.
     #[cfg(test)]
     pub(super) fn texts(&self) -> Vec<String> {
-        let mut texts = vec!["Key".to_owned(), self.status.clone()];
+        let mut texts = vec![self.label.to_owned(), self.status.clone()];
         texts.extend(self.override_note.clone());
         texts.extend(self.warning.clone());
         texts.extend(
@@ -1104,6 +1249,7 @@ impl KeyRow<'_> {
 fn key_row<'a>(row_data: KeyRow<'a>, palette: Palette) -> Element<'a, Message> {
     let busy_label = row_data.busy_label();
     let KeyRow {
+        label,
         status,
         override_note,
         warning,
@@ -1123,7 +1269,7 @@ fn key_row<'a>(row_data: KeyRow<'a>, palette: Palette) -> Element<'a, Message> {
         text: on_text,
     } = row_data;
     let mut rows = column![setting_row(
-        "Key",
+        label,
         text(status).color(palette.foreground).into(),
         None,
         palette,
@@ -1426,6 +1572,14 @@ fn gog_row<'a>(
 pub(super) fn locate_steam_key() -> iced::Task<crate::grid_motion::CardBounds> {
     crate::grid_motion::locate(
         iced::widget::Id::new(STEAM_KEY_ID),
+        iced::widget::Id::new(SCROLL_ID),
+    )
+}
+
+/// Finds the SteamGridDB key row, for the art page's link to it.
+pub(super) fn locate_steamgriddb_key() -> iced::Task<crate::grid_motion::CardBounds> {
+    crate::grid_motion::locate(
+        iced::widget::Id::new(STEAMGRIDDB_KEY_ID),
         iced::widget::Id::new(SCROLL_ID),
     )
 }
@@ -2112,8 +2266,9 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     let muted = |value: &str| -> Element<'_, Message> {
         text(value.to_owned()).color(palette.muted).into()
     };
-    let field = |value: &str, on_input: fn(String) -> Event| -> Element<'_, Message> {
+    let field = |value: &str, id: &'static str, on_input: fn(String) -> Event| {
         text_input("unset", value)
+            .id(id)
             .on_input_maybe((!locked).then_some(move |value| send(on_input(value))))
             .width(Fill)
             .padding([6, 10])
@@ -2125,7 +2280,7 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     if !info.native {
         rows = rows.push(setting_row(
             "Prefix",
-            field(&draft.prefix, Event::Prefix),
+            field(&draft.prefix, PREFIX_ID, Event::Prefix),
             None,
             palette,
         ));
@@ -2136,13 +2291,13 @@ fn advanced(editor: &Editor, locked: bool, palette: Palette) -> Element<'_, Mess
     if editor.protonfixes_shown() {
         rows = rows.push(setting_row(
             "Game id",
-            field(&draft.gameid, Event::GameId),
+            field(&draft.gameid, GAME_ID_ID, Event::GameId),
             None,
             palette,
         ));
         rows = rows.push(setting_row(
             "Store",
-            field(&draft.store, Event::Store),
+            field(&draft.store, STORE_ID, Event::Store),
             None,
             palette,
         ));

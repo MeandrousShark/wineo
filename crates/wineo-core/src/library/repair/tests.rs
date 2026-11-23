@@ -1739,6 +1739,21 @@ fn repair_keeps_coverflow_fullscreen_only_as_a_bool() {
 }
 
 #[test]
+fn repair_keeps_advanced_settings_only_as_a_bool() {
+    let fixture = Fixture::new();
+    fixture.write("[view]\nadvanced_settings = true\nthis is broken\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Recovered);
+    assert!(load(&fixture.paths).view.advanced_settings);
+
+    let fixture = Fixture::new();
+    fixture.write("[view]\nadvanced_settings = \"yes\"\ndescending = true\nthis is broken\n");
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert_eq!(report.view, ViewRecovery::Partly);
+    assert!(!fixture.read().contains("advanced_settings"));
+}
+
+#[test]
 fn repair_keeps_input_and_its_buttons_from_the_parsed_part() {
     let fixture = Fixture::new();
     fixture.write(

@@ -653,6 +653,10 @@ added it.
   be read refuses with `Error::LibraryUnreadable` and stays byte-for-byte
   as it was. Its `newer_version` says a newer wineo wrote the file, which
   has no repair, so the refusal says to update wineo instead.
+- `set_advanced_settings` writes `[view] advanced_settings` (and
+  `set_coverflow_fullscreen` `coverflow_fullscreen`), a bool, the same way;
+  `View::advanced_settings` reads it, and an absent or non-bool value reads
+  as `false`.
 - `set_group` writes `[view] group`, a `GroupBy` (`None`, `Tag`, `Source`,
   or `State`), the same way, and `View::group` reads it, defaulting to
   `None`.

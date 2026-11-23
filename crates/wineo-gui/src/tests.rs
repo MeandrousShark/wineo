@@ -1436,7 +1436,7 @@ fn the_steam_key_link_opens_global_settings_at_the_key_row() {
     let _ = app.open_steam_key_settings();
     let page = app.settings.as_ref().unwrap();
     assert!(page.is_global());
-    assert!(page.reveal_steam_key);
+    assert_eq!(page.reveal, Some(crate::settings::Reveal::SteamKey));
 }
 
 #[test]

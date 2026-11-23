@@ -413,6 +413,7 @@ random = "any"            # launchable (default) or any
 layout = "list"           # grid (default), list, or coverflow
 group = "tag"             # none (default), recent, tag, source, or state
 coverflow_fullscreen = true
+advanced_settings = true  # show Settings' advanced sections, default false
 
 [view.list_columns]       # list view column widths, only the ones moved off their default
 state = 96
@@ -469,7 +470,8 @@ baselined = ["/home/me/.local/share/Steam"]
 620 = "dismissed"
 ```
 
-`[view]` is the desktop app's saved sort and grid view: `sort` defaults to
+`[view]` holds the desktop app's saved view and a few of its display
+choices: `sort` defaults to
 `name`, and `descending` and `favorites_first` to `false`. `zoom` is the
 grid's size in whole percent, any integer from 60 to 200, and defaults to
 100. `poster_only` hides titles under the posters and defaults to `false`.
@@ -484,8 +486,13 @@ same way, as `grid` with a warning, and one that updates a coverflow preset
 writes `grid` into it. Repair keeps any string `layout`, so a layout from a
 newer wineo survives it. `coverflow_fullscreen` makes the window fill the
 screen whenever the library switches to coverflow, and defaults to
-`false`. `group` is how the library splits into sections, `none`, the
-default, `recent`, `tag`, `source`, or `state`; collapsed sections aren't
+`false`. `advanced_settings` shows the advanced sections of Settings and
+of an environment's page (plan 0070), and defaults to `false`; the app
+writes it as soon as the switch is flipped. Anything but a boolean reads as
+`false` with a `validate` warning, and repair drops it. An older wineo
+ignores the key, `validate` there reports it as unknown, and repair keeps
+it. `group` is how the library
+splits into sections, `none`, the default, `recent`, `tag`, `source`, or `state`; collapsed sections aren't
 saved. The
 window's filters and Show hidden aren't saved in `[view]`, only in a preset.
 

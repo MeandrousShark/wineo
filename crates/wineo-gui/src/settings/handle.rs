@@ -25,6 +25,8 @@ impl Page {
             }
             Event::Back => self.go_back(),
             Event::Tab(tab) => self.select_tab(tab),
+            Event::AdvancedSettings(on) => self.flip_advanced(on),
+            Event::ShowAdvanced => self.show_advanced_section(),
             Event::Scrolled(tab, offset) => {
                 self.scrolled(tab, offset);
                 Step::none()
@@ -346,10 +348,10 @@ impl Page {
                 self.steam_key_removed(paths, generation, sequence, input_session, result)
             }
             Event::SteamKeyLocated(generation, bounds) => {
-                if generation != self.generation {
-                    return Step::none();
-                }
-                Step::task(view::scroll_to_row(bounds))
+                self.scroll_to_located(generation, super::Reveal::SteamKey, bounds)
+            }
+            Event::SteamGridDbKeyLocated(generation, bounds) => {
+                self.scroll_to_located(generation, super::Reveal::SteamGridDbKey, bounds)
             }
             Event::Prefix(value) => {
                 self.edited();
@@ -514,8 +516,12 @@ impl Page {
                     | Event::ResetButtons
                     | Event::CaptureButton(_)
                     | Event::Appearance(_)
+                    | Event::AdvancedSettings(_)
             )
         {
+            return true;
+        }
+        if self.global && matches!(event, Event::ShowAdvanced) {
             return true;
         }
         if let Some(editor) = self.editor()
@@ -524,6 +530,49 @@ impl Page {
             return true;
         }
         false
+    }
+    /// The switch moves only when it takes a flip; the app writes it.
+    fn flip_advanced(&mut self, on: bool) -> Step {
+        if on == self.advanced_settings || !self.advanced_switch_enabled() {
+            return Step::none();
+        }
+        self.advanced_settings = on;
+        if !on {
+            // Runner's and Arch's pick lists go with the sections, so an
+            // open one's close never arrives, as on a tab switch.
+            self.menu_open = false;
+            self.close_font_picker();
+        }
+        Step {
+            advanced: Some(on),
+            ..Step::none()
+        }
+    }
+    /// The section shows in place, with focus on its first field.
+    fn show_advanced_section(&mut self) -> Step {
+        if self.advanced_settings || self.leave_prompt {
+            return Step::none();
+        }
+        self.advanced_settings = true;
+        Step {
+            advanced: Some(true),
+            ..Step::task(iced::widget::operation::focus(iced::widget::Id::new(
+                view::PREFIX_ID,
+            )))
+        }
+    }
+    /// Scrolls to a revealed key row, unless a switch away before the answer
+    /// landed left its tab, or the answer is for a page closed earlier.
+    fn scroll_to_located(
+        &self,
+        generation: u64,
+        reveal: super::Reveal,
+        bounds: crate::grid_motion::CardBounds,
+    ) -> Step {
+        if generation != self.generation || self.tab != reveal.tab() {
+            return Step::none();
+        }
+        Step::task(view::scroll_to_row(bounds))
     }
     fn land(&mut self, pending: Pending, snapshot: Snapshot) {
         self.menu_open = false;

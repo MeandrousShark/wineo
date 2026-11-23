@@ -18,6 +18,15 @@ fn global_page(paths: &Paths) -> Page {
     page
 }
 
+/// Shows the Advanced tab with its sections. Every test that needs New
+/// environments, Runs, or Environment variables on screen comes through
+/// here, so whatever it takes to show them changes in one place.
+fn show_advanced(page: &mut Page, paths: &Paths) -> Task<Message> {
+    let _ = page.update(paths, Event::AdvancedSettings(true));
+    assert!(page.advanced_settings);
+    page.update(paths, Event::Tab(Tab::Advanced)).task
+}
+
 fn global_editor(page: &Page) -> &global::Editor {
     match &page.view {
         View::Global(editor) => editor,
@@ -354,10 +363,10 @@ fn steam_key_results_for_a_closed_page_are_dropped() {
 fn steam_key_reveal_is_used_once() {
     let (_root, paths) = setup();
     let mut page = Page::new_global(1);
-    page.reveal_steam_key = true;
+    page.reveal = Some(Reveal::SteamKey);
     let _ = page.reload(&paths, Mode::Replace);
     let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
-    assert!(!page.reveal_steam_key);
+    assert!(page.reveal.is_none());
 }
 
 #[test]
@@ -941,7 +950,7 @@ fn element_texts(element: iced::Element<'_, crate::Message>) -> Vec<String> {
 }
 
 #[test]
-fn global_settings_end_with_the_version_wineo_reports() {
+fn every_global_tab_ends_with_the_version_wineo_reports() {
     let (_root, paths) = setup();
     let line = view::version_line();
     assert_eq!(line, format!("wineo {}", wineo_core::version::VERSION));
@@ -951,21 +960,20 @@ fn global_settings_end_with_the_version_wineo_reports() {
         1,
         "{texts:?}"
     );
-    let at = texts.iter().position(|text| *text == line).unwrap();
-    let env_heading = texts
-        .iter()
-        .position(|text| text == "Environment variables")
-        .unwrap();
-    assert!(at > env_heading, "{texts:?}");
     let global = global_page(&paths);
-    let general = view::global_view(
-        global_editor(&global),
-        &global,
-        &paths,
-        global.locked(),
-        crate::theme::Palette::DARK,
-    );
-    assert_eq!(element_texts(general).last(), Some(&line));
+    for tab in Tab::ALL {
+        let content = view::global_view(
+            tab,
+            global_editor(&global),
+            &global,
+            &paths,
+            global.locked(),
+            crate::theme::Palette::DARK,
+        );
+        let texts = element_texts(content);
+        assert_eq!(texts.last(), Some(&line), "{tab:?}");
+        assert_eq!(texts.iter().filter(|text| **text == line).count(), 1);
+    }
     write(&paths, GAME);
     assert!(!page_texts(&page(&paths), &paths).contains(&line));
 }
@@ -3894,6 +3902,10 @@ mod controller;
 mod remap;
 
 mod narrow_rows;
+
+mod reveal;
+
+mod advanced_switch;
 
 #[test]
 fn retroarch_quit_switch_defaults_on_and_saves_through_set() {
