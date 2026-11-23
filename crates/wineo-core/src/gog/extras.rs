@@ -21,7 +21,7 @@ use crate::art::{self, Kind, Source};
 use crate::art_fetch::{self, Fetched, Mode};
 use crate::cancel::Token;
 use crate::download::Transport;
-use crate::environment::{Environment, EnvironmentIdentity};
+use crate::environment::{Currency, Environment, EnvironmentIdentity};
 use crate::operation::Locks;
 use crate::paths::Paths;
 use crate::stats::{self, Imported};
@@ -259,9 +259,13 @@ fn playtime(
         return;
     };
     match raise_baseline(paths, request.name, gog_seconds, identity, token) {
-        Ok(Some(playtime)) => report.playtime = Some(playtime),
+        Ok(Ok(playtime)) => report.playtime = Some(playtime),
         Err(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
-        Ok(None) => report.notes.push(format!(
+        Ok(Err(Currency::LibraryUnreadable)) => report.notes.push(format!(
+            "Skipped GOG playtime: library.toml can't be read, so {} couldn't be checked.",
+            request.name
+        )),
+        Ok(Err(_)) => report.notes.push(format!(
             "Skipped GOG playtime: {} changed while it was being fetched.",
             request.name
         )),
@@ -273,15 +277,15 @@ fn playtime(
 
 /// Makes the imported baseline the larger of what it is and `gog_seconds`.
 /// The log is append-only, so a total that isn't larger appends nothing,
-/// and running this again changes nothing. None means the environment was
-/// replaced meanwhile.
+/// and running this again changes nothing. When the identity isn't current,
+/// nothing is written and the answer says why.
 fn raise_baseline(
     paths: &Paths,
     name: &str,
     gog_seconds: i64,
     identity: EnvironmentIdentity,
     token: &Token,
-) -> crate::Result<Option<Playtime>> {
+) -> crate::Result<Result<Playtime, Currency>> {
     // Held across the read and the append, so two runs can't each read a
     // small baseline and the smaller total be the one that lands last.
     #[cfg(test)]
@@ -291,8 +295,9 @@ fn raise_baseline(
     if token.is_canceled() {
         return Err(crate::Error::Canceled("playtime import"));
     }
-    if !identity.is_current(paths, name).is_current() {
-        return Ok(None);
+    match identity.is_current(paths, name) {
+        Currency::Current => {}
+        other => return Ok(Err(other)),
     }
     let existing = stats::read(&paths.stats_log(name))?.imported;
     let before_seconds = existing.map_or(0, |imported| imported.seconds);
@@ -313,7 +318,7 @@ fn raise_baseline(
             },
         )?;
     }
-    Ok(Some(Playtime {
+    Ok(Ok(Playtime {
         gog_seconds,
         before_seconds,
         after_seconds,

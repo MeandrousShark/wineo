@@ -472,6 +472,28 @@ fn an_environment_edited_while_fetching_still_gets_its_playtime_and_art() {
 }
 
 #[test]
+fn a_library_broken_while_fetching_skips_playtime_and_says_why() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let library = fixture.paths.library_file();
+    let art = art_body(&[]);
+    let server = Scripted::start(move |line| {
+        if line.contains("/sessions") {
+            fs::write(&library, "[broken\n").unwrap();
+        }
+        gog(Some(30), art.clone())(line)
+    });
+    let mut session = fixture.session(&server.base);
+    let report = go(&fixture, Some(&mut session), &server, &images(), &ALL).unwrap();
+    assert_eq!(report.playtime, None);
+    assert_eq!(
+        report.notes[0],
+        "Skipped GOG playtime: library.toml can't be read, so rimworld couldn't be checked."
+    );
+    assert_eq!(fixture.imported(), None);
+}
+
+#[test]
 fn nothing_to_write_gives_an_old_environment_no_id() {
     let fixture = Fixture::new();
     let server = Scripted::start(gog(Some(30), art_body(&[])));

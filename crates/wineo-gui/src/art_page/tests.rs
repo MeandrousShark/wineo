@@ -1577,3 +1577,80 @@ fn leaving_clears_a_failed_decode_so_reopening_retries() {
     page.leave();
     assert_eq!(reload_units(&mut page, &paths), 1);
 }
+
+/// Core's words for an identity `library.toml` can't confirm.
+fn library_unreadable() -> String {
+    wineo_core::Error::ArtLibraryUnreadable("game".to_owned()).to_string()
+}
+
+fn break_library(paths: &Paths) {
+    fs::write(paths.library_file(), "[broken\n").unwrap();
+}
+
+#[test]
+fn a_write_says_the_library_couldnt_be_read_rather_than_that_it_changed() {
+    let (root, paths, page) = fixture();
+    assert!(page.identity.id().is_some());
+    break_library(&paths);
+    let source = png(root.path());
+    for path in [Some(source.as_path()), None] {
+        let outcome = write_art_for(
+            &paths,
+            "game",
+            page_identity(&page),
+            &(None, Kind::Grid),
+            path,
+        );
+        assert!(!outcome.changed());
+        assert_eq!(outcome.error, Some(library_unreadable()), "{path:?}");
+    }
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {},
+        &Token::new(),
+    );
+    assert!(!outcome.changed());
+    assert_eq!(outcome.error, Some(library_unreadable()));
+    assert!(transport.urls.borrow().is_empty(), "it downloaded anyway");
+}
+
+#[test]
+fn a_library_breaking_mid_download_says_so() {
+    let (root, paths, page) = fixture();
+    // Over one read's worth, so the download reports progress twice.
+    let mut bytes = fs::read(png(root.path())).unwrap();
+    bytes.resize(100 * 1024, 0);
+    let transport = ImageApi {
+        bytes,
+        urls: Default::default(),
+    };
+    let mut calls = 0;
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {
+            calls += 1;
+            if calls == 1 {
+                break_library(&paths);
+            }
+        },
+        &Token::new(),
+    );
+    assert!(calls >= 2, "{calls}");
+    assert!(!outcome.changed());
+    assert_eq!(outcome.error, Some(library_unreadable()));
+    assert!(!paths.art_dir("game").join("grid.png").exists());
+}
