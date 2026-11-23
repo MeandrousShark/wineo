@@ -1231,29 +1231,29 @@ fn art_fetch_with_the_library_unreadable_at_the_upgrade() {
 #[test]
 fn a_fetch_without_a_creation_identity_writes_nothing_until_a_game_is_picked() {
     let (_root, paths) = paths();
-    let request = AutoFetch {
-        env: "hades",
-        term: "hades",
-        kinds: ArtFetch::Icon,
-    };
     // A failed search, then a skipped pick.
+    let failed = fetch_new_with(&paths, &Fake::default(), ArtFetch::Icon, None);
+    assert!(failed.result.is_ok());
+    assert!(
+        failed.err.starts_with("warning: art fetch failed: "),
+        "{}",
+        failed.err
+    );
+    assert!(!paths.library_file().exists());
+
     let mut fake = Fake::default();
     fake.search("hades", true);
-    for answers in [None, Some(&["4"][..])] {
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
-        let pick = match &mut prompt {
-            Some(prompt) => Pick::Ask(prompt),
-            None => Pick::Top(&mut out),
-        };
-        let transport: &dyn Transport = match answers {
-            Some(_) => &fake,
-            None => &Fake::default(),
-        };
-        let result = fetch_new(&paths, transport, &key(), &request, None, pick, &mut err);
-        assert!(result.is_ok());
-        assert!(!paths.library_file().exists(), "{answers:?}");
-    }
+    let skipped = fetch_new_with(&paths, &fake, ArtFetch::Icon, Some(&["4"]));
+    assert!(skipped.result.is_ok());
+    assert!(
+        skipped.out.ends_with(
+            "Game [1]: Skipped art. Fetch later with: wineo art fetch hades --search <term>\n"
+        ),
+        "{}",
+        skipped.out
+    );
+    assert_eq!(skipped.err, "");
+    assert!(!paths.library_file().exists());
 }
 
 #[test]
