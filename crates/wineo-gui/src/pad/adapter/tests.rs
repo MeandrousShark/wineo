@@ -912,6 +912,14 @@ async fn not_wanted_lets_go_and_disconnects_its_pads() {
     assert_eq!(reader.claims(), 1);
 }
 
+/// Waits for the reader to end, failing rather than hanging if it doesn't.
+async fn ended(task: tokio::task::JoinHandle<()>) {
+    tokio::time::timeout(Duration::from_secs(60), task)
+        .await
+        .expect("the reader should end")
+        .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_app_going_away_ends_the_reader_and_lets_go() {
     let reader = harness(Seen::Found, true, |_| {});
@@ -924,7 +932,7 @@ async fn the_app_going_away_ends_the_reader_and_lets_go() {
         ..
     } = reader;
     drop(wanted);
-    task.await.unwrap();
+    ended(task).await;
     assert!(!shared.with(|bus| bus.held));
 
     // The app no longer hearing it ends it too.
@@ -935,7 +943,7 @@ async fn the_app_going_away_ends_the_reader_and_lets_go() {
     } = reader;
     drop(out);
     shared.push(Ok(hex(PROBE_FIRST)));
-    task.await.unwrap();
+    ended(task).await;
     assert!(!shared.with(|bus| bus.held));
 }
 

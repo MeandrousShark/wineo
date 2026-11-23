@@ -246,14 +246,10 @@ impl Pads {
     }
 
     fn style(&self, id: PadId) -> Style {
-        match id {
-            PadId::Adapter(_) => Style::GameCube,
-            PadId::Gilrs(_) => self
-                .connected
-                .get(&id)
-                .map(|info| style_of(id, info))
-                .unwrap_or_default(),
-        }
+        self.connected
+            .get(&id)
+            .map(|info| style_of(id, info))
+            .unwrap_or_default()
     }
 
     /// Takes one event and says what it comes to.
