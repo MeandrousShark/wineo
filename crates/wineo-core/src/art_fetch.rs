@@ -231,6 +231,8 @@ pub fn use_image(
     cancel: &Token,
     expected_identity: EnvironmentIdentity,
 ) -> Result<Fetched> {
+    // Before the download too, so a replaced environment costs none.
+    art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
     let bytes = api.download_with_progress(&image.url, progress, cancel)?;
     let Some(format) = detect(&bytes).filter(|format| kind.accepts(*format)) else {

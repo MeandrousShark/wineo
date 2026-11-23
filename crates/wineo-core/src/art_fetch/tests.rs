@@ -419,6 +419,39 @@ fn use_image_rejects_replacement_after_final_progress() {
 }
 
 #[test]
+fn use_image_refuses_a_replaced_environment_before_downloading() {
+    let (_root, paths) = setup();
+    let api = FakeApi::default();
+    let image = Image {
+        id: 72,
+        url: "https://cdn.example/never.png".into(),
+        ..Image::default()
+    };
+    api.bytes(&image.url, PNG);
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    replace_environment(&paths);
+
+    let err = use_image(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &Api::new(&api, "k"),
+        &image,
+        |_, _| {},
+        &Token::new(),
+        identity,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<Error>(),
+        Some(Error::ArtEnvironmentChanged(name)) if name == "hades"
+    ));
+    assert!(api.urls().is_empty(), "{:?}", api.urls());
+    assert!(!paths.art_dir("hades").join("grid.png").exists());
+}
+
+#[test]
 fn use_image_rechecks_identity_after_waiting_for_art_lock() {
     let (_root, paths) = setup();
     let image = Image {
