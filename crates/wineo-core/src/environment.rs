@@ -1154,3 +1154,6 @@ fn write_new(path: &Path, contents: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod identity_tests;
