@@ -1,3 +1,8 @@
+---
+type: reference
+status: active
+tags: [gui, design]
+---
 # GUI style guide
 
 This is Wineo's approved visual direction from

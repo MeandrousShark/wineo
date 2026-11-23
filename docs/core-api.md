@@ -1,3 +1,8 @@
+---
+type: reference
+status: active
+tags: [core, api]
+---
 # Core API for frontends
 
 `wineo-core` is what the CLI is built on, and what the desktop app calls directly.
