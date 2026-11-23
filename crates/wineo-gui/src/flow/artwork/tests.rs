@@ -1364,3 +1364,28 @@ fn a_draft_whose_files_cant_be_stored_gives_no_id() {
     assert_eq!(applied.identity, None);
     assert_eq!(std::fs::read(paths.library_file()).unwrap(), before);
 }
+
+#[test]
+fn a_fingerprint_the_flow_holds_is_written_with_and_never_upgraded() {
+    use crate::flow::artwork::canned::canned_hades;
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    old_environment(&paths);
+    let before = legacy_library(&paths);
+    // As creation hands it over when its stamp failed.
+    let held = EnvironmentIdentity::peek(&paths, "game").unwrap();
+    assert_eq!(held.id(), None);
+    let answers = canned_hades();
+    let fetched = fetch_default_over(
+        &paths,
+        "game",
+        "Hades",
+        Some(held),
+        &Token::new(),
+        &move || Ok((Box::new(answers.clone()), "key".to_owned())),
+    );
+    assert!(fetched.art.is_ok(), "{:?}", fetched.art);
+    assert_eq!(fetched.identity, Some(held));
+    assert!(paths.art_dir("game").join("icon.png").exists());
+    assert_eq!(std::fs::read(paths.library_file()).unwrap(), before);
+}

@@ -2818,3 +2818,31 @@ fn a_batch_game_whose_library_breaks_says_so_and_writes_no_entries() {
     );
     assert_eq!(entry_count(&paths), 0);
 }
+
+#[test]
+fn an_unreadable_library_with_other_failures_still_ends_each_sentence() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    // A hero that's missing fails in its own words after the library's.
+    let missing = root.path().join("missing.png");
+    let _ = page.art.update(artwork::Event::Path(
+        Kind::Hero,
+        missing.display().to_string(),
+    ));
+    fs::write(page.paths.library_file(), "[broken\n").unwrap();
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    drive_all(&mut page, task);
+    let error = page.error.clone().unwrap();
+    assert!(
+        error.starts_with(&format!(
+            "library.toml can't be read. Artwork for `{name}` wasn't stored.\nCould not store hero: "
+        )),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("missing.png. The environment is registered. Retry or skip artwork."),
+        "{error}"
+    );
+}
