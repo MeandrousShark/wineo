@@ -1056,8 +1056,8 @@ async fn an_unplug_while_reading_lets_go_until_it_comes_back() {
     reader.shared.push(Ok(hex(PROBE_FIRST)));
     reader.settle().await;
     reader.sent();
+    // Even with the bus still showing it, nothing is tried until it's back.
     reader.shared.push(Err(Lost::Unplugged));
-    reader.shared.with(|bus| bus.seen = Seen::Absent);
     reader.settle().await;
     assert!(!reader.held());
     assert_eq!(
@@ -1070,7 +1070,6 @@ async fn an_unplug_while_reading_lets_go_until_it_comes_back() {
     reader.wait(5000).await;
     assert_eq!(reader.claims(), 1);
 
-    reader.shared.with(|bus| bus.seen = Seen::Found);
     reader.hotplug.send(Hotplug::Arrived).unwrap();
     reader.settle().await;
     assert!(reader.held());

@@ -754,4 +754,20 @@ mod app {
         assert_eq!(page(&app).pads, ["Xbox Wireless Controller"]);
         assert_eq!(page(&app).adapter, State::Absent);
     }
+
+    #[test]
+    fn with_the_controller_switch_saved_off_the_drafts_switch_starts_the_adapters_reader() {
+        let (_root, paths) = setup();
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = false\ngamecube_adapter = true\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        assert!(app.input.gamecube_adapter && !app.input.controller);
+        assert!(!app.adapter_subscribed());
+        let _ = app.update(Message::Settings(Event::GlobalController(true)));
+        assert!(app.adapter_subscribed() && app.adapter_wanted());
+        let _ = app.update(Message::Settings(Event::GlobalController(false)));
+        assert!(!app.adapter_subscribed());
+    }
 }

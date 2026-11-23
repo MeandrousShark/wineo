@@ -223,12 +223,13 @@ async fn record() {
         Sysfs::Free,
         "the adapter is in use by a program or a kernel driver; not taking it"
     );
+    println!();
+    println!(">>> Hands off the controller in port 1 until the next prompt");
+    std::thread::sleep(Duration::from_secs(3));
     let mut held = Held::claim(&info).expect("the claim failed");
     println!("- control request: {:?}", held.control().await);
     println!("- start byte: {:?}", held.start().await);
 
-    println!();
-    println!(">>> Leave the controller in port 1 untouched for a moment");
     let mut first = Vec::new();
     for _ in 0..10 {
         first.push(next(&mut held).await);

@@ -1148,8 +1148,15 @@ fn closing_exiting_a_closed_window_focus_and_starts_let_go() {
         let (home, mut app) = adapter_ready();
         assert!(told(&app), "{case}");
         match case {
-            "closing" => app.closing = true,
-            "exiting" => app.exiting = true,
+            // Either alone ends the reader, before any update reacts.
+            "closing" => {
+                app.closing = true;
+                assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+            }
+            "exiting" => {
+                app.exiting = true;
+                assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+            }
             "window" => app.main_window = None,
             "unfocused" => {
                 let id = app.main_window.unwrap();
@@ -1234,6 +1241,10 @@ fn the_adapters_pads_go_with_its_reader_and_late_reports_are_dropped() {
     let _ = app.update(Message::Adapter(Report::State(adapter::State::Busy)));
     assert_eq!(app.pads.names(), ["Xbox Wireless Controller"]);
     assert_eq!(app.adapter.shown, adapter::State::Absent);
+    // Even a press, which would act before anything else could drop it.
+    let task = adapter_pad(&mut app, PadEvent::Pressed(PORT1, Raw::South));
+    settle(&mut app, task);
+    assert!(!app.panel_open);
 }
 
 #[test]
@@ -1287,6 +1298,10 @@ fn the_hint_bar_leaves_out_what_a_gamecube_pad_lacks() {
     app.input.buttons.clear();
     app.input.buttons.insert(PadAction::Last, PadButton::Ls);
     app.input.buttons.insert(PadAction::Random, PadButton::Rt);
+    assert!(words(&app).contains(&"Random"));
+    app.input.buttons.clear();
+    app.input.buttons.insert(PadAction::First, PadButton::Ls);
+    app.input.buttons.insert(PadAction::Random, PadButton::Lt);
     assert!(words(&app).contains(&"Random"));
     app.input.buttons.insert(PadAction::Confirm, PadButton::Rs);
     assert!(!words(&app).contains(&"Open"));
