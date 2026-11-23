@@ -1777,6 +1777,35 @@ fn repair_keeps_input_and_its_buttons_from_the_parsed_part() {
 }
 
 #[test]
+fn repair_keeps_a_gamecube_adapter_switch_and_drops_a_wrong_typed_one() {
+    let broken = "[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n";
+    for tail in [false, true] {
+        let fixture = Fixture::new();
+        let input = "[input]\ngamecube_adapter = true\n[input.buttons]\nfavorite = \"rb\"\n";
+        fixture.write(&if tail {
+            format!("schema_version = 1\n{broken}{input}")
+        } else {
+            format!("schema_version = 1\n{input}{broken}")
+        });
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        let loaded = load(&fixture.paths).input;
+        assert!(loaded.gamecube_adapter, "{tail}: {}", fixture.read());
+        assert_eq!(loaded.buttons.len(), 1, "{tail}");
+    }
+
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[input]\ncontroller = false\ngamecube_adapter = \"true\"\n[input.buttons]\nmark = \"rs\"\n{broken}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(!report.complete(), "{report}");
+    let text = fixture.read();
+    assert!(!text.contains("gamecube_adapter"), "{text}");
+    assert!(text.contains("controller = false"), "{text}");
+    assert!(text.contains("mark = \"rs\""), "{text}");
+}
+
+#[test]
 fn repair_salvages_input_from_the_broken_tail() {
     let fixture = Fixture::new();
     fixture.write(

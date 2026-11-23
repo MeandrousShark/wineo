@@ -10,6 +10,7 @@ use super::*;
 fn input(controller: bool, buttons: &[(PadAction, PadButton)]) -> Input {
     Input {
         controller,
+        gamecube_adapter: false,
         buttons: buttons.iter().copied().collect::<BTreeMap<_, _>>(),
     }
 }
@@ -198,4 +199,66 @@ fn a_rebase_that_finds_the_config_moved_still_records_both() {
     );
     assert!(!page.loading(), "nothing changed since the rebase read");
     assert!(!page.changed_on_disk);
+}
+
+#[test]
+fn rebase_keeps_a_gamecube_switch_the_form_changed_and_follows_one_it_didnt() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let View::Global(editor) = &mut page.view else {
+        panic!("global form expected");
+    };
+    editor.form.draft.input.gamecube_adapter = true;
+    let mut values = editor.form.loaded.clone();
+    // Another window edited a different key and left this one alone.
+    values.input.controller = false;
+    editor.form.rebase(values);
+    assert!(editor.form.draft.input.gamecube_adapter);
+    assert!(
+        !editor.form.draft.input.controller,
+        "an untouched one follows"
+    );
+    assert!(!editor.form.loaded.input.gamecube_adapter);
+    assert_eq!(editor.form.changes(), 1);
+
+    // Untouched here, so another window's value is followed.
+    let mut page = global_page(&paths);
+    let View::Global(editor) = &mut page.view else {
+        panic!("global form expected");
+    };
+    let mut values = editor.form.loaded.clone();
+    values.input.gamecube_adapter = true;
+    editor.form.rebase(values);
+    assert!(editor.form.draft.input.gamecube_adapter);
+    assert!(editor.form.loaded.input.gamecube_adapter);
+    assert_eq!(editor.form.changes(), 0);
+}
+
+#[test]
+fn another_windows_gamecube_switch_names_library_toml_and_rebases_an_untouched_form() {
+    let (_root, paths) = setup();
+    let mut page = global_page(&paths);
+    let before = load::Texts::read_global(&paths);
+    let on = Input {
+        gamecube_adapter: true,
+        ..Input::default()
+    };
+    library::set_input(&paths, &on).unwrap();
+    let after = load::Texts::read_global(&paths);
+    assert_eq!(ChangedFile::between(&after, &before), ChangedFile::Library);
+
+    let generation = page.generation;
+    page.drop_checks();
+    let _ = page.update(
+        &paths,
+        Event::Checked(generation, page.check_sequence, after),
+    );
+    let _ = page.update(
+        &paths,
+        Event::Loaded(generation, load::snapshot_global(&paths)),
+    );
+    let form = &global_editor(&page).form;
+    assert!(form.draft.input.gamecube_adapter);
+    assert!(!page.changed_on_disk);
+    assert!(!page.is_dirty());
 }
