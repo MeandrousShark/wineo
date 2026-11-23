@@ -537,3 +537,127 @@ fn events_nothing_reads_show_the_device_works() {
     );
     assert_eq!(reader::Clock::now(&clock), start);
 }
+
+const PORT1: PadId = PadId::Adapter(0);
+
+fn connect_port(pads: &mut Pads, port: u8) {
+    pads.event(
+        PadEvent::Connected(PadId::Adapter(port), adapter::port_info(usize::from(port))),
+        Instant::now(),
+    );
+}
+
+#[test]
+fn a_gamecube_pad_and_a_gamepad_each_keep_their_own_labels() {
+    let mut pads = pads(&[(0, xbox())]);
+    connect_port(&mut pads, 0);
+    assert_eq!(
+        pads.names(),
+        ["Xbox Wireless Controller", "GameCube controller (port 1)"]
+    );
+    // Both sides number from zero, and neither shadows the other.
+    assert_eq!(
+        pads.event(PadEvent::Pressed(PORT1, Raw::South), Instant::now()),
+        Some(Input::Button(PadButton::A, Style::GameCube))
+    );
+    assert_eq!(
+        press(&mut pads, 0, Raw::South),
+        Some(Input::Button(PadButton::A, Style::Xbox))
+    );
+    pads.event(PadEvent::Disconnected(PORT1), Instant::now());
+    assert_eq!(pads.names(), ["Xbox Wireless Controller"]);
+}
+
+#[test]
+fn an_adapter_pad_is_gamecube_by_its_id_never_by_its_nintendo_vendor() {
+    let info = adapter::port_info(0);
+    assert_eq!(info.vendor, Some(NINTENDO));
+    let mut pads = Pads::default();
+    pads.event(PadEvent::Connected(PORT1, info), Instant::now());
+    assert_eq!(pads.recent_style(), Style::GameCube);
+    // East is B, not the Nintendo swap's A, which would make A go back.
+    assert_eq!(
+        pads.event(PadEvent::Pressed(PORT1, Raw::East), Instant::now()),
+        Some(Input::Button(PadButton::B, Style::GameCube))
+    );
+    assert_eq!(
+        pads.event(PadEvent::Pressed(PORT1, Raw::South), Instant::now()),
+        Some(Input::Button(PadButton::A, Style::GameCube))
+    );
+}
+
+#[test]
+fn steams_virtual_pad_is_left_out_beside_adapter_pads() {
+    let mut pads = pads(&[(0, steam_virtual())]);
+    connect_port(&mut pads, 1);
+    assert_eq!(pads.names(), ["GameCube controller (port 2)"]);
+    assert_eq!(press(&mut pads, 0, Raw::South), None);
+    // The adapter let go: the virtual pad is read again.
+    pads.event(PadEvent::Disconnected(PadId::Adapter(1)), Instant::now());
+    assert!(press(&mut pads, 0, Raw::South).is_some());
+}
+
+#[test]
+fn a_stick_move_sets_the_last_style_like_a_press() {
+    let mut pads = pads(&[(0, xbox())]);
+    connect_port(&mut pads, 0);
+    press(&mut pads, 0, Raw::South);
+    assert_eq!(pads.recent_style(), Style::Xbox);
+    // Jitter that moves nothing names no pad.
+    pads.event(PadEvent::Stick(PORT1, Axis::X, 0.1), Instant::now());
+    assert_eq!(pads.recent_style(), Style::Xbox);
+    assert_eq!(
+        pads.event(PadEvent::Stick(PORT1, Axis::X, 0.9), Instant::now()),
+        Some(Input::Move(Direction::Right, Style::GameCube))
+    );
+    assert_eq!(pads.recent_style(), Style::GameCube);
+}
+
+#[test]
+fn dropping_the_adapter_disconnects_only_its_pads() {
+    let mut pads = pads(&[(0, xbox())]);
+    connect_port(&mut pads, 0);
+    connect_port(&mut pads, 3);
+    pads.event(PadEvent::Pressed(PORT1, Raw::DPadUp), Instant::now());
+    assert!(pads.repeat_due().is_some());
+    assert!(pads.drop_adapter());
+    assert_eq!(pads.names(), ["Xbox Wireless Controller"]);
+    assert_eq!(pads.repeat_due(), None);
+    assert!(!pads.drop_adapter());
+}
+
+#[test]
+fn a_gamecube_pad_lacks_only_the_stick_clicks() {
+    for button in PadButton::ALL {
+        let lacks = matches!(button, PadButton::Ls | PadButton::Rs);
+        assert_eq!(Style::GameCube.has(button), !lacks, "{button:?}");
+        for style in [Style::Xbox, Style::PlayStation, Style::Nintendo] {
+            assert!(style.has(button), "{style:?} {button:?}");
+        }
+    }
+}
+
+#[test]
+fn gamecube_glyphs_are_its_own_words() {
+    use glyph::{Glyph, glyph};
+    let word = |button| match glyph(Style::GameCube, button) {
+        Glyph::Label(label) => label,
+        Glyph::Face(_) => "face",
+    };
+    assert_eq!(word(PadButton::Lb), "L");
+    assert_eq!(word(PadButton::Rb), "R");
+    assert_eq!(word(PadButton::View), "Z");
+    assert_eq!(word(PadButton::Start), "Start");
+    assert_eq!(word(PadButton::Lt), "C left");
+    assert_eq!(word(PadButton::Rt), "C right");
+    // The stick clicks it lacks fall through to the generic words.
+    assert_eq!(word(PadButton::Ls), "LS");
+    assert_eq!(word(PadButton::Rs), "RS");
+    for button in [PadButton::A, PadButton::B, PadButton::X, PadButton::Y] {
+        assert_eq!(
+            glyph(Style::GameCube, button),
+            glyph(Style::Xbox, button),
+            "{button:?}"
+        );
+    }
+}

@@ -707,4 +707,51 @@ mod app {
         )));
         assert_eq!(page(&app).pad_style, crate::pad::Style::Nintendo);
     }
+
+    #[test]
+    fn a_waiting_row_takes_a_c_stick_push_with_the_adapter_on_in_the_draft() {
+        use crate::pad::adapter::{Report, State, port_info};
+        let (_root, paths) = setup();
+        let (mut app, _) = app_in(&paths);
+        let port = PadId::Adapter(0);
+        let adapter = |app: &mut App, report| {
+            let _ = app.update(Message::Adapter(report));
+        };
+        // Saved off: what an old reader sends is dropped.
+        assert!(!app.adapter_subscribed());
+        adapter(
+            &mut app,
+            Report::Pad(PadEvent::Connected(port, port_info(0))),
+        );
+        assert_eq!(page(&app).pads, ["Xbox Wireless Controller"]);
+
+        // On in the draft, before any save.
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(true)));
+        assert!(app.adapter_subscribed() && app.adapter_wanted());
+        assert!(!app.input.gamecube_adapter, "the saved switch is still off");
+        adapter(&mut app, Report::State(State::Held));
+        adapter(
+            &mut app,
+            Report::Pad(PadEvent::Connected(port, port_info(0))),
+        );
+        assert_eq!(
+            page(&app).pads,
+            ["Xbox Wireless Controller", "GameCube controller (port 1)"]
+        );
+        start_capture(&mut app, PadAction::Random);
+        adapter(
+            &mut app,
+            Report::Pad(PadEvent::Pressed(port, Raw::LeftTrigger)),
+        );
+        assert_eq!(page(&app).capturing(), None);
+        assert_eq!(button(page(&app), PadAction::Random), Some(PadButton::Lt));
+        // The rows now read in its words.
+        assert_eq!(page(&app).pad_style, crate::pad::Style::GameCube);
+
+        // Off in the draft again: the reader and its pads go.
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(false)));
+        assert!(!app.adapter_subscribed());
+        assert_eq!(page(&app).pads, ["Xbox Wireless Controller"]);
+        assert_eq!(page(&app).adapter, State::Absent);
+    }
 }
