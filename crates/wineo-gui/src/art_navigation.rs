@@ -37,12 +37,11 @@ impl App {
         self.portable_page = None;
         // Checked against what the cached page holds, not the new peek, so a
         // page holding a fingerprint survives another process giving the
-        // environment an id. A library that can't be read keeps the page.
-        if self
-            .art_pages
-            .get(&name)
-            .is_some_and(|page| page.identity.is_current(&self.paths, &name).is_changed())
-        {
+        // environment an id. A library that can't be read keeps the page,
+        // and so does a write in flight that may bring the page an id.
+        if self.art_pages.get(&name).is_some_and(|page| {
+            !page.upgrading() && page.identity.is_current(&self.paths, &name).is_changed()
+        }) {
             self.close_missing_art(&name);
         }
         self.leave_art();
@@ -197,23 +196,27 @@ impl App {
                 completion,
             );
         }
-        // Adopted before the replacement check, so an edit made during the
-        // write that gave the page its id doesn't close it.
-        if let Some(completion) = completion
-            && let Some(adopted) = completion.identity
-            && page.write_sequence == completion.sequence
+        // The result of the page's own write: the identity it brings is
+        // adopted before the replacement check, so an edit made during the
+        // write that gave the page its id doesn't close it. Pending keys are
+        // found by name, generation, and sequence, so the old identity in
+        // them doesn't matter.
+        let own_result =
+            completion.is_some_and(|completion| page.write_sequence == completion.sequence);
+        if own_result
+            && let Some(adopted) = completion.and_then(|completion| completion.identity)
             && page.identity != adopted
         {
-            self.pending_art_writes.remove(&(
-                name.clone(),
-                generation,
-                completion.sequence,
-                page.identity,
-            ));
             self.art_pages.get_mut(&name).unwrap().adopt(adopted);
+            self.shown.adopt_art(&name, adopted);
         }
         let page = &self.art_pages[&name];
-        if page.replaced(&self.paths) {
+        let replaced = if own_result {
+            page.replaced_now(&self.paths)
+        } else {
+            page.replaced(&self.paths)
+        };
+        if replaced {
             self.close_missing_art(&name);
             return self.drop_stale_art_event(
                 &name,
@@ -239,12 +242,13 @@ impl App {
                     self.pending_art_writes.remove(pending);
                 }
                 if let Some(completion) = completion {
-                    self.pending_art_writes.remove(&(
-                        name.clone(),
-                        generation,
-                        completion.sequence,
-                        page.identity,
-                    ));
+                    self.pending_art_writes.retain(
+                        |(pending_name, pending_generation, sequence, _)| {
+                            !(*pending_name == name
+                                && *pending_generation == generation
+                                && *sequence == completion.sequence)
+                        },
+                    );
                 }
                 let decodes = self.decodes.clone();
                 let key_available = self.steamgriddb_available;

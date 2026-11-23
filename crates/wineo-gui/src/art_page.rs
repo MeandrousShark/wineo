@@ -21,7 +21,7 @@ use wineo_core::steamgriddb::{self, Api, Game};
 use wineo_core::{art_fetch, desktop};
 
 use crate::ends::{MIN_LEFT, ends};
-use crate::flow::artwork::{self as flow_artwork, Match};
+use crate::flow::artwork::{self as flow_artwork, Match, NOT_REMOVED, NOT_STORED, changed_message};
 use crate::task;
 use crate::theme::Palette;
 use crate::ui::PickListStyle;
@@ -283,8 +283,24 @@ impl Page {
     /// Whether the environment is no longer the one the page opened on,
     /// through its cache. A library that can't be read doesn't say so, so
     /// the page stays and its next write reports the library.
+    ///
+    /// A page holding a fingerprint with a write in flight is never called
+    /// replaced here: the write may have given the environment an id that
+    /// an edit since doesn't change, and its own checks decide. Its result
+    /// brings the id to adopt or says "changed", and `replaced_now` asks
+    /// then.
     pub(crate) fn replaced(&self, paths: &Paths) -> bool {
+        !self.upgrading() && self.replaced_now(paths)
+    }
+
+    /// `replaced` without waiting for a write in flight.
+    pub(crate) fn replaced_now(&self, paths: &Paths) -> bool {
         currency(paths, &self.name, (self.identity, &self.identity_cache)).is_changed()
+    }
+
+    /// Whether a write in flight may bring an id for this page to adopt.
+    pub(crate) fn upgrading(&self) -> bool {
+        self.writing && self.identity.id().is_none()
     }
 
     /// Takes the identity a write upgraded to, once the app has cleared what
@@ -1521,6 +1537,19 @@ pub(crate) fn write_art(
     write_art_for(paths, name, (identity, &Mutex::default()), spot, path)
 }
 
+/// `write_art` with the identity a page holds, for tests that start from
+/// an older one.
+#[cfg(test)]
+pub(crate) fn write_art_with(
+    paths: &Paths,
+    name: &str,
+    identity: EnvironmentIdentity,
+    spot: &Spot,
+    path: Option<&Path>,
+) -> WriteOutcome {
+    write_art_for(paths, name, (identity, &Mutex::default()), spot, path)
+}
+
 /// Whether `identity` is still current, read through the page's cache. Only
 /// an early check: the write's own check under the art lock decides.
 fn currency(
@@ -1565,42 +1594,70 @@ fn refused(
     held: (EnvironmentIdentity, &Mutex<library::Cache>),
     step: Guarded,
 ) -> Option<String> {
+    let id = held.0.id().is_some();
     match currency(paths, name, held) {
         Currency::Current => None,
-        Currency::Changed => Some(format!(
-            "environment changed before {}",
-            match step {
-                Guarded::Store | Guarded::Remove => "artwork could be written",
-                Guarded::Entries => "desktop entries could be reconciled",
+        Currency::Changed => Some(match step {
+            Guarded::Store => changed_message(name, id, NOT_STORED),
+            Guarded::Remove => changed_message(name, id, NOT_REMOVED),
+            Guarded::Entries => {
+                "environment changed before desktop entries could be reconciled".into()
             }
-        )),
+        }),
         Currency::LibraryUnreadable => Some(step.unreadable(name)),
     }
 }
 
-/// The page's message for an environment that changed under a write, and the
-/// error's own for anything else. `what` is what could not be done to the art.
-fn changed_or(error: wineo_core::Error, what: &str) -> String {
-    match error {
-        wineo_core::Error::ArtEnvironmentChanged(_) => {
-            format!("environment changed before artwork could be {what}")
+/// The desktop entries after an icon changed: reconciled while the
+/// environment is current, and left alone otherwise. A replacement's say
+/// `changed` if given; a library that can't be read says so, except on a
+/// portable root, which has no entries.
+fn entries_after_icon(
+    paths: &Paths,
+    name: &str,
+    held: (EnvironmentIdentity, &Mutex<library::Cache>),
+    changed: Option<String>,
+) -> Option<String> {
+    match currency(paths, name, held) {
+        Currency::Current => reconcile_desktop(paths, name).err(),
+        Currency::Changed => changed,
+        Currency::LibraryUnreadable if desktop::supported(paths).is_ok() => {
+            Some(Guarded::Entries.unreadable(name))
         }
-        error => error.to_string(),
+        Currency::LibraryUnreadable => None,
+    }
+}
+
+/// The page's message for an environment that changed under a write, and the
+/// error's own for anything else. `id` is whether the write held an id, and
+/// `outcome` what wasn't done to the art.
+fn changed_or(error: &anyhow::Error, id: bool, outcome: &str) -> String {
+    match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<wineo_core::Error>())
+    {
+        Some(wineo_core::Error::ArtEnvironmentChanged(env)) => changed_message(env, id, outcome),
+        _ => error.to_string(),
     }
 }
 
 /// The page's identity for a write, upgraded first so a page on an
 /// environment from before ids writes, and checks from then on, with the id.
-/// Off the UI thread, since it may write `library.toml`.
+/// Off the UI thread, since it may write `library.toml`. Callers check
+/// first what they can, so a write that can't happen mints no id.
 fn upgraded(
     paths: &Paths,
     name: &str,
     identity: EnvironmentIdentity,
-    what: &str,
+    outcome: &str,
 ) -> Result<EnvironmentIdentity, WriteOutcome> {
-    identity
-        .upgrade(paths, name)
-        .map_err(|error| WriteOutcome::failed(changed_or(error, what)))
+    identity.upgrade(paths, name).map_err(|error| {
+        WriteOutcome::failed(changed_or(
+            &anyhow::Error::from(error),
+            identity.id().is_some(),
+            outcome,
+        ))
+    })
 }
 
 fn write_art_for(
@@ -1610,41 +1667,44 @@ fn write_art_for(
     spot: &Spot,
     path: Option<&Path>,
 ) -> WriteOutcome {
-    let (step, what) = if path.is_some() {
-        (Guarded::Store, "written")
+    let (step, outcome) = if path.is_some() {
+        (Guarded::Store, NOT_STORED)
     } else {
-        (Guarded::Remove, "removed")
+        (Guarded::Remove, NOT_REMOVED)
     };
-    let identity = match upgraded(paths, name, held.0, what) {
+    // What can be checked without an identity comes first.
+    let checked = match path {
+        Some(path) => flow_artwork::preview_with_format(path, spot.1).map(|_| ()),
+        None => art::check_something_to_remove(paths, name, spot.0.as_deref(), spot.1)
+            .map_err(|error| error.to_string()),
+    };
+    if let Err(error) = checked {
+        return WriteOutcome::failed(error);
+    }
+    let identity = match upgraded(paths, name, held.0, outcome) {
         Ok(identity) => identity,
         Err(outcome) => return outcome,
     };
+    let id = identity.id().is_some();
     let held = (identity, held.1);
     if let Some(error) = refused(paths, name, held, step) {
         return WriteOutcome::failed_with(error, identity);
     }
     let result = match path {
-        Some(path) => flow_artwork::preview_with_format(path, spot.1).and_then(|_| {
-            if let Some(error) = refused(paths, name, held, step) {
-                return Err(error);
-            }
-            art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, identity)
-                .map(|_| ())
-                .map_err(|error| changed_or(error, "written"))
-        }),
+        Some(path) => art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, identity)
+            .map(|_| ())
+            .map_err(|error| changed_or(&error.into(), id, NOT_STORED)),
         // Checked under the art lock, with the removal.
         None => art::remove(paths, name, spot.0.as_deref(), spot.1, identity)
             .map(|_| ())
-            .map_err(|error| changed_or(error, "removed")),
+            .map_err(|error| changed_or(&error.into(), id, NOT_REMOVED)),
     };
     if let Err(error) = result {
         return WriteOutcome::failed_with(error, identity);
     }
     let error = if spot.1 == Kind::Icon {
-        match refused(paths, name, held, Guarded::Entries) {
-            None => reconcile_desktop(paths, name).err(),
-            refusal => refusal,
-        }
+        let changed = refused(paths, name, held, Guarded::Entries);
+        entries_after_icon(paths, name, held, changed)
     } else {
         None
     };
@@ -1666,10 +1726,14 @@ fn use_image_for(
     mut progress: impl FnMut(u64, Option<u64>),
     token: &Token,
 ) -> WriteOutcome {
-    let identity = match upgraded(paths, name, held.0, "written") {
+    if token.is_canceled() {
+        return WriteOutcome::failed(wineo_core::Error::Canceled("download").to_string());
+    }
+    let identity = match upgraded(paths, name, held.0, NOT_STORED) {
         Ok(identity) => identity,
         Err(outcome) => return outcome,
     };
+    let id = identity.id().is_some();
     let held = (identity, held.1);
     if let Some(error) = refused(paths, name, held, Guarded::Store) {
         return WriteOutcome::failed_with(error, identity);
@@ -1697,12 +1761,13 @@ fn use_image_for(
         identity,
     );
     if let Err(error) = result {
-        return WriteOutcome::failed_with(stopped.unwrap_or_else(|| error.to_string()), identity);
+        let error = stopped.unwrap_or_else(|| changed_or(&error, id, NOT_STORED));
+        return WriteOutcome::failed_with(error, identity);
     }
-    let error = match (spot.1, currency(paths, name, held)) {
-        (Kind::Icon, Currency::Current) => reconcile_desktop(paths, name).err(),
-        (Kind::Icon, Currency::LibraryUnreadable) => Some(Guarded::Entries.unreadable(name)),
-        _ => None,
+    let error = if spot.1 == Kind::Icon {
+        entries_after_icon(paths, name, held, None)
+    } else {
+        None
     };
     WriteOutcome {
         changed: true,

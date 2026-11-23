@@ -889,7 +889,10 @@ fn picker_use_refuses_replacement_in_the_last_progress_callback() {
     );
     assert!(replaced);
     assert!(!outcome.changed());
-    assert!(outcome.error.unwrap().contains("environment"));
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("`game` was replaced. Artwork wasn't stored.")
+    );
     assert_eq!(
         fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
         fs::read(replacement).unwrap()
@@ -1041,7 +1044,10 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
 
     let outcome = worker.join().unwrap();
     assert!(!outcome.changed());
-    assert!(outcome.error.unwrap().contains("changed"));
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("`game` was replaced. Artwork wasn't stored.")
+    );
     assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), saved_art);
     assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), saved_record);
     let mut files: Vec<_> = fs::read_dir(&art_dir)
@@ -1142,7 +1148,7 @@ fn remove_checks_identity_under_the_art_lock() {
     // The page's own words for a changed environment.
     assert_eq!(
         outcome.error.as_deref(),
-        Some("environment changed before artwork could be removed")
+        Some("`game` was replaced. Artwork wasn't removed.")
     );
     assert!(grid.exists());
 }
@@ -1711,8 +1717,10 @@ fn break_library(paths: &Paths) {
 fn a_write_says_the_library_couldnt_be_read_rather_than_that_it_changed() {
     let (root, paths, page) = fixture();
     assert!(page.identity.id().is_some());
-    break_library(&paths);
     let source = png(root.path());
+    // Something to remove, so the removal gets as far as the library.
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, page.identity).unwrap();
+    break_library(&paths);
     for path in [Some(source.as_path()), None] {
         let outcome = write_art_for(
             &paths,
@@ -1879,7 +1887,7 @@ fn an_environment_replaced_inside_the_upgrade_gets_no_write_and_no_id_to_adopt()
     assert!(!outcome.changed());
     assert_eq!(
         outcome.error.as_deref(),
-        Some("environment changed before artwork could be written")
+        Some("`game` changed. Artwork wasn't stored.")
     );
     assert_eq!(outcome.identity(), None);
     assert!(!paths.art_dir("game").join("grid.png").exists());
@@ -1903,5 +1911,100 @@ fn a_page_whose_library_cant_take_an_id_keeps_its_fingerprint_and_still_writes()
     assert!(outcome.changed(), "{outcome:?}");
     assert_eq!(outcome.identity(), Some(page.identity));
     assert!(paths.art_dir("game").join("grid.png").exists());
+    assert_eq!(fs::read(paths.library_file()).unwrap(), before);
+}
+
+#[test]
+fn entries_left_for_an_unreadable_library_are_said_only_off_a_portable_root() {
+    for portable in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| home.clone().into_os_string()),
+            portable.then(|| root.path().join("portable")).as_deref(),
+        )
+        .unwrap();
+        let config = paths.environment_config("game");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        write_script(root.path().join("notepad"), "#!/bin/sh\nexit 0\n");
+        fs::write(
+            &config,
+            format!(
+                "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = '{}'\ndesktop = true\n",
+                root.path().join("notepad").display()
+            ),
+        )
+        .unwrap();
+        wineo_core::library::fresh(&paths, "game").unwrap();
+        let identity = EnvironmentIdentity::peek(&paths, "game").unwrap();
+        break_library(&paths);
+        let cache = Mutex::default();
+        let said = entries_after_icon(&paths, "game", (identity, &cache), None);
+        let expected = (!portable).then(|| {
+            "library.toml can't be read. The desktop entries for `game` weren't updated.".to_owned()
+        });
+        assert_eq!(said, expected, "portable {portable}");
+        assert!(
+            fs::read_dir(paths.applications_dir()).map_or(true, |mut dir| dir.next().is_none()),
+            "portable {portable}"
+        );
+    }
+}
+
+#[test]
+fn page_writes_that_cant_happen_give_an_old_environment_no_id() {
+    let (root, paths, page) = legacy_fixture();
+    fs::write(
+        paths.library_file(),
+        "schema_version = 1\n\n[environments.game]\nfavorite = true\n",
+    )
+    .unwrap();
+    let before = fs::read(paths.library_file()).unwrap();
+    let notes = root.path().join("notes.png");
+    fs::write(&notes, b"just some notes\n").unwrap();
+    // A file that won't decode, and a removal with nothing to remove.
+    for path in [Some(notes.as_path()), None] {
+        let outcome = write_art_for(
+            &paths,
+            "game",
+            page_identity(&page),
+            &(None, Kind::Grid),
+            path,
+        );
+        assert!(!outcome.changed());
+        assert_eq!(outcome.identity(), None);
+    }
+    // A use canceled before it starts.
+    let token = Token::new();
+    token.cancel();
+    let transport = ImageApi {
+        bytes: fs::read(png(root.path())).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {},
+        &token,
+    );
+    assert!(!outcome.changed());
+    assert!(transport.urls.borrow().is_empty());
+    // An art.toml that can't be read, for a removal.
+    let art = paths.art_dir("game");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join(art::ART_FILE), "[broken\n").unwrap();
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        None,
+    );
+    assert!(!outcome.changed());
     assert_eq!(fs::read(paths.library_file()).unwrap(), before);
 }
