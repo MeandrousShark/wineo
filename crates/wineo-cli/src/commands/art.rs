@@ -271,22 +271,17 @@ fn fetch_with(
     api: &Api,
     out: &mut dyn io::Write,
 ) -> anyhow::Result<bool> {
-    let (env, _) = split(request.spot);
-    let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
-    fetch_checked(paths, request, api, identity, out)
-}
-
-fn fetch_checked(
-    paths: &Paths,
-    request: &FetchRequest,
-    api: &Api,
-    identity: EnvironmentIdentity,
-    out: &mut dyn io::Write,
-) -> anyhow::Result<bool> {
     let (env, target) = split(request.spot);
+    // Only looked at before the pick, which can stay open for minutes, so
+    // a replacement while it is open is refused and picking nothing writes
+    // nothing.
+    let Some(seen) = EnvironmentIdentity::peek(paths, env) else {
+        return Err(wineo_core::Error::UnknownEnvironment(env.to_owned()).into());
+    };
     let Some(game) = fetch_game(paths, env, request, api)? else {
         return Ok(true);
     };
+    let identity = seen.upgrade(paths, env)?;
     if art::saved_game(paths, env)? != Some(game) {
         art::save_game_for(paths, env, game, identity, None)?;
     }

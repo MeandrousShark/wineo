@@ -868,3 +868,78 @@ fn a_fetch_after_a_creation_that_returned_no_identity_acquires_one() {
     assert!(paths.art_dir("hades").join("icon.png").exists());
     assert!(library_id(&paths).is_some());
 }
+
+/// A Steam environment, whose SteamGridDB game is looked up while `art
+/// fetch` would otherwise be asking which game it is.
+fn steam_environment(paths: &Paths) -> Fake {
+    fs::write(
+        paths.environment_config("hades"),
+        "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1145360\"\n",
+    )
+    .unwrap();
+    let mut fake = Fake::default();
+    fake.0.insert(
+        format!("{}/games/steam/1145360", steamgriddb::API),
+        (
+            200,
+            br#"{"success":true,"data":{"id":7,"name":"Hades"}}"#.to_vec(),
+        ),
+    );
+    fake.icon_only();
+    fake
+}
+
+fn icon_request() -> FetchRequest<'static> {
+    FetchRequest {
+        only: None,
+        kinds: ArtFetch::Icon,
+        ..fetch_request()
+    }
+}
+
+#[test]
+fn art_fetch_refuses_an_environment_replaced_while_the_game_is_picked() {
+    for with_id in [false, true] {
+        let (_root, paths) = paths();
+        let fake = steam_environment(&paths);
+        if with_id {
+            EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+        }
+        let swap = super::fake::Swap::new(fake, &paths, "hades").at("/games/steam/");
+        let mut out = Vec::new();
+        let result = fetch_with(&paths, &icon_request(), &Api::new(&swap, "k"), &mut out);
+        assert!(swap.done.get());
+        assert_eq!(result.unwrap_err().to_string(), CHANGED_ERROR, "{with_id}");
+        assert_eq!(String::from_utf8(out).unwrap(), "");
+        assert!(!paths.art_dir("hades").join("icon.png").exists());
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+    }
+}
+
+#[test]
+fn art_fetch_gives_an_old_environment_an_id_only_once_a_game_is_picked() {
+    let (_root, paths) = paths();
+    let mut fake = steam_environment(&paths);
+    let lookup = format!("{}/games/steam/1145360", steamgriddb::API);
+    let answer = fake.0.remove(&lookup).unwrap();
+    // No game, so nothing is picked and nothing is written.
+    let result = fetch_with(
+        &paths,
+        &icon_request(),
+        &Api::new(&fake, "k"),
+        &mut Vec::new(),
+    );
+    assert!(result.is_err());
+    assert!(!paths.library_file().exists());
+
+    fake.0.insert(lookup, answer);
+    let result = fetch_with(
+        &paths,
+        &icon_request(),
+        &Api::new(&fake, "k"),
+        &mut Vec::new(),
+    );
+    assert!(result.unwrap());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(library_id(&paths).is_some());
+}
