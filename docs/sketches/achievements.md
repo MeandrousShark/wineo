@@ -1,3 +1,8 @@
+---
+type: notes
+status: active
+tags: [gog, emulation]
+---
 # Achievements
 
 Earn and see achievements for GOG and emulated games outside Steam.

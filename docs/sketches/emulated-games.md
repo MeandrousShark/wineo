@@ -1,3 +1,8 @@
+---
+type: notes
+status: done
+tags: [emulation, imports]
+---
 # Emulated games
 
 Add and launch games from emulators like Dolphin, RetroArch, and Cemu,

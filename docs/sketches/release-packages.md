@@ -1,3 +1,8 @@
+---
+type: notes
+status: done
+tags: [packaging, release]
+---
 # Release packages (deb, rpm, AppImage)
 
 Install wineo on Debian, Ubuntu, Fedora, and other distros without

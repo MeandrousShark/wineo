@@ -1,3 +1,8 @@
+---
+type: notes
+status: active
+tags: [imports, library]
+---
 # Store library import: Epic
 
 Show whole store libraries in wineo, installed or not, and launch through

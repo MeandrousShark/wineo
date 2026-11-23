@@ -1,3 +1,8 @@
+---
+type: notes
+status: done
+tags: [core, perf]
+---
 # Simplification finds
 
 Places where wineo does avoidable work or repeats itself, found in a code

@@ -1,3 +1,8 @@
+---
+type: notes
+status: active
+tags: [core, validate]
+---
 # Clean up leftovers no environment owns
 
 Find and remove prefixes and GOG folder records left behind after an

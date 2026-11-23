@@ -1,3 +1,8 @@
+---
+type: notes
+status: active
+tags: [core]
+---
 # Race-free process group waits
 
 Stop installer runs, hooks, and Proton run settling from calling a process

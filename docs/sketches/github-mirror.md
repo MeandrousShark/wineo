@@ -1,3 +1,8 @@
+---
+type: notes
+status: done
+tags: [release, packaging]
+---
 # GitHub mirror and CI
 
 Publish wineo at 1.0 while the maintainer keeps working in Gitea. Backlog

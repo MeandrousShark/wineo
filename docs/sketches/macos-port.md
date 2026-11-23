@@ -1,3 +1,8 @@
+---
+type: notes
+status: active
+tags: [macos, runners]
+---
 # macOS port
 
 Run wineo and wineo-gui on Apple Silicon Macs with Wine, CrossOver-style
