@@ -27,6 +27,9 @@ rest get a plan when they come up, and the rows below have the details.
    same config file", so an edit doesn't read as a replacement, and artwork
    retries and long fetches can keep the environment they started with
    (plan 0071).
+2. GameCube adapter as a controller: navigate the Library with a GameCube
+   controller on Nintendo's USB adapter, and hand the adapter over before
+   a game starts (plan 0072). Ships with plan 0071 in 1.10.0.
 
 Store imports come after.
 
