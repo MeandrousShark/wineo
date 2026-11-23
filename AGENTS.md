@@ -51,5 +51,5 @@ The primary session reads `docs/workflow.md` at the start of each session.
 ## Plans
 
 - One file per plan: `docs/plans/NNNN-short-name.md`, numbered in order.
-- Each plan starts with a status line: `Status: draft`, `Status: approved`, or `Status: done`.
+- Each plan has a status line at the top, after any frontmatter: `Status: draft`, `Status: approved`, or `Status: done`. A plan with frontmatter keeps its `status` key in step with that line.
 - Only the maintainer approves a plan. Feature work beyond an approved plan needs a new or amended plan.
