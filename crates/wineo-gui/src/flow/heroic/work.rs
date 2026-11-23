@@ -428,13 +428,11 @@ pub(super) fn store_heroic_poster(
     app: &str,
     poster: Option<&BatchPoster>,
 ) -> Option<String> {
-    store_heroic_poster_for(
-        paths,
-        name,
-        app,
-        poster,
-        EnvironmentIdentity::read(paths, name),
-    )
+    // Only with a poster to store, so an import with none never gives the
+    // environment an id. A name core would refuse gets no identity, and
+    // core's own error.
+    let identity = poster.and_then(|_| EnvironmentIdentity::acquire(paths, name).ok().flatten());
+    store_heroic_poster_for(paths, name, app, poster, identity)
 }
 
 /// `store_heroic_poster`, stored only while the environment is still the one

@@ -88,10 +88,7 @@ fn manual(paths: &Paths, name: &str, bytes: &[u8]) -> PathBuf {
 }
 
 fn replace_environment(paths: &Paths) {
-    let config = paths.environment_config("hades");
-    let replacement = config.with_extension("replacement");
-    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
-    fs::rename(replacement, config).unwrap();
+    crate::test_support::replace_environment(paths, "hades").unwrap();
 }
 
 #[test]
@@ -170,13 +167,9 @@ fn fetch_steam_uses_the_app_id_and_only_requests_missing_kinds() {
 fn fetch_steam_stores_nothing_in_a_replaced_environment() {
     for replaced in [false, true] {
         let (_root, paths) = setup();
-        let identity = EnvironmentIdentity::read(&paths, "hades");
+        let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
         if replaced {
-            // A copy renamed over the config is a different file.
-            let config = paths.environment_config("hades");
-            let staged = config.with_extension("toml.new");
-            fs::copy(&config, &staged).unwrap();
-            fs::rename(&staged, &config).unwrap();
+            replace_environment(&paths);
         }
         let api = FakeApi::default();
         api.json(
@@ -223,12 +216,9 @@ fn fetch_steam_stores_nothing_in_a_replaced_environment() {
 fn publish_for_stores_only_in_the_environment_it_was_read_from() {
     for replaced in [false, true] {
         let (_root, paths) = setup();
-        let identity = EnvironmentIdentity::read(&paths, "hades");
+        let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
         if replaced {
-            let config = paths.environment_config("hades");
-            let staged = config.with_extension("toml.new");
-            fs::copy(&config, &staged).unwrap();
-            fs::rename(&staged, &config).unwrap();
+            replace_environment(&paths);
         }
         let image = Downloaded {
             asset: 3,
@@ -378,7 +368,9 @@ fn use_image_rejects_replacement_after_final_progress() {
         ..Image::default()
     };
     api.bytes(&image.url, JPEG);
-    let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+    let identity = EnvironmentIdentity::acquire(&paths, "hades")
+        .unwrap()
+        .unwrap();
     let source = manual(&paths, "source.png", PNG);
     art::set_manual(&paths, "hades", None, Kind::Grid, &source, None).unwrap();
     let art_dir = paths.art_dir("hades");
@@ -405,7 +397,10 @@ fn use_image_rejects_replacement_after_final_progress() {
     .unwrap_err();
 
     assert!(completed);
-    assert_ne!(EnvironmentIdentity::read(&paths, "hades"), Some(identity));
+    assert_eq!(
+        identity.is_current(&paths, "hades"),
+        crate::environment::Currency::Changed
+    );
     assert!(matches!(
         err.downcast_ref::<Error>(),
         Some(Error::ArtEnvironmentChanged(name)) if name == "hades"
@@ -423,7 +418,9 @@ fn use_image_rechecks_identity_after_waiting_for_art_lock() {
         url: "https://cdn.example/locked.jpg".into(),
         ..Image::default()
     };
-    let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+    let identity = EnvironmentIdentity::acquire(&paths, "hades")
+        .unwrap()
+        .unwrap();
     let source = manual(&paths, "source.png", PNG);
     art::set_manual(&paths, "hades", None, Kind::Grid, &source, None).unwrap();
     let art_dir = paths.art_dir("hades");
@@ -861,7 +858,7 @@ fn fetch_game_with(
         7,
         kinds,
         "en",
-        crate::environment::EnvironmentIdentity::read(paths, "hades"),
+        crate::environment::EnvironmentIdentity::acquire(paths, "hades").unwrap(),
         cancel,
     )
 }
@@ -979,7 +976,7 @@ fn fetch_game_canceled_during_its_last_kind_says_so() {
 #[test]
 fn fetch_kind_for_reads_a_removed_environment_as_changed() {
     let (_root, paths) = setup();
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
     fs::remove_file(paths.environment_config("hades")).unwrap();
     let api = FakeApi::default();
     let error = fetch_kind_for(

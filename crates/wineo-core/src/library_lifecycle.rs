@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::library::Id;
 use crate::paths::Paths;
 
 /// The reason a library write failed, without the refusal wrapper's own
@@ -19,8 +20,10 @@ pub(crate) fn cause(error: &Error) -> String {
         .to_owned()
 }
 
-pub(crate) fn fresh_warning(paths: &Paths, name: &str) -> Option<String> {
-    crate::library::fresh(paths, name).err().map(|error| {
+/// Stamps a new environment's library entry. The new id, or the warning to
+/// show when the stamp failed.
+pub(crate) fn fresh_warning(paths: &Paths, name: &str) -> Result<Id, String> {
+    crate::library::fresh(paths, name).map_err(|error| {
         format!(
             "Can't update library.toml: {}. {name} may show an old star or hidden flag once it can be read.",
             cause(&error)

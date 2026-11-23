@@ -21,7 +21,7 @@ use crate::art::{self, Kind, Source};
 use crate::art_fetch::{self, Fetched, Mode};
 use crate::cancel::Token;
 use crate::download::Transport;
-use crate::environment::{Environment, EnvironmentIdentity};
+use crate::environment::{Currency, Environment, EnvironmentIdentity};
 use crate::operation::Locks;
 use crate::paths::Paths;
 use crate::stats::{self, Imported};
@@ -183,24 +183,37 @@ pub fn import_with(
             }
             .into());
         }
-        // Writes below only land on this config, not one that replaced it
-        // while GOG was answering.
-        EnvironmentIdentity::read(paths, name)
-            .ok_or_else(|| crate::Error::UnknownEnvironment(name.to_owned()))?
+        // Writes below only land on this environment, not one that replaced
+        // it while GOG was answering. Nothing to write takes no identity,
+        // so it never gives an old environment an id.
+        if session.is_none() && (request.kinds.is_empty() || client.is_err()) {
+            None
+        } else {
+            Some(
+                EnvironmentIdentity::acquire(paths, name)?
+                    .ok_or_else(|| crate::Error::UnknownEnvironment(name.to_owned()))?,
+            )
+        }
     };
 
     let mut report = Report::default();
-    match session {
-        Some(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
-        Some(session) => playtime(paths, request, session, identity, token, &mut report),
-        None => report
+    match (session, identity) {
+        (Some(_), _) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
+        (Some(session), Some(identity)) => {
+            playtime(paths, request, session, identity, token, &mut report)
+        }
+        _ => report
             .notes
             .push("Skipped GOG playtime: not logged in to GOG.".to_owned()),
     }
-    match client {
-        Ok(_) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
-        Ok(client) => artwork(paths, request, client, identity, token, &mut report),
-        Err(error) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
+    match (client, identity) {
+        (Ok(_), _) if token.is_canceled() => report.notes.push(canceled("GOG artwork")),
+        (Ok(client), Some(identity)) => {
+            artwork(paths, request, client, identity, token, &mut report)
+        }
+        // No kinds were asked for.
+        (Ok(_), None) => {}
+        (Err(error), _) => report.notes.push(format!("Skipped GOG artwork: {error}.")),
     }
     Ok(report)
 }
@@ -246,9 +259,13 @@ fn playtime(
         return;
     };
     match raise_baseline(paths, request.name, gog_seconds, identity, token) {
-        Ok(Some(playtime)) => report.playtime = Some(playtime),
+        Ok(Ok(playtime)) => report.playtime = Some(playtime),
         Err(_) if token.is_canceled() => report.notes.push(canceled("GOG playtime")),
-        Ok(None) => report.notes.push(format!(
+        Ok(Err(Currency::LibraryUnreadable)) => report.notes.push(format!(
+            "Skipped GOG playtime: library.toml can't be read, so {} couldn't be checked.",
+            request.name
+        )),
+        Ok(Err(_)) => report.notes.push(format!(
             "Skipped GOG playtime: {} changed while it was being fetched.",
             request.name
         )),
@@ -260,15 +277,15 @@ fn playtime(
 
 /// Makes the imported baseline the larger of what it is and `gog_seconds`.
 /// The log is append-only, so a total that isn't larger appends nothing,
-/// and running this again changes nothing. None means the environment was
-/// replaced meanwhile.
+/// and running this again changes nothing. When the identity isn't current,
+/// nothing is written and the answer says why.
 fn raise_baseline(
     paths: &Paths,
     name: &str,
     gog_seconds: i64,
     identity: EnvironmentIdentity,
     token: &Token,
-) -> crate::Result<Option<Playtime>> {
+) -> crate::Result<Result<Playtime, Currency>> {
     // Held across the read and the append, so two runs can't each read a
     // small baseline and the smaller total be the one that lands last.
     #[cfg(test)]
@@ -278,8 +295,9 @@ fn raise_baseline(
     if token.is_canceled() {
         return Err(crate::Error::Canceled("playtime import"));
     }
-    if EnvironmentIdentity::read(paths, name) != Some(identity) {
-        return Ok(None);
+    match identity.is_current(paths, name) {
+        Currency::Current => {}
+        other => return Ok(Err(other)),
     }
     let existing = stats::read(&paths.stats_log(name))?.imported;
     let before_seconds = existing.map_or(0, |imported| imported.seconds);
@@ -300,7 +318,7 @@ fn raise_baseline(
             },
         )?;
     }
-    Ok(Some(Playtime {
+    Ok(Ok(Playtime {
         gog_seconds,
         before_seconds,
         after_seconds,

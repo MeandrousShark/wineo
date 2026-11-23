@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use jiff::Zoned;
 use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 
-use super::check::{is_newer, is_offset_datetime};
+use super::check::{is_id, is_newer, is_offset_datetime};
 use super::columns::{ListColumn, read_width};
 use super::preset::readable_name;
 use super::record::{Recorded, valid_app_id};
@@ -1227,6 +1227,7 @@ fn valid_entry_field(key: &str, item: &Item) -> bool {
     match key {
         "favorite" | "hidden" => item.as_bool().is_some(),
         "added" => is_offset_datetime(item),
+        "id" => is_id(item),
         // A newer release may have written it.
         _ => true,
     }

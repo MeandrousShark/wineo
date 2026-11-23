@@ -44,7 +44,7 @@ use super::store;
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::create::{self, CreateEvent, CreateRequest, Hooks};
-use crate::environment::{self, Environment};
+use crate::environment::{self, Environment, EnvironmentIdentity};
 use crate::gog::account::{CallError, Session};
 use crate::gog::folder::{
     self, AdoptionLock, Attempted, EntryType, FolderLock, FolderState, Journal, JournalKind,
@@ -1404,6 +1404,8 @@ fn run(
 
     // The state comes before the environment's config, so a crash between
     // them leaves a journal that installing again finishes.
+    // The id creation stamped, when this install created the environment.
+    let mut stamped = None;
     let guard = match &plan.creation {
         Some(creation) if !plan.has_config => {
             let request = CreateRequest {
@@ -1417,6 +1419,7 @@ fn run(
             let mut hooks = Forward { events };
             let created =
                 create::create_and_install_held(paths, request, None, guard, token, &mut hooks)?;
+            stamped = Some(created.identity.and_then(|identity| identity.id()));
             created
                 .guard
                 .ok_or_else(|| anyhow!("creating {name} let go of its locks"))?
@@ -1635,6 +1638,8 @@ fn run(
         Some(launch) => windows::add_target(paths, name, &plan.title, launch, plan.desktop)?,
         None => None,
     };
+    // After the target's write, so a fingerprint isn't already stale.
+    let identity = stamped.and_then(|stamped| EnvironmentIdentity::created(paths, name, stamped));
 
     // `installed` before the commit, so a crash after it already finds the
     // record matching what's committed.
@@ -1683,6 +1688,7 @@ fn run(
         target: added,
         reported_language: None,
         needs_restart: ran.needs_restart,
+        identity,
     })
 }
 

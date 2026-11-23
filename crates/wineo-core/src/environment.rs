@@ -13,6 +13,7 @@ use crate::edit;
 use crate::error::{Error, IoContext, Result};
 use crate::files;
 use crate::installer::Output;
+use crate::library::Id;
 use crate::name;
 use crate::operation::{LaunchReservation, Locks, Operation};
 use crate::paths::Paths;
@@ -29,10 +30,24 @@ pub struct Environment {
     pub config: EnvironmentConfig,
 }
 
-/// The config file identity used to distinguish a replaced environment with
-/// the same name.
+/// Which environment an operation began with, so it can tell the same
+/// environment from one removed and made again under its name.
+///
+/// It is the environment's id from its library entry when it has one, and
+/// otherwise the config file's fingerprint, which every config save
+/// changes. The two are never compared with each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnvironmentIdentity {
+pub struct EnvironmentIdentity(Held);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Held {
+    Id(Id),
+    File(Fingerprint),
+}
+
+/// The config file's device, inode, and birth time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Fingerprint {
     device: u64,
     inode: u64,
     /// Tells a config from a later one that reused its inode. None when the
@@ -40,8 +55,8 @@ pub struct EnvironmentIdentity {
     birth: Option<(i64, u32)>,
 }
 
-impl EnvironmentIdentity {
-    pub fn read(paths: &Paths, name: &str) -> Option<Self> {
+impl Fingerprint {
+    fn read(paths: &Paths, name: &str) -> Option<Self> {
         let stamp = files::stamp_following(&paths.environment_config(name))
             .ok()
             .flatten()?;
@@ -53,12 +68,234 @@ impl EnvironmentIdentity {
     }
 }
 
+/// Whether an identity still names the environment there now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Currency {
+    Current,
+    /// Removed, replaced, or for a fingerprint, saved since.
+    Changed,
+    /// An id can't be confirmed because `library.toml` can't be read.
+    LibraryUnreadable,
+}
+
+impl Currency {
+    pub fn is_current(self) -> bool {
+        self == Self::Current
+    }
+
+    /// Not the same as `!is_current()`: a library that can't be read hasn't
+    /// shown the environment to be another one.
+    pub fn is_changed(self) -> bool {
+        self == Self::Changed
+    }
+}
+
+/// What `EnvironmentIdentity::observe` saw, for comparing later with
+/// `matches` without reading again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Observed {
+    entry: SeenEntry,
+    /// None when the config is missing, which nothing matches.
+    fingerprint: Option<Fingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeenEntry {
+    Id(Option<Id>),
+    Unreadable,
+}
+
+impl Observed {
+    /// The id if the entry has one, else the fingerprint. None when the
+    /// config is missing.
+    pub fn preferred(&self) -> Option<EnvironmentIdentity> {
+        self.fingerprint?;
+        match self.entry {
+            SeenEntry::Id(Some(id)) => Some(EnvironmentIdentity(Held::Id(id))),
+            _ => self
+                .fingerprint
+                .map(|fingerprint| EnvironmentIdentity(Held::File(fingerprint))),
+        }
+    }
+}
+
+impl EnvironmentIdentity {
+    /// For the start of an art write with no identity yet: the entry's id,
+    /// minting one when it has none. The fingerprint when `library.toml`
+    /// can't be written. None for an environment that doesn't exist. Checks
+    /// the name, pending trash, and snapshot recovery first, as a write
+    /// would, so none of them ever writes `library.toml`.
+    pub fn acquire(paths: &Paths, name: &str) -> Result<Option<Self>> {
+        match Environment::ensure_exists(paths, name) {
+            Ok(()) => {}
+            Err(Error::UnknownEnvironment(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        match crate::library::read_id(paths, name) {
+            Ok(Some(id)) => return Ok(Some(Self(Held::Id(id)))),
+            Ok(None) => {}
+            Err(_) => return Ok(Self::fingerprint(paths, name)),
+        }
+        // Checked again under the library lock, so a mint can't bring back
+        // an entry `rm` or `validate` removed meanwhile.
+        let config = paths.environment_config(name);
+        match crate::library::adopt_or_mint_id(paths, name, || config.is_file()) {
+            Ok(id) => Ok(id.map(|id| Self(Held::Id(id)))),
+            Err(_) => Ok(Self::fingerprint(paths, name)),
+        }
+    }
+
+    /// For showing something: what the entry holds and the config's
+    /// fingerprint. Never writes or locks.
+    pub fn observe(paths: &Paths, name: &str) -> Observed {
+        if !name::is_valid(name) {
+            return Observed {
+                entry: SeenEntry::Id(None),
+                fingerprint: None,
+            };
+        }
+        Observed {
+            entry: match crate::library::read_id(paths, name) {
+                Ok(id) => SeenEntry::Id(id),
+                Err(_) => SeenEntry::Unreadable,
+            },
+            fingerprint: Fingerprint::read(paths, name),
+        }
+    }
+
+    /// `observe`'s preferred identity.
+    pub fn peek(paths: &Paths, name: &str) -> Option<Self> {
+        Self::observe(paths, name).preferred()
+    }
+
+    /// Whether this still names the environment called `name`, reading
+    /// `library.toml` itself. An id is current while the config exists and
+    /// the entry holds it; a fingerprint while the config's still matches,
+    /// whether or not an id has appeared since. Never writes.
+    pub fn is_current(&self, paths: &Paths, name: &str) -> Currency {
+        match self.0 {
+            Held::File(fingerprint) => file_currency(fingerprint, Fingerprint::read(paths, name)),
+            Held::Id(id) => {
+                if Fingerprint::read(paths, name).is_none() {
+                    return Currency::Changed;
+                }
+                id_currency(id, crate::library::read_id(paths, name).map_err(|_| ()))
+            }
+        }
+    }
+
+    /// `is_current` against what `observe` saw.
+    pub fn matches(&self, observed: &Observed) -> Currency {
+        match self.0 {
+            Held::File(fingerprint) => file_currency(fingerprint, observed.fingerprint),
+            Held::Id(id) => {
+                if observed.fingerprint.is_none() {
+                    return Currency::Changed;
+                }
+                id_currency(
+                    id,
+                    match observed.entry {
+                        SeenEntry::Id(entry) => Ok(entry),
+                        SeenEntry::Unreadable => Err(()),
+                    },
+                )
+            }
+        }
+    }
+
+    /// `is_current` reading the library through `cache`, for early checks
+    /// made often. A stale cache only delays noticing a change, so the
+    /// check that decides uses `is_current`.
+    pub fn is_current_with(
+        &self,
+        paths: &Paths,
+        name: &str,
+        cache: &mut crate::library::Cache,
+    ) -> Currency {
+        match self.0 {
+            Held::File(fingerprint) => file_currency(fingerprint, Fingerprint::read(paths, name)),
+            Held::Id(id) => {
+                if Fingerprint::read(paths, name).is_none() {
+                    return Currency::Changed;
+                }
+                id_currency(id, crate::library::cached_id(paths, name, cache))
+            }
+        }
+    }
+
+    /// For a fingerprint holder about to write: the id the environment
+    /// has, minting one if needed, as long as the config's fingerprint
+    /// still matches. Both are decided under the library lock, so a
+    /// removal and a new environment between them can't hand back the new
+    /// one's id. An id returns itself, and a library that can't be written
+    /// keeps the fingerprint while it still matches.
+    pub fn upgrade(self, paths: &Paths, name: &str) -> Result<Self> {
+        let Held::File(held) = self.0 else {
+            return Ok(self);
+        };
+        let changed = || Error::ArtEnvironmentChanged(name.to_owned());
+        match Environment::ensure_exists(paths, name) {
+            Ok(()) => {}
+            Err(Error::UnknownEnvironment(_)) => return Err(changed()),
+            Err(error) => return Err(error),
+        }
+        match crate::library::adopt_or_mint_id(paths, name, || {
+            Fingerprint::read(paths, name) == Some(held)
+        }) {
+            Ok(Some(id)) => Ok(Self(Held::Id(id))),
+            Ok(None) => Err(changed()),
+            // The library refused before the check under its lock could
+            // run, so the fingerprint is checked here instead.
+            Err(_) if Fingerprint::read(paths, name) == Some(held) => Ok(self),
+            Err(_) => Err(changed()),
+        }
+    }
+
+    /// The identity a creation path hands back: the id its stamp wrote, or
+    /// when the stamp failed, the fingerprint, which the caller takes after
+    /// its last config write.
+    pub(crate) fn created(paths: &Paths, name: &str, stamped: Option<Id>) -> Option<Self> {
+        match stamped {
+            Some(id) => Some(Self(Held::Id(id))),
+            None => Self::fingerprint(paths, name),
+        }
+    }
+
+    pub(crate) fn fingerprint(paths: &Paths, name: &str) -> Option<Self> {
+        Fingerprint::read(paths, name).map(|fingerprint| Self(Held::File(fingerprint)))
+    }
+
+    /// The id this holds, None for a fingerprint.
+    pub fn id(&self) -> Option<Id> {
+        match self.0 {
+            Held::Id(id) => Some(id),
+            Held::File(_) => None,
+        }
+    }
+}
+
+fn file_currency(held: Fingerprint, now: Option<Fingerprint>) -> Currency {
+    if now == Some(held) {
+        Currency::Current
+    } else {
+        Currency::Changed
+    }
+}
+
+fn id_currency(held: Id, entry: std::result::Result<Option<Id>, ()>) -> Currency {
+    match entry {
+        Ok(Some(id)) if id == held => Currency::Current,
+        Ok(_) => Currency::Changed,
+        Err(()) => Currency::LibraryUnreadable,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HeroicIdSnapshot {
     text: String,
     device: u64,
     inode: u64,
-    /// See `EnvironmentIdentity`.
+    /// See `Fingerprint`.
     birth: Option<(i64, u32)>,
 }
 
@@ -322,7 +559,8 @@ impl Environment {
 
     /// Writes a native environment's config. With an `exe`, which is checked
     /// the way a launch resolves it, it gets one default target named after
-    /// the environment, with a desktop entry when `desktop` is set.
+    /// the environment, with a desktop entry when `desktop` is set. Returns
+    /// the environment and the identity its art step carries.
     pub fn create_native(
         paths: &Paths,
         global: &GlobalConfig,
@@ -330,7 +568,7 @@ impl Environment {
         exe: Option<&str>,
         desktop: bool,
         warnings: impl FnMut(String),
-    ) -> Result<Self> {
+    ) -> Result<(Self, Option<EnvironmentIdentity>)> {
         Self::create_native_titled(paths, global, name, exe, None, desktop, warnings)
     }
 
@@ -345,7 +583,7 @@ impl Environment {
         title: Option<&str>,
         desktop: bool,
         mut warnings: impl FnMut(String),
-    ) -> Result<Self> {
+    ) -> Result<(Self, Option<EnvironmentIdentity>)> {
         Self::plan_native(paths, global, name, exe)?;
         let title = title.map(normalize_env_title).transpose()?;
         let path = paths.environment_config(name);
@@ -371,10 +609,14 @@ impl Environment {
         }
         let _guard = Locks::new(paths).config(&path)?;
         write_new(&path, &doc.to_string())?;
-        if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
-            warnings(warning);
-        }
-        Self::load(paths, name)
+        let stamped = crate::library_lifecycle::fresh_warning(paths, name)
+            .map_err(&mut warnings)
+            .ok();
+        let environment = Self::load(paths, name)?;
+        Ok((
+            environment,
+            EnvironmentIdentity::created(paths, name, stamped),
+        ))
     }
 
     pub fn prefix(&self, paths: &Paths) -> Result<PathBuf> {
@@ -921,3 +1163,6 @@ fn write_new(path: &Path, contents: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod identity_tests;

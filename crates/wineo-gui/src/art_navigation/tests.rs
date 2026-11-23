@@ -265,6 +265,29 @@ fn refresh_closes_and_drops_art_after_external_removal() {
 }
 
 #[test]
+fn an_unreadable_library_keeps_the_art_page_open() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::ContextArt("game".into()));
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let generation = app.art_pages["game"].generation;
+    fs::write(app.paths.library_file(), "[broken\n").unwrap();
+
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    let _ = app.update(Message::ArtPage(
+        "game".into(),
+        generation,
+        art_page::Event::Back,
+    ));
+    assert!(app.art_pages.contains_key("game"));
+
+    // Reopening looks at the library itself, not the page's cache.
+    let _ = app.update(Message::ContextArt("game".into()));
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert!(app.art_pages.contains_key("game"));
+}
+
+#[test]
 fn refresh_closes_art_after_external_rename() {
     let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
@@ -285,21 +308,11 @@ fn refresh_closes_art_after_external_rename() {
 
 #[test]
 fn same_name_recreation_gets_a_fresh_art_page() {
-    let (root, mut app) = fixture();
+    let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
     let old_generation = app.art_pages["game"].generation;
     let old_identity = app.art_pages["game"].identity;
-    let retained = root.path().join("retained-game.toml");
-    fs::rename(app.paths.environment_config("game"), retained).unwrap();
-    Environment::create_native(
-        &app.paths,
-        &GlobalConfig::default(),
-        "game",
-        None,
-        false,
-        |_| {},
-    )
-    .unwrap();
+    wineo_core::test_support::replace_environment(&app.paths, "game").unwrap();
 
     let cards = crate::library::load_library(&app.paths).unwrap();
     let _ = app.update(Message::Loaded(Ok(cards)));
@@ -756,4 +769,37 @@ fn the_art_page_searches_for_what_the_card_shows() {
     app.merge(titled(&app, "game", "  "));
     let _ = app.update(Message::OpenArt);
     assert_eq!(change_search(&mut app, "game").as_deref(), Some("game"));
+}
+
+#[test]
+fn a_cached_page_holding_a_fingerprint_is_reopened_after_another_process_mints() {
+    let (_root, mut app) = fixture();
+    let config = app.paths.environment_config("legacy");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    let page = &app.art_pages["legacy"];
+    let (generation, identity) = (page.generation, page.identity);
+    assert_eq!(identity.id(), None);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Back,
+    ));
+    assert!(app.art_page.is_none());
+    // Leaving moves the cached page to a new generation, which a page made
+    // anew wouldn't have.
+    let generation = app.art_pages["legacy"].generation;
+
+    let minted = art_page::EnvironmentIdentity::acquire(&app.paths, "legacy")
+        .unwrap()
+        .unwrap();
+    assert!(minted.id().is_some());
+    let _ = app.update(Message::ContextArt("legacy".into()));
+
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    let page = &app.art_pages["legacy"];
+    assert_eq!(page.generation, generation);
+    assert_eq!(page.identity, identity);
 }

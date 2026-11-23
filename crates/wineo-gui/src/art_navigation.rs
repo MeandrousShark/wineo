@@ -27,16 +27,21 @@ impl App {
             .find(|card| card.name == name)
             .map(|card| card.display_title.clone())
             .unwrap_or_default();
-        let Some(identity) = art_page::EnvironmentIdentity::read(&self.paths, &name) else {
+        // Never writes, so opening the page leaves an old environment
+        // without an id until its first art write.
+        let Some(identity) = art_page::EnvironmentIdentity::peek(&self.paths, &name) else {
             self.close_missing_art(&name);
             return Task::none();
         };
         self.tool_page = None;
         self.portable_page = None;
+        // Checked against what the cached page holds, not the new peek, so a
+        // page holding a fingerprint survives another process giving the
+        // environment an id. A library that can't be read keeps the page.
         if self
             .art_pages
             .get(&name)
-            .is_some_and(|page| page.identity != identity)
+            .is_some_and(|page| page.identity.is_current(&self.paths, &name).is_changed())
         {
             self.close_missing_art(&name);
         }
@@ -104,9 +109,7 @@ impl App {
             self.close_missing_art(&name);
             return Task::none();
         };
-        if !cards.iter().any(|card| card.name == name)
-            || art_page::EnvironmentIdentity::read(&self.paths, &name) != Some(page.identity)
-        {
+        if !cards.iter().any(|card| card.name == name) || page.replaced(&self.paths) {
             self.close_missing_art(&name);
             return Task::none();
         }
@@ -194,7 +197,7 @@ impl App {
                 completion,
             );
         }
-        if art_page::EnvironmentIdentity::read(&self.paths, &name) != Some(page.identity) {
+        if page.replaced(&self.paths) {
             self.close_missing_art(&name);
             return self.drop_stale_art_event(
                 &name,

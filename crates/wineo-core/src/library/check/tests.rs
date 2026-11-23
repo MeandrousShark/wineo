@@ -826,3 +826,20 @@ fn list_columns_that_is_not_a_table_is_invalid() {
         [] as [String; 0]
     );
 }
+
+#[test]
+fn an_id_is_a_known_entry_key_and_a_malformed_one_is_a_field_finding() {
+    let inspection = inspect_text(
+        "schema_version = 1\n[environments.hades]\nid = \"3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5\"\n[environments.celeste]\nid = \"nope\"\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: environments.celeste.id: expected 32 lowercase hex characters, which wineo writes itself, found \"nope\""
+        ]
+    );
+}

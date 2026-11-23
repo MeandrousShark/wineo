@@ -246,7 +246,7 @@ pub fn execute_reviewed(
         )
     })?;
     let environment = Environment::load(paths, &reviewed.new_name)?;
-    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &reviewed.new_name) {
+    if let Err(warning) = crate::library_lifecycle::fresh_warning(paths, &reviewed.new_name) {
         progress(ImportProgress::Warning(warning));
     }
     Ok(environment)
@@ -489,7 +489,7 @@ pub fn execute_native(
         None => err,
     })?;
     let environment = Environment::load(paths, &reviewed.new_name)?;
-    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &reviewed.new_name) {
+    if let Err(warning) = crate::library_lifecycle::fresh_warning(paths, &reviewed.new_name) {
         warnings(warning);
     }
     Ok(environment)

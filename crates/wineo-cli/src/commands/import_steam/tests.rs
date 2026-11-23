@@ -47,7 +47,7 @@ fn hades() -> Fake {
 /// request containing `replace_at` when that is given.
 fn fetch(replace_at: Option<&'static str>) -> (Paths, String, tempfile::TempDir) {
     let (root, paths) = imported_environment();
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
     let swap = Swap::new(hades(), &paths, "hades").at(replace_at.unwrap_or(""));
     swap.done.set(replace_at.is_none());
     let mut err = Vec::new();
@@ -100,7 +100,7 @@ fn two_kinds() -> Fake {
 #[test]
 fn a_replacement_that_stops_two_kinds_is_warned_about_once() {
     let (_root, paths) = imported_environment();
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
     let swap = Swap::new(two_kinds(), &paths, "hades").at("/icons/");
     let mut err = Vec::new();
     store_art(
@@ -119,7 +119,7 @@ fn a_replacement_that_stops_two_kinds_is_warned_about_once() {
 /// Runs `imported` for the game as `applied`, fetching through `fake`.
 fn run_imported(replaced: bool) -> (Paths, tempfile::TempDir) {
     let (root, paths) = imported_environment();
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
     let applied = Applied {
         environment: Environment::load(&paths, "hades").unwrap(),
         identity,

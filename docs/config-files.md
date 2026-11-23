@@ -395,7 +395,9 @@ an older release only loses those preferences. The one exception is
 `~/.config/wineo/library.toml` holds how the desktop app shows each
 environment: favorites, hidden games, when it was added, the saved sort
 and grid view, saved views (presets), the app's theme, the controller's
-buttons, and which Steam games it has dealt with.
+buttons, and which Steam games it has dealt with. It also holds each
+environment's `id`, which `wineo` and the desktop app both use to store
+artwork in the right environment.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -445,6 +447,7 @@ page_right = "y"
 [environments.hades]
 favorite = true
 added = 2026-10-18T19:30:00Z
+id = "3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5"
 
 [environments.old-demo]
 hidden = true
@@ -624,6 +627,20 @@ when wineo created or imported it, a TOML datetime in UTC; environments
 made before wineo recorded it have none and sort last by date added. A
 clone starts with a fresh entry, a removed environment's entry is dropped
 (and kept with it in the trash), and a portable copy takes its entry along.
+
+`id` is wineo's own: 32 lowercase hex characters, written when an
+environment is created, imported, or cloned. It tells an environment apart
+from a later one with the same name, so artwork that was being fetched for
+one is never stored in the other, while editing an environment keeps its
+id. Don't edit it. An environment from before 1.10.0 gets one the first
+time artwork is written for it, and removing the key only makes wineo
+write a new one then. Anything but 32 lowercase hex characters reads as no
+id with a `validate` warning, and repair drops it. An older wineo ignores
+the key and keeps it, and `validate` there reports it as unknown, once for
+each environment that has one. While `library.toml` can't be written,
+wineo tells environments apart by their config file instead, as 1.9.0
+did, so an edit made while artwork is being fetched stops that artwork
+from being stored.
 
 When the file doesn't parse, or has a `schema_version` this wineo doesn't
 support, favorites and hidden games are off and every write to it is refused,

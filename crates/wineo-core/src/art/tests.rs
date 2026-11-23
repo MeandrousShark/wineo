@@ -571,7 +571,9 @@ fn manual_art_rechecks_identity_after_waiting_for_art_lock() {
     let (root, paths) = store();
     let prior = source(root.path(), "prior.png", PNG);
     set_manual(&paths, "hades", None, Kind::Grid, &prior, None).unwrap();
-    let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+    let identity = EnvironmentIdentity::acquire(&paths, "hades")
+        .unwrap()
+        .unwrap();
     let replacement = source(root.path(), "replacement.jpg", JPEG);
     let art_dir = paths.art_dir("hades");
     let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
@@ -596,14 +598,11 @@ fn manual_art_rechecks_identity_after_waiting_for_art_lock() {
         .recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
-    let config = paths.environment_config("hades");
-    let next = config.with_extension("replacement");
-    fs::write(&next, fs::read(&config).unwrap()).unwrap();
-    fs::rename(next, config).unwrap();
+    crate::test_support::replace_environment(&paths, "hades").unwrap();
     drop(held);
 
     let err = worker.join().unwrap().unwrap_err();
-    assert_ne!(EnvironmentIdentity::read(&paths, "hades"), Some(identity));
+    assert_eq!(identity.is_current(&paths, "hades"), Currency::Changed);
     assert!(matches!(
         err,
         Error::ArtEnvironmentChanged(name) if name == "hades"
@@ -960,13 +959,8 @@ fn saving_writes_through_a_symlinked_art_file() {
     .check();
 }
 
-/// Swaps the config for a copy, which is a different file as far as its
-/// identity goes.
 fn replace_config(paths: &Paths, name: &str) {
-    let config = paths.environment_config(name);
-    let staged = config.with_extension("replacement");
-    fs::copy(&config, &staged).unwrap();
-    fs::rename(staged, config).unwrap();
+    crate::test_support::replace_environment(paths, name).unwrap();
 }
 
 #[test]
@@ -976,7 +970,7 @@ fn every_manual_write_and_removal_refuses_a_replaced_environment() {
     let file = source(root.path(), "grid.png", PNG);
     let kept = source(root.path(), "kept.png", PNG);
     set_manual(&paths, "hades", None, Kind::Logo, &kept, None).unwrap();
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
     // Written under the identity it was read with, as before.
     set_manual_as(
         &paths,
@@ -1022,7 +1016,7 @@ fn every_manual_write_and_removal_refuses_a_replaced_environment() {
 fn a_removed_environment_reads_as_changed_before_anything_else() {
     let (root, paths) = store();
     let file = source(root.path(), "grid.png", PNG);
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
     fs::remove_file(paths.environment_config("hades")).unwrap();
     let changed =
         |error: Error| matches!(error, Error::ArtEnvironmentChanged(name) if name == "hades");

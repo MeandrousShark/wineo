@@ -20,6 +20,7 @@ fn execute(
     progress: impl FnMut(ImportProgress),
 ) -> Result<Environment> {
     execute_reviewed(paths, global, request, None, None, cancel, progress)
+        .map(|(environment, _)| environment)
 }
 
 fn copy_runner(
@@ -332,7 +333,7 @@ fn reviewed_import_registers_installed_dxvk_and_vkd3d_builds() {
         ..ImportedSettings::default()
     };
 
-    let env = execute_reviewed(
+    let (env, _) = execute_reviewed(
         &paths,
         &global,
         ImportRequest {
@@ -814,7 +815,7 @@ fn execute_copies_prefix_and_registers_heroic_settings_atomically() {
         heroic_id: Some("kZXLzzKAFWBP4dpRatpPHu".to_owned()),
         ..ImportedSettings::default()
     };
-    let env = execute_reviewed(
+    let (env, _) = execute_reviewed(
         &paths,
         &global,
         ImportRequest {

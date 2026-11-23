@@ -601,7 +601,7 @@ fn late_art_and_add_results_use_current_key_availability() {
 
         let mut app = App::boot(paths.clone()).0;
         let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, initial));
-        let identity = art_page::EnvironmentIdentity::read(&paths, "game").unwrap();
+        let identity = art_page::EnvironmentIdentity::peek(&paths, "game").unwrap();
         app.art_page = Some("game".to_owned());
         app.art_pages.insert(
             "game".to_owned(),

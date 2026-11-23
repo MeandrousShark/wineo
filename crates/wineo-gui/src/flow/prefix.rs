@@ -948,7 +948,7 @@ impl Page {
                 task::join(
                     move || {
                         let global = GlobalConfig::load(&paths)?;
-                        let imported = import::execute_reviewed(
+                        let (imported, _) = import::execute_reviewed(
                             &paths,
                             &global,
                             request,

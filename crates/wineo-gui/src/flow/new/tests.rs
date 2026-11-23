@@ -4184,7 +4184,7 @@ fn art_lands_after_a_target_was_added_to_the_new_environment() {
     page.draft.title = "Hades".to_owned();
     let name = page.draft.environment_name();
     let paths = page.paths.clone();
-    Environment::create_native_titled(
+    let (_, created) = Environment::create_native_titled(
         &paths,
         &GlobalConfig::default(),
         &name,
@@ -4194,7 +4194,14 @@ fn art_lands_after_a_target_was_added_to_the_new_environment() {
         |_| {},
     )
     .unwrap();
-    let created = wineo_core::environment::EnvironmentIdentity::read(&paths, &name);
+    let created = created.unwrap();
+    let inode = || {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(paths.environment_config(&name))
+            .unwrap()
+            .ino()
+    };
+    let before = inode();
     // Everything after creation runs the production fetch, over canned answers.
     let answers = canned_hades();
     page.fetcher = Arc::new(move |paths, name, title, token| {
@@ -4211,11 +4218,8 @@ fn art_lands_after_a_target_was_added_to_the_new_environment() {
     page.target_desktop = true;
     let task = page.update(Event::AddTarget);
     drive(&mut page, task, true);
-    assert_ne!(
-        wineo_core::environment::EnvironmentIdentity::read(&paths, &name),
-        created,
-        "the config was rewritten"
-    );
+    assert_ne!(inode(), before, "the config was rewritten");
+    assert!(created.is_current(&paths, &name).is_current());
     assert_eq!(page.stage, Stage::Finished);
     let report = page.report.as_ref().unwrap();
     assert_eq!(report.art_error, None, "{:?}", report.notes);
@@ -4244,10 +4248,7 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
     let replace = {
         let paths = paths.clone();
         Arc::new(move || {
-            let config = paths.environment_config("hades");
-            let staged = config.with_extension("replacement");
-            std::fs::copy(&config, &staged).unwrap();
-            std::fs::rename(staged, config).unwrap();
+            wineo_core::test_support::replace_environment(&paths, "hades").unwrap();
         })
     };
     let mut answers = canned_hades();

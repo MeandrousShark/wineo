@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{Arch, EnvironmentConfig, GlobalConfig, HooksSetting, Target};
-use crate::environment::Environment;
+use crate::environment::{Environment, EnvironmentIdentity};
 use crate::error::Error;
 use crate::gamescope::GamescopeSetting;
 use crate::install::{self, Wanted};
@@ -369,7 +369,7 @@ pub fn execute_reviewed(
     settings: Option<&ImportedSettings>,
     cancel: &Token,
     mut progress: impl FnMut(ImportProgress),
-) -> Result<Environment> {
+) -> Result<(Environment, Option<EnvironmentIdentity>)> {
     if !name::is_valid(&request.name) {
         bail!("invalid environment name `{}`", request.name);
     }
@@ -544,10 +544,15 @@ pub fn execute_reviewed(
             config_path.display()
         )
     })?;
-    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &request.name) {
-        progress(ImportProgress::Warning(warning));
-    }
-    Ok(environment)
+    let stamped = match crate::library_lifecycle::fresh_warning(paths, &request.name) {
+        Ok(id) => Some(id),
+        Err(warning) => {
+            progress(ImportProgress::Warning(warning));
+            None
+        }
+    };
+    let identity = EnvironmentIdentity::created(paths, &request.name, stamped);
+    Ok((environment, identity))
 }
 
 pub(crate) fn ensure_same_review(expected: &Inspection, actual: &Inspection) -> Result<()> {

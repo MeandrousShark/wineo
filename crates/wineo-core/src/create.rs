@@ -9,7 +9,7 @@ use crate::build_lock;
 use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::desktop;
-use crate::environment::{Environment, NewEnvironment};
+use crate::environment::{Environment, EnvironmentIdentity, NewEnvironment};
 use crate::error::Error;
 use crate::install::{self, Wanted};
 use crate::installer::{self, Installer, Output};
@@ -172,6 +172,8 @@ pub struct Created {
     pub prefix: PathBuf,
     pub created_prefix: bool,
     pub target: TargetOutcome,
+    /// The new environment's identity, for its art step to carry.
+    pub identity: Option<EnvironmentIdentity>,
     pub guard: Guard,
     _build_guard: Option<build_lock::Guard>,
 }
@@ -398,9 +400,13 @@ fn apply_with(
             }
         },
     )?;
-    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &environment.name) {
-        events(CreateEvent::Warning(warning));
-    }
+    let stamped = match crate::library_lifecycle::fresh_warning(paths, &environment.name) {
+        Ok(id) => Some(id),
+        Err(warning) => {
+            events(CreateEvent::Warning(warning));
+            None
+        }
+    };
     events(CreateEvent::Saved);
     let target = match exe {
         Some(exe) if add_default_target(paths, &environment, &exe, target_title, desktop)? => {
@@ -409,6 +415,9 @@ fn apply_with(
         Some(_) => TargetOutcome::ExeNotFound,
         None => TargetOutcome::None,
     };
+    // After the target's write, since a fingerprint taken before it would
+    // already be stale.
+    let identity = EnvironmentIdentity::created(paths, &environment.name, stamped);
     events(CreateEvent::Registered {
         name: environment.name.clone(),
         stored_prefix: environment.wine()?.prefix.clone(),
@@ -423,6 +432,7 @@ fn apply_with(
             prefix,
             created_prefix,
             target,
+            identity,
             guard,
             _build_guard: build_guard,
         });
@@ -455,6 +465,7 @@ fn apply_with(
         prefix,
         created_prefix,
         target,
+        identity,
         guard,
         _build_guard: build_guard,
     })
@@ -532,6 +543,8 @@ pub struct Installed<S> {
     pub prefix: PathBuf,
     pub created_prefix: bool,
     pub target: TargetOutcome,
+    /// As `Created::identity`.
+    pub identity: Option<EnvironmentIdentity>,
     pub step: Stepped<S>,
     /// The environment's and prefix's locks, still held, when the caller
     /// handed them in with `create_and_install_held`. Lost when the step
@@ -602,6 +615,7 @@ fn create_and_install_with<H: Hooks>(
         prefix,
         created_prefix,
         target,
+        identity,
         guard,
         _build_guard: build_guard,
     } = created;
@@ -653,6 +667,7 @@ fn create_and_install_with<H: Hooks>(
         prefix,
         created_prefix,
         target,
+        identity,
         step,
         guard: guard.filter(|_| keep),
         build_guard,

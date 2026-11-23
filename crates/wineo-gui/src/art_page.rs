@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iced::widget::{column, container, image, pick_list, row, scrollable, stack, text, text_input};
@@ -10,8 +10,10 @@ use wineo_core::art::{self, Kind, Origin, Resolved, Source};
 use wineo_core::cancel::Token;
 use wineo_core::config::{self, GlobalConfig};
 use wineo_core::download::Https;
+use wineo_core::environment::Currency;
 use wineo_core::environment::Environment;
 pub(crate) use wineo_core::environment::EnvironmentIdentity;
+use wineo_core::library;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 use wineo_core::secret_service::SecretServiceKeyring;
@@ -176,6 +178,9 @@ pub(crate) struct Page {
     pub(crate) title: String,
     pub(crate) generation: u64,
     pub(crate) identity: EnvironmentIdentity,
+    /// For the early checks that `identity` is still current, made on every
+    /// event and download chunk. The checks that decide don't use it.
+    pub(crate) identity_cache: Arc<Mutex<library::Cache>>,
     showing: Option<String>,
     targets: Vec<String>,
     game_id: Option<u64>,
@@ -226,6 +231,7 @@ impl Page {
             title: String::new(),
             generation,
             identity,
+            identity_cache: Arc::default(),
             showing: None,
             targets: Vec::new(),
             game_id: None,
@@ -256,6 +262,13 @@ impl Page {
 
     pub(crate) fn busy(&self) -> bool {
         self.writing
+    }
+
+    /// Whether the environment is no longer the one the page opened on,
+    /// through its cache. A library that can't be read doesn't say so, so
+    /// the page stays and its next write reports the library.
+    pub(crate) fn replaced(&self, paths: &Paths) -> bool {
+        currency(paths, &self.name, (self.identity, &self.identity_cache)).is_changed()
     }
 
     #[cfg(test)]
@@ -876,6 +889,7 @@ impl Page {
         let paths = paths.clone();
         let name = self.name.clone();
         let identity = self.identity;
+        let cache = self.identity_cache.clone();
         let event_spot = spot.clone();
         let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
         let work = Task::perform(
@@ -892,7 +906,7 @@ impl Page {
                         Ok::<_, String>(use_image_for(
                             &paths,
                             &name,
-                            identity,
+                            (identity, &cache),
                             &spot,
                             &Api::new(&https, &key.value),
                             &image,
@@ -949,10 +963,11 @@ impl Page {
         let paths = paths.clone();
         let name = self.name.clone();
         let identity = self.identity;
+        let cache = self.identity_cache.clone();
         Step::task(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    write_art_for(&paths, &name, identity, &spot, path.as_deref())
+                    write_art_for(&paths, &name, (identity, &cache), &spot, path.as_deref())
                 })
                 .await
                 .unwrap_or_else(|error| WriteOutcome::failed(error.to_string()))
@@ -1467,10 +1482,71 @@ pub(crate) fn write_art(
     spot: &Spot,
     path: Option<&Path>,
 ) -> WriteOutcome {
-    let Some(identity) = EnvironmentIdentity::read(paths, name) else {
+    let Some(identity) = EnvironmentIdentity::peek(paths, name) else {
         return WriteOutcome::failed("environment no longer exists".into());
     };
-    write_art_for(paths, name, identity, spot, path)
+    write_art_for(paths, name, (identity, &Mutex::default()), spot, path)
+}
+
+/// Whether `identity` is still current, read through the page's cache. Only
+/// an early check: the write's own check under the art lock decides.
+fn currency(
+    paths: &Paths,
+    name: &str,
+    (identity, cache): (EnvironmentIdentity, &Mutex<library::Cache>),
+) -> Currency {
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    identity.is_current_with(paths, name, &mut cache)
+}
+
+/// What an early check is about to let happen.
+#[derive(Clone, Copy)]
+enum Guarded {
+    Store,
+    Remove,
+    /// The desktop entries, after an icon is already stored or removed.
+    Entries,
+}
+
+impl Guarded {
+    /// The message for a library that can't be read, which isn't a
+    /// replacement. Artwork's is in core's words.
+    fn unreadable(self, name: &str) -> String {
+        let outcome = match self {
+            Self::Store => "stored",
+            Self::Remove => "removed",
+            Self::Entries => {
+                return format!(
+                    "library.toml can't be read. The desktop entries for `{name}` weren't updated."
+                );
+            }
+        };
+        wineo_core::Error::ArtLibraryUnreadable {
+            env: name.to_owned(),
+            outcome,
+        }
+        .to_string()
+    }
+}
+
+/// Why an early check stops `step`, or None to go on.
+fn refused(
+    paths: &Paths,
+    name: &str,
+    held: (EnvironmentIdentity, &Mutex<library::Cache>),
+    step: Guarded,
+) -> Option<String> {
+    match currency(paths, name, held) {
+        Currency::Current => None,
+        Currency::Changed => Some(format!(
+            "environment changed before {}",
+            match step {
+                Guarded::Store | Guarded::Remove => "artwork could be written",
+                Guarded::Entries => "desktop entries could be reconciled",
+            }
+        )),
+        Currency::LibraryUnreadable => Some(step.unreadable(name)),
+    }
 }
 
 /// The page's message for an environment that changed under a write, and the
@@ -1487,17 +1563,23 @@ fn changed_or(error: wineo_core::Error, what: &str) -> String {
 fn write_art_for(
     paths: &Paths,
     name: &str,
-    identity: EnvironmentIdentity,
+    held: (EnvironmentIdentity, &Mutex<library::Cache>),
     spot: &Spot,
     path: Option<&Path>,
 ) -> WriteOutcome {
-    if EnvironmentIdentity::read(paths, name) != Some(identity) {
-        return WriteOutcome::failed("environment changed before artwork could be written".into());
+    let identity = held.0;
+    let step = if path.is_some() {
+        Guarded::Store
+    } else {
+        Guarded::Remove
+    };
+    if let Some(error) = refused(paths, name, held, step) {
+        return WriteOutcome::failed(error);
     }
     let result = match path {
         Some(path) => flow_artwork::preview_with_format(path, spot.1).and_then(|_| {
-            if EnvironmentIdentity::read(paths, name) != Some(identity) {
-                return Err("environment changed before artwork could be written".into());
+            if let Some(error) = refused(paths, name, held, step) {
+                return Err(error);
             }
             art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, Some(identity))
                 .map(|_| ())
@@ -1512,10 +1594,9 @@ fn write_art_for(
         return WriteOutcome::failed(error);
     }
     let error = if spot.1 == Kind::Icon {
-        if EnvironmentIdentity::read(paths, name) == Some(identity) {
-            reconcile_desktop(paths, name).err()
-        } else {
-            Some("environment changed before desktop entries could be reconciled".into())
+        match refused(paths, name, held, Guarded::Entries) {
+            None => reconcile_desktop(paths, name).err(),
+            refusal => refusal,
         }
     } else {
         None
@@ -1530,16 +1611,20 @@ fn write_art_for(
 fn use_image_for(
     paths: &Paths,
     name: &str,
-    identity: EnvironmentIdentity,
+    held: (EnvironmentIdentity, &Mutex<library::Cache>),
     spot: &Spot,
     api: &Api,
     image: &steamgriddb::Image,
     mut progress: impl FnMut(u64, Option<u64>),
     token: &Token,
 ) -> WriteOutcome {
-    if EnvironmentIdentity::read(paths, name) != Some(identity) {
-        return WriteOutcome::failed("environment changed before artwork could be written".into());
+    let identity = held.0;
+    if let Some(error) = refused(paths, name, held, Guarded::Store) {
+        return WriteOutcome::failed(error);
     }
+    // Why a check during the download canceled it, which the cancel's own
+    // error would hide.
+    let mut stopped = None;
     let result = art_fetch::use_image(
         paths,
         name,
@@ -1548,8 +1633,11 @@ fn use_image_for(
         api,
         image,
         |received, total| {
-            if EnvironmentIdentity::read(paths, name) != Some(identity) {
-                token.cancel();
+            if stopped.is_none() {
+                stopped = refused(paths, name, held, Guarded::Store);
+                if stopped.is_some() {
+                    token.cancel();
+                }
             }
             progress(received, total);
         },
@@ -1557,13 +1645,12 @@ fn use_image_for(
         Some(identity),
     );
     if let Err(error) = result {
-        return WriteOutcome::failed(error.to_string());
+        return WriteOutcome::failed(stopped.unwrap_or_else(|| error.to_string()));
     }
-    let error = if spot.1 == Kind::Icon && EnvironmentIdentity::read(paths, name) == Some(identity)
-    {
-        reconcile_desktop(paths, name).err()
-    } else {
-        None
+    let error = match (spot.1, currency(paths, name, held)) {
+        (Kind::Icon, Currency::Current) => reconcile_desktop(paths, name).err(),
+        (Kind::Icon, Currency::LibraryUnreadable) => Some(Guarded::Entries.unreadable(name)),
+        _ => None,
     };
     WriteOutcome {
         changed: true,

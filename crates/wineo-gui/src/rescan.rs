@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iced::futures::Stream;
+use wineo_core::environment::Observed;
 use wineo_core::library::{self as saved, Problem};
 use wineo_core::paths::Paths;
 use wineo_core::steam::Discovery;
@@ -270,7 +271,8 @@ impl Watch {
                 .as_ref()
                 .is_some_and(|(name, identity, snapshot)| {
                     *name == art.name
-                        && (art.identity != Some(*identity) || *snapshot != art.snapshot)
+                        && (identity.matches(&art.observed).is_changed()
+                            || *snapshot != art.snapshot)
                 })
         });
         let changed = library.is_some()
@@ -312,7 +314,9 @@ pub(crate) struct Scan {
 #[derive(Debug, Clone)]
 pub(crate) struct Art {
     pub(crate) name: String,
-    pub(crate) identity: Option<EnvironmentIdentity>,
+    /// Compared with the page's identity like with like, so a page holding
+    /// a fingerprint doesn't reload when the environment gets an id.
+    pub(crate) observed: Observed,
     pub(crate) snapshot: ArtSnapshot,
 }
 
@@ -380,7 +384,7 @@ pub(crate) fn read_with(
         }),
         art: art_page.map(|name| Art {
             name: name.to_owned(),
-            identity: EnvironmentIdentity::read(paths, name),
+            observed: EnvironmentIdentity::observe(paths, name),
             snapshot: art_page::load_snapshot(paths, name),
         }),
     }

@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
 use crate::config::{Arch, EnvironmentConfig, validate_env_var};
-use crate::environment::Environment;
+use crate::environment::{Environment, EnvironmentIdentity};
 use crate::error::Error;
 use crate::files;
 use crate::name;
@@ -145,7 +145,7 @@ pub fn register_native(
     name: &str,
     settings: &ImportedSettings,
     mut warnings: impl FnMut(String),
-) -> Result<Environment> {
+) -> Result<(Environment, Option<EnvironmentIdentity>)> {
     if !name::is_valid(name) {
         bail!("invalid environment name `{name}`");
     }
@@ -156,10 +156,13 @@ pub fn register_native(
     let text = native_config_text(&stored_settings(paths, settings)?)?;
     let _operation = Locks::new(paths).acquire(Operation::Create, name, &[])?;
     let environment = write_native_config(paths, name, &text)?;
-    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, name) {
-        warnings(warning);
-    }
-    Ok(environment)
+    let stamped = crate::library_lifecycle::fresh_warning(paths, name)
+        .map_err(&mut warnings)
+        .ok();
+    Ok((
+        environment,
+        EnvironmentIdentity::created(paths, name, stamped),
+    ))
 }
 
 /// The config `register_native` writes for `settings`, checked but not

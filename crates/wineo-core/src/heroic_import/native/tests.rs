@@ -373,3 +373,32 @@ fn native_environment_entries_are_refused_like_the_wine_plan_does() {
     // A refused edit leaves the environment as it was.
     assert_eq!(plan.settings().env.len(), 2);
 }
+
+#[test]
+fn a_native_import_returns_its_new_id_or_after_a_failed_stamp_its_fingerprint() {
+    use crate::environment::Currency;
+    for broken in [false, true] {
+        let root = tempdir().unwrap();
+        let source = dusklight(root.path(), "{}");
+        let paths = paths(root.path());
+        let plan = plan_native(&source, "dusk", None).unwrap();
+        if broken {
+            let library = paths.library_file();
+            fs::create_dir_all(library.parent().unwrap()).unwrap();
+            fs::write(&library, "[broken\n").unwrap();
+        }
+        let registered = apply_native(&paths, &source, &plan).unwrap();
+        let name = registered.environment.name.clone();
+        let identity = registered.identity.unwrap();
+        if broken {
+            assert_eq!(identity.id(), None);
+            assert_eq!(identity.is_current(&paths, &name), Currency::Current);
+        } else {
+            assert!(identity.id().is_some());
+            assert_eq!(
+                identity.id(),
+                crate::library::load(&paths).environments[&name].id
+            );
+        }
+    }
+}

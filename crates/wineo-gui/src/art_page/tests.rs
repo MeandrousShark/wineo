@@ -14,8 +14,19 @@ fn fixture() -> (tempfile::TempDir, Paths, Page) {
         "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = 'game.exe'\n",
     )
     .unwrap();
-    let identity = EnvironmentIdentity::read(&paths, "game").unwrap();
+    // Stamped as creating it would, so the page holds an id.
+    wineo_core::library::fresh(&paths, "game").unwrap();
+    let identity = EnvironmentIdentity::peek(&paths, "game").unwrap();
     (root, paths, Page::new("game".into(), 1, identity))
+}
+
+/// The page's identity and cache, as its writes are handed them.
+fn page_identity(page: &Page) -> (EnvironmentIdentity, &Mutex<library::Cache>) {
+    (page.identity, &page.identity_cache)
+}
+
+fn replace_environment(paths: &Paths) {
+    wineo_core::test_support::replace_environment(paths, "game").unwrap();
 }
 
 /// Gives the environment a native target with a desktop entry. Its program
@@ -357,12 +368,7 @@ fn a_game_is_saved_only_in_the_environment_it_was_picked_for() {
         let (_root, paths, page) = fixture();
         let config = paths.environment_config("game");
         match case {
-            "replaced" => {
-                // A copy renamed over the config is a different file.
-                let staged = config.with_extension("replacement");
-                fs::copy(&config, &staged).unwrap();
-                fs::rename(staged, &config).unwrap();
-            }
+            "replaced" => replace_environment(&paths),
             "removed" => fs::remove_file(&config).unwrap(),
             _ => {}
         }
@@ -477,21 +483,16 @@ fn changing_icon_art_reconciles_the_desktop_entry() {
 #[test]
 fn a_queued_write_refuses_a_same_name_environment_replacement() {
     let (root, paths, page) = fixture();
-    let identity = page.identity;
-    let retained = root.path().join("retained-game.toml");
-    fs::rename(paths.environment_config("game"), retained).unwrap();
-    wineo_core::environment::Environment::create_native(
-        &paths,
-        &GlobalConfig::default(),
-        "game",
-        None,
-        false,
-        |_| {},
-    )
-    .unwrap();
+    replace_environment(&paths);
     let source = png(root.path());
 
-    let outcome = write_art_for(&paths, "game", identity, &(None, Kind::Grid), Some(&source));
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
 
     assert!(!outcome.changed());
     assert!(outcome.error.is_some());
@@ -553,7 +554,7 @@ fn picker_use_publishes_exact_image_and_refreshes_the_kind() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &spot,
         &Api::new(&transport, "key"),
         &image,
@@ -593,7 +594,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Grid),
         &Api::new(&transport, "key"),
         &image,
@@ -613,7 +614,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Grid),
         &Api::new(&transport, "key"),
         &image,
@@ -632,10 +633,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
 fn picker_use_icon_reconciles_desktop_entries() {
     let (root, paths, page) = fixture();
     desktop_target(&root, &paths);
-    assert_eq!(
-        EnvironmentIdentity::read(&paths, "game"),
-        Some(page.identity)
-    );
+    assert!(page.identity.is_current(&paths, "game").is_current());
     let source = png(root.path());
     let transport = ImageApi {
         bytes: fs::read(&source).unwrap(),
@@ -644,7 +642,7 @@ fn picker_use_icon_reconciles_desktop_entries() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Icon),
         &Api::new(&transport, "key"),
         &chosen_image(),
@@ -844,26 +842,13 @@ fn picker_use_refuses_replacement_in_the_last_progress_callback() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Grid),
         &Api::new(&transport, "key"),
         &chosen_image(),
         |received, _| {
             if received == bytes.len() as u64 && !replaced {
-                fs::rename(
-                    paths.environment_config("game"),
-                    root.path().join("old-game.toml"),
-                )
-                .unwrap();
-                Environment::create_native(
-                    &paths,
-                    &GlobalConfig::default(),
-                    "game",
-                    None,
-                    false,
-                    |_| {},
-                )
-                .unwrap();
+                replace_environment(&paths);
                 art::set_manual(&paths, "game", None, Kind::Grid, &replacement, None).unwrap();
                 replaced = true;
             }
@@ -993,7 +978,7 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
             write_art_for(
                 &paths,
                 "game",
-                page.identity,
+                page_identity(&page),
                 &(None, Kind::Grid),
                 Some(&source),
             )
@@ -1001,10 +986,7 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
     });
     wait_for_lock_waiter(&lock);
     assert!(!worker.is_finished());
-    let config = paths.environment_config("game");
-    let replacement = config.with_extension("replacement");
-    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
-    fs::rename(replacement, config).unwrap();
+    replace_environment(&paths);
     ::image::RgbaImage::from_pixel(8, 12, ::image::Rgba([0, 0, 255, 255]))
         .save(art_dir.join("grid.png"))
         .unwrap();
@@ -1085,10 +1067,7 @@ fn replaced_while_waiting_for_the_art_lock<R: Send + 'static>(
     let worker = std::thread::spawn(write);
     wait_for_lock_waiter(&lock);
     assert!(!worker.is_finished());
-    let config = paths.environment_config("game");
-    let replacement = config.with_extension("replacement");
-    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
-    fs::rename(replacement, config).unwrap();
+    replace_environment(paths);
     drop(held);
     worker.join().unwrap()
 }
@@ -1101,8 +1080,15 @@ fn remove_checks_identity_under_the_art_lock() {
     let grid = paths.art_dir("game").join("grid.png");
     let outcome = replaced_while_waiting_for_the_art_lock(&paths, {
         let paths = paths.clone();
-        let identity = page.identity;
-        move || write_art_for(&paths, "game", identity, &(None, Kind::Grid), None)
+        move || {
+            write_art_for(
+                &paths,
+                "game",
+                page_identity(&page),
+                &(None, Kind::Grid),
+                None,
+            )
+        }
     });
     assert!(!outcome.changed());
     // The page's own words for a changed environment.
@@ -1590,4 +1576,90 @@ fn leaving_clears_a_failed_decode_so_reopening_retries() {
     );
     page.leave();
     assert_eq!(reload_units(&mut page, &paths), 1);
+}
+
+/// What a write says when `library.toml` can't confirm the identity.
+fn library_unreadable(outcome: &str) -> String {
+    format!("library.toml can't be read. Artwork for `game` wasn't {outcome}.")
+}
+
+#[test]
+fn skipped_desktop_entries_say_the_library_couldnt_be_read() {
+    assert_eq!(
+        Guarded::Entries.unreadable("game"),
+        "library.toml can't be read. The desktop entries for `game` weren't updated."
+    );
+}
+
+fn break_library(paths: &Paths) {
+    fs::write(paths.library_file(), "[broken\n").unwrap();
+}
+
+#[test]
+fn a_write_says_the_library_couldnt_be_read_rather_than_that_it_changed() {
+    let (root, paths, page) = fixture();
+    assert!(page.identity.id().is_some());
+    break_library(&paths);
+    let source = png(root.path());
+    for path in [Some(source.as_path()), None] {
+        let outcome = write_art_for(
+            &paths,
+            "game",
+            page_identity(&page),
+            &(None, Kind::Grid),
+            path,
+        );
+        assert!(!outcome.changed());
+        let outcome_word = if path.is_some() { "stored" } else { "removed" };
+        assert_eq!(outcome.error, Some(library_unreadable(outcome_word)));
+    }
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {},
+        &Token::new(),
+    );
+    assert!(!outcome.changed());
+    assert_eq!(outcome.error, Some(library_unreadable("stored")));
+    assert!(transport.urls.borrow().is_empty(), "it downloaded anyway");
+}
+
+#[test]
+fn a_library_breaking_mid_download_says_so() {
+    let (root, paths, page) = fixture();
+    // Over one read's worth, so the download reports progress twice.
+    let mut bytes = fs::read(png(root.path())).unwrap();
+    bytes.resize(100 * 1024, 0);
+    let transport = ImageApi {
+        bytes,
+        urls: Default::default(),
+    };
+    let mut calls = 0;
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {
+            calls += 1;
+            if calls == 1 {
+                break_library(&paths);
+            }
+        },
+        &Token::new(),
+    );
+    assert!(calls >= 2, "{calls}");
+    assert!(!outcome.changed());
+    assert_eq!(outcome.error, Some(library_unreadable("stored")));
+    assert!(!paths.art_dir("game").join("grid.png").exists());
 }

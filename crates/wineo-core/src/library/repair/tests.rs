@@ -2125,3 +2125,22 @@ fn repair_merges_a_repeated_list_columns_table_with_the_first_value_winning() {
     );
     assert_eq!(fixture.read().matches("[view.list_columns]").count(), 1);
 }
+
+#[test]
+fn repair_keeps_a_valid_id_and_drops_a_malformed_one() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nid = \"3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5\"\nfavorite = true\n\n[environments.celeste]\nid = \"nope\"\nhidden = true\n\n[broken header\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let text = fixture.read();
+    assert!(!text.contains("nope"), "{text}");
+    let library = load(&fixture.paths);
+    assert_eq!(
+        library.environments["hades"].id,
+        crate::library::Id::parse("3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5")
+    );
+    assert!(library.environments["hades"].favorite);
+    assert_eq!(library.environments["celeste"].id, None);
+    assert!(library.environments["celeste"].hidden);
+}

@@ -496,6 +496,10 @@ fn a_scanning_import_registers_heroics_name_and_copies_nothing() {
     let plan = plan_game(&paths, &global, &source, "a", &name, Options::default()).unwrap();
     let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
     assert_eq!(registered.runner().unwrap().name(), "wine-heroic");
+    // The id the import stamped, for its art to carry.
+    let id = registered.identity.and_then(|identity| identity.id());
+    assert!(id.is_some());
+    assert_eq!(id, crate::library::load(&paths).environments["alpha"].id);
     let written = fs::read_to_string(paths.environment_config("alpha")).unwrap();
     assert!(written.contains("runner = \"wine-heroic\""), "{written}");
     // The build stays in Heroic's folder, and nothing lands in wineo's.

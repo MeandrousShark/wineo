@@ -426,14 +426,11 @@ fn a_total_too_large_to_hold_is_a_note() {
 fn an_environment_replaced_while_fetching_gets_no_playtime() {
     let fixture = Fixture::new();
     fixture.login();
-    let config = fixture.paths.environment_config("rimworld");
+    let paths = fixture.paths.clone();
     let art = art_body(&[]);
     let server = Scripted::start(move |line| {
         if line.contains("/sessions") {
-            // A new file renamed over the old one has another inode.
-            let next = config.with_extension("next");
-            fs::write(&next, fs::read(&config).unwrap()).unwrap();
-            fs::rename(&next, &config).unwrap();
+            crate::test_support::replace_environment(&paths, "rimworld").unwrap();
         }
         gog(Some(30), art.clone())(line)
     });
@@ -448,6 +445,81 @@ fn an_environment_replaced_while_fetching_gets_no_playtime() {
     assert_eq!(fixture.imported(), None);
     // Art is refused for the replaced config too.
     assert!(report.art.is_empty());
+}
+
+#[test]
+fn an_environment_edited_while_fetching_still_gets_its_playtime_and_art() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let config = fixture.paths.environment_config("rimworld");
+    let art = art_body(&[]);
+    let server = Scripted::start(move |line| {
+        if line.contains("/sessions") {
+            // Saved through a new file, as every edit is.
+            let next = config.with_extension("next");
+            let text = fs::read_to_string(&config).unwrap();
+            fs::write(&next, format!("# edited\n{text}")).unwrap();
+            fs::rename(&next, &config).unwrap();
+        }
+        gog(Some(30), art.clone())(line)
+    });
+    let mut session = fixture.session(&server.base);
+    let report = go(&fixture, Some(&mut session), &server, &images(), &ALL).unwrap();
+    assert_eq!(report.notes, Vec::<String>::new());
+    assert_eq!(report.playtime.unwrap().after_seconds, 1800);
+    assert_eq!(fixture.imported().unwrap().seconds, 1800);
+    assert_eq!(report.art.len(), 4, "{:?}", report.art);
+}
+
+#[test]
+fn a_library_broken_while_fetching_skips_playtime_and_says_why() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let library = fixture.paths.library_file();
+    let art = art_body(&[]);
+    let server = Scripted::start(move |line| {
+        if line.contains("/sessions") {
+            fs::write(&library, "[broken\n").unwrap();
+        }
+        gog(Some(30), art.clone())(line)
+    });
+    let mut session = fixture.session(&server.base);
+    let report = go(&fixture, Some(&mut session), &server, &images(), &ALL).unwrap();
+    assert_eq!(report.playtime, None);
+    assert_eq!(
+        report.notes[0],
+        "Skipped GOG playtime: library.toml can't be read, so rimworld couldn't be checked."
+    );
+    assert_eq!(fixture.imported(), None);
+}
+
+#[test]
+fn nothing_to_write_gives_an_old_environment_no_id() {
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(Some(30), art_body(&[])));
+    let report = go(
+        &fixture,
+        None,
+        &server,
+        &images(),
+        &Options {
+            kinds: &[],
+            key: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        report.notes,
+        ["Skipped GOG playtime: not logged in to GOG."]
+    );
+    assert!(!fixture.paths.library_file().exists());
+    // With something to write, it gets one.
+    go(&fixture, None, &server, &images(), &ALL).unwrap();
+    assert!(
+        crate::library::load(&fixture.paths).environments["rimworld"]
+            .id
+            .is_some()
+    );
 }
 
 #[test]
@@ -915,8 +987,7 @@ impl crate::download::Transport for Hooked<'_> {
     }
 }
 
-/// Puts a different game's config in place of the environment's, as a new
-/// file so it has another identity.
+/// Replaces the environment with one that runs a different game.
 fn replace_environment(fixture: &Fixture) {
     let config = fixture.paths.environment_config("rimworld");
     let next = config.with_extension("next");
@@ -926,6 +997,7 @@ fn replace_environment(fixture: &Fixture) {
     )
     .unwrap();
     fs::rename(&next, &config).unwrap();
+    crate::test_support::replace_environment(&fixture.paths, "rimworld").unwrap();
 }
 
 #[test]
