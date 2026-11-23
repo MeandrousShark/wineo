@@ -918,6 +918,16 @@ fn controller_rows<'a>(
         palette,
     )]
     .spacing(12);
+    // Waits for the Controller switch like the remap rows below.
+    rows = rows.push(switch_row(
+        GAMECUBE_ADAPTER_SWITCH,
+        input.gamecube_adapter,
+        None,
+        |on| send(Event::GlobalGamecubeAdapter(on)),
+        None,
+        locked || !input.controller,
+        palette,
+    ));
     if page.pads.is_empty() {
         rows = rows.push(text(NO_CONTROLLER).size(13).color(palette.muted));
     }
@@ -983,6 +993,7 @@ pub(super) const CAPTURE_PROMPT: &str = "Press a button...";
 pub(super) const UNBOUND: &str = "Unbound";
 pub(super) const RESET_BUTTONS: &str = "Reset to defaults";
 pub(super) const CONTROLLER_SWITCH: &str = "Use a controller in the Library";
+pub(super) const GAMECUBE_ADAPTER_SWITCH: &str = "Use a GameCube adapter";
 pub(super) const NO_CONTROLLER: &str = "No controller found.";
 
 pub(super) fn version_line() -> String {

@@ -110,3 +110,166 @@ fn the_app_keeps_the_pads_and_the_saved_switch_current() {
     let _ = app.update(crate::Message::Settings(Event::GlobalController(true)));
     assert!(!app.input.controller);
 }
+
+fn gamecube(page: &Page) -> bool {
+    global_editor(page).form.draft.input.gamecube_adapter
+}
+
+fn controller_tab(paths: &Paths) -> Page {
+    let mut page = global_page(paths);
+    let _ = page.update(paths, Event::Tab(Tab::Controller));
+    page
+}
+
+#[test]
+fn the_gamecube_switch_is_off_on_a_library_with_no_key_and_sits_under_the_controller_one() {
+    let (_root, paths) = setup();
+    let page = controller_tab(&paths);
+    assert!(!gamecube(&page));
+    assert!(!page.is_dirty());
+    assert_eq!(view::GAMECUBE_ADAPTER_SWITCH, "Use a GameCube adapter");
+    let texts = page_texts(&page, &paths);
+    let first = texts
+        .iter()
+        .position(|text| text == view::CONTROLLER_SWITCH)
+        .unwrap();
+    // Each switch row's blank source label sits between them.
+    assert_eq!(texts[first + 2], view::GAMECUBE_ADAPTER_SWITCH, "{texts:?}");
+
+    // A file with only the controller switch reads the same.
+    write_library_text(&paths, "schema_version = 1\n[input]\ncontroller = true\n");
+    assert!(!gamecube(&controller_tab(&paths)));
+}
+
+fn write_library_text(paths: &Paths, text: &str) {
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), text).unwrap();
+}
+
+#[test]
+fn flipping_the_gamecube_switch_enables_save_by_itself_and_saving_stores_the_key() {
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    assert!(!page.can_save());
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(true));
+    assert!(page.is_dirty() && page.can_save());
+    assert_eq!(page.changes(), 1);
+    assert!(global_editor(&page).form.edits().is_empty());
+    assert!(!global_editor(&page).form.library_edits().is_empty());
+
+    // Flipped back before saving, it is no change at all.
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(false));
+    assert!(!page.is_dirty() && !page.can_save());
+    assert_eq!(page.changes(), 0);
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(true));
+
+    assert!(save(&paths, &page).failed.is_none());
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[input]\ngamecube_adapter = true\n"
+    );
+    assert!(!paths.global_config().exists());
+
+    // Back off is stored as false, and the controller switch is untouched.
+    let mut page = controller_tab(&paths);
+    assert!(gamecube(&page) && controller(&page));
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(false));
+    assert!(save(&paths, &page).failed.is_none());
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[input]\ngamecube_adapter = false\n"
+    );
+}
+
+#[test]
+fn a_saved_gamecube_switch_is_not_an_outside_change() {
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(true));
+    let _ = page.update(&paths, Event::Save);
+    assert!(page.saving);
+    let report = save(&paths, &page);
+    let _ = page.update(&paths, Event::Saved(1, Ok(report)));
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    assert!(!page.is_dirty());
+    assert!(gamecube(&page));
+
+    // The check that follows reads the file this page just wrote.
+    let sequence = page.check_sequence + 1;
+    page.check_sequence = sequence;
+    page.checking = true;
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, load::Texts::read_global(&paths)),
+    );
+    assert!(!page.changed_on_disk);
+    assert!(!page.is_dirty());
+}
+
+/// What a press and release at the toggler of the row labelled `label` sends.
+fn click_switch(page: &Page, paths: &Paths, label: &str) -> Vec<crate::Message> {
+    use crate::layout_probe::lay_out;
+    use iced::advanced::widget::{Id, Operation};
+    use std::sync::{Arc, Mutex};
+
+    struct Find(String, Arc<Mutex<Option<iced::Rectangle>>>);
+    impl Operation for Find {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _id: Option<&Id>, bounds: iced::Rectangle, text: &str) {
+            if text == self.0 {
+                *self.1.lock().unwrap() = Some(bounds);
+            }
+        }
+    }
+    let found = Arc::new(Mutex::new(None));
+    let mut laid = lay_out(
+        page.view(paths, crate::theme::Palette::DARK),
+        iced::Size::new(900.0, 3000.0),
+    );
+    laid.run(Box::new(Find(label.to_owned(), found.clone())));
+    let bounds = found.lock().unwrap().expect(label);
+    // The toggler is at the left of its box, after the 180 wide label and
+    // the 12 gap.
+    let cursor = iced::mouse::Cursor::Available(iced::Point::new(
+        bounds.x + 192.0 + 10.0,
+        bounds.center_y(),
+    ));
+    let left = iced::mouse::Button::Left;
+    let mut messages = laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonPressed(left)),
+        cursor,
+    );
+    messages.extend(laid.event_at(
+        &iced::Event::Mouse(iced::mouse::Event::ButtonReleased(left)),
+        cursor,
+    ));
+    messages
+}
+
+#[test]
+fn the_gamecube_switch_waits_for_the_controller_switch_like_the_remap_rows() {
+    let (_root, paths) = setup();
+    let label = view::GAMECUBE_ADAPTER_SWITCH;
+    let mut page = controller_tab(&paths);
+
+    let messages = click_switch(&page, &paths, label);
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [crate::Message::Settings(Event::GlobalGamecubeAdapter(true))]
+        ),
+        "{messages:?}"
+    );
+
+    // The Controller switch off: the switch is as locked as a remap row.
+    let _ = page.update(&paths, Event::GlobalController(false));
+    assert!(click_switch(&page, &paths, label).is_empty());
+    let _ = page.update(&paths, Event::GlobalController(true));
+    assert_eq!(click_switch(&page, &paths, label).len(), 1);
+
+    // A page that is saving locks it too, as it does every control.
+    page.saving = true;
+    assert!(click_switch(&page, &paths, label).is_empty());
+}

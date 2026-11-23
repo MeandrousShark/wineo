@@ -260,6 +260,9 @@ impl Form {
         if self.draft.input.controller == self.loaded.input.controller {
             self.draft.input.controller = values.input.controller;
         }
+        if self.draft.input.gamecube_adapter == self.loaded.input.gamecube_adapter {
+            self.draft.input.gamecube_adapter = values.input.gamecube_adapter;
+        }
         if self.draft.input.buttons == self.loaded.input.buttons {
             self.draft.input.buttons = values.input.buttons.clone();
         }
@@ -559,7 +562,9 @@ fn same_input(a: &wineo_core::library::Input, b: &wineo_core::library::Input) ->
             .map(|(action, button)| (*action, *button))
             .collect()
     };
-    a.controller == b.controller && changed(a) == changed(b)
+    a.controller == b.controller
+        && a.gamecube_adapter == b.gamecube_adapter
+        && changed(a) == changed(b)
 }
 
 pub(crate) struct Editor {
