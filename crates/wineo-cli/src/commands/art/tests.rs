@@ -701,7 +701,12 @@ fn art_fetch_fails_when_the_environment_is_replaced() {
         // Without a swap the same fetch stores its icon.
         swap.done.set(!replaced);
         let mut out = Vec::new();
-        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out);
+        let result = fetch_with(
+            &paths,
+            &request,
+            &Api::new(&swap, "k"),
+            (&mut out, &mut Vec::new()),
+        );
         let icon = paths.art_dir("hades").join("icon.png").exists();
         if replaced {
             // `main` prints this as `error: ...` and exits 1.
@@ -796,13 +801,61 @@ fn art_fetch_leaves_a_replacement_environments_entry_alone() {
         request.game = Some(7);
         request.only = None;
         let mut out = Vec::new();
-        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out);
+        let result = fetch_with(
+            &paths,
+            &request,
+            &Api::new(&swap, "k"),
+            (&mut out, &mut Vec::new()),
+        );
         assert!(paths.art_dir("hades").join("icon.png").exists());
         assert_eq!(entry(&paths).exists(), !replaced);
         match result {
             Err(error) => assert!(replaced && error.to_string() == CHANGED_ERROR),
             Ok(found) => assert!(!replaced && found),
         }
+    }
+}
+
+/// A `Fake` that runs `then` once, at the first request other than a search
+/// whose address contains `at`.
+struct At {
+    fake: Fake,
+    at: &'static str,
+    then: std::cell::RefCell<Option<Box<dyn FnOnce()>>>,
+}
+
+impl At {
+    fn new(fake: Fake, at: &'static str, then: impl FnOnce() + 'static) -> Self {
+        Self {
+            fake,
+            at,
+            then: std::cell::RefCell::new(Some(Box::new(then))),
+        }
+    }
+
+    fn note(&self, url: &str) {
+        if !url.contains("/search/")
+            && url.contains(self.at)
+            && let Some(then) = self.then.borrow_mut().take()
+        {
+            then();
+        }
+    }
+}
+
+impl Transport for At {
+    fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+        self.note(url);
+        self.fake.get(url)
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> anyhow::Result<wineo_core::download::Response> {
+        self.note(url);
+        self.fake.request(url, bearer)
     }
 }
 
@@ -907,7 +960,12 @@ fn art_fetch_refuses_an_environment_replaced_while_the_game_is_picked() {
         }
         let swap = super::fake::Swap::new(fake, &paths, "hades").at("/games/steam/");
         let mut out = Vec::new();
-        let result = fetch_with(&paths, &icon_request(), &Api::new(&swap, "k"), &mut out);
+        let result = fetch_with(
+            &paths,
+            &icon_request(),
+            &Api::new(&swap, "k"),
+            (&mut out, &mut Vec::new()),
+        );
         assert!(swap.done.get());
         assert_eq!(result.unwrap_err().to_string(), CHANGED_ERROR, "{with_id}");
         assert_eq!(String::from_utf8(out).unwrap(), "");
@@ -927,7 +985,7 @@ fn art_fetch_gives_an_old_environment_an_id_only_once_a_game_is_picked() {
         &paths,
         &icon_request(),
         &Api::new(&fake, "k"),
-        &mut Vec::new(),
+        (&mut Vec::new(), &mut Vec::new()),
     );
     assert!(result.is_err());
     assert!(!paths.library_file().exists());
@@ -937,9 +995,73 @@ fn art_fetch_gives_an_old_environment_an_id_only_once_a_game_is_picked() {
         &paths,
         &icon_request(),
         &Api::new(&fake, "k"),
-        &mut Vec::new(),
+        (&mut Vec::new(), &mut Vec::new()),
     );
     assert!(result.unwrap());
     assert!(paths.art_dir("hades").join("icon.png").exists());
     assert!(library_id(&paths).is_some());
+}
+
+const ENTRIES_SKIPPED: &str =
+    "warning: library.toml can't be read. The desktop entries for `hades` weren't updated.\n";
+const NOT_STORED: &str = "library.toml can't be read. Artwork for `hades` wasn't stored.";
+
+/// A game with an icon, after which `library.toml` stops being readable.
+fn library_breaks_after_the_icon(paths: &Paths) -> At {
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    fake.icon_only();
+    let library = paths.library_file();
+    At::new(fake, "/grids/", move || {
+        fs::write(library, "not [toml").unwrap();
+    })
+}
+
+#[test]
+fn entries_skipped_because_the_library_cant_be_read_are_warned_about() {
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::All,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        &paths,
+        &library_breaks_after_the_icon(&paths),
+        &key(),
+        &request,
+        None,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(!entry(&paths).exists());
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        format!("{ENTRIES_SKIPPED}warning: art fetch failed: {NOT_STORED}\n")
+    );
+}
+
+#[test]
+fn art_fetch_warns_about_entries_skipped_because_the_library_cant_be_read() {
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let mut request = fetch_request();
+    request.game = Some(7);
+    request.only = None;
+    let transport = library_breaks_after_the_icon(&paths);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_with(
+        &paths,
+        &request,
+        &Api::new(&transport, "k"),
+        (&mut out, &mut err),
+    );
+    assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(!entry(&paths).exists());
+    assert_eq!(String::from_utf8(err).unwrap(), ENTRIES_SKIPPED);
 }

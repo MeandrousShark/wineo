@@ -11,7 +11,7 @@ use wineo_core::art_fetch::{self, Fetched, Mode};
 use wineo_core::cancel::Token;
 use wineo_core::config::ArtFetch;
 use wineo_core::download::{Https, Lazy, Transport};
-use wineo_core::environment::{Environment, EnvironmentIdentity};
+use wineo_core::environment::{Currency, Environment, EnvironmentIdentity};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Removed, Saved};
@@ -260,7 +260,12 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
     let transport = Https::new()?;
     let api = Api::new(&transport, &key.value);
-    fetch_with(paths, request, &api, &mut crate::output::stdout())
+    fetch_with(
+        paths,
+        request,
+        &api,
+        (&mut crate::output::stdout(), &mut crate::output::stderr()),
+    )
 }
 
 /// `fetch` once there is a connection. Nothing is stored if the environment
@@ -269,7 +274,7 @@ fn fetch_with(
     paths: &Paths,
     request: &FetchRequest,
     api: &Api,
-    out: &mut dyn io::Write,
+    (out, err): (&mut dyn io::Write, &mut dyn io::Write),
 ) -> anyhow::Result<bool> {
     let (env, target) = split(request.spot);
     // Only looked at before the pick, which can stay open for minutes, so
@@ -295,16 +300,29 @@ fn fetch_with(
     let mut icon = false;
     let fetched = fetch_kinds(&spot, request, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store.
-    if icon && unchanged(paths, env, identity) {
+    if icon && unchanged(paths, env, identity, err) {
         apply_desktop(paths, env)?;
     }
     fetched
 }
 
 /// Whether `env` is still the environment `identity` was read from, which
-/// the desktop entries are only updated for.
-fn unchanged(paths: &Paths, env: &str, identity: EnvironmentIdentity) -> bool {
-    identity.is_current(paths, env).is_current()
+/// the desktop entries are only updated for. A replacement's entries are
+/// left alone without a word, since the art itself already failed for it,
+/// but entries skipped because `library.toml` can't be read are warned
+/// about on `err`.
+fn unchanged(paths: &Paths, env: &str, identity: EnvironmentIdentity, err: &mut dyn Write) -> bool {
+    match identity.is_current(paths, env) {
+        Currency::Current => true,
+        Currency::Changed => false,
+        Currency::LibraryUnreadable => {
+            let line = format!(
+                "warning: library.toml can't be read. The desktop entries for `{env}` weren't updated."
+            );
+            let _ = writeln!(err, "{}", style::warning_stderr(line));
+            false
+        }
+    }
 }
 
 fn fetch_game(
@@ -621,7 +639,7 @@ impl Access<'_> {
                 request,
                 (picked.game, &picked.term),
                 identity,
-                out,
+                (out, &mut *err),
             )
         })();
         if let Err(error) = result {
@@ -674,7 +692,7 @@ pub fn fetch_new<I: Input, W: Write>(
     if request.kinds.kinds().is_empty() {
         return Ok(());
     }
-    match try_fetch_new(paths, transport, key, request, identity, pick) {
+    match try_fetch_new(paths, transport, key, request, identity, pick, err) {
         Ok(()) => Ok(()),
         Err(error) if cancel::prompted(&error) => Err(Canceled),
         Err(error) => {
@@ -691,6 +709,7 @@ fn try_fetch_new<I: Input, W: Write>(
     request: &AutoFetch,
     identity: Option<EnvironmentIdentity>,
     pick: Pick<I, W>,
+    err: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let api = Api::new(transport, &key.value);
     // Before the pick, so a replacement while the questions are asked counts.
@@ -698,7 +717,7 @@ fn try_fetch_new<I: Input, W: Write>(
     let Some((game, term, out)) = choose_game(&api, request, pick)? else {
         return Ok(());
     };
-    store_art(paths, &api, request, (game, &term), identity, out)
+    store_art(paths, &api, request, (game, &term), identity, (out, err))
 }
 
 /// Picks the game from the search results, naming a skipped pick. `out` is
@@ -745,7 +764,7 @@ fn store_art(
     request: &AutoFetch,
     (game, term): (u64, &str),
     identity: EnvironmentIdentity,
-    out: &mut dyn Write,
+    (out, err): (&mut dyn Write, &mut dyn Write),
 ) -> anyhow::Result<()> {
     let env = request.env;
     if art::saved_game(paths, env)? != Some(game) {
@@ -770,7 +789,7 @@ fn store_art(
     let fetched = fetch_kinds(&spot, &fetch, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store, but
     // a replacement environment's entries are not this fetch's to touch.
-    if icon && unchanged(paths, env, identity) {
+    if icon && unchanged(paths, env, identity, err) {
         apply_desktop(paths, env)?;
     }
     fetched.map(drop)
