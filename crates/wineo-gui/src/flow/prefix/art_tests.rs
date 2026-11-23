@@ -1039,7 +1039,9 @@ fn retry_reuses_the_identity_the_import_handed_over() {
     page.fetcher = fetcher;
     let task = page.start_fetch();
     drive(&mut page, task, true);
+    // Replaced between tries, so a Retry that read again would get another.
     for _ in 0..2 {
+        wineo_core::test_support::replace_environment(&page.paths, "imported").unwrap();
         let task = page.update_with_key_availability(Event::RetryArt, true);
         drive(&mut page, task, true);
     }

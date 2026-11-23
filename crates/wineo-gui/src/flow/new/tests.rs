@@ -4332,7 +4332,9 @@ fn retry_reuses_the_identity_the_flow_holds() {
     page.fetcher = fetcher;
     let task = page.finish();
     drive(&mut page, task, true);
+    // Replaced between tries, so a Retry that read again would get another.
     for _ in 0..2 {
+        wineo_core::test_support::replace_environment(&paths, "hollow-knight").unwrap();
         let task = page.update(Event::RetryArt);
         drive(&mut page, task, true);
     }
