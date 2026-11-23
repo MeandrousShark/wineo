@@ -2,7 +2,7 @@
 //! `library.toml`'s `[input]`, and the pads connected now.
 
 use super::*;
-use crate::pad::{PadEvent, PadInfo};
+use crate::pad::{PadEvent, PadId, PadInfo};
 
 fn save(paths: &Paths, page: &Page) -> load::Report {
     let form = &global_editor(page).form;
@@ -81,7 +81,10 @@ fn the_app_keeps_the_pads_and_the_saved_switch_current() {
         vendor: Some(0x045e),
         product: Some(0x0b13),
     };
-    let _ = app.update(crate::Message::Pad(PadEvent::Connected(0, xbox)));
+    let _ = app.update(crate::Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(0),
+        xbox,
+    )));
     assert!(app.input.controller);
     // Another window turned it off since this one started.
     wineo_core::library::set_input(
@@ -103,7 +106,7 @@ fn the_app_keeps_the_pads_and_the_saved_switch_current() {
         load::snapshot_global(&paths),
     )));
     assert!(!app.input.controller);
-    let _ = app.update(crate::Message::Pad(PadEvent::Disconnected(0)));
+    let _ = app.update(crate::Message::Pad(PadEvent::Disconnected(PadId::Gilrs(0))));
     assert!(app.settings.as_ref().unwrap().pads.is_empty());
 
     // An edit isn't saved yet, so the app keeps what's on disk.

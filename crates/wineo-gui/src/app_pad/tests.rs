@@ -8,7 +8,7 @@ use iced::window;
 use wineo_core::runtime::State;
 
 use super::*;
-use crate::pad::{Axis, PadEvent, PadInfo, Raw};
+use crate::pad::{Axis, PadEvent, PadId, PadInfo, Raw};
 use crate::test_tasks::each_ready;
 use crate::tests::card;
 
@@ -51,7 +51,7 @@ fn closed_app() -> (tempfile::TempDir, App) {
     let _ = app.update(Message::Loaded(Ok(cards)));
     app.viewport_width = 1000.0;
     app.snap_grid();
-    let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(0), xbox())));
     (home, app)
 }
 
@@ -117,6 +117,7 @@ fn settle(app: &mut App, task: Task<Message>) {
 }
 
 fn tap_on(app: &mut App, pad: usize, raw: Raw) {
+    let pad = PadId::Gilrs(pad);
     let task = app.update(Message::Pad(PadEvent::Pressed(pad, raw)));
     settle(app, task);
     let task = app.update(Message::Pad(PadEvent::Released(pad, raw)));
@@ -423,10 +424,10 @@ fn library_presses_become_their_keyboard_twins() {
 #[test]
 fn the_stick_moves_like_the_dpad() {
     let (_home, mut app) = ready();
-    let task = app.update(Message::Pad(PadEvent::Stick(0, Axis::X, 0.9)));
+    let task = app.update(Message::Pad(PadEvent::Stick(PadId::Gilrs(0), Axis::X, 0.9)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
-    let task = app.update(Message::Pad(PadEvent::Stick(0, Axis::X, 0.0)));
+    let task = app.update(Message::Pad(PadEvent::Stick(PadId::Gilrs(0), Axis::X, 0.0)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
 }
@@ -435,7 +436,10 @@ fn the_stick_moves_like_the_dpad() {
 fn a_held_direction_repeats_through_its_wakeup() {
     let (_home, mut app) = ready();
     app.pad_clock = Some(std::time::Instant::now());
-    let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
+    let task = app.update(Message::Pad(PadEvent::Pressed(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
     let due = app.pads.repeat_due().expect("a repeat is due");
@@ -453,7 +457,10 @@ fn a_held_direction_repeats_through_its_wakeup() {
     let generation = app.pad_wake.generation();
     settle_update(&mut app, Message::PadRepeat(generation));
     assert_eq!(app.selected.as_deref(), Some("gamma"));
-    let _ = app.update(Message::Pad(PadEvent::Released(0, Raw::DPadRight)));
+    let _ = app.update(Message::Pad(PadEvent::Released(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     assert_eq!(app.pad_wake.due(), None);
 }
 
@@ -462,7 +469,10 @@ fn a_held_repeat_waits_for_the_last_presss_field_check() {
     let (_home, mut app) = ready();
     let start = std::time::Instant::now();
     app.pad_clock = Some(start);
-    let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
+    let press = app.update(Message::Pad(PadEvent::Pressed(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     assert!(app.pad_checking);
     // The repeat comes due before the check answers: nothing new is asked.
     app.pad_clock = Some(start + crate::pad::REPEAT_AFTER);
@@ -486,7 +496,7 @@ fn a_held_repeat_waits_for_the_last_presss_field_check() {
 #[test]
 fn a_field_check_answer_meets_the_gate_and_overlays_again() {
     let (_home, mut app) = ready();
-    let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let press = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::South)));
     let answers = outputs(&app, press);
     assert!(matches!(answers.as_slice(), [Message::PadKey(_, _, false)]));
     // Focus left while the check ran.
@@ -516,7 +526,7 @@ fn back_and_start_skip_the_field_check() {
     assert!(app.panel_open);
     // B goes straight to Esc, as mouse Back does even with a field
     // focused: no pad check is asked, only the page's own Esc path.
-    let back = app.update(Message::Pad(PadEvent::Pressed(0, Raw::East)));
+    let back = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::East)));
     assert!(!app.pad_checking);
     let answers = outputs(&app, back);
     assert!(
@@ -529,7 +539,7 @@ fn back_and_start_skip_the_field_check() {
         settle(&mut app, task);
     }
     assert!(!app.panel_open);
-    let start = app.update(Message::Pad(PadEvent::Pressed(0, Raw::Start)));
+    let start = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::Start)));
     assert!(!app.pad_checking);
     assert!(
         !outputs(&app, start)
@@ -546,7 +556,10 @@ fn settle_update(app: &mut App, message: Message) {
 #[test]
 fn a_nintendo_pad_confirms_with_its_printed_a() {
     let (_home, mut app) = ready();
-    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(1),
+        switch_pro(),
+    )));
     // The bottom button is B there, which backs out instead.
     tap_on(&mut app, 1, Raw::South);
     assert!(!app.panel_open);
@@ -752,12 +765,12 @@ fn a_is_dropped_on_pages_and_flows_that_take_enter() {
     // takes Enter too; A must reach neither.
     let (_home, mut app) = ready();
     app.tool_page = Some(("alpha".into(), crate::tools_page::Kind::Exec));
-    let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let task = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::South)));
     assert!(outputs(&app, task).is_empty());
 
     let (_home, mut app) = ready();
     let _ = app.update(Message::Add);
-    let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let task = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::South)));
     assert!(outputs(&app, task).is_empty());
 }
 
@@ -838,7 +851,10 @@ fn turning_the_controller_off_ignores_presses() {
     assert!(!app.panel_open);
     assert!(app.pad_hint.is_none());
     // The pad list stays current for the settings page.
-    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(1),
+        switch_pro(),
+    )));
     assert_eq!(app.pads.names().len(), 2);
 }
 
@@ -940,7 +956,10 @@ fn a_remap_changes_what_a_press_does_and_what_the_hints_say() {
 fn a_remap_names_the_printed_button_on_a_nintendo_pad_too() {
     use wineo_core::library::{PadAction, PadButton};
     let (_home, mut app) = ready();
-    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(1),
+        switch_pro(),
+    )));
     // Confirm on `b` and Back on `a`: the button printed B, which sits at
     // the bottom of a Nintendo pad, now confirms.
     app.input.buttons.insert(PadAction::Confirm, PadButton::B);
@@ -978,7 +997,7 @@ fn coverflow_ready() -> (tempfile::TempDir, App) {
     let _ = app.update(Message::ToggleSection(crate::slot::SectionKey::Tag(
         "b".into(),
     )));
-    let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(0), xbox())));
     focus(&mut app);
     move_to(&mut app, "a-0");
     (home, app)

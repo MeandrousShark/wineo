@@ -338,7 +338,7 @@ mod app {
 
     use super::*;
     use crate::Message;
-    use crate::pad::{PadEvent, PadInfo, Raw};
+    use crate::pad::{PadEvent, PadId, PadInfo, Raw};
 
     fn xbox() -> PadInfo {
         PadInfo {
@@ -354,7 +354,7 @@ mod app {
         let mut app = App::boot(paths.clone()).0;
         let start = Instant::now();
         app.pad_clock = Some(start);
-        let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+        let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(0), xbox())));
         let id = app.main_window.unwrap();
         let _ = app.update(Message::Window(id, window::Event::Focused));
         let _ = app.open_global_settings();
@@ -372,8 +372,8 @@ mod app {
     }
 
     fn press(app: &mut App, raw: Raw) {
-        let _ = app.update(Message::Pad(PadEvent::Pressed(0, raw)));
-        let _ = app.update(Message::Pad(PadEvent::Released(0, raw)));
+        let _ = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), raw)));
+        let _ = app.update(Message::Pad(PadEvent::Released(PadId::Gilrs(0), raw)));
     }
 
     fn start_capture(app: &mut App, action: PadAction) {
@@ -467,7 +467,10 @@ mod app {
             vendor: Some(0x054c),
             product: Some(0x0ce6),
         };
-        let _ = app.update(Message::Pad(PadEvent::Connected(0, dualsense)));
+        let _ = app.update(Message::Pad(PadEvent::Connected(
+            PadId::Gilrs(0),
+            dualsense,
+        )));
         let _ = app.open_global_settings();
         assert_eq!(page(&app).pad_style, crate::pad::Style::PlayStation);
         let generation = page(&app).generation;
@@ -520,7 +523,7 @@ mod app {
         let _ = app.update(Message::Window(id, window::Event::Focused));
 
         start_capture(&mut app, PadAction::Favorite);
-        let _ = app.update(Message::Pad(PadEvent::Disconnected(0)));
+        let _ = app.update(Message::Pad(PadEvent::Disconnected(PadId::Gilrs(0))));
         assert_eq!(page(&app).capturing(), None);
         assert!(!page(&app).is_dirty());
     }
@@ -696,9 +699,12 @@ mod app {
             vendor: Some(0x057e),
             product: Some(0x2009),
         };
-        let _ = app.update(Message::Pad(PadEvent::Connected(1, nintendo)));
+        let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(1), nintendo)));
         assert_eq!(page(&app).pad_style, crate::pad::Style::Xbox);
-        let _ = app.update(Message::Pad(PadEvent::Pressed(1, Raw::LeftBumper)));
+        let _ = app.update(Message::Pad(PadEvent::Pressed(
+            PadId::Gilrs(1),
+            Raw::LeftBumper,
+        )));
         assert_eq!(page(&app).pad_style, crate::pad::Style::Nintendo);
     }
 }

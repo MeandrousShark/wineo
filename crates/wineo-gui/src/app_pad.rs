@@ -348,13 +348,17 @@ impl App {
     }
 
     /// The bar's hints. A panel a coverflow card hides isn't open to A,
-    /// which opens the card's section instead.
+    /// which opens the card's section instead. A hint whose button the last
+    /// pad lacks is left out, since that pad can't do it.
     pub(crate) fn pad_hints(&self) -> Vec<(wineo_core::library::PadButton, &'static str)> {
-        pad::glyph::hints(
+        let style = self.pad_hint.unwrap_or_default();
+        let mut hints = pad::glyph::hints(
             &self.input.bindings(),
             self.panel_open && !self.panel_hidden_by_card(),
             self.header_cursor().is_some(),
-        )
+        );
+        hints.retain(|(button, _)| style.has(*button));
+        hints
     }
 
     /// A tool run started, by its button, Enter, or any other route: its
@@ -367,6 +371,78 @@ impl App {
         }
         if started {
             self.close_pad_gate();
+        }
+    }
+
+    /// Both the Controller and GameCube adapter switches are on, each saved
+    /// or in the Settings draft, the way `sync_input` counts the first, so
+    /// a remap row hears a GameCube pad before Save.
+    fn adapter_switches_on(&self) -> bool {
+        let page = self.settings.as_ref();
+        let controller = self.input.controller
+            || page
+                .and_then(|page| page.draft_controller())
+                .unwrap_or(false);
+        let adapter = self.input.gamecube_adapter
+            || page
+                .and_then(|page| page.draft_gamecube_adapter())
+                .unwrap_or(false);
+        controller && adapter
+    }
+
+    /// The adapter's reader runs. Off, nothing opens or watches USB.
+    pub(crate) fn adapter_subscribed(&self) -> bool {
+        self.adapter_switches_on() && !self.closing && !self.exiting
+    }
+
+    /// wineo holds the adapter only while pad input would count. This asks
+    /// the gate's level rather than following its opens and closes, since
+    /// quitting and a closed window shut it without `close_pad_gate`.
+    pub(crate) fn adapter_wanted(&self) -> bool {
+        self.adapter_subscribed() && self.pad_gate_open()
+    }
+
+    /// Tells the reader whether it's wanted, only when that changed; a new
+    /// reader starts from the last answer. With the reader gone, its pads
+    /// go too, since it can't say so itself.
+    pub(crate) fn sync_adapter(&mut self) {
+        let wanted = self.adapter_wanted();
+        self.adapter
+            .wanted
+            .send_if_modified(|told| std::mem::replace(told, wanted) != wanted);
+        if self.adapter_subscribed() {
+            return;
+        }
+        self.adapter
+            .state
+            .send_if_modified(|state| std::mem::take(state) != pad::adapter::State::Absent);
+        self.adapter.shown = pad::adapter::State::Absent;
+        let dropped = self.pads.drop_adapter();
+        if let Some(page) = &mut self.settings {
+            page.adapter = pad::adapter::State::Absent;
+            if dropped {
+                page.pads = self.pads.names();
+                page.capture = None;
+                page.pad_style = self.pads.recent_style();
+            }
+        }
+    }
+
+    /// What the adapter's reader sent. One that comes after its
+    /// subscription went away is stale.
+    pub(crate) fn adapter_report(&mut self, report: pad::adapter::Report) -> Task<Message> {
+        if !self.adapter_subscribed() {
+            return Task::none();
+        }
+        match report {
+            pad::adapter::Report::Pad(event) => self.pad_event(event),
+            pad::adapter::Report::State(state) => {
+                self.adapter.shown = state;
+                if let Some(page) = &mut self.settings {
+                    page.adapter = state;
+                }
+                Task::none()
+            }
         }
     }
 

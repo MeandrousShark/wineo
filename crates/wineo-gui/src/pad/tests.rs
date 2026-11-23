@@ -25,16 +25,19 @@ fn steam_virtual() -> PadInfo {
     info("Steam Virtual Gamepad", 0x28de, 0x11ff)
 }
 
-fn pads(connected: &[(PadId, PadInfo)]) -> Pads {
+fn pads(connected: &[(usize, PadInfo)]) -> Pads {
     let mut pads = Pads::default();
     for (id, info) in connected {
-        pads.event(PadEvent::Connected(*id, info.clone()), Instant::now());
+        pads.event(
+            PadEvent::Connected(PadId::Gilrs(*id), info.clone()),
+            Instant::now(),
+        );
     }
     pads
 }
 
-fn press(pads: &mut Pads, id: PadId, raw: Raw) -> Option<Input> {
-    pads.event(PadEvent::Pressed(id, raw), Instant::now())
+fn press(pads: &mut Pads, id: usize, raw: Raw) -> Option<Input> {
+    pads.event(PadEvent::Pressed(PadId::Gilrs(id), raw), Instant::now())
 }
 
 #[test]
@@ -148,11 +151,14 @@ fn steams_virtual_pad_is_read_only_without_a_real_one() {
     );
     assert_eq!(pads.names(), ["Steam Virtual Gamepad"]);
 
-    pads.event(PadEvent::Connected(1, xbox()), Instant::now());
+    pads.event(PadEvent::Connected(PadId::Gilrs(1), xbox()), Instant::now());
     assert_eq!(press(&mut pads, 0, Raw::South), None);
     assert_eq!(press(&mut pads, 0, Raw::DPadLeft), None);
     assert_eq!(
-        pads.event(PadEvent::Stick(0, Axis::X, 1.0), Instant::now()),
+        pads.event(
+            PadEvent::Stick(PadId::Gilrs(0), Axis::X, 1.0),
+            Instant::now()
+        ),
         None
     );
     assert_eq!(
@@ -161,7 +167,7 @@ fn steams_virtual_pad_is_read_only_without_a_real_one() {
     );
     assert_eq!(pads.names(), ["Xbox Wireless Controller"]);
 
-    pads.event(PadEvent::Disconnected(1), Instant::now());
+    pads.event(PadEvent::Disconnected(PadId::Gilrs(1)), Instant::now());
     assert!(press(&mut pads, 0, Raw::South).is_some());
 }
 
@@ -170,7 +176,7 @@ fn a_real_pad_arriving_stops_the_virtual_pads_repeat() {
     let mut pads = pads(&[(0, steam_virtual())]);
     assert!(press(&mut pads, 0, Raw::DPadRight).is_some());
     assert!(pads.repeat_due().is_some());
-    pads.event(PadEvent::Connected(1, xbox()), Instant::now());
+    pads.event(PadEvent::Connected(PadId::Gilrs(1), xbox()), Instant::now());
     assert_eq!(pads.repeat_due(), None);
 }
 
@@ -179,7 +185,7 @@ fn a_held_direction_repeats_after_a_pause_then_steadily() {
     let mut pads = pads(&[(0, xbox())]);
     let start = Instant::now();
     assert_eq!(
-        pads.event(PadEvent::Pressed(0, Raw::DPadDown), start),
+        pads.event(PadEvent::Pressed(PadId::Gilrs(0), Raw::DPadDown), start),
         Some(Input::Move(Direction::Down, Style::Xbox))
     );
     assert_eq!(pads.repeat_due(), Some(start + REPEAT_AFTER));
@@ -197,7 +203,7 @@ fn a_held_direction_repeats_after_a_pause_then_steadily() {
     let late = first + 3 * REPEAT_EVERY;
     assert!(pads.repeat(late).is_some());
     assert_eq!(pads.repeat_due(), Some(late + REPEAT_EVERY));
-    pads.event(PadEvent::Released(0, Raw::DPadDown), late);
+    pads.event(PadEvent::Released(PadId::Gilrs(0), Raw::DPadDown), late);
     assert_eq!(pads.repeat_due(), None);
     assert_eq!(pads.repeat(late + Duration::from_secs(1)), None);
 }
@@ -206,29 +212,29 @@ fn a_held_direction_repeats_after_a_pause_then_steadily() {
 fn the_dpad_and_stick_share_one_repeat_clock() {
     let mut pads = pads(&[(0, xbox())]);
     let start = Instant::now();
-    pads.event(PadEvent::Pressed(0, Raw::DPadRight), start);
+    pads.event(PadEvent::Pressed(PadId::Gilrs(0), Raw::DPadRight), start);
     let later = start + Duration::from_millis(200);
     assert_eq!(
-        pads.event(PadEvent::Stick(0, Axis::Y, 0.9), later),
+        pads.event(PadEvent::Stick(PadId::Gilrs(0), Axis::Y, 0.9), later),
         Some(Input::Move(Direction::Up, Style::Xbox))
     );
     // The stick took over, and its clock starts from its own press.
     assert_eq!(pads.repeat_due(), Some(later + REPEAT_AFTER));
     // Letting go of the D-pad leaves the stick's repeat.
-    pads.event(PadEvent::Released(0, Raw::DPadRight), later);
+    pads.event(PadEvent::Released(PadId::Gilrs(0), Raw::DPadRight), later);
     assert_eq!(pads.repeat_due(), Some(later + REPEAT_AFTER));
     assert_eq!(
         pads.repeat(later + REPEAT_AFTER),
         Some(Input::Move(Direction::Up, Style::Xbox))
     );
-    pads.event(PadEvent::Stick(0, Axis::Y, 0.0), later);
+    pads.event(PadEvent::Stick(PadId::Gilrs(0), Axis::Y, 0.0), later);
     assert_eq!(pads.repeat_due(), None);
 
     // The same direction from both: letting go of the D-pad's leaves the
     // stick's.
-    pads.event(PadEvent::Pressed(0, Raw::DPadRight), later);
-    pads.event(PadEvent::Stick(0, Axis::X, 0.9), later);
-    pads.event(PadEvent::Released(0, Raw::DPadRight), later);
+    pads.event(PadEvent::Pressed(PadId::Gilrs(0), Raw::DPadRight), later);
+    pads.event(PadEvent::Stick(PadId::Gilrs(0), Axis::X, 0.9), later);
+    pads.event(PadEvent::Released(PadId::Gilrs(0), Raw::DPadRight), later);
     assert_eq!(pads.repeat_due(), Some(later + REPEAT_AFTER));
 }
 
@@ -236,7 +242,7 @@ fn the_dpad_and_stick_share_one_repeat_clock() {
 fn the_stick_presses_at_half_and_lets_go_below_35_percent() {
     let mut pads = pads(&[(0, xbox())]);
     let now = Instant::now();
-    let mut stick = |axis, value| pads.event(PadEvent::Stick(0, axis, value), now);
+    let mut stick = |axis, value| pads.event(PadEvent::Stick(PadId::Gilrs(0), axis, value), now);
     assert_eq!(stick(Axis::X, 0.49), None);
     assert_eq!(
         stick(Axis::X, 0.5),
@@ -247,10 +253,10 @@ fn the_stick_presses_at_half_and_lets_go_below_35_percent() {
     assert_eq!(stick(Axis::X, 0.4), None);
     assert_eq!(stick(Axis::X, 0.36), None);
     assert!(pads.repeat_due().is_some());
-    let mut stick = |axis, value| pads.event(PadEvent::Stick(0, axis, value), now);
+    let mut stick = |axis, value| pads.event(PadEvent::Stick(PadId::Gilrs(0), axis, value), now);
     assert_eq!(stick(Axis::X, 0.34), None);
     assert_eq!(pads.repeat_due(), None);
-    let mut stick = |axis, value| pads.event(PadEvent::Stick(0, axis, value), now);
+    let mut stick = |axis, value| pads.event(PadEvent::Stick(PadId::Gilrs(0), axis, value), now);
     // Back above the release line but under the press line is nothing.
     assert_eq!(stick(Axis::X, 0.45), None);
     assert_eq!(
@@ -263,7 +269,7 @@ fn the_stick_presses_at_half_and_lets_go_below_35_percent() {
 fn a_sloppy_diagonal_moves_only_along_its_dominant_axis() {
     let mut pads = pads(&[(0, xbox())]);
     let now = Instant::now();
-    let mut stick = |axis, value| pads.event(PadEvent::Stick(0, axis, value), now);
+    let mut stick = |axis, value| pads.event(PadEvent::Stick(PadId::Gilrs(0), axis, value), now);
     assert_eq!(
         stick(Axis::X, 0.7),
         Some(Input::Move(Direction::Right, Style::Xbox))
@@ -278,7 +284,7 @@ fn a_sloppy_diagonal_moves_only_along_its_dominant_axis() {
     );
     // Starting from rest on a diagonal picks one direction.
     let mut pads = pads_with_xbox();
-    let mut stick = |axis, value| pads.event(PadEvent::Stick(0, axis, value), now);
+    let mut stick = |axis, value| pads.event(PadEvent::Stick(PadId::Gilrs(0), axis, value), now);
     assert_eq!(
         stick(Axis::Y, 0.55),
         Some(Input::Move(Direction::Up, Style::Xbox))
@@ -294,17 +300,23 @@ fn pads_with_xbox() -> Pads {
 fn a_disconnect_or_release_all_stops_the_repeat() {
     let mut pads = pads(&[(0, xbox())]);
     press(&mut pads, 0, Raw::DPadUp);
-    pads.event(PadEvent::Disconnected(0), Instant::now());
+    pads.event(PadEvent::Disconnected(PadId::Gilrs(0)), Instant::now());
     assert_eq!(pads.repeat_due(), None);
     assert!(pads.names().is_empty());
 
     let mut pads = pads_with_xbox();
-    pads.event(PadEvent::Stick(0, Axis::X, 1.0), Instant::now());
+    pads.event(
+        PadEvent::Stick(PadId::Gilrs(0), Axis::X, 1.0),
+        Instant::now(),
+    );
     pads.release_all();
     assert_eq!(pads.repeat_due(), None);
     // The stick still held counts as a new press once it moves again.
     assert_eq!(
-        pads.event(PadEvent::Stick(0, Axis::X, 0.95), Instant::now()),
+        pads.event(
+            PadEvent::Stick(PadId::Gilrs(0), Axis::X, 0.95),
+            Instant::now()
+        ),
         Some(Input::Move(Direction::Right, Style::Xbox))
     );
 }
@@ -360,7 +372,10 @@ fn fake(next: impl FnMut(usize) -> reader::Read + 'static) -> Fake {
 fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
     // Quick empty reads between events never add up to a back-off, as long as
     // an event comes between: ten here, but never more than five in a row.
-    let mut events = vec![Read::Event(PadEvent::Pressed(0, Raw::DPadRight))];
+    let mut events = vec![Read::Event(PadEvent::Pressed(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    ))];
     events.extend([
         Read::Nothing,
         Read::Nothing,
@@ -368,7 +383,10 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
         Read::Nothing,
         Read::Nothing,
     ]);
-    events.push(Read::Event(PadEvent::Released(0, Raw::DPadRight)));
+    events.push(Read::Event(PadEvent::Released(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     events.extend([
         Read::Nothing,
         Read::Nothing,
@@ -376,8 +394,8 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
         Read::Nothing,
         Read::Nothing,
     ]);
-    events.push(Read::Event(PadEvent::Disconnected(0)));
-    events.push(Read::Event(PadEvent::Connected(1, xbox())));
+    events.push(Read::Event(PadEvent::Disconnected(PadId::Gilrs(0))));
+    events.push(Read::Event(PadEvent::Connected(PadId::Gilrs(1), xbox())));
     let clock = FakeClock::new();
     let start = reader::Clock::now(&clock);
     let sent = std::cell::RefCell::new(Vec::new());
@@ -399,9 +417,9 @@ fn a_none_between_events_reads_on_at_once_and_the_pump_stops_with_the_app() {
     assert_eq!(
         sent.into_iter().map(|(event, _)| event).collect::<Vec<_>>(),
         [
-            PadEvent::Pressed(0, Raw::DPadRight),
-            PadEvent::Released(0, Raw::DPadRight),
-            PadEvent::Disconnected(0),
+            PadEvent::Pressed(PadId::Gilrs(0), Raw::DPadRight),
+            PadEvent::Released(PadId::Gilrs(0), Raw::DPadRight),
+            PadEvent::Disconnected(PadId::Gilrs(0)),
         ]
     );
 }
@@ -418,7 +436,7 @@ fn reads_that_keep_failing_back_off() {
     let source = fake(move |read| {
         let passed = reader::Clock::now(&time).saturating_duration_since(start);
         if passed >= window || read >= 10_000 {
-            Read::Event(PadEvent::Disconnected(0))
+            Read::Event(PadEvent::Disconnected(PadId::Gilrs(0)))
         } else {
             Read::Nothing
         }
@@ -446,7 +464,7 @@ fn a_press_after_dropped_axis_events_waits_at_most_one_short_retry() {
         let now = reader::Clock::now(&time);
         if now >= ready {
             seen.set(Some(now));
-            Read::Event(PadEvent::Pressed(0, Raw::South))
+            Read::Event(PadEvent::Pressed(PadId::Gilrs(0), Raw::South))
         } else {
             time.advance(Duration::from_millis(1));
             Read::Nothing
@@ -454,7 +472,7 @@ fn a_press_after_dropped_axis_events_waits_at_most_one_short_retry() {
     });
     let sent = std::cell::Cell::new(None);
     reader::pump(source, reader::RETRY_AFTER, &clock, |event| {
-        assert_eq!(event, PadEvent::Pressed(0, Raw::South));
+        assert_eq!(event, PadEvent::Pressed(PadId::Gilrs(0), Raw::South));
         sent.set(Some(reader::Clock::now(&clock)));
         false
     });
@@ -477,7 +495,7 @@ fn a_slow_none_is_a_read_that_waited_and_never_backs_off() {
             time.advance(Duration::from_millis(60));
             Read::Nothing
         } else {
-            Read::Event(PadEvent::Disconnected(0))
+            Read::Event(PadEvent::Disconnected(PadId::Gilrs(0)))
         }
     });
     reader::pump(source, Duration::from_secs(5), &clock, |_| false);
@@ -493,11 +511,11 @@ fn events_nothing_reads_show_the_device_works() {
     // drain read, ten times over, then the tap's release. That's more
     // empty reads than the back-off allows in a row, but each has an event
     // before it, so no fake time passes.
-    let mut reads = vec![Read::Event(PadEvent::Pressed(0, Raw::South))];
+    let mut reads = vec![Read::Event(PadEvent::Pressed(PadId::Gilrs(0), Raw::South))];
     for _ in 0..10 {
         reads.extend([Read::Ignored, Read::Nothing]);
     }
-    reads.push(Read::Event(PadEvent::Released(0, Raw::South)));
+    reads.push(Read::Event(PadEvent::Released(PadId::Gilrs(0), Raw::South)));
     let clock = FakeClock::new();
     let start = reader::Clock::now(&clock);
     let sent = std::cell::RefCell::new(Vec::new());
@@ -513,8 +531,8 @@ fn events_nothing_reads_show_the_device_works() {
     assert_eq!(
         sent.into_inner(),
         [
-            PadEvent::Pressed(0, Raw::South),
-            PadEvent::Released(0, Raw::South)
+            PadEvent::Pressed(PadId::Gilrs(0), Raw::South),
+            PadEvent::Released(PadId::Gilrs(0), Raw::South)
         ]
     );
     assert_eq!(reader::Clock::now(&clock), start);

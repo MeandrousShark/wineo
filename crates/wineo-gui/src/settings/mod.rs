@@ -494,6 +494,8 @@ pub(crate) struct Page {
     /// Whose labels the remap rows show: the last pad pressed, else the
     /// first connected.
     pub(crate) pad_style: crate::pad::Style,
+    /// Where the GameCube adapter stands, which the app keeps current.
+    pub(crate) adapter: crate::pad::adapter::State,
     /// The remap row waiting for a pad button.
     pub(crate) capture: Option<Capture>,
     /// The add target form as it was sent to be checked.
@@ -634,6 +636,7 @@ impl Page {
             reveal: None,
             pads: Vec::new(),
             pad_style: crate::pad::Style::default(),
+            adapter: crate::pad::adapter::State::default(),
             capture: None,
             resolving: None,
             open_add_after_load: false,
@@ -768,6 +771,13 @@ impl Page {
     pub(crate) fn draft_controller(&self) -> Option<bool> {
         match &self.view {
             View::Global(editor) => Some(editor.form.draft.input.controller),
+            _ => None,
+        }
+    }
+    /// The GameCube adapter switch as the draft has it, on the global page.
+    pub(crate) fn draft_gamecube_adapter(&self) -> Option<bool> {
+        match &self.view {
+            View::Global(editor) => Some(editor.form.draft.input.gamecube_adapter),
             _ => None,
         }
     }
@@ -1039,6 +1049,7 @@ impl App {
         page.gog.sequence = self.gog_work.sequence;
         page.pads = self.pads.names();
         page.pad_style = self.pads.recent_style();
+        page.adapter = self.adapter.shown;
         if let Some((sequence, busy)) = self.gog_work.pending {
             page.gog.busy = Some(busy);
             page.gog.busy_sequence = Some(sequence);
