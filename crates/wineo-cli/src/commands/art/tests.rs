@@ -700,14 +700,16 @@ fn art_fetch_fails_when_the_environment_is_replaced() {
         request.game = Some(7);
         // Without a swap the same fetch stores its icon.
         swap.done.set(!replaced);
-        let mut out = Vec::new();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
         let result = fetch_with(
             &paths,
             &request,
             &Api::new(&swap, "k"),
-            (&mut out, &mut Vec::new()),
+            (&mut out, &mut err),
         );
         let icon = paths.art_dir("hades").join("icon.png").exists();
+        // A replacement is the error alone, with nothing said about entries.
+        assert_eq!(String::from_utf8(err).unwrap(), "");
         if replaced {
             // `main` prints this as `error: ...` and exits 1.
             assert_eq!(result.unwrap_err().to_string(), CHANGED_ERROR);
@@ -800,15 +802,16 @@ fn art_fetch_leaves_a_replacement_environments_entry_alone() {
         let mut request = fetch_request();
         request.game = Some(7);
         request.only = None;
-        let mut out = Vec::new();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
         let result = fetch_with(
             &paths,
             &request,
             &Api::new(&swap, "k"),
-            (&mut out, &mut Vec::new()),
+            (&mut out, &mut err),
         );
         assert!(paths.art_dir("hades").join("icon.png").exists());
         assert_eq!(entry(&paths).exists(), !replaced);
+        assert_eq!(String::from_utf8(err).unwrap(), "");
         match result {
             Err(error) => assert!(replaced && error.to_string() == CHANGED_ERROR),
             Ok(found) => assert!(!replaced && found),
@@ -1066,34 +1069,6 @@ fn art_fetch_warns_about_entries_skipped_because_the_library_cant_be_read() {
     assert_eq!(String::from_utf8(err).unwrap(), ENTRIES_SKIPPED);
 }
 
-#[test]
-fn a_fetch_without_a_creation_identity_writes_nothing_until_a_game_is_picked() {
-    let (_root, paths) = paths();
-    let request = AutoFetch {
-        env: "hades",
-        term: "hades",
-        kinds: ArtFetch::Icon,
-    };
-    // A failed search, then a skipped pick.
-    let mut fake = Fake::default();
-    fake.search("hades", true);
-    for answers in [None, Some(&["4"][..])] {
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
-        let pick = match &mut prompt {
-            Some(prompt) => Pick::Ask(prompt),
-            None => Pick::Top(&mut out),
-        };
-        let transport: &dyn Transport = match answers {
-            Some(_) => &fake,
-            None => &Fake::default(),
-        };
-        let result = fetch_new(&paths, transport, &key(), &request, None, pick, &mut err);
-        assert!(result.is_ok());
-        assert!(!paths.library_file().exists(), "{answers:?}");
-    }
-}
-
 /// Like `paths`, but a portable folder, which has no desktop entries.
 fn portable_paths() -> (tempfile::TempDir, Paths) {
     let root = tempfile::tempdir().unwrap();
@@ -1153,6 +1128,132 @@ fn a_portable_fetch_says_nothing_about_entries() {
     assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
     assert!(paths.art_dir("hades").join("icon.png").exists());
     assert_eq!(String::from_utf8(err).unwrap(), "");
+}
+
+#[test]
+fn no_icon_stored_means_nothing_said_about_entries() {
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    for kind in [Kind::Icon, Kind::Grid, Kind::Hero, Kind::Logo] {
+        fake.page(kind, &[]);
+    }
+    let library = paths.library_file();
+    let transport = At::new(fake, "/grids/", move || {
+        fs::write(library, "not [toml").unwrap();
+    });
+    let mut request = fetch_request();
+    request.game = Some(7);
+    request.only = None;
+    let mut err = Vec::new();
+    let result = fetch_with(
+        &paths,
+        &request,
+        &Api::new(&transport, "k"),
+        (&mut Vec::new(), &mut err),
+    );
+    assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+    assert!(!entry(&paths).exists());
+}
+
+/// `wineo art fetch` of the icon for the Steam environment, with `then` run
+/// while the game is looked up, which stands in for the pick.
+fn fetch_during_the_pick(paths: &Paths, then: impl FnOnce() + 'static) -> anyhow::Result<bool> {
+    let transport = At::new(steam_environment(paths), "/games/steam/", then);
+    fetch_with(
+        paths,
+        &icon_request(),
+        &Api::new(&transport, "k"),
+        (&mut Vec::new(), &mut Vec::new()),
+    )
+}
+
+#[test]
+fn art_fetch_lands_through_an_edit_made_during_the_pick() {
+    let (_root, paths) = paths();
+    // Written first, so the edit below is the only change.
+    steam_environment(&paths);
+    EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    let config = paths.environment_config("hades");
+    let result = fetch_during_the_pick(&paths, move || {
+        // Saved the way every config edit is, through a new file.
+        let text = fs::read_to_string(&config).unwrap();
+        let staged = config.with_extension("edit");
+        fs::write(&staged, text + "title = \"Hades\"\n").unwrap();
+        fs::rename(&staged, &config).unwrap();
+    });
+    assert!(result.unwrap());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(7));
+}
+
+#[test]
+fn art_fetch_falls_back_to_the_file_when_the_library_cant_be_read_at_the_peek() {
+    let (_root, paths) = paths();
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::write(&library, "not [toml").unwrap();
+    let result = fetch_during_the_pick(&paths, || {});
+    assert!(result.unwrap());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(fs::read(&library).unwrap(), b"not [toml");
+}
+
+#[test]
+fn art_fetch_with_the_library_unreadable_at_the_upgrade() {
+    for with_id in [false, true] {
+        let (_root, paths) = paths();
+        steam_environment(&paths);
+        if with_id {
+            EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+        }
+        let library = paths.library_file();
+        let result = fetch_during_the_pick(&paths, move || {
+            fs::create_dir_all(library.parent().unwrap()).unwrap();
+            fs::write(library, "not [toml").unwrap();
+        });
+        let icon = paths.art_dir("hades").join("icon.png").exists();
+        if with_id {
+            // The id can't be confirmed, so nothing is stored.
+            assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+            assert!(!icon);
+            assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+        } else {
+            // A fingerprint needs no library, as in 1.9.0.
+            assert!(result.unwrap());
+            assert!(icon);
+        }
+    }
+}
+
+#[test]
+fn a_fetch_without_a_creation_identity_writes_nothing_until_a_game_is_picked() {
+    let (_root, paths) = paths();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::Icon,
+    };
+    // A failed search, then a skipped pick.
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    for answers in [None, Some(&["4"][..])] {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
+        let pick = match &mut prompt {
+            Some(prompt) => Pick::Ask(prompt),
+            None => Pick::Top(&mut out),
+        };
+        let transport: &dyn Transport = match answers {
+            Some(_) => &fake,
+            None => &Fake::default(),
+        };
+        let result = fetch_new(&paths, transport, &key(), &request, None, pick, &mut err);
+        assert!(result.is_ok());
+        assert!(!paths.library_file().exists(), "{answers:?}");
+    }
 }
 
 #[test]

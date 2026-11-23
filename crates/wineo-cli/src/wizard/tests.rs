@@ -525,6 +525,44 @@ fn guided_art_is_held_to_the_environment_creation_returned() {
 }
 
 #[test]
+fn guided_native_art_is_held_to_the_environment_creation_returned() {
+    for replaced in [false, true] {
+        let world = world();
+        let exe = world._root.path().join("game.sh");
+        write_script(&exe, "#!/bin/sh\n");
+        let exe = exe.display().to_string();
+        // Native, its name and program, art searching Hades, the review,
+        // then the first match. The program's own questions come after.
+        let answers = ["2", "hades", &exe, "1", "Hades", "", "1"];
+        let fake = fake();
+        let access = Access {
+            check_key: Box::new(found),
+            transport: Box::new(|| {
+                if replaced {
+                    crate::commands::art::fake::replace_environment(&world.paths, "hades");
+                }
+                Ok(Box::new(fake.clone()))
+            }),
+        };
+        let mut prompt = Prompt::new(Script::new(&answers), Vec::new());
+        let mut guided = Guided { registered: None };
+        let _ = run(
+            &world.paths,
+            &world.global,
+            &Prefill::default(),
+            &mut prompt,
+            &mut guided,
+            &access,
+        );
+        let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+        assert!(transcript.contains("Created hades."), "{transcript}");
+        let icon = world.paths.art_dir("hades").join("icon.png").exists();
+        assert_eq!(icon, !replaced, "{replaced}\n{transcript}");
+        assert_eq!(saved_game(&world), (!replaced).then_some(7));
+    }
+}
+
+#[test]
 fn with_an_installer_the_pick_list_comes_before_creation_and_the_download_after() {
     let world = world();
     install_runner(&world);

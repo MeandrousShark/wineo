@@ -161,3 +161,43 @@ fn an_import_fetches_into_the_environment_it_registered_and_no_other() {
     let (paths, _root) = run_imported(true);
     assert!(!paths.art_dir("hades").join("icon.png").exists());
 }
+
+#[test]
+fn an_import_that_returned_no_identity_acquires_one_for_its_art() {
+    let (_root, paths) = imported_environment();
+    let library_id = || {
+        wineo_core::library::load(&paths)
+            .environments
+            .get("hades")
+            .and_then(|entry| entry.id)
+    };
+    assert_eq!(library_id(), None);
+    let mut err = Vec::new();
+    store_art(
+        (&paths, "hades"),
+        1086940,
+        &[Kind::Icon],
+        &Api::new(&hades(), "k"),
+        None,
+        &mut err,
+    );
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(library_id().is_some());
+
+    // Gone by then, it says so and fetches nothing.
+    fs::remove_file(paths.environment_config("hades")).unwrap();
+    let mut err = Vec::new();
+    store_art(
+        (&paths, "hades"),
+        1086940,
+        &[Kind::Grid],
+        &Api::new(&hades(), "k"),
+        None,
+        &mut err,
+    );
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        "warning: SteamGridDB art couldn't be fetched: environment `hades` does not exist.\n"
+    );
+}
