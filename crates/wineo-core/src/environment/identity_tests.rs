@@ -162,8 +162,11 @@ fn a_mint_racing_validates_stray_removal_leaves_no_entry() {
     }
 }
 
+/// Puts `library.toml` in some state.
+type MakeLibrary = Box<dyn Fn(&Paths)>;
+
 /// Library states `acquire` can't write an id into, each left as it was.
-fn unwritable_libraries() -> Vec<(&'static str, Box<dyn Fn(&Paths)>)> {
+fn unwritable_libraries() -> Vec<(&'static str, MakeLibrary)> {
     vec![
         (
             "unreadable",
@@ -245,7 +248,8 @@ fn an_edit_keeps_an_id_current_and_the_art_lands() {
     let identity = EnvironmentIdentity::acquire(&paths, "game")
         .unwrap()
         .unwrap();
-    let edits: [(&str, Box<dyn Fn()>); 4] = [
+    type Edit<'a> = Box<dyn Fn() + 'a>;
+    let edits: [(&str, Edit); 4] = [
         (
             "settings::update",
             Box::new(|| {
