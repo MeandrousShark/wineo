@@ -45,3 +45,10 @@ pub fn replace_environment(paths: &Paths, name: &str) -> io::Result<()> {
 pub fn identity(paths: &Paths, name: &str) -> EnvironmentIdentity {
     EnvironmentIdentity::peek(paths, name).expect("the environment exists")
 }
+
+/// Runs `hook` once, on this thread, when the code under test reaches
+/// `at`. Only the points in `library.rs`'s id mint are reachable outside
+/// this crate's own tests.
+pub fn on_hook(at: &'static str, hook: impl FnOnce() + 'static) {
+    crate::art::on_test_hook(at, hook);
+}

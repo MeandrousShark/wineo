@@ -637,3 +637,22 @@ fn a_real_rm_and_create_refuses_the_old_identity_and_takes_the_new_one() {
     assert!(!paths.art_dir("game").join("grid.png").exists());
     store(&paths, new).unwrap();
 }
+
+#[test]
+fn after_its_own_write_a_fingerprint_is_taken_again_and_an_id_kept() {
+    let (_root, paths) = legacy();
+    let fingerprint = EnvironmentIdentity::peek(&paths, "game").unwrap();
+    rewrite(&paths);
+    assert!(fingerprint.is_current(&paths, "game").is_changed());
+    let retaken = fingerprint.after_own_write(&paths, "game").unwrap();
+    assert_eq!(retaken.id(), None);
+    assert!(retaken.is_current(&paths, "game").is_current());
+    assert_eq!(library_bytes(&paths), None, "it wrote the library");
+
+    let id = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
+    rewrite(&paths);
+    assert_eq!(id.after_own_write(&paths, "game"), Some(id));
+
+    fs::remove_file(paths.environment_config("game")).unwrap();
+    assert_eq!(retaken.after_own_write(&paths, "game"), None);
+}

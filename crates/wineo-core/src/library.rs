@@ -858,11 +858,11 @@ pub(crate) fn adopt_or_mint_id(
     still_valid: impl FnOnce() -> bool,
 ) -> Result<Option<Id>> {
     let minted = Id::mint().context(|| format!("failed to make an id for {name}"))?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     crate::art::test_hook("library.mint");
     let mut result = None;
     edit(paths, |document| {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         crate::art::test_hook("library.mint.locked");
         if !still_valid() {
             return false;

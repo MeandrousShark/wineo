@@ -697,7 +697,7 @@ pub fn save_game_for(
 
 /// Runs the test hook set for `at` on this thread, once. Tests use it to
 /// cancel in the gap just before a write.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_hook(at: &str) {
     let hook = TEST_HOOKS.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
@@ -709,16 +709,16 @@ pub(crate) fn test_hook(at: &str) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type TestHooks = std::cell::RefCell<Vec<(&'static str, Box<dyn FnOnce()>)>>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static TEST_HOOKS: TestHooks = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Sets a test hook for `at` on this thread.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn on_test_hook(at: &'static str, hook: impl FnOnce() + 'static) {
     TEST_HOOKS.with(|hooks| hooks.borrow_mut().push((at, Box::new(hook))));
 }
