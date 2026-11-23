@@ -1076,10 +1076,11 @@ pub(crate) mod fake {
     /// `replace_environment` as a shell command, for a fake program to run
     /// while wineo waits on it: a new config file, and the environment's
     /// library entry holding another id, as a new one's would. The library
-    /// is expected to have only this environment's entry.
+    /// is expected to have only this environment's entry, and the command
+    /// exits 3 if it had no id to change.
     pub(crate) fn replace_environment_command(paths: &Paths, name: &str) -> String {
         format!(
-            "cp '{0}' '{0}.new' && mv '{0}.new' '{0}' && sed -i 's/^id = \".*\"$/id = \"{1}\"/' '{2}'",
+            "cp '{0}' '{0}.new' && mv '{0}.new' '{0}' && sed -i 's/^id = \".*\"$/id = \"{1}\"/' '{2}' && grep -q '^id = \"{1}\"$' '{2}' || exit 3",
             paths.environment_config(name).display(),
             "0123456789abcdef0123456789abcdef",
             paths.library_file().display(),

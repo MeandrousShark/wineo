@@ -589,3 +589,50 @@ fn trash_and_restore_keep_the_id() {
     assert_eq!(identity.is_current(&paths, "game"), Currency::Current);
     store(&paths, identity).unwrap();
 }
+
+#[test]
+fn the_test_replacement_refuses_to_keep_an_old_id() {
+    let (_root, paths) = legacy();
+    EnvironmentIdentity::acquire(&paths, "game")
+        .unwrap()
+        .unwrap();
+    crate::test_support::replace_environment(&paths, "game").unwrap();
+    // Readable but not writable, so the old id would stay.
+    set_mode(paths.library_file().parent().unwrap(), 0o555);
+    let result = crate::test_support::replace_environment(&paths, "game");
+    set_mode(paths.library_file().parent().unwrap(), 0o755);
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("without a new id"), "{error}");
+}
+
+#[test]
+fn a_real_rm_and_create_refuses_the_old_identity_and_takes_the_new_one() {
+    let (_root, paths) = legacy();
+    let fingerprint = EnvironmentIdentity::peek(&paths, "game").unwrap();
+    let old = EnvironmentIdentity::acquire(&paths, "game")
+        .unwrap()
+        .unwrap();
+    assert!(old.id().is_some());
+    crate::trash::remove(&paths, "game", false).unwrap();
+    let (_, new) = Environment::create_native(
+        &paths,
+        &GlobalConfig::default(),
+        "game",
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
+    let new = new.unwrap();
+    assert!(new.id().is_some());
+    assert_ne!(new, old);
+    for held in [old, fingerprint] {
+        assert_eq!(held.is_current(&paths, "game"), Currency::Changed);
+        assert!(matches!(
+            store(&paths, held),
+            Err(Error::ArtEnvironmentChanged(_))
+        ));
+    }
+    assert!(!paths.art_dir("game").join("grid.png").exists());
+    store(&paths, new).unwrap();
+}
