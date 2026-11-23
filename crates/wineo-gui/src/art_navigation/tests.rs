@@ -747,3 +747,36 @@ fn the_art_page_searches_for_what_the_card_shows() {
     let _ = app.update(Message::OpenArt);
     assert_eq!(change_search(&mut app, "game").as_deref(), Some("game"));
 }
+
+#[test]
+fn a_cached_page_holding_a_fingerprint_is_reopened_after_another_process_mints() {
+    let (_root, mut app) = fixture();
+    let config = app.paths.environment_config("legacy");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    let page = &app.art_pages["legacy"];
+    let (generation, identity) = (page.generation, page.identity);
+    assert_eq!(identity.id(), None);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Back,
+    ));
+    assert!(app.art_page.is_none());
+    // Leaving moves the cached page to a new generation, which a page made
+    // anew wouldn't have.
+    let generation = app.art_pages["legacy"].generation;
+
+    let minted = art_page::EnvironmentIdentity::acquire(&app.paths, "legacy")
+        .unwrap()
+        .unwrap();
+    assert!(minted.id().is_some());
+    let _ = app.update(Message::ContextArt("legacy".into()));
+
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    let page = &app.art_pages["legacy"];
+    assert_eq!(page.generation, generation);
+    assert_eq!(page.identity, identity);
+}

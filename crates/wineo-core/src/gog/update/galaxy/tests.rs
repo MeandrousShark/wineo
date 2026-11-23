@@ -464,6 +464,24 @@ fn a_galaxy_install_returns_the_new_environments_id() {
 }
 
 #[test]
+fn a_galaxy_install_after_a_failed_stamp_returns_a_fingerprint_taken_after_its_target() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    let library = fx.paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::write(&library, "[broken\n").unwrap();
+    let installed = fx.install();
+    assert_eq!(installed.target, Some(fx.folder.join("bin/Game.exe")));
+    let identity = installed.identity.unwrap();
+    assert_eq!(identity.id(), None);
+    assert_eq!(
+        identity.is_current(&fx.paths, "game"),
+        crate::environment::Currency::Current
+    );
+    assert_eq!(fs::read(&library).unwrap(), b"[broken\n");
+}
+
+#[test]
 fn a_galaxy_install_downloads_every_file_and_commits() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));
