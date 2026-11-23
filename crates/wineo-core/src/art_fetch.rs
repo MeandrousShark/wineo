@@ -37,11 +37,10 @@ pub enum Fetched {
     AssetNotFound,
 }
 
-/// Fetches `kind` for `target`, or the environment for None, from `game`.
-/// Candidates are tried best first, and one whose bytes are not a format the
-/// kind takes is passed over for the next.
+/// `fetch_kind_for` held to the environment as it is now, for tests.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn fetch_kind(
+pub(crate) fn fetch_kind(
     paths: &Paths,
     env: &str,
     target: Option<&str>,
@@ -51,6 +50,8 @@ pub fn fetch_kind(
     language: &str,
     mode: Mode,
 ) -> Result<Fetched> {
+    let identity = EnvironmentIdentity::peek(paths, env)
+        .ok_or_else(|| Error::UnknownEnvironment(env.to_owned()))?;
     fetch_kind_for(
         paths,
         env,
@@ -60,15 +61,17 @@ pub fn fetch_kind(
         game,
         language,
         mode,
-        None,
+        identity,
         &Token::new(),
     )
 }
 
-/// Like `fetch_kind`, except that nothing is written unless the environment
-/// is still the one `expected_identity` was read from, and `cancel` stops
-/// the download and anything after it. Both are checked under the art lock,
-/// after the download.
+/// Fetches `kind` for `target`, or the environment for None, from `game`.
+/// Candidates are tried best first, and one whose bytes are not a format the
+/// kind takes is passed over for the next. Nothing is written unless the
+/// environment is still the one `expected_identity` was read from, and
+/// `cancel` stops the download and anything after it. Both are checked
+/// under the art lock, after the download.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_kind_for(
     paths: &Paths,
@@ -79,14 +82,14 @@ pub fn fetch_kind_for(
     game: u64,
     language: &str,
     mode: Mode,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
     cancel: &Token,
 ) -> Result<Fetched> {
     if cancel.is_canceled() {
         return Err(crate::Error::Canceled("download").into());
     }
-    // First, so a removed environment reads as changed when one is expected,
-    // as it does under the art lock.
+    // First, so a removed environment reads as changed, as it does under
+    // the art lock.
     art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
     if mode == Mode::Fill
@@ -124,7 +127,7 @@ pub fn fetch_game(
     game: u64,
     kinds: &[Kind],
     language: &str,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
     cancel: &Token,
 ) -> Result<Vec<(Kind, Result<Fetched>)>> {
     if cancel.is_canceled() {
@@ -168,7 +171,7 @@ pub fn fetch_steam(
     api: &Api<'_>,
     language: &str,
     kinds: &[Kind],
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Vec<(Kind, Result<Fetched>)>> {
     let mut missing = Vec::new();
     for &kind in kinds {
@@ -226,7 +229,7 @@ pub fn use_image(
     image: &Image,
     progress: impl FnMut(u64, Option<u64>),
     cancel: &Token,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Fetched> {
     art::check_spot(paths, env, target)?;
     let bytes = api.download_with_progress(&image.url, progress, cancel)?;
@@ -296,9 +299,9 @@ fn choose_for(
     Ok(Choice::NoneFound)
 }
 
-/// Like `publish`, except that nothing is written unless the environment is
-/// still the one `expected_identity` was read from, which is checked under
-/// the art lock.
+/// Publishes a downloaded image, keeping existing art in Fill mode. Nothing
+/// is written unless the environment is still the one `expected_identity`
+/// was read from, which is checked under the art lock.
 pub fn publish_for(
     paths: &Paths,
     env: &str,
@@ -306,7 +309,7 @@ pub fn publish_for(
     kind: Kind,
     image: &Downloaded,
     mode: Mode,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Fetched> {
     publish_with_cancel(
         paths,
@@ -320,8 +323,9 @@ pub fn publish_for(
     )
 }
 
-/// Publishes a downloaded image, keeping existing art in Fill mode.
-pub fn publish(
+/// `publish_for` held to the environment as it is now, for tests.
+#[cfg(test)]
+pub(crate) fn publish(
     paths: &Paths,
     env: &str,
     target: Option<&str>,
@@ -329,7 +333,9 @@ pub fn publish(
     image: &Downloaded,
     mode: Mode,
 ) -> Result<Fetched> {
-    publish_with_cancel(paths, env, target, kind, image, mode, None, None)
+    let identity = EnvironmentIdentity::peek(paths, env)
+        .ok_or_else(|| Error::UnknownEnvironment(env.to_owned()))?;
+    publish_with_cancel(paths, env, target, kind, image, mode, None, identity)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -341,7 +347,7 @@ fn publish_with_cancel(
     image: &Downloaded,
     mode: Mode,
     cancel: Option<&Token>,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Fetched> {
     art::check_environment_identity(paths, env, expected_identity)?;
     art::check_spot(paths, env, target)?;
@@ -350,31 +356,16 @@ fn publish_with_cancel(
     {
         return Ok(skipped);
     }
-    let published = match cancel {
-        Some(cancel) => art::publish_fetched_with_cancel(
-            paths,
-            env,
-            target,
-            kind,
-            image,
-            mode != Mode::Fill,
-            Some(cancel),
-            expected_identity,
-        )?,
-        None => match expected_identity {
-            Some(expected_identity) => art::publish_fetched_with_cancel(
-                paths,
-                env,
-                target,
-                kind,
-                image,
-                mode != Mode::Fill,
-                None,
-                Some(expected_identity),
-            )?,
-            None => art::publish_fetched(paths, env, target, kind, image, mode != Mode::Fill)?,
-        },
-    };
+    let published = art::publish_fetched_with_cancel(
+        paths,
+        env,
+        target,
+        kind,
+        image,
+        mode != Mode::Fill,
+        cancel,
+        expected_identity,
+    )?;
     Ok(match published {
         Some(stored) => Fetched::Stored {
             asset: image.asset,

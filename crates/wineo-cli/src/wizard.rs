@@ -1118,11 +1118,11 @@ fn create_native<I: Input, W: Write>(
     exe: String,
     art: Option<(Key, String)>,
 ) -> anyhow::Result<ExitCode> {
-    let environment =
+    let (environment, identity) =
         match Environment::create_native(paths, global, name, None, false, |warning| {
             eprintln!("warning: {warning}")
         }) {
-            Ok((environment, _)) => environment,
+            Ok(created) => created,
             Err(err) => {
                 prompt.say(format!("error: {:#}", anyhow::Error::from(err)))?;
                 prompt.say(format!(
@@ -1134,7 +1134,7 @@ fn create_native<I: Input, W: Write>(
     guided.registered = Some(name.to_owned());
     prompt.say(format!("Created {name}."))?;
     if let Some((key, term)) = &art {
-        fetch_art(paths, global, prompt, access, name, key, term)?;
+        fetch_art(paths, global, prompt, access, (name, identity), key, term)?;
     }
     let mut native_env = global.env.clone();
     native_env.extend(environment.config.env.clone());
@@ -1268,7 +1268,7 @@ fn create<I: Input, W: Write>(
     if let (Some((key, term)), How::Existing(_) | How::Nothing) = (&art, &how) {
         // The create lock is released, so a slow SteamGridDB only holds up
         // this command.
-        fetch_art(paths, global, prompt, access, &name, key, term)?;
+        fetch_art(paths, global, prompt, access, (&name, identity), key, term)?;
     }
 
     let step = match ended_early(paths, &name, prompt, step, picked.is_some())? {
@@ -1499,12 +1499,14 @@ impl<I: Input, W: Write> create::Hooks for WizardHooks<'_, I, W> {
     }
 }
 
+/// Fetches art into the environment `identity` is, the identity its creation
+/// returned.
 fn fetch_art<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     prompt: &mut Prompt<I, W>,
     access: &Access,
-    name: &str,
+    (name, identity): (&str, Option<EnvironmentIdentity>),
     key: &Key,
     term: &str,
 ) -> anyhow::Result<()> {
@@ -1517,6 +1519,7 @@ fn fetch_art<I: Input, W: Write>(
         paths,
         key,
         &request,
+        identity,
         Pick::Ask(prompt),
         &mut crate::output::stderr(),
     )?;

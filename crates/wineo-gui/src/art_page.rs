@@ -1467,7 +1467,7 @@ fn save_game(
     game: u64,
     identity: EnvironmentIdentity,
 ) -> Result<(), String> {
-    art::save_game_for(paths, name, game, Some(identity), None).map_err(|error| match error {
+    art::save_game_for(paths, name, game, identity, None).map_err(|error| match error {
         wineo_core::Error::ArtEnvironmentChanged(_) => {
             "environment changed before its game could be saved".into()
         }
@@ -1581,12 +1581,12 @@ fn write_art_for(
             if let Some(error) = refused(paths, name, held, step) {
                 return Err(error);
             }
-            art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, Some(identity))
+            art::set_manual(paths, name, spot.0.as_deref(), spot.1, path, identity)
                 .map(|_| ())
                 .map_err(|error| changed_or(error, "written"))
         }),
         // Checked under the art lock, with the removal.
-        None => art::remove(paths, name, spot.0.as_deref(), spot.1, Some(identity))
+        None => art::remove(paths, name, spot.0.as_deref(), spot.1, identity)
             .map(|_| ())
             .map_err(|error| changed_or(error, "removed")),
     };
@@ -1642,7 +1642,7 @@ fn use_image_for(
             progress(received, total);
         },
         token,
-        Some(identity),
+        identity,
     );
     if let Err(error) = result {
         return WriteOutcome::failed(stopped.unwrap_or_else(|| error.to_string()));

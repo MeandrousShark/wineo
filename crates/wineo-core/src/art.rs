@@ -337,13 +337,13 @@ pub fn set_manual(
     target: Option<&str>,
     kind: Kind,
     file: &Path,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Stored> {
     let original = file
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // First, so a removed environment reads as changed when one is expected.
+    // First, so a removed environment reads as changed.
     check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
@@ -368,9 +368,9 @@ pub fn set_manual_as(
     kind: Kind,
     file: &Path,
     original: &str,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Stored> {
-    // First, so a removed environment reads as changed when one is expected.
+    // First, so a removed environment reads as changed.
     check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
     let bytes = read_art(file)?;
@@ -395,7 +395,7 @@ pub fn set_manual_bytes(
     kind: Kind,
     bytes: &[u8],
     original: &str,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Stored> {
     check_environment_identity(paths, env, expected_identity)?;
     check_spot(paths, env, target)?;
@@ -423,7 +423,7 @@ fn store_manual(
     bytes: &[u8],
     original: &str,
     file: &Path,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Stored> {
     let format = detect(bytes)
         .filter(|format| kind.accepts(*format))
@@ -472,14 +472,14 @@ fn store_manual(
 pub(crate) fn check_environment_identity(
     paths: &Paths,
     env: &str,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<()> {
     // Reads library.toml itself, never a cache, since this is the check
     // that decides.
-    match expected_identity.map(|expected| expected.is_current(paths, env)) {
-        None | Some(Currency::Current) => Ok(()),
-        Some(Currency::Changed) => Err(Error::ArtEnvironmentChanged(env.to_owned())),
-        Some(Currency::LibraryUnreadable) => Err(Error::ArtLibraryUnreadable {
+    match expected_identity.is_current(paths, env) {
+        Currency::Current => Ok(()),
+        Currency::Changed => Err(Error::ArtEnvironmentChanged(env.to_owned())),
+        Currency::LibraryUnreadable => Err(Error::ArtLibraryUnreadable {
             env: env.to_owned(),
             outcome: "stored",
         }),
@@ -490,7 +490,7 @@ pub(crate) fn check_environment_identity(
 fn check_environment_identity_to_remove(
     paths: &Paths,
     env: &str,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<()> {
     check_environment_identity(paths, env, expected_identity).map_err(|error| match error {
         Error::ArtLibraryUnreadable { env, .. } => Error::ArtLibraryUnreadable {
@@ -513,18 +513,9 @@ pub struct Downloaded {
 /// for None, recorded as SteamGridDB `asset`. Without `replace`, art that
 /// appeared since the fetch began is kept and None is returned. The file is
 /// staged beside its final name and published without replacing anything
-/// but the kind's own files this decided to replace.
-pub(crate) fn publish_fetched(
-    paths: &Paths,
-    env: &str,
-    target: Option<&str>,
-    kind: Kind,
-    image: &Downloaded,
-    replace: bool,
-) -> Result<Option<Stored>> {
-    publish_fetched_with_cancel(paths, env, target, kind, image, replace, None, None)
-}
-
+/// but the kind's own files this decided to replace. Nothing is written once
+/// `cancel` is canceled or the environment is no longer the one
+/// `expected_identity` was read from, both checked under the art lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_fetched_with_cancel(
     paths: &Paths,
@@ -534,7 +525,7 @@ pub(crate) fn publish_fetched_with_cancel(
     image: &Downloaded,
     replace: bool,
     cancel: Option<&Token>,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Option<Stored>> {
     publish_source(
         paths,
@@ -551,7 +542,7 @@ pub(crate) fn publish_fetched_with_cancel(
 }
 
 /// Publishes `bytes`, already identified as `format`, as `kind` recorded
-/// with `source`. Otherwise as `publish_fetched`.
+/// with `source`. Otherwise as `publish_fetched_with_cancel`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_source(
     paths: &Paths,
@@ -563,7 +554,7 @@ pub(crate) fn publish_source(
     source: Source,
     replace: bool,
     cancel: Option<&Token>,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Option<Stored>> {
     let art_dir = paths.art_dir(env);
     #[cfg(test)]
@@ -635,19 +626,24 @@ pub fn saved_game(paths: &Paths, env: &str) -> Result<Option<u64>> {
     Ok(ArtConfig::load(&paths.art_dir(env))?.game)
 }
 
-/// Records `game` as the environment's SteamGridDB game.
+/// Records `game` as the environment's SteamGridDB game, for tests that
+/// only need one there.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
 pub fn save_game(paths: &Paths, env: &str, game: u64) -> Result<()> {
-    save_game_for(paths, env, game, None, None)
+    let identity = EnvironmentIdentity::peek(paths, env)
+        .ok_or_else(|| Error::UnknownEnvironment(env.to_owned()))?;
+    save_game_for(paths, env, game, identity, None)
 }
 
-/// Like `save_game`, but refused unless the environment is still the one
-/// `expected_identity` was read from, or when `cancel` was canceled by the
-/// time the art lock is held.
+/// Records `game` as the environment's SteamGridDB game, refused unless the
+/// environment is still the one `expected_identity` was read from, or when
+/// `cancel` was canceled by the time the art lock is held.
 pub fn save_game_for(
     paths: &Paths,
     env: &str,
     game: u64,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
     cancel: Option<&Token>,
 ) -> Result<()> {
     let art_dir = paths.art_dir(env);
@@ -711,14 +707,14 @@ pub struct Removed {
 /// it falls back to. The target itself need not exist, so art left behind by
 /// one that was removed can still be cleaned up.
 ///
-/// With `expected_identity`, nothing is removed unless the environment is
-/// still the one it was read from, which is checked under the art lock.
+/// Nothing is removed unless the environment is still the one
+/// `expected_identity` was read from, which is checked under the art lock.
 pub fn remove(
     paths: &Paths,
     env: &str,
     target: Option<&str>,
     kind: Kind,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> Result<Removed> {
     if let Some(target) = target
         && !name::is_valid(target)

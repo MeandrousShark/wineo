@@ -145,6 +145,14 @@ impl EnvironmentIdentity {
         }
     }
 
+    /// `acquire` for a write that needs the environment, where one that
+    /// doesn't exist is `UnknownEnvironment`. That comes after the checks
+    /// `acquire` makes first, so an invalid name, a pending trash entry, or
+    /// a snapshot recovery marker keeps its own error.
+    pub fn acquire_existing(paths: &Paths, name: &str) -> Result<Self> {
+        Self::acquire(paths, name)?.ok_or_else(|| Error::UnknownEnvironment(name.to_owned()))
+    }
+
     /// For showing something: what the entry holds and the config's
     /// fingerprint. Never writes or locks.
     pub fn observe(paths: &Paths, name: &str) -> Observed {

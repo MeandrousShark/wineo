@@ -580,18 +580,9 @@ pub(super) fn import_one(
     for warning in &registered.warnings {
         eprintln!("warning: {warning}");
     }
-    let environment = &registered.environment;
     let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.
-    let _ = fetch_art(
-        paths,
-        global,
-        bulk.access,
-        &environment.name,
-        &art,
-        top,
-        err,
-    );
+    let _ = fetch_art(paths, global, bulk.access, &registered, &art, top, err);
     finish_registered(paths, global, &registered)?;
     Ok(log_body)
 }

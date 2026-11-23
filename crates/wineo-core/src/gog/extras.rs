@@ -443,7 +443,7 @@ fn store(
         // Checked again under the art lock, so a cancel that came while
         // waiting for it publishes nothing.
         Some(token),
-        Some(identity),
+        identity,
     )?;
     Ok(stored.is_some())
 }
@@ -490,9 +490,7 @@ fn steamgriddb(
                 }
                 return;
             }
-            if let Err(error) =
-                art::save_game_for(paths, name, game.id, Some(identity), Some(token))
-            {
+            if let Err(error) = art::save_game_for(paths, name, game.id, identity, Some(token)) {
                 if token.is_canceled() {
                     for kind in kinds {
                         note(canceled(&format!("{kind} artwork")));
@@ -523,7 +521,7 @@ fn steamgriddb(
             game,
             request.language,
             Mode::Fill,
-            Some(identity),
+            identity,
             token,
         ) {
             Err(_) if token.is_canceled() => note(canceled(&format!("{kind} artwork"))),

@@ -389,3 +389,123 @@ fn new_with_art_and_no_key_notes_it_and_succeeds() {
         stderr(&plain)
     );
 }
+
+/// `library.toml`'s bytes, or None while there is none.
+fn library(f: &Fixture) -> Option<Vec<u8>> {
+    fs::read(f.paths().library_file()).ok()
+}
+
+fn assert_refused(output: &std::process::Output, error: &str) {
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    assert_eq!(stderr(output), format!("error: {error}\n"));
+}
+
+#[test]
+fn set_and_rm_keep_their_errors_and_leave_the_library_alone() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let png = image(&f, "a.png", PNG);
+    let before = library(&f);
+
+    // The first dot starts the target, so the environment's name is empty.
+    let set = f.run(&["art", "set", "../config", "grid", &png]);
+    assert_refused(
+        &set,
+        &wineo_core::Error::InvalidName(String::new()).to_string(),
+    );
+    let removed = f.run(&["art", "rm", "../config", "grid"]);
+    assert_refused(
+        &removed,
+        &wineo_core::Error::InvalidName("./config".to_owned()).to_string(),
+    );
+    for output in [
+        f.run(&["art", "set", "nope", "grid", &png]),
+        f.run(&["art", "rm", "nope", "grid"]),
+    ] {
+        assert_refused(&output, "environment `nope` does not exist");
+    }
+    assert_eq!(library(&f), before);
+}
+
+#[test]
+fn set_and_rm_keep_a_pending_trash_entrys_error() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let png = image(&f, "a.png", PNG);
+    let removed = f.run(&["rm", "hades"]);
+    assert_success(&removed);
+    let paths = f.paths();
+    let manifest = paths
+        .trash_dir()
+        .join(trash_id(&removed))
+        .join("manifest.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("phase = \"trashed\""), "{text}");
+    fs::write(
+        &manifest,
+        text.replace("phase = \"trashed\"", "phase = \"removing\""),
+    )
+    .unwrap();
+    let pending = wineo_core::environment::Environment::ensure_exists(&paths, "hades")
+        .unwrap_err()
+        .to_string();
+    assert!(!pending.contains("does not exist"), "{pending}");
+    let before = library(&f);
+
+    assert_refused(&f.run(&["art", "set", "hades", "grid", &png]), &pending);
+    assert_refused(&f.run(&["art", "rm", "hades", "grid"]), &pending);
+    assert_eq!(library(&f), before);
+}
+
+#[test]
+fn an_interrupted_restore_with_its_config_missing_does_not_exist_for_art() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let png = image(&f, "a.png", PNG);
+    let paths = f.paths();
+    let marker = paths.restore_marker("hades");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(&marker, "{}").unwrap();
+    let interrupted = f.run(&["art", "set", "hades", "grid", &png]);
+    assert!(
+        stderr(&interrupted).contains("interrupted snapshot restore"),
+        "{}",
+        stderr(&interrupted)
+    );
+
+    fs::remove_file(paths.environment_config("hades")).unwrap();
+    assert_refused(
+        &f.run(&["art", "set", "hades", "grid", &png]),
+        "environment `hades` does not exist",
+    );
+    assert_refused(
+        &f.run(&["art", "rm", "hades", "grid"]),
+        "environment `hades` does not exist",
+    );
+}
+
+#[test]
+fn set_and_rm_give_an_environment_from_before_ids_one() {
+    let f = Fixture::new();
+    let paths = f.paths();
+    let png = image(&f, "a.png", PNG);
+    for (name, args) in [
+        ("hades", vec!["art", "set", "hades", "grid", png.as_str()]),
+        ("zagreus", vec!["art", "rm", "zagreus", "grid"]),
+    ] {
+        f.environment(name, "");
+        if name == "zagreus" {
+            fs::create_dir_all(paths.art_dir(name)).unwrap();
+            fs::write(paths.art_dir(name).join("grid.png"), PNG).unwrap();
+        }
+        let id = || {
+            wineo_core::library::load(&paths)
+                .environments
+                .get(name)
+                .and_then(|entry| entry.id)
+        };
+        assert_eq!(id(), None);
+        assert_success(&f.run(&args));
+        assert!(id().is_some(), "{name}");
+    }
+}

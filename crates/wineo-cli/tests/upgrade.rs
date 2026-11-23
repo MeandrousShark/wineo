@@ -775,7 +775,7 @@ fn write_art(paths: &Paths, environment: &str) -> wineo_core::library::Id {
         wineo_core::art::Kind::Grid,
         PNG,
         "grid.png",
-        Some(identity),
+        identity,
     )
     .unwrap_or_else(|error| panic!("{environment}: {error}"));
     id

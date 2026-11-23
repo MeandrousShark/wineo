@@ -503,7 +503,12 @@ pub fn apply(
         if cancel.is_canceled() {
             break;
         }
-        match store_cached_art(paths, &plan.name, kind, &source, identity) {
+        // None only when the config was gone right after it was written.
+        let stored = match identity {
+            Some(identity) => store_cached_art(paths, &plan.name, kind, &source, identity),
+            None => Err(crate::Error::UnknownEnvironment(plan.name.clone()).into()),
+        };
+        match stored {
             Ok(()) => art.push(kind),
             Err(error) => warnings.push(format!("Could not import {} art: {error:#}.", kind)),
         }
@@ -717,7 +722,7 @@ fn store_cached_art(
     name: &str,
     kind: Kind,
     source: &Path,
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
 ) -> anyhow::Result<()> {
     let mut bytes = Vec::new();
     fs::File::open(source)

@@ -97,7 +97,8 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.command {
         Command::Set { spot, kind, file } => {
             let (env, target) = split(&spot);
-            art::set_manual(paths, env, target, kind, &file, None)?;
+            let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
+            art::set_manual(paths, env, target, kind, &file, identity)?;
             println!("Set {kind} for {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;
@@ -147,7 +148,15 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
-            art::remove(paths, env, target, kind, None)?;
+            // Before the environment's own checks, as `art::remove` makes
+            // them, so a spot with both names invalid keeps its error.
+            if let Some(target) = target
+                && !wineo_core::name::is_valid(target)
+            {
+                return Err(wineo_core::Error::InvalidName(target.to_owned()).into());
+            }
+            let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
+            art::remove(paths, env, target, kind, identity)?;
             println!("Removed {kind} from {spot}");
             if kind == Kind::Icon {
                 apply_desktop(paths, env)?;
@@ -263,7 +272,7 @@ fn fetch_with(
     out: &mut dyn io::Write,
 ) -> anyhow::Result<bool> {
     let (env, _) = split(request.spot);
-    let identity = EnvironmentIdentity::acquire(paths, env)?;
+    let identity = EnvironmentIdentity::acquire_existing(paths, env)?;
     fetch_checked(paths, request, api, identity, out)
 }
 
@@ -271,7 +280,7 @@ fn fetch_checked(
     paths: &Paths,
     request: &FetchRequest,
     api: &Api,
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
     out: &mut dyn io::Write,
 ) -> anyhow::Result<bool> {
     let (env, target) = split(request.spot);
@@ -298,9 +307,9 @@ fn fetch_checked(
 }
 
 /// Whether `env` is still the environment `identity` was read from, which
-/// the desktop entries are only updated for. Without one, it can't tell.
-fn unchanged(paths: &Paths, env: &str, identity: Option<EnvironmentIdentity>) -> bool {
-    identity.is_none_or(|identity| identity.is_current(paths, env).is_current())
+/// the desktop entries are only updated for.
+fn unchanged(paths: &Paths, env: &str, identity: EnvironmentIdentity) -> bool {
+    identity.is_current(paths, env).is_current()
 }
 
 fn fetch_game(
@@ -340,7 +349,7 @@ struct Spot<'a> {
     target: Option<&'a str>,
     /// What the environment was when the fetch began. Nothing is written
     /// once it has been replaced.
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
 }
 
 /// Fetches each kind the request asks for, printing a line per kind as it
@@ -541,6 +550,7 @@ impl<'a> Access<'a> {
         paths: &Paths,
         key: &Key,
         request: &AutoFetch,
+        identity: Option<EnvironmentIdentity>,
         pick: Pick<I, W>,
         err: &mut dyn Write,
     ) -> Result<(), Canceled> {
@@ -548,7 +558,7 @@ impl<'a> Access<'a> {
             return Ok(());
         }
         match (self.transport)() {
-            Ok(transport) => fetch_new(paths, &*transport, key, request, pick, err),
+            Ok(transport) => fetch_new(paths, &*transport, key, request, identity, pick, err),
             Err(error) => {
                 warn_failed(&error, err);
                 Ok(())
@@ -594,8 +604,9 @@ impl Access<'_> {
     }
 
     /// The downloading half: records the game `pick` chose and fetches into
-    /// the environment, which has to exist and, when `identity` is given,
-    /// still be the one it was read from. Failures are warnings on `err`.
+    /// the environment, which has to still be the one `identity` is, the
+    /// identity its creation returned. Without one, one is acquired here.
+    /// Failures are warnings on `err`.
     pub fn fetch_picked(
         &self,
         paths: &Paths,
@@ -608,6 +619,7 @@ impl Access<'_> {
         let result = (|| {
             let transport = (self.transport)()?;
             let api = Api::new(&*transport, &key.value);
+            let identity = created_or_acquired(paths, request.env, identity)?;
             store_art(
                 paths,
                 &api,
@@ -636,22 +648,38 @@ pub(crate) fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
     let _ = writeln!(err, "{}", style::warning_stderr(line));
 }
 
+/// The identity creation returned, or for a creation that returned none, one
+/// acquired now. A missing environment is "does not exist".
+fn created_or_acquired(
+    paths: &Paths,
+    env: &str,
+    created: Option<EnvironmentIdentity>,
+) -> anyhow::Result<EnvironmentIdentity> {
+    match created {
+        Some(identity) => Ok(identity),
+        None => Ok(EnvironmentIdentity::acquire_existing(paths, env)?),
+    }
+}
+
 /// Fetches art into the environment's store with `Mode::Fill`, printing its
-/// lines through the prompt or the `Top` writer. Any failure is a warning on
-/// `err` and kinds already stored stay, so art never changes how
-/// `new` or `import` ends. Only canceling the pick list is an error.
+/// lines through the prompt or the `Top` writer. Nothing is stored once the
+/// environment is no longer the one `identity`, the identity its creation
+/// returned, names. Any failure is a warning on `err` and kinds already
+/// stored stay, so art never changes how `new` or `import` ends. Only
+/// canceling the pick list is an error.
 pub fn fetch_new<I: Input, W: Write>(
     paths: &Paths,
     transport: &dyn Transport,
     key: &Key,
     request: &AutoFetch,
+    identity: Option<EnvironmentIdentity>,
     pick: Pick<I, W>,
     err: &mut dyn Write,
 ) -> Result<(), Canceled> {
     if request.kinds.kinds().is_empty() {
         return Ok(());
     }
-    match try_fetch_new(paths, transport, key, request, pick) {
+    match try_fetch_new(paths, transport, key, request, identity, pick) {
         Ok(()) => Ok(()),
         Err(error) if cancel::prompted(&error) => Err(Canceled),
         Err(error) => {
@@ -666,11 +694,12 @@ fn try_fetch_new<I: Input, W: Write>(
     transport: &dyn Transport,
     key: &Key,
     request: &AutoFetch,
+    identity: Option<EnvironmentIdentity>,
     pick: Pick<I, W>,
 ) -> anyhow::Result<()> {
     let api = Api::new(transport, &key.value);
     // Before the pick, so a replacement while the questions are asked counts.
-    let identity = EnvironmentIdentity::acquire(paths, request.env)?;
+    let identity = created_or_acquired(paths, request.env, identity)?;
     let Some((game, term, out)) = choose_game(&api, request, pick)? else {
         return Ok(());
     };
@@ -720,7 +749,7 @@ fn store_art(
     api: &Api,
     request: &AutoFetch,
     (game, term): (u64, &str),
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let env = request.env;

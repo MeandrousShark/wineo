@@ -141,7 +141,7 @@ fn fetch_steam_uses_the_app_id_and_only_requests_missing_kinds() {
         &Api::new(&api, "k"),
         "en",
         &[Kind::Grid, Kind::Hero],
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap();
 
@@ -167,7 +167,7 @@ fn fetch_steam_uses_the_app_id_and_only_requests_missing_kinds() {
 fn fetch_steam_stores_nothing_in_a_replaced_environment() {
     for replaced in [false, true] {
         let (_root, paths) = setup();
-        let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
         if replaced {
             replace_environment(&paths);
         }
@@ -216,7 +216,7 @@ fn fetch_steam_stores_nothing_in_a_replaced_environment() {
 fn publish_for_stores_only_in_the_environment_it_was_read_from() {
     for replaced in [false, true] {
         let (_root, paths) = setup();
-        let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
         if replaced {
             replace_environment(&paths);
         }
@@ -273,7 +273,7 @@ fn fetch_steam_keeps_trying_after_a_kind_fails() {
         &Api::new(&api, "k"),
         "en",
         &[Kind::Icon, Kind::Grid],
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap();
 
@@ -346,7 +346,7 @@ fn use_image_publishes_the_selected_url_without_listing_again() {
         &image,
         |received, total| progress.push((received, total)),
         &Token::new(),
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap();
     assert!(matches!(fetched, Fetched::Stored { asset: 42, .. }));
@@ -372,7 +372,15 @@ fn use_image_rejects_replacement_after_final_progress() {
         .unwrap()
         .unwrap();
     let source = manual(&paths, "source.png", PNG);
-    art::set_manual(&paths, "hades", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &source,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     let art_dir = paths.art_dir("hades");
     let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
     let saved_record = fs::read(art_dir.join(art::ART_FILE)).unwrap();
@@ -392,7 +400,7 @@ fn use_image_rejects_replacement_after_final_progress() {
             }
         },
         &Token::new(),
-        Some(identity),
+        identity,
     )
     .unwrap_err();
 
@@ -422,7 +430,15 @@ fn use_image_rechecks_identity_after_waiting_for_art_lock() {
         .unwrap()
         .unwrap();
     let source = manual(&paths, "source.png", PNG);
-    art::set_manual(&paths, "hades", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &source,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     let art_dir = paths.art_dir("hades");
     let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
     let saved_record = fs::read(art_dir.join(art::ART_FILE)).unwrap();
@@ -444,7 +460,7 @@ fn use_image_rechecks_identity_after_waiting_for_art_lock() {
                 &image,
                 |_, _| progress.send(()).unwrap(),
                 &Token::new(),
-                Some(identity),
+                identity,
             )
         }
     });
@@ -486,7 +502,7 @@ fn canceled_use_image_leaves_prior_art_untouched() {
         &image,
         |_, _| cancel.cancel(),
         &cancel,
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap_err();
     assert!(matches!(
@@ -532,7 +548,7 @@ fn cancellation_while_waiting_for_the_art_lock_preserves_art_and_record() {
         &replacement,
         Mode::Replace,
         Some(&cancel),
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap_err();
     release.join().unwrap();
@@ -581,7 +597,7 @@ fn use_image_refuses_an_unstorable_format_with_the_asset_error() {
         &image,
         |_, _| {},
         &Token::new(),
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap_err();
     assert_eq!(
@@ -615,7 +631,15 @@ fn kinds_with_art_are_skipped_without_asking_the_api() {
     let file = paths.art_dir("hades").join("a.png");
     fs::write(&file, PNG).unwrap();
     fs::remove_file(&unrecorded).unwrap();
-    crate::art::set_manual(&paths, "hades", None, Kind::Logo, &file, None).unwrap();
+    crate::art::set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Logo,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!(
         fetch(&paths, &api, None, Kind::Logo, Mode::Fill).unwrap(),
         Fetched::Skipped {
@@ -858,7 +882,7 @@ fn fetch_game_with(
         7,
         kinds,
         "en",
-        crate::environment::EnvironmentIdentity::acquire(paths, "hades").unwrap(),
+        crate::environment::EnvironmentIdentity::acquire_existing(paths, "hades").unwrap(),
         cancel,
     )
 }
@@ -976,7 +1000,7 @@ fn fetch_game_canceled_during_its_last_kind_says_so() {
 #[test]
 fn fetch_kind_for_reads_a_removed_environment_as_changed() {
     let (_root, paths) = setup();
-    let identity = EnvironmentIdentity::acquire(&paths, "hades").unwrap();
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
     fs::remove_file(paths.environment_config("hades")).unwrap();
     let api = FakeApi::default();
     let error = fetch_kind_for(

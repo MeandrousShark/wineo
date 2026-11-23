@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 
+use crate::environment::EnvironmentIdentity;
 use crate::paths::Paths;
 
 /// Replaces `name` the way `rm` and then making it again would, as far as
@@ -37,4 +38,10 @@ pub fn replace_environment(paths: &Paths, name: &str) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The identity `name` has now, for a test that only needs art written to
+/// it. Never writes `library.toml`.
+pub fn identity(paths: &Paths, name: &str) -> EnvironmentIdentity {
+    EnvironmentIdentity::peek(paths, name).expect("the environment exists")
 }

@@ -149,7 +149,7 @@ pub fn store_poster(
     env: &str,
     app_name: &str,
     poster: &Path,
-    expected_identity: Option<EnvironmentIdentity>,
+    expected_identity: EnvironmentIdentity,
 ) -> crate::Result<Option<art::Stored>> {
     let mut bytes = Vec::new();
     let read = fs::File::open(poster)

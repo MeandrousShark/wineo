@@ -190,7 +190,17 @@ fn new_wine(
     if let Stepped::None = created.step {
         // The create lock is already released, so a slow SteamGridDB only
         // holds up this command.
-        if args.art && fetch_art(paths, &created.global, name, access, out, err).is_err() {
+        if args.art
+            && fetch_art(
+                paths,
+                &created.global,
+                (name, created.identity),
+                access,
+                out,
+                err,
+            )
+            .is_err()
+        {
             eprintln!("Canceled. Kept {name}, continue with `wineo setup {name}`.");
             return Ok(cancel::exit_code());
         }
@@ -570,7 +580,7 @@ fn new_native(
     art: Option<&Access<'_>>,
 ) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
-    let (environment, _) =
+    let (environment, identity) =
         Environment::create_native(paths, &global, name, exe, desktop, |warning| {
             eprintln!("warning: {warning}")
         })?;
@@ -586,7 +596,7 @@ fn new_native(
         && fetch_art(
             paths,
             &global,
-            name,
+            (name, identity),
             access,
             &mut crate::output::stdout(),
             &mut crate::output::stderr(),
@@ -657,11 +667,12 @@ fn guided(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 }
 
 /// Fetches art searching the environment's name, with the pick list when
-/// there is a terminal and the top match otherwise.
+/// there is a terminal and the top match otherwise, into the environment
+/// `identity` is, the identity its creation returned.
 fn fetch_art(
     paths: &Paths,
     global: &GlobalConfig,
-    name: &str,
+    (name, identity): (&str, Option<EnvironmentIdentity>),
     access: &Access<'_>,
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -679,7 +690,7 @@ fn fetch_art(
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(out),
     };
-    access.fetch(paths, &key, &request, pick, err)
+    access.fetch(paths, &key, &request, identity, pick, err)
 }
 
 /// The key to fetch art with, or None after saying why there is no art.
@@ -874,6 +885,19 @@ mod tests {
         token: &Token,
         before: &dyn Fn(&Path),
     ) -> Run {
+        new_connecting(fake, installer, runner, (wine, token), before, &|_| {})
+    }
+
+    /// `new_with`, running `connect` each time the art connects, which is
+    /// after the environment is created.
+    fn new_connecting(
+        fake: Fake,
+        installer: bool,
+        runner: &str,
+        (wine, token): (&dyn Fn(&Path) -> String, &Token),
+        before: &dyn Fn(&Path),
+        connect: &dyn Fn(&Paths),
+    ) -> Run {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         let runner_dir = paths.default_runner_root().join("test-wine/bin");
@@ -905,6 +929,7 @@ mod tests {
                 })
             }),
             transport: Box::new(|| {
+                connect(&paths);
                 Ok(Box::new(Probe {
                     fake: fake.clone(),
                     paths: paths.clone(),
@@ -1171,6 +1196,66 @@ mod tests {
         assert_eq!(run.out, TOP_PICK);
         assert!(!run.paths.art_dir("hades").join("icon.png").exists());
         assert!(!run.out.contains("Art not fetched"));
+    }
+
+    #[test]
+    fn art_is_held_to_the_environment_new_created() {
+        for replaced in [false, true] {
+            let wine = |_: &Path| "#!/bin/sh\nexit 0\n".to_owned();
+            let connect = |paths: &Paths| {
+                if replaced {
+                    crate::commands::art::fake::replace_environment(paths, "hades");
+                }
+            };
+            let run = new_connecting(
+                hades(),
+                false,
+                "test-wine",
+                (&wine, &Token::new()),
+                &|_| {},
+                &connect,
+            );
+            assert_eq!(run.code.as_ref().unwrap(), &ExitCode::SUCCESS);
+            let icon = run.paths.art_dir("hades").join("icon.png").exists();
+            if replaced {
+                assert_eq!(
+                    run.err,
+                    "warning: art fetch failed: environment `hades` changed before artwork could be written\n"
+                );
+                assert!(!icon);
+            } else {
+                assert_eq!(run.err, "");
+                assert!(icon);
+            }
+        }
+    }
+
+    #[test]
+    fn native_art_is_held_to_the_environment_new_created() {
+        for replaced in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = paths(root.path());
+            let fake = hades();
+            let access = Access {
+                check_key: Box::new(|| {
+                    KeyCheck::Found(Key {
+                        value: "k".to_owned(),
+                        source: KeySource::Variable,
+                    })
+                }),
+                transport: Box::new(|| {
+                    if replaced {
+                        crate::commands::art::fake::replace_environment(&paths, "hades");
+                    }
+                    Ok(Box::new(fake.clone()))
+                }),
+            };
+            assert_eq!(
+                new_native(&paths, "hades", None, false, Some(&access)).unwrap(),
+                ExitCode::SUCCESS
+            );
+            assert_eq!(paths.art_dir("hades").join("icon.png").exists(), !replaced);
+        }
     }
 
     #[test]

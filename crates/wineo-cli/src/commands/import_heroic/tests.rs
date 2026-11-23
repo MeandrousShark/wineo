@@ -1558,3 +1558,52 @@ fn a_failed_bulk_art_fetch_warns_without_failing_the_game() {
     assert!(err.contains("warning: art fetch failed:"), "{err}");
     assert!(paths.environment_config("alpha").exists());
 }
+
+#[test]
+fn bulk_art_is_held_to_the_environment_the_import_registered() {
+    for replaced in [false, true] {
+        let root = tempdir().unwrap();
+        let (paths, global, source, game) = bulk_fixture(root.path());
+        let mut fake = Fake::default();
+        fake.search("Alpha", true);
+        fake.icon_only();
+        let access = Access {
+            check_key: Box::new(|| unreachable!("a batch has its key")),
+            // The art connects once the game is registered, and a fresh read
+            // there would take a replacement for it.
+            transport: Box::new(|| {
+                if replaced {
+                    crate::commands::art::fake::replace_environment(&paths, "alpha");
+                }
+                Ok(Box::new(fake.clone()))
+            }),
+        };
+        let bulk = Bulk {
+            paths: &paths,
+            global: &global,
+            access: &access,
+            source: &source,
+            desktop: true,
+            art: Some(Key {
+                value: "k".into(),
+                source: wineo_core::steamgriddb::KeySource::Variable,
+            }),
+            verbose: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let cancellation = Cancellation::new().unwrap();
+        import_one(&bulk, &game, &cancellation, &mut out, &mut err).unwrap();
+        let err = String::from_utf8(err).unwrap();
+        let icon = paths.art_dir("alpha").join("icon.png").exists();
+        if replaced {
+            assert_eq!(
+                err,
+                "warning: art fetch failed: environment `alpha` changed before artwork could be written\n"
+            );
+            assert!(!icon);
+        } else {
+            assert_eq!(err, "");
+            assert!(icon);
+        }
+    }
+}

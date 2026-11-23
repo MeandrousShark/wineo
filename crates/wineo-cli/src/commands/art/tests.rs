@@ -77,7 +77,7 @@ fn steam_fetch_uses_the_app_id_even_with_a_saved_game() {
         paths: &paths,
         env: "hades",
         target: None,
-        identity: EnvironmentIdentity::acquire(&paths, "hades").unwrap(),
+        identity: EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap(),
     };
     let mut icon = false;
     let mut out = Vec::new();
@@ -187,7 +187,7 @@ fn run(paths: &Paths, fake: &Fake, only: Option<Kind>) -> (anyhow::Result<bool>,
         paths,
         env: "hades",
         target: None,
-        identity: EnvironmentIdentity::acquire(paths, "hades").unwrap(),
+        identity: EnvironmentIdentity::acquire_existing(paths, "hades").unwrap(),
     };
     let mut out = Vec::new();
     let mut icon = false;
@@ -284,7 +284,7 @@ fn fetch_new_with(
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(&mut out),
     };
-    let result = fetch_new(paths, fake, &key(), &request, pick, &mut err);
+    let result = fetch_new(paths, fake, &key(), &request, None, pick, &mut err);
     if let Some(prompt) = prompt {
         out = prompt.output().clone();
     }
@@ -678,6 +678,7 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
         &swap,
         &key(),
         &request,
+        None,
         Pick::<Script, Vec<u8>>::Top(&mut out),
         &mut err,
     );
@@ -758,6 +759,7 @@ fn an_environment_replaced_after_the_icon_gets_no_desktop_update() {
             &swap,
             &key(),
             &request,
+            None,
             Pick::<Script, Vec<u8>>::Top(&mut out),
             &mut err,
         );
@@ -802,4 +804,67 @@ fn art_fetch_leaves_a_replacement_environments_entry_alone() {
             Ok(found) => assert!(!replaced && found),
         }
     }
+}
+
+fn library_id(paths: &Paths) -> Option<wineo_core::library::Id> {
+    wineo_core::library::load(paths)
+        .environments
+        .get("hades")
+        .and_then(|entry| entry.id)
+}
+
+/// `fetch_new` for the icon of `hades`, given the identity its creation
+/// returned, or None.
+fn fetch_new_for(paths: &Paths, identity: Option<EnvironmentIdentity>) -> String {
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    fake.icon_only();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::Icon,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        paths,
+        &fake,
+        &key(),
+        &request,
+        identity,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    String::from_utf8(err).unwrap()
+}
+
+#[test]
+fn a_fetch_after_creation_holds_to_the_identity_creation_returned() {
+    for replaced in [false, true] {
+        let (_root, paths) = paths();
+        let created = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+        // Between creation and the fetch, where a fresh read would take the
+        // replacement for the environment that was made.
+        if replaced {
+            super::fake::replace_environment(&paths, "hades");
+        }
+        let err = fetch_new_for(&paths, Some(created));
+        let icon = paths.art_dir("hades").join("icon.png").exists();
+        if replaced {
+            assert_eq!(err, CHANGED);
+            assert!(!icon);
+        } else {
+            assert_eq!(err, "");
+            assert!(icon);
+        }
+    }
+}
+
+#[test]
+fn a_fetch_after_a_creation_that_returned_no_identity_acquires_one() {
+    let (_root, paths) = paths();
+    assert_eq!(library_id(&paths), None);
+    assert_eq!(fetch_new_for(&paths, None), "");
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(library_id(&paths).is_some());
 }

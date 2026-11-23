@@ -370,8 +370,9 @@ fn fetch_art(
 }
 
 /// Fetches the art Steam didn't have cached into `name`, which has to still
-/// be the environment `identity` was read from. Whatever couldn't be fetched
-/// is a warning on `err`, and a replaced environment is one line however many
+/// be the environment `identity` is, the identity its import returned, or
+/// without one, the one acquired here. Whatever couldn't be fetched is a
+/// warning on `err`, and a replaced environment is one line however many
 /// kinds it stopped.
 fn store_art(
     (paths, name): (&Paths, &str),
@@ -381,6 +382,17 @@ fn store_art(
     identity: Option<EnvironmentIdentity>,
     err: &mut dyn Write,
 ) {
+    let identity =
+        match identity.map_or_else(|| EnvironmentIdentity::acquire_existing(paths, name), Ok) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = writeln!(
+                    err,
+                    "warning: SteamGridDB art couldn't be fetched: {error:#}."
+                );
+                return;
+            }
+        };
     let language = wineo_core::steamgriddb::language(|var| std::env::var_os(var));
     let results =
         wineo_core::art_fetch::fetch_steam(paths, name, app_id, api, &language, kinds, identity);

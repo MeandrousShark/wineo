@@ -166,7 +166,7 @@ pub(super) fn direct(
         paths,
         global,
         access,
-        &environment.name,
+        &registered,
         &art,
         pick,
         &mut crate::output::stderr(),
@@ -283,7 +283,7 @@ pub(super) fn guided<I: Input, W: Write>(
         paths,
         global,
         access,
-        &environment.name,
+        &registered,
         &art,
         Pick::Ask(prompt),
         &mut crate::output::stderr(),
@@ -330,15 +330,7 @@ pub(super) fn import_one(
     }
     let top = Pick::<NoInput, Vec<u8>>::Top(out);
     // A top match can't be canceled.
-    let _ = fetch_art(
-        paths,
-        global,
-        bulk.access,
-        &registered.environment.name,
-        &art,
-        top,
-        err,
-    );
+    let _ = fetch_art(paths, global, bulk.access, &registered, &art, top, err);
     super::finish_registered(paths, global, &registered)?;
     Ok(())
 }
