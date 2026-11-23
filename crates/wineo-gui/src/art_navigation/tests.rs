@@ -835,3 +835,96 @@ fn a_cached_page_holding_a_fingerprint_is_reopened_after_another_process_mints()
     assert_eq!(page.generation, generation);
     assert_eq!(page.identity, identity);
 }
+
+/// Rewrites `name`'s config through a new file, as an editor saving it
+/// would.
+fn edit_config(paths: &Paths, name: &str) {
+    let config = paths.environment_config(name);
+    let text = fs::read_to_string(&config).unwrap();
+    let staged = config.with_extension("saving");
+    fs::write(&staged, format!("# edited\n{text}")).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+/// Opens the Art page of `legacy`, an environment from before ids, and
+/// starts a grid write from `source` on it.
+fn legacy_write(app: &mut App, source: &std::path::Path) -> u64 {
+    let config = app.paths.environment_config("legacy");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    let generation = app.art_pages["legacy"].generation;
+    assert_eq!(app.art_pages["legacy"].identity.id(), None);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Browse(Kind::Grid),
+    ));
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Picked(1, (None, Kind::Grid), Ok(Some(source.to_owned()))),
+    ));
+    assert!(app.art_busy());
+    generation
+}
+
+#[test]
+fn an_old_environments_page_adopts_the_id_from_its_first_write_and_then_survives_edits() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    assert!(id.id().is_some());
+    // Edited before the result lands, which the fingerprint wouldn't survive.
+    edit_config(&app.paths, "legacy");
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].identity, id);
+    assert!(app.pending_art_writes.is_empty());
+    assert!(!app.art_busy());
+    assert!(app.paths.art_dir("legacy").join("grid.png").exists());
+
+    // Another edit keeps it open; a real replacement closes it.
+    edit_config(&app.paths, "legacy");
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    wineo_core::test_support::replace_environment(&app.paths, "legacy").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert!(app.art_page.is_none());
+    assert!(!app.art_pages.contains_key("legacy"));
+}
+
+#[test]
+fn a_page_left_during_its_first_write_still_adopts_the_id() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let _ = app.update(Message::Section(sidebar::Section::Trash));
+    assert!(app.art_page.is_none());
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert!(!app.art_busy());
+    assert_eq!(app.art_pages["legacy"].identity, id);
+    // So reopening after an edit keeps the cached page.
+    let cached = app.art_pages["legacy"].generation;
+    edit_config(&app.paths, "legacy");
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].generation, cached);
+}

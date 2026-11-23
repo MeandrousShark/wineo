@@ -197,6 +197,22 @@ impl App {
                 completion,
             );
         }
+        // Adopted before the replacement check, so an edit made during the
+        // write that gave the page its id doesn't close it.
+        if let Some(completion) = completion
+            && let Some(adopted) = completion.identity
+            && page.write_sequence == completion.sequence
+            && page.identity != adopted
+        {
+            self.pending_art_writes.remove(&(
+                name.clone(),
+                generation,
+                completion.sequence,
+                page.identity,
+            ));
+            self.art_pages.get_mut(&name).unwrap().adopt(adopted);
+        }
+        let page = &self.art_pages[&name];
         if page.replaced(&self.paths) {
             self.close_missing_art(&name);
             return self.drop_stale_art_event(
@@ -222,11 +238,11 @@ impl App {
                 {
                     self.pending_art_writes.remove(pending);
                 }
-                if let Some((sequence, _, _)) = completion {
+                if let Some(completion) = completion {
                     self.pending_art_writes.remove(&(
                         name.clone(),
                         generation,
-                        sequence,
+                        completion.sequence,
                         page.identity,
                     ));
                 }
@@ -284,9 +300,15 @@ impl App {
         &mut self,
         name: &str,
         generation: u64,
-        completion: Option<(u64, bool, bool)>,
+        completion: Option<Completion>,
     ) -> Task<Message> {
-        let Some((sequence, changed, is_art_write)) = completion else {
+        let Some(Completion {
+            sequence,
+            changed,
+            is_art_write,
+            identity,
+        }) = completion
+        else {
             return Task::none();
         };
         let Some(pending) = self
@@ -302,10 +324,14 @@ impl App {
             return Task::none();
         };
         self.pending_art_writes.remove(&pending);
-        let page = self
+        let mut page = self
             .art_pages
             .get_mut(name)
             .filter(|page| page.identity == pending.3 && page.write_sequence == sequence);
+        // A page left during its write still holds the id it got.
+        if let (Some(page), Some(identity)) = (&mut page, identity) {
+            page.adopt(identity);
+        }
         let active_reload = if self.art_page.as_deref() == Some(name) {
             let page_name = name.to_owned();
             page.map(|page| {
@@ -369,13 +395,31 @@ impl App {
     }
 }
 
-fn write_completion(event: &art_page::Event) -> Option<(u64, bool, bool)> {
+/// A write's result, as the app tracks it.
+#[derive(Debug, Clone, Copy)]
+struct Completion {
+    sequence: u64,
+    changed: bool,
+    is_art_write: bool,
+    /// The identity the write upgraded to, for the page to adopt.
+    identity: Option<art_page::EnvironmentIdentity>,
+}
+
+fn write_completion(event: &art_page::Event) -> Option<Completion> {
     match event {
         art_page::Event::Wrote(sequence, _, result)
-        | art_page::Event::Used(sequence, _, _, result) => {
-            Some((*sequence, result.changed(), true))
-        }
-        art_page::Event::GameSaved(sequence, _, result) => Some((*sequence, result.is_ok(), false)),
+        | art_page::Event::Used(sequence, _, _, result) => Some(Completion {
+            sequence: *sequence,
+            changed: result.changed(),
+            is_art_write: true,
+            identity: result.identity(),
+        }),
+        art_page::Event::GameSaved(sequence, _, result, identity) => Some(Completion {
+            sequence: *sequence,
+            changed: result.is_ok(),
+            is_art_write: false,
+            identity: *identity,
+        }),
         _ => None,
     }
 }

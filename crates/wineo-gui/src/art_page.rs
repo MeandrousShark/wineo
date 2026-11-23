@@ -77,7 +77,8 @@ pub(crate) enum Event {
     Searched(u64, Result<Vec<Game>, String>),
     PickGame(Match),
     SaveGame,
-    GameSaved(u64, Game, Result<(), String>),
+    /// The identity is the one the save upgraded to, as `WriteOutcome`'s.
+    GameSaved(u64, Game, Result<(), String>, Option<EnvironmentIdentity>),
     CancelChange,
 }
 
@@ -97,6 +98,9 @@ impl std::fmt::Display for Showing {
 pub(crate) struct WriteOutcome {
     changed: bool,
     error: Option<String>,
+    /// What the write's `upgrade` gave, which the page adopts. None when the
+    /// write got no further than that.
+    identity: Option<EnvironmentIdentity>,
 }
 
 impl WriteOutcome {
@@ -104,11 +108,23 @@ impl WriteOutcome {
         Self {
             changed: false,
             error: Some(error),
+            identity: None,
+        }
+    }
+
+    fn failed_with(error: String, identity: EnvironmentIdentity) -> Self {
+        Self {
+            identity: Some(identity),
+            ..Self::failed(error)
         }
     }
 
     pub(crate) fn changed(&self) -> bool {
         self.changed
+    }
+
+    pub(crate) fn identity(&self) -> Option<EnvironmentIdentity> {
+        self.identity
     }
 }
 
@@ -269,6 +285,12 @@ impl Page {
     /// the page stays and its next write reports the library.
     pub(crate) fn replaced(&self, paths: &Paths) -> bool {
         currency(paths, &self.name, (self.identity, &self.identity_cache)).is_changed()
+    }
+
+    /// Takes the identity a write upgraded to, once the app has cleared what
+    /// it keyed under the old one. An edit no longer closes the page after.
+    pub(crate) fn adopt(&mut self, identity: EnvironmentIdentity) {
+        self.identity = identity;
     }
 
     #[cfg(test)]
@@ -773,12 +795,15 @@ impl Page {
                 let name = self.name.clone();
                 let identity = self.identity;
                 let paths = paths.clone();
-                Step::task(task::blocking(
+                Step::task(task::blocking_value(
                     move || save_game(&paths, &name, game.id, identity),
-                    move |result| Event::GameSaved(sequence, game.clone(), result),
+                    move |result| {
+                        let (saved, identity) = result.unwrap_or_else(|error| (Err(error), None));
+                        Event::GameSaved(sequence, game.clone(), saved, identity)
+                    },
                 ))
             }
-            Event::GameSaved(sequence, game, result)
+            Event::GameSaved(sequence, game, result, _)
                 if self.writing && sequence == self.write_sequence =>
             {
                 self.writing = false;
@@ -1460,19 +1485,27 @@ pub(crate) fn canceled_use_outcome() -> WriteOutcome {
 
 /// Records the environment's SteamGridDB game, refusing once the environment
 /// is not the one `identity` was read from. That is checked under the art
-/// lock, together with the write.
+/// lock, together with the write. Returns the identity it upgraded to.
 fn save_game(
     paths: &Paths,
     name: &str,
     game: u64,
     identity: EnvironmentIdentity,
-) -> Result<(), String> {
-    art::save_game_for(paths, name, game, identity, None).map_err(|error| match error {
+) -> (Result<(), String>, Option<EnvironmentIdentity>) {
+    let saved_or = |error| match error {
         wineo_core::Error::ArtEnvironmentChanged(_) => {
             "environment changed before its game could be saved".into()
         }
         error => error.to_string(),
-    })
+    };
+    let identity = match identity.upgrade(paths, name) {
+        Ok(identity) => identity,
+        Err(error) => return (Err(saved_or(error)), None),
+    };
+    (
+        art::save_game_for(paths, name, game, identity, None).map_err(saved_or),
+        Some(identity),
+    )
 }
 
 #[cfg(test)]
@@ -1515,11 +1548,7 @@ impl Guarded {
         let outcome = match self {
             Self::Store => "stored",
             Self::Remove => "removed",
-            Self::Entries => {
-                return format!(
-                    "library.toml can't be read. The desktop entries for `{name}` weren't updated."
-                );
-            }
+            Self::Entries => return flow_artwork::entries_unreadable(name),
         };
         wineo_core::Error::ArtLibraryUnreadable {
             env: name.to_owned(),
@@ -1560,6 +1589,20 @@ fn changed_or(error: wineo_core::Error, what: &str) -> String {
     }
 }
 
+/// The page's identity for a write, upgraded first so a page on an
+/// environment from before ids writes, and checks from then on, with the id.
+/// Off the UI thread, since it may write `library.toml`.
+fn upgraded(
+    paths: &Paths,
+    name: &str,
+    identity: EnvironmentIdentity,
+    what: &str,
+) -> Result<EnvironmentIdentity, WriteOutcome> {
+    identity
+        .upgrade(paths, name)
+        .map_err(|error| WriteOutcome::failed(changed_or(error, what)))
+}
+
 fn write_art_for(
     paths: &Paths,
     name: &str,
@@ -1567,14 +1610,18 @@ fn write_art_for(
     spot: &Spot,
     path: Option<&Path>,
 ) -> WriteOutcome {
-    let identity = held.0;
-    let step = if path.is_some() {
-        Guarded::Store
+    let (step, what) = if path.is_some() {
+        (Guarded::Store, "written")
     } else {
-        Guarded::Remove
+        (Guarded::Remove, "removed")
     };
+    let identity = match upgraded(paths, name, held.0, what) {
+        Ok(identity) => identity,
+        Err(outcome) => return outcome,
+    };
+    let held = (identity, held.1);
     if let Some(error) = refused(paths, name, held, step) {
-        return WriteOutcome::failed(error);
+        return WriteOutcome::failed_with(error, identity);
     }
     let result = match path {
         Some(path) => flow_artwork::preview_with_format(path, spot.1).and_then(|_| {
@@ -1591,7 +1638,7 @@ fn write_art_for(
             .map_err(|error| changed_or(error, "removed")),
     };
     if let Err(error) = result {
-        return WriteOutcome::failed(error);
+        return WriteOutcome::failed_with(error, identity);
     }
     let error = if spot.1 == Kind::Icon {
         match refused(paths, name, held, Guarded::Entries) {
@@ -1604,6 +1651,7 @@ fn write_art_for(
     WriteOutcome {
         changed: true,
         error,
+        identity: Some(identity),
     }
 }
 
@@ -1618,9 +1666,13 @@ fn use_image_for(
     mut progress: impl FnMut(u64, Option<u64>),
     token: &Token,
 ) -> WriteOutcome {
-    let identity = held.0;
+    let identity = match upgraded(paths, name, held.0, "written") {
+        Ok(identity) => identity,
+        Err(outcome) => return outcome,
+    };
+    let held = (identity, held.1);
     if let Some(error) = refused(paths, name, held, Guarded::Store) {
-        return WriteOutcome::failed(error);
+        return WriteOutcome::failed_with(error, identity);
     }
     // Why a check during the download canceled it, which the cancel's own
     // error would hide.
@@ -1645,7 +1697,7 @@ fn use_image_for(
         identity,
     );
     if let Err(error) = result {
-        return WriteOutcome::failed(stopped.unwrap_or_else(|| error.to_string()));
+        return WriteOutcome::failed_with(stopped.unwrap_or_else(|| error.to_string()), identity);
     }
     let error = match (spot.1, currency(paths, name, held)) {
         (Kind::Icon, Currency::Current) => reconcile_desktop(paths, name).err(),
@@ -1655,6 +1707,7 @@ fn use_image_for(
     WriteOutcome {
         changed: true,
         error,
+        identity: Some(identity),
     }
 }
 

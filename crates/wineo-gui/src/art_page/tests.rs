@@ -353,7 +353,7 @@ fn changed_game_saves_and_uses_its_name_immediately() {
     art::save_game(&paths, "game", game.id).unwrap();
     let step = page.update(
         &paths,
-        Event::GameSaved(page.write_sequence, game, Ok(())),
+        Event::GameSaved(page.write_sequence, game, Ok(()), None),
         decodes(),
     );
     assert!(step.changed);
@@ -372,7 +372,7 @@ fn a_game_is_saved_only_in_the_environment_it_was_picked_for() {
             "removed" => fs::remove_file(&config).unwrap(),
             _ => {}
         }
-        let result = save_game(&paths, "game", 77, page.identity);
+        let (result, _) = save_game(&paths, "game", 77, page.identity);
         if case == "unchanged" {
             result.unwrap();
             assert_eq!(art::saved_game(&paths, "game").unwrap(), Some(77));
@@ -700,7 +700,7 @@ fn find_without_a_game_routes_through_change_then_opens_picker() {
     art::save_game(&paths, "game", game.id).unwrap();
     let _ = page.update_with_key_availability(
         &paths,
-        Event::GameSaved(page.write_sequence, game, Ok(())),
+        Event::GameSaved(page.write_sequence, game, Ok(()), None),
         decodes(),
         true,
     );
@@ -1153,7 +1153,7 @@ fn saving_a_game_checks_identity_under_the_art_lock() {
     let result = replaced_while_waiting_for_the_art_lock(&paths, {
         let paths = paths.clone();
         let identity = page.identity;
-        move || save_game(&paths, "game", 77, identity)
+        move || save_game(&paths, "game", 77, identity).0
     });
     assert_eq!(
         result,
@@ -1774,4 +1774,134 @@ fn a_library_breaking_mid_download_says_so() {
     assert!(!outcome.changed());
     assert_eq!(outcome.error, Some(library_unreadable("stored")));
     assert!(!paths.art_dir("game").join("grid.png").exists());
+}
+
+/// `fixture`, for an environment from before ids: its page holds the
+/// config's fingerprint.
+fn legacy_fixture() -> (tempfile::TempDir, Paths, Page) {
+    let (root, paths, _) = fixture();
+    fs::remove_file(paths.library_file()).unwrap();
+    let identity = EnvironmentIdentity::peek(&paths, "game").unwrap();
+    assert_eq!(identity.id(), None);
+    (root, paths, Page::new("game".into(), 1, identity))
+}
+
+/// Rewrites the config through a new file, as an editor saving it would.
+fn edit_config(paths: &Paths) {
+    let config = paths.environment_config("game");
+    let text = fs::read_to_string(&config).unwrap();
+    let staged = config.with_extension("saving");
+    fs::write(&staged, format!("# edited\n{text}")).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+fn library_id(paths: &Paths) -> Option<wineo_core::library::Id> {
+    wineo_core::library::load(paths)
+        .environments
+        .get("game")
+        .and_then(|entry| entry.id)
+}
+
+#[test]
+fn the_first_write_on_an_old_environment_upgrades_and_an_edit_during_its_download_lands() {
+    let (root, paths, page) = legacy_fixture();
+    let source = png(root.path());
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| edit_config(&paths),
+        &Token::new(),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    assert!(outcome.error.is_none(), "{outcome:?}");
+    assert!(paths.art_dir("game").join("grid.png").exists());
+    let id = library_id(&paths);
+    assert!(id.is_some(), "the write gave the environment an id");
+    assert_eq!(outcome.identity().and_then(|identity| identity.id()), id);
+    assert!(
+        fs::read_to_string(paths.environment_config("game"))
+            .unwrap()
+            .starts_with("# edited")
+    );
+}
+
+#[test]
+fn every_kind_of_write_hands_back_the_id_it_upgraded_to() {
+    let (root, paths, page) = legacy_fixture();
+    let source = png(root.path());
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    let id = library_id(&paths);
+    assert!(id.is_some());
+    assert_eq!(outcome.identity().and_then(|identity| identity.id()), id);
+
+    let (_root, paths, page) = legacy_fixture();
+    let (saved, identity) = save_game(&paths, "game", 77, page.identity);
+    saved.unwrap();
+    assert!(library_id(&paths).is_some());
+    assert_eq!(
+        identity.and_then(|identity| identity.id()),
+        library_id(&paths)
+    );
+}
+
+#[test]
+fn an_environment_replaced_inside_the_upgrade_gets_no_write_and_no_id_to_adopt() {
+    let (root, paths, page) = legacy_fixture();
+    let source = png(root.path());
+    wineo_core::test_support::on_hook("library.mint", {
+        let paths = paths.clone();
+        move || replace_environment(&paths)
+    });
+    let replaced = library_id(&paths);
+    assert_eq!(replaced, None);
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert!(!outcome.changed());
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("environment changed before artwork could be written")
+    );
+    assert_eq!(outcome.identity(), None);
+    assert!(!paths.art_dir("game").join("grid.png").exists());
+    // The replacement's own id, which the page must never take.
+    assert!(library_id(&paths).is_some());
+}
+
+#[test]
+fn a_page_whose_library_cant_take_an_id_keeps_its_fingerprint_and_still_writes() {
+    let (root, paths, page) = legacy_fixture();
+    fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+    let before = fs::read(paths.library_file()).unwrap();
+    let source = png(root.path());
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    assert_eq!(outcome.identity(), Some(page.identity));
+    assert!(paths.art_dir("game").join("grid.png").exists());
+    assert_eq!(fs::read(paths.library_file()).unwrap(), before);
 }
