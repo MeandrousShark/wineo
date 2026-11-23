@@ -4123,8 +4123,6 @@ struct Canned(
     Arc<std::collections::HashMap<String, (u16, Vec<u8>)>>,
     // Runs the first time an image is asked for.
     Option<Arc<dyn Fn() + Send + Sync>>,
-    // Runs when the game is searched for.
-    Option<Arc<dyn Fn() + Send + Sync>>,
 );
 
 impl wineo_core::download::Transport for Canned {
@@ -4139,11 +4137,6 @@ impl wineo_core::download::Transport for Canned {
     ) -> anyhow::Result<wineo_core::download::Response> {
         if url.contains("/icons/")
             && let Some(hook) = &self.1
-        {
-            hook();
-        }
-        if url.contains("/search/")
-            && let Some(hook) = &self.2
         {
             hook();
         }
@@ -4182,7 +4175,7 @@ fn canned_hades() -> Canned {
         "https://cdn.example/1".to_owned(),
         (200, ONE_PIXEL_PNG.to_vec()),
     );
-    Canned(Arc::new(answers), None, None)
+    Canned(Arc::new(answers), None)
 }
 
 #[test]
@@ -4274,48 +4267,4 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
         "{error}"
     );
     assert!(!paths.art_dir("hades").join("icon.png").exists());
-}
-
-#[test]
-fn art_is_not_stored_in_an_environment_replaced_during_the_search() {
-    let (page, _) = registered(true);
-    let paths = page.paths.clone();
-    Environment::create_native_titled(
-        &paths,
-        &GlobalConfig::default(),
-        "hades",
-        None,
-        Some("Hades"),
-        false,
-        |_| {},
-    )
-    .unwrap();
-    let replace = {
-        let paths = paths.clone();
-        Arc::new(move || {
-            let config = paths.environment_config("hades");
-            let staged = config.with_extension("replacement");
-            std::fs::copy(&config, &staged).unwrap();
-            std::fs::rename(staged, config).unwrap();
-        })
-    };
-    let mut answers = canned_hades();
-    answers.2 = Some(replace);
-    let result = crate::flow::artwork::fetch_default_over(
-        &paths,
-        "hades",
-        "Hades",
-        &Token::new(),
-        &move || Ok((Box::new(answers.clone()), "key".to_owned())),
-    );
-    let error = result.unwrap_err();
-    assert!(
-        error.starts_with("environment `hades` changed before artwork could be written"),
-        "{error}"
-    );
-    let stored: Vec<_> = std::fs::read_dir(paths.art_dir("hades"))
-        .map(|dir| dir.map(|entry| entry.unwrap().path()).collect())
-        .unwrap_or_default();
-    assert!(stored.is_empty(), "{stored:?}");
-    assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
 }

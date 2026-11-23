@@ -1044,9 +1044,9 @@ pub(crate) fn fetch_default(
 /// replace so nothing reaches SteamGridDB.
 pub(crate) type Connect<'a> = &'a dyn Fn() -> Result<(Box<dyn Transport>, String), String>;
 
-/// `fetch_default` over `connect`. The environment's identity is read before
-/// anything else, so an environment replaced while the search is in flight
-/// gets none of this fetch's art.
+/// `fetch_default` over `connect`. The environment's identity is read just
+/// before the download starts, so a config edit made any time before that
+/// doesn't count as the environment having been replaced.
 pub(crate) fn fetch_default_over(
     paths: &Paths,
     name: &str,
@@ -1054,7 +1054,6 @@ pub(crate) fn fetch_default_over(
     token: &Token,
     connect: Connect<'_>,
 ) -> Result<Vec<String>, String> {
-    let identity = EnvironmentIdentity::read(paths, name);
     let loaded = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
     // Reported through the same notes as every other outcome here.
     let mut notes: Vec<String> = loaded
@@ -1077,14 +1076,17 @@ pub(crate) fn fetch_default_over(
         .into_iter()
         .next()
     {
-        Some(game) => notes.extend(fetch_with(
-            (paths, name),
-            &api,
-            &game,
-            &kinds,
-            identity,
-            token,
-        )?),
+        Some(game) => {
+            let identity = EnvironmentIdentity::read(paths, name);
+            notes.extend(fetch_with(
+                (paths, name),
+                &api,
+                &game,
+                &kinds,
+                identity,
+                token,
+            )?)
+        }
         None => notes.push(format!("No artwork match for {title}")),
     }
     Ok(notes)
