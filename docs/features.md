@@ -14,13 +14,11 @@ accessibility settings with Tray icon and hide on launch in 1.5.0 (plan
 0063). The new environment flow (plan 0064), publishing to the repositories
 in parallel (plan 0065), and Coverflow with controller navigation, library
 views part 5 (plan 0066), shipped in 1.6.0, Resizable list columns
-(plan 0067) with Emulated games (plan 0068) in 1.7.0, and Not so fuzzy
-search (plan 0069) in 1.8.0. The rest get a plan when they come up, and the
-rows below have the details.
+(plan 0067) with Emulated games (plan 0068) in 1.7.0, Not so fuzzy
+search (plan 0069) in 1.8.0, and Settings in tabs (plan 0070) in 1.9.0. The
+rest get a plan when they come up, and the rows below have the details.
 
-1. Settings in tabs: split the desktop app's settings into more tabs and
-   hide advanced settings unless they're turned on (plan 0070).
-2. Stable environment identity: tell "the same environment" apart from "the
+1. Stable environment identity: tell "the same environment" apart from "the
    same config file", so an edit doesn't read as a replacement, and artwork
    retries and long fetches can keep the environment they started with
    (plan 0071).

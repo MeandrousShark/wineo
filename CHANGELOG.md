@@ -4,6 +4,28 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.9.0 - 2026-11-22
+
+Settings in tabs (plan 0070, done).
+
+New in this release:
+
+- Settings is split into five tabs: General, Appearance, Controller, Stores, and Advanced.
+- **Show advanced settings**, a new switch on the Advanced tab (`[view] advanced_settings` in `library.toml`), is off by default and hides the advanced settings in Settings and on Wine environment pages.
+- Ctrl+Enter opens the focused source in the Heroic import.
+
+Behavior changes:
+
+- `wineo new --art` asks which art to use before creating the environment and downloads it after.
+- Artwork is stored only in the environment an operation began with; one that was replaced meanwhile is skipped with a message.
+
+Fixes:
+
+- `wineo new --art` no longer holds the environment and runner build locks during the art download.
+- `wineo new --art` checks `--install-exe` before asking for art, and says when art wasn't fetched after an unfinished installer.
+- Adding a folder the Heroic import already lists opens its row instead of adding a duplicate.
+- `url` updated to 2.5.9 for RUSTSEC-2026-0592.
+
 ## 1.8.0 - 2026-11-20
 
 Not so fuzzy search (plan 0069, done).
