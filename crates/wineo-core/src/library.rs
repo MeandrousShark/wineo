@@ -1,4 +1,6 @@
-//! Lenient display state for environments.
+//! Lenient state kept beside the environments: how the library shows each
+//! one, and the id that tells an environment from a later one of the same
+//! name.
 //!
 //! Every write sets one field under the file lock, so a window never writes
 //! back state it merely read. `Ok(false)` means the file wasn't touched.
