@@ -986,11 +986,10 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
     let held = wineo_core::operation::Locks::new(&paths)
         .config(&art_dir.join(art::ART_FILE))
         .unwrap();
-    let (started, ready) = std::sync::mpsc::channel();
+    let lock = held_lock(&paths);
     let worker = std::thread::spawn({
         let paths = paths.clone();
         move || {
-            started.send(()).unwrap();
             write_art_for(
                 &paths,
                 "game",
@@ -1000,10 +999,7 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
             )
         }
     });
-    ready
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    wait_for_lock_waiter(&lock);
     assert!(!worker.is_finished());
     let config = paths.environment_config("game");
     let replacement = config.with_extension("replacement");
@@ -1034,6 +1030,45 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
     assert_eq!(files, saved_files);
 }
 
+/// The lock files under `paths` this process has open, each with how many
+/// descriptors are open on it.
+fn open_locks(paths: &Paths) -> std::collections::HashMap<std::path::PathBuf, usize> {
+    let locks = fs::canonicalize(paths.locks_dir()).unwrap();
+    let mut open = std::collections::HashMap::new();
+    for entry in fs::read_dir("/proc/self/fd").unwrap().flatten() {
+        // A descriptor closed mid-scan has no link left to read.
+        if let Ok(target) = fs::read_link(entry.path())
+            && target.starts_with(&locks)
+        {
+            *open.entry(target).or_default() += 1;
+        }
+    }
+    open
+}
+
+/// The one lock file this test holds open under `paths`.
+fn held_lock(paths: &Paths) -> (Paths, std::path::PathBuf) {
+    let open = open_locks(paths);
+    assert_eq!(open.len(), 1, "{open:?}");
+    let lock = open.into_keys().next().unwrap();
+    (paths.clone(), lock)
+}
+
+/// Waits until a second descriptor is open on the held lock. A writer opens
+/// it only after every check it makes before the lock has passed, and can't
+/// get past it while the lock is held, so whatever changes from here on is
+/// seen only by the check under the lock.
+fn wait_for_lock_waiter((paths, lock): &(Paths, std::path::PathBuf)) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while open_locks(paths).get(lock).copied().unwrap_or(0) < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the writer never reached the art lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// Runs `write` while the art lock is held elsewhere, replaces the
 /// environment once it is waiting for the lock, and returns what it did after
 /// the lock is let go. A check made before the lock would already have passed.
@@ -1046,15 +1081,9 @@ fn replaced_while_waiting_for_the_art_lock<R: Send + 'static>(
     let held = wineo_core::operation::Locks::new(paths)
         .config(&art_dir.join(art::ART_FILE))
         .unwrap();
-    let (started, ready) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        started.send(()).unwrap();
-        write()
-    });
-    ready
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    let lock = held_lock(paths);
+    let worker = std::thread::spawn(write);
+    wait_for_lock_waiter(&lock);
     assert!(!worker.is_finished());
     let config = paths.environment_config("game");
     let replacement = config.with_extension("replacement");
