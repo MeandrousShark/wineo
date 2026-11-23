@@ -97,10 +97,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.command {
         Command::Set { spot, kind, file } => {
             let (env, target) = split(&spot);
-            art::set_manual_acquiring(paths, env, target, kind, &file)?;
+            let (_, identity) = art::set_manual_acquiring(paths, env, target, kind, &file)?;
             println!("Set {kind} for {spot}");
             if kind == Kind::Icon {
-                apply_desktop(paths, env)?;
+                apply_desktop_for(paths, env, identity, &mut crate::output::stderr())?;
             }
         }
         Command::List { env } => {
@@ -147,10 +147,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
-            art::remove_acquiring(paths, env, target, kind)?;
+            let (_, identity) = art::remove_acquiring(paths, env, target, kind)?;
             println!("Removed {kind} from {spot}");
             if kind == Kind::Icon {
-                apply_desktop(paths, env)?;
+                apply_desktop_for(paths, env, identity, &mut crate::output::stderr())?;
             }
         }
     }
@@ -161,6 +161,21 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 /// none, so they get nothing said about them either.
 pub(crate) fn apply_desktop(paths: &Paths, env: &str) -> anyhow::Result<()> {
     if wineo_core::desktop::supported(paths).is_err() {
+        return Ok(());
+    }
+    desktop::apply(paths, env, false)
+}
+
+/// `apply_desktop`, only while `env` is still the environment `identity`
+/// names, which `unchanged` decides and warns for. Portable environments have
+/// no entries, so nothing is checked or said for them.
+fn apply_desktop_for(
+    paths: &Paths,
+    env: &str,
+    identity: EnvironmentIdentity,
+    err: &mut dyn Write,
+) -> anyhow::Result<()> {
+    if wineo_core::desktop::supported(paths).is_err() || !unchanged(paths, env, identity, err) {
         return Ok(());
     }
     desktop::apply(paths, env, false)
@@ -291,8 +306,8 @@ fn fetch_with(
     let mut icon = false;
     let fetched = fetch_kinds(&spot, request, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store.
-    if icon && unchanged(paths, env, identity, err) {
-        apply_desktop(paths, env)?;
+    if icon {
+        apply_desktop_for(paths, env, identity, err)?;
     }
     fetched
 }
@@ -800,8 +815,8 @@ fn store_art(
     let fetched = fetch_kinds(&spot, &fetch, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store, but
     // a replacement environment's entries are not this fetch's to touch.
-    if icon && unchanged(paths, env, identity, err) {
-        apply_desktop(paths, env)?;
+    if icon {
+        apply_desktop_for(paths, env, identity, err)?;
     }
     fetched.map(drop)
 }

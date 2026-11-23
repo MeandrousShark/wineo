@@ -1093,3 +1093,88 @@ fn a_fetch_without_a_creation_identity_writes_nothing_until_a_game_is_picked() {
         assert!(!paths.library_file().exists(), "{answers:?}");
     }
 }
+
+/// Like `paths`, but a portable folder, which has no desktop entries.
+fn portable_paths() -> (tempfile::TempDir, Paths) {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let paths = Paths::select(
+        move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+        Some(&root.path().join("usb")),
+    )
+    .unwrap();
+    let config = paths.environment_config("hades");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        config,
+        "prefix = \"p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.game]\nexe = \"game.exe\"\ndesktop = true\n",
+    )
+    .unwrap();
+    (root, paths)
+}
+
+#[test]
+fn a_portable_fetch_says_nothing_about_entries() {
+    let (_root, paths) = portable_paths();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::All,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        &paths,
+        &library_breaks_after_the_icon(&paths),
+        &key(),
+        &request,
+        None,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        format!("warning: art fetch failed: {NOT_STORED}\n")
+    );
+
+    let (_root, paths) = portable_paths();
+    let mut request = fetch_request();
+    request.game = Some(7);
+    request.only = None;
+    let transport = library_breaks_after_the_icon(&paths);
+    let mut err = Vec::new();
+    let result = fetch_with(
+        &paths,
+        &request,
+        &Api::new(&transport, "k"),
+        (&mut Vec::new(), &mut err),
+    );
+    assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+}
+
+#[test]
+fn set_and_rm_update_entries_only_for_the_environment_they_wrote_to() {
+    // `art set` and `art rm` hand their identity here once the icon changed.
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    let mut err = Vec::new();
+    apply_desktop_for(&paths, "hades", identity, &mut err).unwrap();
+    assert!(entry(&paths).exists());
+    fs::remove_file(entry(&paths)).unwrap();
+
+    super::fake::replace_environment(&paths, "hades");
+    apply_desktop_for(&paths, "hades", identity, &mut err).unwrap();
+    assert!(!entry(&paths).exists());
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    fs::write(paths.library_file(), "not [toml").unwrap();
+    let mut err = Vec::new();
+    apply_desktop_for(&paths, "hades", identity, &mut err).unwrap();
+    assert!(!entry(&paths).exists());
+    assert_eq!(String::from_utf8(err).unwrap(), ENTRIES_SKIPPED);
+}
