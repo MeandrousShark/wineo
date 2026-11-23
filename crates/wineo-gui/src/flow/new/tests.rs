@@ -4539,6 +4539,58 @@ fn a_replacement_during_the_target_stage_gets_no_target_and_the_art_step_reads_c
 }
 
 #[test]
+fn a_replacement_during_the_target_stage_on_an_id_says_replaced() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let created = created.unwrap();
+    assert!(created.id().is_some());
+    let report = page.report.as_mut().unwrap();
+    report.identity = Some(created);
+    report.offer_programs = true;
+    page.fetcher = canned_hades().fetcher();
+    let program = paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    wineo_core::test_support::replace_environment(&paths, "hades").unwrap();
+    let before = fs::read(paths.environment_config("hades")).unwrap();
+    let task = page.update(Event::AddTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Target);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("`hades` was replaced. The target wasn't added.")
+    );
+    assert_eq!(fs::read(paths.environment_config("hades")).unwrap(), before);
+
+    let task = page.update(Event::SkipTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::Changed {
+            env: "hades".into(),
+            id: true
+        })
+    );
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+    let shown = finished_texts(&page);
+    assert!(!shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Skip artwork".to_owned()), "{shown:?}");
+}
+
+#[test]
 fn a_target_add_that_hands_back_no_identity_keeps_the_flows() {
     let (mut page, created) = on_target_on_the_fingerprint_fallback();
     page.stage = Stage::Working;
