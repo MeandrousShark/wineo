@@ -1334,7 +1334,10 @@ fn a_heroic_poster_is_prefilled_and_stored_as_grid_art() {
     )
     .unwrap();
     let name = registered.environment.name.as_str();
-    page.art.apply(&paths, name).unwrap();
+    page.art
+        .apply(&paths, name, registered.identity)
+        .art
+        .unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1367,7 +1370,10 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
         |_| {},
     )
     .unwrap();
-    assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
+    assert_eq!(
+        store_heroic_poster(&paths, "dawn", "dawn", None, None),
+        None
+    );
     let art = artwork::Draft::with_fetched(
         Kind::Grid,
         7,
@@ -1377,7 +1383,7 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
             format: wineo_core::art::Format::Jpeg,
         },
     );
-    art.apply(&paths, "dawn").unwrap();
+    art.apply(&paths, "dawn", None).art.unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dawn")).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1440,7 +1446,7 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
         )
         .unwrap();
         assert_eq!(
-            store_heroic_poster(&paths, name, name, posters.get(name)),
+            store_heroic_poster(&paths, name, name, posters.get(name), None),
             None
         );
     }
@@ -1509,12 +1515,12 @@ fn a_batch_import_only_gives_an_old_environment_an_id_when_it_has_a_poster() {
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
     assert_eq!(
-        super::work::store_heroic_poster(&paths, name, name, None),
+        super::work::store_heroic_poster(&paths, name, name, None, None),
         None
     );
     assert!(!paths.library_file().exists());
     assert_eq!(
-        super::work::store_heroic_poster(&paths, name, name, posters.get(name)),
+        super::work::store_heroic_poster(&paths, name, name, posters.get(name), None),
         None
     );
     assert!(paths.art_dir(name).join("grid.png").exists());
@@ -2409,12 +2415,171 @@ fn a_canceled_batch_art_fetch_says_so_plainly() {
     let notes = vec!["No logo artwork found for Hades".to_owned()];
     assert_eq!(art_notes(Ok(notes.clone()), &token), notes);
     assert_eq!(
-        art_notes(Err("offline".to_owned()), &token),
+        art_notes(
+            Err(artwork::FetchError::Other("offline".to_owned())),
+            &token
+        ),
         ["Artwork: offline"]
     );
     token.cancel();
     assert_eq!(
-        art_notes(Err("artwork canceled".to_owned()), &token),
+        art_notes(
+            Err(artwork::FetchError::Other("artwork canceled".to_owned())),
+            &token
+        ),
         ["Artwork canceled"]
     );
+}
+
+/// A single Heroic import of Dusk, registered, with its poster prefilled,
+/// and the page it came from.
+fn registered_dusk(root: &std::path::Path) -> (Page, Arc<Registered>) {
+    let mut page = grid_page(root);
+    decode_posters(&mut page);
+    open_single(&mut page, DUSK);
+    let listing = page.listing.clone().unwrap();
+    let review = plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap();
+    let Review::Single { game, .. } = &review else {
+        panic!("expected a single review");
+    };
+    let paths = page.paths.clone();
+    let global = GlobalConfig::load(&paths).unwrap();
+    let registered = apply_game(
+        &paths,
+        &global,
+        &listing.source,
+        game,
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap();
+    page.review = Some(review);
+    page.step = Step::Working;
+    page.token = Some(Token::new());
+    (page, Arc::new(registered))
+}
+
+fn shown(page: &Page) -> Vec<String> {
+    crate::layout_probe::texts(
+        page.view_with_key_availability(crate::theme::Palette::DARK, 900.0, true),
+        iced::Size::new(900.0, 1200.0),
+    )
+}
+
+#[test]
+fn a_replacement_before_the_art_offers_only_skip_and_leaves_the_entries_alone() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    assert!(
+        registered
+            .identity
+            .is_some_and(|identity| identity.id().is_some())
+    );
+    wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    let mut finished = sent(task);
+    assert_eq!(finished.len(), 1);
+    let Event::ArtFinished(_, fetched) = &finished[0] else {
+        panic!("expected the art result, got {finished:?}");
+    };
+    assert_eq!(fetched.art, Err(artwork::FetchError::Changed { id: true }));
+    // No desktop entries are finished for the replacement.
+    let task = page.update(finished.remove(0));
+    assert!(sent(task).is_empty());
+    assert!(!page.paths.art_dir(&name).join("grid.png").exists());
+    assert_eq!(page.step, Step::Working);
+    assert_eq!(page.error.as_deref(), Some(artwork::changed_message(true)));
+    let texts = shown(&page);
+    assert!(!texts.contains(&"Retry artwork".to_owned()), "{texts:?}");
+    assert!(texts.contains(&"Skip artwork".to_owned()), "{texts:?}");
+    assert!(sent(page.update(Event::RetryArt)).is_empty());
+    let _ = page.update(Event::SkipArt);
+    assert_eq!(page.step, Step::Finished);
+    assert!(page.error.is_none());
+}
+
+#[test]
+fn heroic_art_retry_reuses_the_imports_identity() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    // The poster is gone, so storing it fails in a way Retry may fix.
+    let poster = page.listing.as_ref().unwrap().candidates[DUSK]
+        .poster
+        .clone()
+        .unwrap();
+    let bytes = fs::read(&poster).unwrap();
+    fs::remove_file(&poster).unwrap();
+    let generation = page.generation;
+    let mut pending = vec![page.update(Event::SingleRegistered(generation, Ok(registered)))];
+    while let Some(task) = pending.pop() {
+        for event in sent(task) {
+            pending.push(page.update(event));
+        }
+    }
+    assert!(
+        page.error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Artwork failed")),
+        "{:?}",
+        page.error
+    );
+    assert!(shown(&page).contains(&"Retry artwork".to_owned()));
+    // A Retry that read the environment again would take the
+    // replacement's id and store the poster there.
+    fs::write(&poster, bytes).unwrap();
+    wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+    let retried = sent(page.update(Event::RetryArt));
+    let [Event::ArtFinished(_, fetched)] = &retried[..] else {
+        panic!("expected the art result, got {retried:?}");
+    };
+    assert_eq!(fetched.art, Err(artwork::FetchError::Changed { id: true }));
+    assert!(!page.paths.art_dir(&name).join("grid.png").exists());
+}
+
+#[test]
+fn a_batch_leaves_a_replacements_desktop_entries_alone() {
+    for replaced in [false, true] {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        open_single(&mut page, DUSK);
+        let listing = page.listing.clone().unwrap();
+        let Review::Single { mut game, .. } =
+            plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap()
+        else {
+            panic!("expected a single review");
+        };
+        match &mut *game {
+            Game::Windows(plan) => plan.set_desktop_enabled(true),
+            Game::Native(plan) => plan.set_desktop_enabled(true),
+        }
+        let paths = page.paths.clone();
+        let global = GlobalConfig::load(&paths).unwrap();
+        let registered = apply_game(
+            &paths,
+            &global,
+            &listing.source,
+            &game,
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap();
+        let name = registered.environment.name.clone();
+        if replaced {
+            wineo_core::test_support::replace_environment(&paths, &name).unwrap();
+        }
+        let entries = || {
+            fs::read_dir(paths.applications_dir())
+                .map(|dir| dir.count())
+                .unwrap_or(0)
+        };
+        assert_eq!(entries(), 0, "replaced {replaced}");
+        assert_eq!(
+            super::work::finish_batch_entries(&paths, &global, &name, &registered),
+            None
+        );
+        assert_eq!(entries() > 0, !replaced, "replaced {replaced}");
+    }
 }

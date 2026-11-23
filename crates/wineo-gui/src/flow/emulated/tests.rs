@@ -700,12 +700,18 @@ fn a_finished_import_adds_play_cards_with_the_emulator_as_source_and_their_art()
 
     let fetched: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let seen = fetched.clone();
-    let fetcher: Fetcher = Arc::new(move |_: &Paths, name: &str, title: &str, _: &Token| {
-        seen.lock()
-            .unwrap()
-            .push((name.to_owned(), title.to_owned()));
-        Ok(vec!["No artwork match".to_owned()])
-    });
+    let fetcher: Fetcher = Arc::new(
+        move |_: &Paths,
+              name: &str,
+              title: &str,
+              identity: Option<EnvironmentIdentity>,
+              _: &Token| {
+            seen.lock()
+                .unwrap()
+                .push((name.to_owned(), title.to_owned()));
+            crate::flow::artwork::Fetched::answer(Ok(vec!["No artwork match".to_owned()]), identity)
+        },
+    );
     page.fetcher = Some(fetcher);
     let task = page.update(Event::Import, true);
     assert_eq!(page.step, Step::Working);
@@ -1565,4 +1571,49 @@ fn back_to_the_library_after_one_game_selects_its_card() {
             "{leave:?}"
         );
     }
+}
+
+#[test]
+fn each_games_art_is_fetched_with_the_identity_its_import_returned() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(temp.path(), false);
+    let host = host(temp.path());
+    let folder = roms(temp.path(), &["Zelda (USA).gcm"]);
+    let mut page = open(&paths, &host);
+    to_folder(&mut page, Emulator::Dolphin, &folder);
+    let _ = page.update(Event::SelectAll, false);
+    let _ = page.update(Event::FetchArt(true), true);
+    let _ = page.update(Event::ImportSelected, true);
+    settle(&mut page);
+    assert_eq!(page.step, Step::Review);
+
+    let handed: Arc<Mutex<Vec<Option<EnvironmentIdentity>>>> = Arc::default();
+    let seen = handed.clone();
+    let fetcher: Fetcher = Arc::new(
+        move |_: &Paths, _: &str, _: &str, identity: Option<EnvironmentIdentity>, _: &Token| {
+            seen.lock().unwrap().push(identity);
+            crate::flow::artwork::Fetched::answer(
+                Err(crate::flow::artwork::FetchError::Changed { id: true }),
+                identity,
+            )
+        },
+    );
+    page.fetcher = Some(fetcher);
+    let task = page.update(Event::Import, true);
+    for event in drive(None, task) {
+        let _ = page.update(event, true);
+    }
+    assert_eq!(page.step, Step::Finished);
+    let id = wineo_core::library::load(&paths).environments["zelda"].id;
+    assert!(id.is_some());
+    let handed = handed.lock().unwrap();
+    assert_eq!(handed.len(), 1);
+    assert_eq!(handed[0].and_then(|identity| identity.id()), id);
+    assert_eq!(
+        page.report.as_ref().unwrap().warnings,
+        [format!(
+            "zelda: Artwork: {}",
+            crate::flow::artwork::changed_message(true)
+        )]
+    );
 }

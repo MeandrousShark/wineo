@@ -13,7 +13,7 @@ use wineo_core::cancel::Token;
 use wineo_core::config::{ArtFetch, GlobalConfig};
 use wineo_core::desktop;
 use wineo_core::download::{Https, Lazy, Transport};
-use wineo_core::environment::EnvironmentIdentity;
+use wineo_core::environment::{Currency, EnvironmentIdentity};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game};
@@ -440,102 +440,147 @@ impl Draft {
         Ok(())
     }
 
-    pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
-        // A name core would refuse, or a missing environment, gets no
-        // identity, and that error for each kind.
-        let identity =
-            EnvironmentIdentity::acquire_existing(paths, name).map_err(|e| e.to_string());
+    /// The kinds a fetch fills: the configured ones with no file chosen.
+    fn fetch_kinds(&self) -> Vec<Kind> {
+        self.kinds
+            .iter()
+            .copied()
+            .filter(|kind| {
+                self.local
+                    .get(kind)
+                    .is_none_or(|local| local.path.is_empty())
+            })
+            .collect()
+    }
+
+    /// Whether `apply` would write anything.
+    fn has_work(&self) -> bool {
+        self.local.values().any(|local| !local.path.is_empty())
+            || (self.fetch && self.selected.is_some() && !self.fetch_kinds().is_empty())
+    }
+
+    /// Stores the draft's art in `name` while the environment is still the
+    /// one `identity` names, the identity the flow's creation returned.
+    /// Without one, one is acquired, and only when there is something to
+    /// write, so a draft with nothing in it never gives an environment an
+    /// id.
+    pub(crate) fn apply(
+        &self,
+        paths: &Paths,
+        name: &str,
+        identity: Option<EnvironmentIdentity>,
+    ) -> Fetched {
+        if !self.has_work() {
+            return Fetched {
+                art: Ok(Vec::new()),
+                identity,
+                icon: false,
+            };
+        }
+        let identity = match identity {
+            Some(identity) => Ok(identity),
+            // A name core would refuse, or a missing environment, gets no
+            // identity, and that error for each kind.
+            None => EnvironmentIdentity::acquire_existing(paths, name).map_err(|e| e.to_string()),
+        };
         self.apply_for(paths, name, identity)
     }
 
-    /// `apply`, storing the fetched art only while the environment is still
-    /// the one `identity` was read from. Without one, each kind fails with
-    /// why there is none.
+    /// `apply`, storing the art only while the environment is still the one
+    /// `identity` was read from. Without one, each kind fails with why there
+    /// is none.
     fn apply_for(
         &self,
         paths: &Paths,
         name: &str,
         identity: Result<EnvironmentIdentity, String>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Fetched {
+        let held_id = identity
+            .as_ref()
+            .is_ok_and(|identity| identity.id().is_some());
         let mut notes = Vec::new();
         let mut failures = Vec::new();
+        let mut icon = false;
         for (kind, local) in &self.local {
             if local.path.is_empty() {
                 continue;
             }
-            let result = resolve(Some(paths), &local.path).and_then(|path| {
-                let identity = identity.clone()?;
-                match &local.prefilled {
-                    Some(prefilled) => art::set_manual_as(
-                        paths,
-                        name,
-                        None,
-                        *kind,
-                        &path,
-                        &prefilled.original,
-                        identity,
-                    ),
-                    None => art::set_manual(paths, name, None, *kind, &path, identity),
+            let could_not = |error: String| format!("Could not store {kind}: {error}");
+            let path = match resolve(Some(paths), &local.path) {
+                Ok(path) => path,
+                Err(error) => {
+                    failures.push(FetchError::Other(could_not(error)));
+                    continue;
                 }
-                .map_err(|e| e.to_string())
-            });
-            if let Err(error) = result {
-                failures.push(format!("Could not store {kind}: {error}"));
+            };
+            let identity = match &identity {
+                Ok(identity) => *identity,
+                Err(error) => {
+                    failures.push(FetchError::Other(could_not(error.clone())));
+                    continue;
+                }
+            };
+            let stored = match &local.prefilled {
+                Some(prefilled) => art::set_manual_as(
+                    paths,
+                    name,
+                    None,
+                    *kind,
+                    &path,
+                    &prefilled.original,
+                    identity,
+                ),
+                None => art::set_manual(paths, name, None, *kind, &path, identity),
+            };
+            match stored {
+                Ok(_) => icon |= *kind == Kind::Icon,
+                Err(error) => failures.push(FetchError::from_core(error, held_id, could_not)),
             }
         }
+        let kinds = self.fetch_kinds();
         if self.fetch
             && let Some(game) = &self.selected
+            && !kinds.is_empty()
         {
-            let kinds: Vec<_> = self
-                .kinds
-                .iter()
-                .copied()
-                .filter(|kind| {
-                    self.local
-                        .get(kind)
-                        .is_none_or(|local| local.path.is_empty())
-                })
-                .collect();
-            if !kinds.is_empty() {
-                let saved = identity.clone().and_then(|identity| {
-                    art::save_game_for(paths, name, game.0.id, identity, None)
-                        .map(|()| identity)
-                        .map_err(|e| e.to_string())
-                });
-                match saved {
-                    Err(error) => failures.push(format!("Art fetching failed: {error}")),
-                    Ok(identity) => {
-                        let missing = self.publish_held(
-                            paths,
-                            name,
+            let failed = |error: String| format!("Art fetching failed: {error}");
+            let saved = match &identity {
+                Ok(identity) => art::save_game_for(paths, name, game.0.id, *identity, None)
+                    .map(|()| *identity)
+                    .map_err(|error| FetchError::from_core(error, held_id, failed)),
+                Err(error) => Err(FetchError::Other(failed(error.clone()))),
+            };
+            match saved {
+                Err(error) => failures.push(error),
+                Ok(identity) => {
+                    let missing = self.publish_held(
+                        paths,
+                        name,
+                        &game.0,
+                        &kinds,
+                        identity,
+                        (&mut notes, &mut failures, &mut icon),
+                    );
+                    if !missing.is_empty() {
+                        let (fetched, stored_icon) = fetch(
+                            (paths, name),
                             &game.0,
-                            &kinds,
+                            &missing,
                             identity,
-                            (&mut notes, &mut failures),
+                            (&Lazy::new(), &Token::new()),
                         );
-                        if !missing.is_empty() {
-                            let fetched = fetch(
-                                (paths, name),
-                                &game.0,
-                                &missing,
-                                identity,
-                                (&Lazy::new(), &Token::new()),
-                            );
-                            match fetched {
-                                Ok(fetched) => notes.extend(fetched),
-                                Err(error) => {
-                                    failures.push(format!("Art fetching failed: {error}"))
-                                }
-                            }
+                        icon |= stored_icon;
+                        match fetched {
+                            Ok(fetched) => notes.extend(fetched),
+                            Err(error) => failures.push(error.described(failed)),
                         }
                     }
                 }
             }
         }
-        if failures.is_empty() {
-            Ok(notes)
-        } else {
-            Err(failures.join("\n"))
+        Fetched {
+            art: FetchError::combine(failures).map_or(Ok(notes), Err),
+            identity: identity.ok(),
+            icon,
         }
     }
 
@@ -549,8 +594,9 @@ impl Draft {
         game: &Game,
         kinds: &[Kind],
         identity: EnvironmentIdentity,
-        (notes, failures): (&mut Vec<String>, &mut Vec<String>),
+        (notes, failures, icon): (&mut Vec<String>, &mut Vec<FetchError>, &mut bool),
     ) -> Vec<Kind> {
+        let held_id = identity.id().is_some();
         let mut missing = Vec::new();
         for &kind in kinds {
             if let Some(image) = self
@@ -558,10 +604,12 @@ impl Draft {
                 .get(&kind)
                 .and_then(|remote| remote.image.as_ref())
             {
-                if let Err(error) =
-                    art_fetch::publish_for(paths, name, None, kind, image, Mode::Fill, identity)
-                {
-                    failures.push(format!("Could not fetch {kind}: {error}"));
+                match art_fetch::publish_for(paths, name, None, kind, image, Mode::Fill, identity) {
+                    Ok(art_fetch::Fetched::Stored { .. }) => *icon |= kind == Kind::Icon,
+                    Ok(_) => {}
+                    Err(error) => failures.push(FetchError::from_error(&error, held_id, |error| {
+                        format!("Could not fetch {kind}: {error}")
+                    })),
                 }
             } else if self
                 .remote
@@ -990,18 +1038,25 @@ fn fetch(
     kinds: &[Kind],
     identity: EnvironmentIdentity,
     (https, token): (&Lazy<Https>, &Token),
-) -> Result<Vec<String>, String> {
-    let key = steamgriddb::require_key(
+) -> (Result<Vec<String>, FetchError>, bool) {
+    let connected = steamgriddb::require_key(
         paths,
         |key| std::env::var_os(key),
         &SecretServiceKeyring::steamgriddb(),
     )
-    .map_err(|e| e.to_string())?;
-    let https = https.https().map_err(|e| e.to_string())?;
-    let api = Api::new(https, &key.value);
-    fetch_with((paths, name), &api, game, kinds, identity, token)
+    .map_err(|e| e.to_string())
+    .and_then(|key| Ok((https.https().map_err(|e| e.to_string())?, key)));
+    match connected {
+        Ok((https, key)) => {
+            let api = Api::new(https, &key.value);
+            fetch_with((paths, name), &api, game, kinds, identity, token)
+        }
+        Err(error) => (Err(FetchError::Other(error)), false),
+    }
 }
 
+/// Fetches `kinds` of `game` into `name`, and says whether an icon was
+/// stored, which the desktop entries show even when a later kind failed.
 fn fetch_with(
     (paths, name): (&Paths, &str),
     api: &Api,
@@ -1009,40 +1064,49 @@ fn fetch_with(
     kinds: &[Kind],
     identity: EnvironmentIdentity,
     token: &Token,
-) -> Result<Vec<String>, String> {
+) -> (Result<Vec<String>, FetchError>, bool) {
+    let held_id = identity.id().is_some();
     let language = steamgriddb::language(|key| std::env::var_os(key));
     let fetched =
-        art_fetch::fetch_game(paths, name, api, game.id, kinds, &language, identity, token)
-            .map_err(|e| e.to_string())?;
+        match art_fetch::fetch_game(paths, name, api, game.id, kinds, &language, identity, token) {
+            Ok(fetched) => fetched,
+            Err(error) => {
+                return (
+                    Err(FetchError::from_error(&error, held_id, |error| error)),
+                    false,
+                );
+            }
+        };
     let mut notes = Vec::new();
     let mut failures = Vec::new();
+    let mut icon = false;
     for (kind, result) in fetched {
         match result {
             Ok(art_fetch::Fetched::NoneFound) => {
                 notes.push(format!("No {kind} artwork found for {}", game.name))
             }
+            Ok(art_fetch::Fetched::Stored { .. }) => icon |= kind == Kind::Icon,
             Ok(_) => {}
-            Err(error) => failures.push(format!("Could not fetch {kind}: {error}")),
+            Err(error) => failures.push(FetchError::from_error(&error, held_id, |error| {
+                format!("Could not fetch {kind}: {error}")
+            })),
         }
     }
-    if failures.is_empty() {
-        Ok(notes)
-    } else {
-        Err(failures.join("\n"))
-    }
+    (FetchError::combine(failures).map_or(Ok(notes), Err), icon)
 }
 
 /// Looks `title` up and fetches the configured kinds for `name`, writing
-/// nothing once `token` is canceled. A batch passes the same `https` for
-/// every game, so they share one client.
+/// only while it is still the environment `identity` names. A batch passes
+/// the same `https` for every game, so they share one client.
 pub(crate) fn fetch_default(
     paths: &Paths,
     name: &str,
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     https: &Lazy<Https>,
     token: &Token,
-) -> Result<Vec<String>, String> {
-    fetch_default_over(paths, name, title, token, &|| {
+) -> Fetched {
+    fetch_default_over(paths, name, title, identity, token, &|| {
         let key = steamgriddb::require_key(
             paths,
             |key| std::env::var_os(key),
@@ -1058,17 +1122,26 @@ pub(crate) fn fetch_default(
 /// replace so nothing reaches SteamGridDB.
 pub(crate) type Connect<'a> = &'a dyn Fn() -> Result<(Box<dyn Transport>, String), String>;
 
-/// `fetch_default` over `connect`. The environment's identity is read just
-/// before the download starts, so a config edit made any time before that
-/// doesn't count as the environment having been replaced.
+/// `fetch_default` over `connect`. The identity is settled before the
+/// search: the flow's own, or when no creation step handed one over, one
+/// acquired here, once there are kinds to fetch.
 pub(crate) fn fetch_default_over(
     paths: &Paths,
     name: &str,
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     token: &Token,
     connect: Connect<'_>,
-) -> Result<Vec<String>, String> {
-    let loaded = GlobalConfig::load_or_default(paths).map_err(|e| e.to_string())?;
+) -> Fetched {
+    let unwritten = |art| Fetched {
+        art,
+        identity,
+        icon: false,
+    };
+    let loaded = match GlobalConfig::load_or_default(paths) {
+        Ok(loaded) => loaded,
+        Err(error) => return unwritten(Err(FetchError::Other(error.to_string()))),
+    };
     // Reported through the same notes as every other outcome here.
     let mut notes: Vec<String> = loaded
         .warning
@@ -1077,44 +1150,230 @@ pub(crate) fn fetch_default_over(
         .collect();
     let kinds = loaded.config.art.fetch.kinds();
     if kinds.is_empty() {
-        return Ok(notes);
+        return unwritten(Ok(notes));
     }
     if token.is_canceled() {
-        return Err(wineo_core::error::Error::Canceled("artwork").to_string());
+        return unwritten(Err(FetchError::Other(
+            wineo_core::error::Error::Canceled("artwork").to_string(),
+        )));
     }
-    let (transport, key) = connect()?;
+    let identity = match identity {
+        Some(identity) => identity,
+        None => match EnvironmentIdentity::acquire_existing(paths, name) {
+            Ok(identity) => identity,
+            Err(error) => return unwritten(Err(FetchError::Other(error.to_string()))),
+        },
+    };
+    let held = |art, icon| Fetched {
+        art,
+        identity: Some(identity),
+        icon,
+    };
+    let (transport, key) = match connect() {
+        Ok(connected) => connected,
+        Err(error) => return held(Err(FetchError::Other(error)), false),
+    };
     let api = Api::new(&*transport, &key);
-    match api
-        .search(title)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .next()
-    {
-        Some(game) => {
-            let identity =
-                EnvironmentIdentity::acquire_existing(paths, name).map_err(|e| e.to_string())?;
-            notes.extend(fetch_with(
-                (paths, name),
-                &api,
-                &game,
-                &kinds,
-                identity,
-                token,
-            )?)
+    match api.search(title).map(|games| games.into_iter().next()) {
+        Err(error) => held(Err(FetchError::Other(error.to_string())), false),
+        Ok(Some(game)) => {
+            let (fetched, icon) = fetch_with((paths, name), &api, &game, &kinds, identity, token);
+            held(
+                fetched.map(|more| {
+                    notes.extend(more);
+                    notes
+                }),
+                icon,
+            )
         }
-        None => notes.push(format!("No artwork match for {title}")),
+        Ok(None) => {
+            notes.push(format!("No artwork match for {title}"));
+            held(Ok(notes), false)
+        }
     }
-    Ok(notes)
+}
+
+/// What a flow says when its art wasn't stored because its environment is
+/// no longer the one it holds: replaced, for an id, or changed, for the
+/// fingerprint kept when the environment has no id.
+pub(crate) fn changed_message(id: bool) -> &'static str {
+    if id {
+        "Artwork wasn't stored because the environment was replaced."
+    } else {
+        "Artwork wasn't stored because the environment changed."
+    }
+}
+
+/// What the add flows and the Art page say when an icon was stored but the
+/// desktop entries were left alone because `library.toml` can't be read.
+pub(crate) fn entries_unreadable(name: &str) -> String {
+    format!("library.toml can't be read. The desktop entries for `{name}` weren't updated.")
+}
+
+/// Why art after creation wasn't stored, sorted so a flow can offer what
+/// fits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FetchError {
+    /// The environment isn't the one the flow holds, which `id` says was an
+    /// id rather than the fingerprint. Retrying with the same identity can
+    /// only fail again, so only Skip is offered.
+    Changed {
+        id: bool,
+    },
+    /// `library.toml` can't be read: its sentence, then any other failures.
+    LibraryUnreadable(String),
+    Other(String),
+}
+
+impl FetchError {
+    pub(crate) fn is_changed(&self) -> bool {
+        matches!(self, Self::Changed { .. })
+    }
+
+    /// Sorts a failed write by core's error, with `describe` wording any
+    /// that isn't about the environment or its library.
+    fn from_error(
+        error: &anyhow::Error,
+        held_id: bool,
+        describe: impl FnOnce(String) -> String,
+    ) -> Self {
+        match error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<wineo_core::Error>())
+        {
+            Some(wineo_core::Error::ArtEnvironmentChanged(_)) => Self::Changed { id: held_id },
+            Some(unreadable @ wineo_core::Error::ArtLibraryUnreadable { .. }) => {
+                Self::LibraryUnreadable(unreadable.to_string())
+            }
+            _ => Self::Other(describe(error.to_string())),
+        }
+    }
+
+    fn from_core(
+        error: wineo_core::Error,
+        held_id: bool,
+        describe: impl FnOnce(String) -> String,
+    ) -> Self {
+        Self::from_error(&anyhow::Error::from(error), held_id, describe)
+    }
+
+    /// Rewords an `Other` failure, leaving the sorted kinds as they are.
+    fn described(self, describe: impl FnOnce(String) -> String) -> Self {
+        match self {
+            Self::Other(error) => Self::Other(describe(error)),
+            error => error,
+        }
+    }
+
+    /// One failure for several: "changed" if any kind was, since nothing
+    /// more can be stored, then a library that can't be read, said once.
+    fn combine(failures: Vec<Self>) -> Option<Self> {
+        if let Some(changed) = failures.iter().find(|failure| failure.is_changed()) {
+            return Some(changed.clone());
+        }
+        let mut unreadable = None;
+        let mut lines: Vec<String> = Vec::new();
+        for failure in failures {
+            match failure {
+                Self::LibraryUnreadable(line) => {
+                    unreadable.get_or_insert(line);
+                }
+                Self::Other(line) => lines.push(line),
+                Self::Changed { .. } => unreachable!("returned above"),
+            }
+        }
+        match unreadable {
+            Some(sentence) => {
+                lines.insert(0, sentence);
+                Some(Self::LibraryUnreadable(lines.join("\n")))
+            }
+            None if lines.is_empty() => None,
+            None => Some(Self::Other(lines.join("\n"))),
+        }
+    }
+
+    /// This failure with the desktop entries' after it, in one message.
+    pub(crate) fn with_entries(self, entries: &EntriesError) -> Self {
+        match (self, entries) {
+            (Self::Other(error), EntriesError::Failed(entry)) => {
+                Self::Other(format!("{error}; desktop entry: {entry}"))
+            }
+            (Self::LibraryUnreadable(error), EntriesError::Failed(entry)) => {
+                Self::LibraryUnreadable(format!("{error}; desktop entry: {entry}"))
+            }
+            (
+                Self::Other(error) | Self::LibraryUnreadable(error),
+                EntriesError::LibraryUnreadable(entry),
+            ) => Self::LibraryUnreadable(format!("{error}\n{entry}")),
+            // Changed leaves the entries alone, so they can't have failed.
+            (changed @ Self::Changed { .. }, _) => changed,
+        }
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed { id } => f.write_str(changed_message(*id)),
+            Self::LibraryUnreadable(message) | Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Why the desktop entries weren't brought in line after a fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EntriesError {
+    /// Skipped after an icon was stored, since `library.toml` can't be read
+    /// to tell whether the environment is still the same one.
+    LibraryUnreadable(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for EntriesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LibraryUnreadable(message) | Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+/// What a fetch after creation came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Fetched {
+    pub(crate) art: Result<Vec<String>, FetchError>,
+    /// The identity it wrote with, which the flow keeps for a Retry. None
+    /// when it took none.
+    pub(crate) identity: Option<EnvironmentIdentity>,
+    /// Whether an icon was stored.
+    pub(crate) icon: bool,
+}
+
+impl Fetched {
+    /// What a fake fetcher answers: `art`, written with the identity it was
+    /// handed, and no icon.
+    #[cfg(test)]
+    pub(crate) fn answer(
+        art: Result<Vec<String>, FetchError>,
+        identity: Option<EnvironmentIdentity>,
+    ) -> Self {
+        Self {
+            art,
+            identity,
+            icon: false,
+        }
+    }
 }
 
 /// Fetches art for an environment, from its name, the title to search for,
-/// and the token that stops it. Tests swap in their own, so nothing they run
-/// reaches SteamGridDB.
+/// the identity the flow holds, and the token that stops it. Tests swap in
+/// their own, so nothing they run reaches SteamGridDB.
 pub(crate) type Fetcher =
-    Arc<dyn Fn(&Paths, &str, &str, &Token) -> Result<Vec<String>, String> + Send + Sync>;
+    Arc<dyn Fn(&Paths, &str, &str, Option<EnvironmentIdentity>, &Token) -> Fetched + Send + Sync>;
 
 pub(crate) fn default_fetcher() -> Fetcher {
-    Arc::new(|paths, name, title, token| fetch_default(paths, name, title, &Lazy::new(), token))
+    Arc::new(|paths, name, title, identity, token| {
+        fetch_default(paths, name, title, identity, &Lazy::new(), token)
+    })
 }
 
 /// What a flow's Details offers for fetching art after the environment
@@ -1177,34 +1436,58 @@ impl ArtOffer {
 }
 
 /// What the fetch and the desktop entry reapply after it each came to, apart
-/// so a caller can tell which half failed.
-pub(crate) type FetchParts = (Result<Vec<String>, String>, Result<(), String>);
+/// so a caller can tell which half failed, and the identity to retry with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FetchParts {
+    pub(crate) art: Result<Vec<String>, FetchError>,
+    pub(crate) entries: Result<(), EntriesError>,
+    pub(crate) identity: Option<EnvironmentIdentity>,
+}
 
 /// The fetch after an environment registers, then the desktop entry again,
-/// since its icon comes from the art.
+/// since its icon comes from the art. `identity` is the flow's, None when no
+/// creation step handed one over.
 pub(crate) fn fetch_art_parts(
     paths: &Paths,
     name: &str,
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     token: &Token,
     fetcher: &Fetcher,
 ) -> FetchParts {
-    // As the environment is when the fetch starts, checked again when it
-    // ends. Only looked at, since the fetch itself takes what it writes with.
-    let identity = EnvironmentIdentity::peek(paths, name);
-    let fetched = fetcher(paths, name, title, token);
+    let fetched = fetcher(paths, name, title, identity, token);
+    let parts = |entries| FetchParts {
+        art: fetched.art.clone(),
+        entries,
+        identity: fetched.identity,
+    };
     // Skipped, so nothing more is written; a later launch refreshes the entry.
-    if fetched.is_err() && token.is_canceled() {
-        return (fetched, Ok(()));
+    if fetched.art.is_err() && token.is_canceled() {
+        return parts(Ok(()));
     }
     // A replacement environment's entries are not this fetch's to touch.
-    if identity.is_some_and(|identity| !identity.is_current(paths, name).is_current()) {
-        return (fetched, Ok(()));
+    if fetched.art.as_ref().is_err_and(FetchError::is_changed) {
+        return parts(Ok(()));
     }
-    let entry = desktop::apply(paths, name, false)
-        .map(|_| ())
-        .map_err(|error| error.to_string());
-    (fetched, entry)
+    match fetched.identity.map(|held| held.is_current(paths, name)) {
+        None | Some(Currency::Current) => {}
+        Some(Currency::Changed) => return parts(Ok(())),
+        // Said only when the entries would have shown a new icon, and never
+        // for a portable root, which has none.
+        Some(Currency::LibraryUnreadable) => {
+            let said = fetched.icon && desktop::supported(paths).is_ok();
+            return parts(if said {
+                Err(EntriesError::LibraryUnreadable(entries_unreadable(name)))
+            } else {
+                Ok(())
+            });
+        }
+    }
+    parts(
+        desktop::apply(paths, name, false)
+            .map(|_| ())
+            .map_err(|error| EntriesError::Failed(error.to_string())),
+    )
 }
 
 /// `fetch_art_parts` as one result, for a page that shows a single error.
@@ -1212,17 +1495,24 @@ pub(crate) fn fetch_art(
     paths: &Paths,
     name: &str,
     title: &str,
+    identity: Option<EnvironmentIdentity>,
     token: &Token,
     fetcher: &Fetcher,
-) -> Result<Vec<String>, String> {
-    match fetch_art_parts(paths, name, title, token, fetcher) {
+) -> (Result<Vec<String>, FetchError>, Option<EnvironmentIdentity>) {
+    let parts = fetch_art_parts(paths, name, title, identity, token, fetcher);
+    let art = match (parts.art, parts.entries) {
         (Ok(notes), Ok(())) => Ok(notes),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(art_error), Err(desktop_error)) => {
-            Err(format!("{art_error}; desktop entry: {desktop_error}"))
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(EntriesError::Failed(error))) => Err(FetchError::Other(error)),
+        (Ok(_), Err(EntriesError::LibraryUnreadable(error))) => {
+            Err(FetchError::LibraryUnreadable(error))
         }
-    }
+        (Err(error), Err(entries)) => Err(error.with_entries(&entries)),
+    };
+    (art, parts.identity)
 }
 
+#[cfg(test)]
+pub(crate) mod canned;
 #[cfg(test)]
 mod tests;

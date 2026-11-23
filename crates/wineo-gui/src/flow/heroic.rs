@@ -32,8 +32,8 @@ use crate::runner_label::{self, Choice};
 use crate::task;
 use crate::theme::Palette;
 use work::{
-    BatchPoster, CopyProgress, apply_game, batch_options, heroic_id, hook_paths, import_status,
-    plan_review, prepare_game, quote_args, refresh, store_heroic_poster,
+    BatchPoster, CopyProgress, apply_game, batch_options, finish_batch_entries, heroic_id,
+    hook_paths, import_status, plan_review, prepare_game, quote_args, refresh, store_heroic_poster,
 };
 pub(super) use work::{
     Prerequisite, install_prerequisite, playtime_note, review_warnings, runner_choices, suggest,
@@ -43,7 +43,7 @@ const SOURCE_LIST: &str = "heroic-sources";
 
 /// A batch game's notes from its art fetch. A cancel stops the fetch with
 /// whichever step it reached, so it reads the same however far it got.
-fn art_notes(fetched: Result<Vec<String>, String>, token: &Token) -> Vec<String> {
+fn art_notes(fetched: Result<Vec<String>, artwork::FetchError>, token: &Token) -> Vec<String> {
     match fetched {
         Ok(notes) => notes,
         Err(_) if token.is_canceled() => vec!["Artwork canceled".to_owned()],
@@ -316,7 +316,7 @@ pub(crate) enum Event {
     BatchFinished(u64, Result<(bool, bool), String>),
     RetryArt,
     SkipArt,
-    ArtFinished(u64, Result<Vec<String>, String>),
+    ArtFinished(u64, artwork::Fetched),
     FinishedRegistered(u64, Result<Vec<String>, String>),
     Art(u64, artwork::Event),
     OpenSettings,
@@ -346,6 +346,12 @@ pub(crate) struct Page {
     art: artwork::Draft,
     art_generation: u64,
     registered: Option<Arc<Registered>>,
+    /// The identity art is written with: the import's, or when it handed
+    /// over none, the one the first art step took. Every Retry reuses it.
+    art_identity: Option<environment::EnvironmentIdentity>,
+    /// Whether the art step found the environment isn't the imported one,
+    /// so only Skip is offered and the desktop entries are left alone.
+    art_changed: bool,
     token: Option<Token>,
     status: String,
     results: Vec<(String, Result<Vec<String>, String>)>,
@@ -383,6 +389,8 @@ impl Page {
             art: artwork::Draft::new(),
             art_generation: 0,
             registered: None,
+            art_identity: None,
+            art_changed: false,
             token: None,
             status: "Finding Heroic configuration...".to_owned(),
             results: Vec::new(),
@@ -1115,25 +1123,31 @@ impl Page {
                                 }
                                 let _ = sender.unbounded_send(status(Some("adding artwork")));
                                 let app = heroic_id(&game);
+                                let identity = registered.identity;
                                 notes.extend(store_heroic_poster(
                                     &paths,
                                     &name,
                                     app,
                                     posters.get(app),
+                                    identity,
                                 ));
                                 if fetch_batch_art {
                                     notes.extend(art_notes(
                                         artwork::fetch_default(
-                                            &paths, &name, &title, &https, &token,
-                                        ),
+                                            &paths, &name, &title, identity, &https, &token,
+                                        )
+                                        .art,
                                         &token,
                                     ));
                                 }
                                 let _ = sender
                                     .unbounded_send(status(Some("finalizing desktop entries")));
-                                if let Err(error) = registered.finish(&paths, &global) {
-                                    notes.push(format!("Desktop entry: {error}"));
-                                }
+                                notes.extend(finish_batch_entries(
+                                    &paths,
+                                    &global,
+                                    &name,
+                                    &registered,
+                                ));
                                 Ok::<_, anyhow::Error>(notes)
                             })()
                             .map_err(|error| {

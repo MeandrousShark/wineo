@@ -10,7 +10,7 @@ use wineo_core::heroic_import::{Registered, RunnerSuggestion};
 use crate::flow::Action;
 use crate::task;
 
-use super::{Event, ImportFailure, Page, Review, Step, playtime_note};
+use super::{Event, ImportFailure, Page, Review, Step, artwork, playtime_note};
 
 impl Page {
     pub(super) fn prerequisite_finished(&mut self, result: Result<String, String>) -> Task<Event> {
@@ -55,13 +55,10 @@ impl Page {
                 };
                 self.status = format!("Imported {title}. Adding artwork...");
                 let name = registered.environment.name.clone();
+                self.art_identity = registered.identity;
+                self.art_changed = false;
                 self.registered = Some(registered);
-                let art = self.art.clone();
-                let paths = self.paths.clone();
-                task::blocking(
-                    move || art.apply(&paths, &name),
-                    move |result| Event::ArtFinished(generation, result),
-                )
+                self.apply_art(name, generation)
             }
             Err(error) => {
                 self.token = None;
@@ -106,10 +103,48 @@ impl Page {
         }
     }
 
-    pub(super) fn art_finished(&mut self, result: Result<Vec<String>, String>) -> Task<Event> {
-        match result {
+    /// Stores the draft's art with the flow's identity, off the UI thread.
+    fn apply_art(&mut self, name: String, generation: u64) -> Task<Event> {
+        let art = self.art.clone();
+        let paths = self.paths.clone();
+        let identity = self.art_identity;
+        task::blocking_value(
+            move || art.apply(&paths, &name, identity),
+            move |result| {
+                Event::ArtFinished(
+                    generation,
+                    result.unwrap_or_else(|error| artwork::Fetched {
+                        art: Err(artwork::FetchError::Other(error)),
+                        identity,
+                        icon: false,
+                    }),
+                )
+            },
+        )
+    }
+
+    pub(super) fn art_finished(&mut self, fetched: artwork::Fetched) -> Task<Event> {
+        // Only an import that handed over none takes the art step's.
+        self.art_identity = self.art_identity.or(fetched.identity);
+        match fetched.art {
             Ok(notes) => {
                 self.notes.extend(notes);
+                self.finish_art()
+            }
+            // The desktop entries now belong to whatever replaced the
+            // import, so they aren't finished, and only Skip is offered.
+            Err(error @ artwork::FetchError::Changed { .. }) => {
+                self.art_changed = true;
+                self.error = Some(error.to_string());
+                self.token = None;
+                self.step = Step::Working;
+                self.status = "Imported with an artwork issue".to_owned();
+                Task::none()
+            }
+            Err(artwork::FetchError::LibraryUnreadable(error)) => {
+                self.error = Some(format!(
+                    "{error} The environment is registered. Retry or skip artwork."
+                ));
                 self.finish_art()
             }
             Err(error) => {
@@ -125,16 +160,14 @@ impl Page {
         let Some(registered) = &self.registered else {
             return Task::none();
         };
+        if self.art_changed {
+            return Task::none();
+        }
         let name = registered.environment.name.clone();
-        let art = self.art.clone();
-        let paths = self.paths.clone();
         let generation = self.generation;
         self.token = Some(Token::new());
         self.error = None;
-        task::blocking(
-            move || art.apply(&paths, &name),
-            move |result| Event::ArtFinished(generation, result),
-        )
+        self.apply_art(name, generation)
     }
 
     pub(super) fn finished_registered(

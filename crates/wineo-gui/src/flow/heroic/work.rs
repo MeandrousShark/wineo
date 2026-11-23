@@ -411,6 +411,27 @@ pub(super) fn heroic_id(game: &Game) -> &str {
     }
 }
 
+/// Brings a batch-imported environment's desktop entries in line, unless
+/// it was replaced since the import: the replacement's entries aren't this
+/// import's to touch. Returns a note when the entries failed.
+pub(super) fn finish_batch_entries(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    registered: &Registered,
+) -> Option<String> {
+    let replaced = registered
+        .identity
+        .is_some_and(|identity| identity.is_current(paths, name).is_changed());
+    if replaced {
+        return None;
+    }
+    registered
+        .finish(paths, global)
+        .err()
+        .map(|error| format!("Desktop entry: {error}"))
+}
+
 /// A Heroic poster a batch may store, and whether the grid decoded it.
 #[derive(Debug, Clone)]
 pub(super) struct BatchPoster {
@@ -427,15 +448,20 @@ pub(super) fn store_heroic_poster(
     name: &str,
     app: &str,
     poster: Option<&BatchPoster>,
+    identity: Option<EnvironmentIdentity>,
 ) -> Option<String> {
     let poster = poster.filter(|poster| decodes(paths, poster))?;
-    // Only with a poster to store, so an import with none never gives the
-    // environment an id. A name core would refuse, or a missing
-    // environment, gets that error.
-    match EnvironmentIdentity::acquire_existing(paths, name) {
-        Ok(identity) => store_decoded_poster(paths, name, app, poster, identity),
-        Err(error) => Some(poster_failed(error)),
-    }
+    let identity = match identity {
+        Some(identity) => identity,
+        // Only with a poster to store, so an import with none never gives
+        // the environment an id. A name core would refuse, or a missing
+        // environment, gets that error.
+        None => match EnvironmentIdentity::acquire_existing(paths, name) {
+            Ok(identity) => identity,
+            Err(error) => return Some(poster_failed(error)),
+        },
+    };
+    store_decoded_poster(paths, name, app, poster, identity)
 }
 
 /// `store_heroic_poster`, stored only while the environment is still the one

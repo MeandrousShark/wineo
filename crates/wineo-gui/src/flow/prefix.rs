@@ -5,13 +5,14 @@ use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
 use wineo_core::desktop;
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::external_runners::Source;
 use wineo_core::import::{self, ImportRequest, Inspection};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
-use super::artwork::{ArtOffer, FetchParts, Fetcher, default_fetcher, fetch_art_parts};
+use super::artwork::{ArtOffer, FetchError, FetchParts, Fetcher, default_fetcher, fetch_art_parts};
 use super::frame;
 use crate::chips::input_style;
 use crate::runner_label;
@@ -97,6 +98,8 @@ pub(crate) struct ImportOutcome {
     name: String,
     /// Why the desktop entry couldn't be refreshed after the import.
     entry_error: Option<String>,
+    /// What the import handed back for its art step to carry.
+    identity: Option<EnvironmentIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +148,11 @@ pub(crate) struct Page {
     fetcher: Fetcher,
     /// Whether ArtFailed came from the fetch, not the desktop entry.
     fetch_failed: bool,
+    /// Whether the fetch found the environment isn't the imported one, so
+    /// only Skip is offered and it leaves the desktop entries alone.
+    fetch_changed: bool,
+    /// The identity the import returned, which every fetch and Retry uses.
+    identity: Option<EnvironmentIdentity>,
     /// Whether the fetch has run and got through, so Retry only has the
     /// desktop entry left to redo.
     fetch_done: bool,
@@ -183,6 +191,8 @@ impl Page {
             fetch_sequence: 0,
             fetcher: default_fetcher(),
             fetch_failed: false,
+            fetch_changed: false,
+            identity: None,
             fetch_done: false,
             notes: Vec::new(),
             imported_name: None,
@@ -355,6 +365,7 @@ impl Page {
                     Ok(outcome) => {
                         let outcome = *outcome;
                         self.imported_name = Some(outcome.name);
+                        self.identity = outcome.identity;
                         if let Some(error) = outcome.entry_error {
                             self.error = Some(error);
                             self.fetch_failed = false;
@@ -424,15 +435,21 @@ impl Page {
                     .fetch_token
                     .take()
                     .is_some_and(|token| token.is_canceled());
-                let (fetched, entry) = result;
-                match (fetched, entry) {
+                let FetchParts {
+                    art,
+                    entries,
+                    identity,
+                } = result;
+                // Only an import that handed over none takes the fetch's.
+                self.identity = self.identity.or(identity);
+                match (art, entries) {
                     (Ok(notes), entry) => {
                         // The art is in, so only the entry is left to retry.
                         self.fetch_done = true;
                         self.notes.extend(notes);
                         (self.error, self.step) = match entry {
                             Ok(()) => (None, Step::Finished),
-                            Err(error) => (Some(error), Step::ArtFailed),
+                            Err(error) => (Some(error.to_string()), Step::ArtFailed),
                         };
                     }
                     (Err(_), _) if skipped => {
@@ -441,9 +458,10 @@ impl Page {
                         self.step = Step::Finished;
                     }
                     (Err(error), entry) => {
+                        self.fetch_changed = error.is_changed();
                         self.error = Some(match entry {
-                            Ok(()) => error,
-                            Err(entry) => format!("{error}; desktop entry: {entry}"),
+                            Ok(()) => error.to_string(),
+                            Err(entry) => error.with_entries(&entry).to_string(),
                         });
                         self.fetch_failed = true;
                         self.step = Step::ArtFailed;
@@ -542,11 +560,12 @@ impl Page {
             .into(),
             Step::ArtFailed => column![
                 text(self.art_failed_line()).color(palette.warning),
-                row![
-                    secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
-                    secondary_button("Skip artwork", palette).on_press(Event::SkipArt)
-                ]
-                .spacing(8),
+                row![]
+                    .push((!self.fetch_changed).then(|| {
+                        secondary_button("Retry artwork", palette).on_press(Event::RetryArt)
+                    }))
+                    .push(secondary_button("Skip artwork", palette).on_press(Event::SkipArt))
+                    .spacing(8),
             ]
             .spacing(12)
             .into(),
@@ -948,7 +967,7 @@ impl Page {
                 task::join(
                     move || {
                         let global = GlobalConfig::load(&paths)?;
-                        let (imported, _) = import::execute_reviewed(
+                        let (imported, identity) = import::execute_reviewed(
                             &paths,
                             &global,
                             request,
@@ -982,6 +1001,7 @@ impl Page {
                         Ok::<_, anyhow::Error>(ImportOutcome {
                             name: imported.name,
                             entry_error,
+                            identity,
                         })
                     },
                     anyhow::Error::from,
@@ -995,7 +1015,7 @@ impl Page {
     }
 
     fn retry_art(&mut self) -> Task<Event> {
-        if self.step != Step::ArtFailed || self.busy() {
+        if self.step != Step::ArtFailed || self.busy() || self.fetch_changed {
             return Task::none();
         }
         let Some(name) = self.imported_name.clone() else {
@@ -1033,6 +1053,7 @@ impl Page {
         self.token = None;
         self.fetching = true;
         self.fetch_failed = false;
+        self.fetch_changed = false;
         self.step = Step::Working;
         self.status = "Fetching artwork...".to_owned();
         self.error = None;
@@ -1040,13 +1061,18 @@ impl Page {
         // The Name as typed, since Import prefix has no separate title.
         let title = self.name.clone();
         let fetcher = self.fetcher.clone();
+        let identity = self.identity;
         task::blocking_value(
-            move || fetch_art_parts(&paths, &name, &title, &token, &fetcher),
+            move || fetch_art_parts(&paths, &name, &title, identity, &token, &fetcher),
             // A worker that panicked counts as a failed fetch.
             move |result| {
                 Event::ArtFetched(
                     sequence,
-                    result.unwrap_or_else(|error| (Err(error), Ok(()))),
+                    result.unwrap_or_else(|error| FetchParts {
+                        art: Err(FetchError::Other(error)),
+                        entries: Ok(()),
+                        identity,
+                    }),
                 )
             },
         )
@@ -1071,6 +1097,14 @@ impl Page {
         let Some(name) = self.imported_name.clone() else {
             return Task::none();
         };
+        // Its desktop entries belong to whatever replaced the import.
+        if self.fetch_changed {
+            self.fetch_changed = false;
+            self.error = None;
+            self.notes.push("Artwork skipped".to_owned());
+            self.step = Step::Finished;
+            return Task::none();
+        }
         self.step = Step::Working;
         self.status = "Refreshing desktop entries...".to_owned();
         self.error = None;
