@@ -222,7 +222,7 @@ impl EnvironmentIdentity {
     /// still matches. Both are decided under the library lock, so a
     /// removal and a new environment between them can't hand back the new
     /// one's id. An id returns itself, and a library that can't be written
-    /// keeps the fingerprint.
+    /// keeps the fingerprint while it still matches.
     pub fn upgrade(self, paths: &Paths, name: &str) -> Result<Self> {
         let Held::File(held) = self.0 else {
             return Ok(self);
@@ -238,7 +238,10 @@ impl EnvironmentIdentity {
         }) {
             Ok(Some(id)) => Ok(Self(Held::Id(id))),
             Ok(None) => Err(changed()),
-            Err(_) => Ok(self),
+            // The library refused before the check under its lock could
+            // run, so the fingerprint is checked here instead.
+            Err(_) if Fingerprint::read(paths, name) == Some(held) => Ok(self),
+            Err(_) => Err(changed()),
         }
     }
 

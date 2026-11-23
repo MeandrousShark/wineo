@@ -408,6 +408,10 @@ fn a_missing_config_matches_nothing_and_peeks_as_nothing() {
     for identity in [id, fingerprint] {
         assert_eq!(identity.matches(&observed), Currency::Changed);
         assert_eq!(identity.is_current(&paths, "game"), Currency::Changed);
+        assert_eq!(
+            identity.is_current_with(&paths, "game", &mut library::Cache::default()),
+            Currency::Changed
+        );
     }
 }
 
@@ -458,6 +462,50 @@ fn upgrade_keeps_the_fingerprint_when_the_library_cant_take_an_id() {
         );
         assert_eq!(library_bytes(&paths), before, "{case}");
         set_mode(paths.library_file().parent().unwrap(), 0o755);
+    }
+}
+
+#[test]
+fn upgrade_refuses_a_changed_config_even_when_the_library_cant_take_an_id() {
+    for (case, make) in unwritable_libraries() {
+        let (_root, paths) = legacy();
+        let fingerprint = EnvironmentIdentity::peek(&paths, "game").unwrap();
+        make(&paths);
+        rewrite(&paths);
+        let before = library_bytes(&paths);
+        let result = fingerprint.upgrade(&paths, "game");
+        set_mode(paths.library_file().parent().unwrap(), 0o755);
+        assert!(
+            matches!(result, Err(Error::ArtEnvironmentChanged(_))),
+            "{case}: {result:?}"
+        );
+        assert_eq!(library_bytes(&paths), before, "{case}");
+    }
+}
+
+/// The checks that run while the library lock is held see a change made
+/// only once the lock is taken, which a check made before it would miss.
+#[test]
+fn the_checks_before_a_mint_run_while_the_library_lock_is_held() {
+    for _ in 0..20 {
+        let (_root, paths) = legacy();
+        let fingerprint = EnvironmentIdentity::peek(&paths, "game").unwrap();
+        crate::art::on_test_hook("library.mint.locked", {
+            let paths = paths.clone();
+            move || rewrite(&paths)
+        });
+        assert!(matches!(
+            fingerprint.upgrade(&paths, "game"),
+            Err(Error::ArtEnvironmentChanged(_))
+        ));
+        assert_eq!(library_bytes(&paths), None);
+
+        crate::art::on_test_hook("library.mint.locked", {
+            let paths = paths.clone();
+            move || fs::remove_file(paths.environment_config("game")).unwrap()
+        });
+        assert_eq!(EnvironmentIdentity::acquire(&paths, "game").unwrap(), None);
+        assert_eq!(library_bytes(&paths), None);
     }
 }
 

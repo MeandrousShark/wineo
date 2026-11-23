@@ -847,9 +847,9 @@ pub(crate) fn cached_id(
 
 /// The id `name`'s entry holds, or a new one written there, adding only
 /// `id` and making the entry if there is none. `still_valid` runs under the
-/// library lock before anything is read, so the caller can check again
-/// that the environment is the one it meant; when it says no, nothing is
-/// written and the result is None.
+/// library lock, after the file is read and before the entry is looked at,
+/// so the caller can check again that the environment is the one it meant;
+/// when it says no, nothing is written and the result is None.
 pub(crate) fn adopt_or_mint_id(
     paths: &Paths,
     name: &str,
@@ -860,6 +860,8 @@ pub(crate) fn adopt_or_mint_id(
     crate::art::test_hook("library.mint");
     let mut result = None;
     edit(paths, |document| {
+        #[cfg(test)]
+        crate::art::test_hook("library.mint.locked");
         if !still_valid() {
             return false;
         }
