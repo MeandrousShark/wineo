@@ -1334,7 +1334,10 @@ fn a_heroic_poster_is_prefilled_and_stored_as_grid_art() {
     )
     .unwrap();
     let name = registered.environment.name.as_str();
-    page.art.apply(&paths, name).unwrap();
+    page.art
+        .apply(&paths, name, registered.identity)
+        .art
+        .unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir(name)).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1367,7 +1370,10 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
         |_| {},
     )
     .unwrap();
-    assert_eq!(store_heroic_poster(&paths, "dawn", "dawn", None), None);
+    assert_eq!(
+        store_heroic_poster(&paths, "dawn", "dawn", None, None),
+        None
+    );
     let art = artwork::Draft::with_fetched(
         Kind::Grid,
         7,
@@ -1377,7 +1383,7 @@ fn a_corrupt_poster_is_neither_prefilled_nor_stored() {
             format: wineo_core::art::Format::Jpeg,
         },
     );
-    art.apply(&paths, "dawn").unwrap();
+    art.apply(&paths, "dawn", None).art.unwrap();
     let config = wineo_core::art::ArtConfig::load(&paths.art_dir("dawn")).unwrap();
     assert_eq!(
         config.kinds[&Kind::Grid].source,
@@ -1440,7 +1446,7 @@ fn a_batch_decodes_posters_the_grid_had_not_yet() {
         )
         .unwrap();
         assert_eq!(
-            store_heroic_poster(&paths, name, name, posters.get(name)),
+            store_heroic_poster(&paths, name, name, posters.get(name), None),
             None
         );
     }
@@ -1488,7 +1494,7 @@ fn a_batch_poster_is_stored_only_in_the_environment_it_was_registered_as() {
         if replaced {
             assert_eq!(
                 note.as_deref(),
-                Some("Heroic poster: environment `dusk` changed before artwork could be written")
+                Some("`dusk` was replaced. Artwork wasn't stored.")
             );
             assert!(!grid.exists());
         } else {
@@ -1509,12 +1515,12 @@ fn a_batch_import_only_gives_an_old_environment_an_id_when_it_has_a_poster() {
     fs::create_dir_all(config.parent().unwrap()).unwrap();
     fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
     assert_eq!(
-        super::work::store_heroic_poster(&paths, name, name, None),
+        super::work::store_heroic_poster(&paths, name, name, None, None),
         None
     );
     assert!(!paths.library_file().exists());
     assert_eq!(
-        super::work::store_heroic_poster(&paths, name, name, posters.get(name)),
+        super::work::store_heroic_poster(&paths, name, name, posters.get(name), None),
         None
     );
     assert!(paths.art_dir(name).join("grid.png").exists());
@@ -2409,12 +2415,434 @@ fn a_canceled_batch_art_fetch_says_so_plainly() {
     let notes = vec!["No logo artwork found for Hades".to_owned()];
     assert_eq!(art_notes(Ok(notes.clone()), &token), notes);
     assert_eq!(
-        art_notes(Err("offline".to_owned()), &token),
+        art_notes(
+            Err(artwork::FetchError::Other("offline".to_owned())),
+            &token
+        ),
         ["Artwork: offline"]
     );
     token.cancel();
     assert_eq!(
-        art_notes(Err("artwork canceled".to_owned()), &token),
+        art_notes(
+            Err(artwork::FetchError::Other("artwork canceled".to_owned())),
+            &token
+        ),
         ["Artwork canceled"]
+    );
+}
+
+/// A single Heroic import of Dusk, registered, with its poster prefilled,
+/// and the page it came from.
+fn registered_dusk(root: &std::path::Path) -> (Page, Arc<Registered>) {
+    registered_dusk_with(root, false, |_| {})
+}
+
+/// `registered_dusk`, with its desktop entries on when `desktop`, and
+/// `prepare` run before the import.
+fn registered_dusk_with(
+    root: &std::path::Path,
+    desktop: bool,
+    prepare: impl FnOnce(&Paths),
+) -> (Page, Arc<Registered>) {
+    let mut page = grid_page(root);
+    decode_posters(&mut page);
+    open_single(&mut page, DUSK);
+    let listing = page.listing.clone().unwrap();
+    let mut review = plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap();
+    let Review::Single { game, .. } = &mut review else {
+        panic!("expected a single review");
+    };
+    match &mut **game {
+        Game::Windows(plan) => plan.set_desktop_enabled(desktop),
+        Game::Native(plan) => plan.set_desktop_enabled(desktop),
+    }
+    let paths = page.paths.clone();
+    prepare(&paths);
+    let global = GlobalConfig::load(&paths).unwrap();
+    let registered = apply_game(
+        &paths,
+        &global,
+        &listing.source,
+        game,
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap();
+    page.review = Some(review);
+    page.step = Step::Working;
+    page.token = Some(Token::new());
+    (page, Arc::new(registered))
+}
+
+fn shown(page: &Page) -> Vec<String> {
+    crate::layout_probe::texts(
+        page.view_with_key_availability(crate::theme::Palette::DARK, 900.0, true),
+        iced::Size::new(900.0, 1200.0),
+    )
+}
+
+#[test]
+fn a_replacement_before_the_art_offers_only_skip_and_leaves_the_entries_alone() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    assert!(
+        registered
+            .identity
+            .is_some_and(|identity| identity.id().is_some())
+    );
+    wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    let mut finished = sent(task);
+    assert_eq!(finished.len(), 1);
+    let Event::ArtFinished(_, fetched) = &finished[0] else {
+        panic!("expected the art result, got {finished:?}");
+    };
+    assert_eq!(
+        fetched.art,
+        Err(artwork::FetchError::Changed {
+            env: name.clone(),
+            id: true
+        })
+    );
+    // No desktop entries are finished for the replacement.
+    let task = page.update(finished.remove(0));
+    assert!(sent(task).is_empty());
+    assert!(!page.paths.art_dir(&name).join("grid.png").exists());
+    assert_eq!(page.step, Step::Working);
+    assert_eq!(
+        page.error.as_deref(),
+        Some(artwork::changed_message(&name, true, artwork::NOT_STORED).as_str())
+    );
+    let texts = shown(&page);
+    assert!(!texts.contains(&"Retry artwork".to_owned()), "{texts:?}");
+    assert!(texts.contains(&"Skip artwork".to_owned()), "{texts:?}");
+    assert!(sent(page.update(Event::RetryArt)).is_empty());
+    let _ = page.update(Event::SkipArt);
+    assert_eq!(page.step, Step::Finished);
+    assert!(page.error.is_none());
+}
+
+#[test]
+fn heroic_art_retry_reuses_the_imports_identity() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    // The poster is gone, so storing it fails in a way Retry may fix.
+    let poster = page.listing.as_ref().unwrap().candidates[DUSK]
+        .poster
+        .clone()
+        .unwrap();
+    let bytes = fs::read(&poster).unwrap();
+    fs::remove_file(&poster).unwrap();
+    let generation = page.generation;
+    let mut pending = vec![page.update(Event::SingleRegistered(generation, Ok(registered)))];
+    while let Some(task) = pending.pop() {
+        for event in sent(task) {
+            pending.push(page.update(event));
+        }
+    }
+    assert!(
+        page.error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Artwork failed")),
+        "{:?}",
+        page.error
+    );
+    assert!(shown(&page).contains(&"Retry artwork".to_owned()));
+    // A Retry that read the environment again would take the
+    // replacement's id and store the poster there.
+    fs::write(&poster, bytes).unwrap();
+    wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+    let retried = sent(page.update(Event::RetryArt));
+    let [Event::ArtFinished(_, fetched)] = &retried[..] else {
+        panic!("expected the art result, got {retried:?}");
+    };
+    assert_eq!(
+        fetched.art,
+        Err(artwork::FetchError::Changed {
+            env: name.clone(),
+            id: true
+        })
+    );
+    assert!(!page.paths.art_dir(&name).join("grid.png").exists());
+}
+
+#[test]
+fn a_batch_leaves_a_replacements_desktop_entries_alone() {
+    for replaced in [false, true] {
+        let root = tempdir().unwrap();
+        let mut page = grid_page(root.path());
+        open_single(&mut page, DUSK);
+        let listing = page.listing.clone().unwrap();
+        let Review::Single { mut game, .. } =
+            plan_review(&page.paths, &listing, Some(DUSK), &page.draft).unwrap()
+        else {
+            panic!("expected a single review");
+        };
+        match &mut *game {
+            Game::Windows(plan) => plan.set_desktop_enabled(true),
+            Game::Native(plan) => plan.set_desktop_enabled(true),
+        }
+        let paths = page.paths.clone();
+        let global = GlobalConfig::load(&paths).unwrap();
+        let registered = apply_game(
+            &paths,
+            &global,
+            &listing.source,
+            &game,
+            &Token::new(),
+            |_| {},
+        )
+        .unwrap();
+        let name = registered.environment.name.clone();
+        if replaced {
+            wineo_core::test_support::replace_environment(&paths, &name).unwrap();
+        }
+        let entries = || {
+            fs::read_dir(paths.applications_dir())
+                .map(|dir| dir.count())
+                .unwrap_or(0)
+        };
+        assert_eq!(entries(), 0, "replaced {replaced}");
+        assert_eq!(
+            super::work::finish_batch_game(
+                &paths,
+                &global,
+                (&name, "dusk"),
+                None,
+                &registered,
+                None,
+                &Token::new(),
+                |_| {}
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(entries() > 0, !replaced, "replaced {replaced}");
+    }
+}
+
+/// Feeds `task`'s events back into `page`, and theirs, until none are left.
+fn drive_all(page: &mut Page, task: iced::Task<Event>) {
+    let mut pending = vec![task];
+    while let Some(task) = pending.pop() {
+        for event in sent(task) {
+            pending.push(page.update(event));
+        }
+    }
+}
+
+fn entry_count(paths: &Paths) -> usize {
+    fs::read_dir(paths.applications_dir())
+        .map(|dir| dir.count())
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_replacement_right_after_the_art_leaves_its_entries_alone() {
+    for replaced in [false, true] {
+        let root = tempdir().unwrap();
+        let (mut page, registered) = registered_dusk_with(root.path(), true, |_| {});
+        let name = registered.environment.name.clone();
+        let generation = page.generation;
+        let art = sent(page.update(Event::SingleRegistered(generation, Ok(registered))));
+        assert_eq!(art.len(), 1);
+        if replaced {
+            wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+        }
+        for event in art {
+            let task = page.update(event);
+            drive_all(&mut page, task);
+        }
+        assert_eq!(page.step, Step::Finished, "replaced {replaced}");
+        assert_eq!(
+            entry_count(&page.paths) > 0,
+            !replaced,
+            "replaced {replaced}"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_library_before_the_entries_says_so_and_writes_none() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk_with(root.path(), true, |_| {});
+    let name = registered.environment.name.clone();
+    let generation = page.generation;
+    let art = sent(page.update(Event::SingleRegistered(generation, Ok(registered))));
+    fs::write(page.paths.library_file(), "[broken\n").unwrap();
+    for event in art {
+        let task = page.update(event);
+        drive_all(&mut page, task);
+    }
+    assert_eq!(entry_count(&page.paths), 0);
+    assert!(
+        page.notes.contains(&format!(
+            "library.toml can't be read. The desktop entries for `{name}` weren't updated."
+        )),
+        "{:?}",
+        page.notes
+    );
+}
+
+#[test]
+fn an_unreadable_library_for_the_art_says_so_and_offers_retry() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    fs::write(page.paths.library_file(), "[broken\n").unwrap();
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    drive_all(&mut page, task);
+    assert_eq!(
+        page.error,
+        Some(format!(
+            "library.toml can't be read. Artwork for `{name}` wasn't stored. \
+             The environment is registered. Retry or skip artwork."
+        ))
+    );
+    assert!(shown(&page).contains(&"Retry artwork".to_owned()));
+}
+
+#[test]
+fn a_change_on_the_fingerprint_fallback_offers_only_skip_in_heroic() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk_with(root.path(), false, |paths| {
+        fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+        fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+    });
+    let name = registered.environment.name.clone();
+    assert_eq!(registered.identity.and_then(|identity| identity.id()), None);
+    wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    drive_all(&mut page, task);
+    assert_eq!(
+        page.error,
+        Some(format!("`{name}` changed. Artwork wasn't stored."))
+    );
+    assert!(!shown(&page).contains(&"Retry artwork".to_owned()));
+}
+
+#[test]
+fn an_import_with_no_identity_keeps_its_first_art_steps_for_retry() {
+    let root = tempdir().unwrap();
+    let (mut page, mut registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    Arc::get_mut(&mut registered).unwrap().identity = None;
+    // A second local file that's missing, so the poster lands, taking an
+    // id, and the art step still fails in a way Retry may fix.
+    let missing = root.path().join("missing.png");
+    let _ = page.art.update(artwork::Event::Path(
+        Kind::Hero,
+        missing.display().to_string(),
+    ));
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    drive_all(&mut page, task);
+    assert!(page.paths.art_dir(&name).join("grid.png").exists());
+    let taken = page.art_identity;
+    assert!(taken.is_some_and(|identity| identity.id().is_some()));
+    // A Retry that acquired again would take the replacement's id.
+    wineo_core::test_support::replace_environment(&page.paths, &name).unwrap();
+    let retried = sent(page.update(Event::RetryArt));
+    let [Event::ArtFinished(_, fetched)] = &retried[..] else {
+        panic!("expected the art result, got {retried:?}");
+    };
+    assert_eq!(fetched.identity, taken);
+    assert!(fetched.art.as_ref().is_err_and(|error| error.is_changed()));
+}
+
+/// A registered Dusk with desktop entries on, and its global config.
+fn batch_dusk(root: &std::path::Path) -> (Paths, GlobalConfig, Arc<Registered>) {
+    let (page, registered) = registered_dusk_with(root, true, |_| {});
+    let global = GlobalConfig::load(&page.paths).unwrap();
+    (page.paths.clone(), global, registered)
+}
+
+#[test]
+fn a_batch_game_replaced_during_its_art_keeps_its_entries_alone() {
+    for replaced in [false, true] {
+        let root = tempdir().unwrap();
+        let (paths, global, registered) = batch_dusk(root.path());
+        let name = registered.environment.name.clone();
+        let handed = std::cell::Cell::new(None);
+        let fetch = |identity| {
+            handed.set(Some(identity));
+            if replaced {
+                wineo_core::test_support::replace_environment(&paths, &name).unwrap();
+            }
+            artwork::Fetched::answer(Ok(Vec::new()), identity)
+        };
+        let notes = super::work::finish_batch_game(
+            &paths,
+            &global,
+            (&name, "dusk"),
+            None,
+            &registered,
+            Some(&fetch),
+            &Token::new(),
+            |_| {},
+        );
+        assert_eq!(handed.get(), Some(registered.identity));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(entry_count(&paths) > 0, !replaced, "replaced {replaced}");
+    }
+}
+
+#[test]
+fn a_batch_game_whose_library_breaks_says_so_and_writes_no_entries() {
+    let root = tempdir().unwrap();
+    let (paths, global, registered) = batch_dusk(root.path());
+    let name = registered.environment.name.clone();
+    let fetch = |identity| {
+        fs::write(paths.library_file(), "[broken\n").unwrap();
+        artwork::Fetched::answer(Ok(Vec::new()), identity)
+    };
+    let notes = super::work::finish_batch_game(
+        &paths,
+        &global,
+        (&name, "dusk"),
+        None,
+        &registered,
+        Some(&fetch),
+        &Token::new(),
+        |_| {},
+    );
+    assert_eq!(
+        notes,
+        [format!(
+            "library.toml can't be read. The desktop entries for `{name}` weren't updated."
+        )]
+    );
+    assert_eq!(entry_count(&paths), 0);
+}
+
+#[test]
+fn an_unreadable_library_with_other_failures_still_ends_each_sentence() {
+    let root = tempdir().unwrap();
+    let (mut page, registered) = registered_dusk(root.path());
+    let name = registered.environment.name.clone();
+    // A hero that's missing fails in its own words after the library's.
+    let missing = root.path().join("missing.png");
+    let _ = page.art.update(artwork::Event::Path(
+        Kind::Hero,
+        missing.display().to_string(),
+    ));
+    fs::write(page.paths.library_file(), "[broken\n").unwrap();
+    let generation = page.generation;
+    let task = page.update(Event::SingleRegistered(generation, Ok(registered)));
+    drive_all(&mut page, task);
+    let error = page.error.clone().unwrap();
+    assert!(
+        error.starts_with(&format!(
+            "library.toml can't be read. Artwork for `{name}` wasn't stored.\nCould not store hero: "
+        )),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("missing.png. The environment is registered. Retry or skip artwork."),
+        "{error}"
     );
 }

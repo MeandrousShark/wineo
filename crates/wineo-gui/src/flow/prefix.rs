@@ -4,14 +4,17 @@ use iced::widget::{column, container, pick_list, row, text, text_input};
 use iced::{Center, Element, Fill, Task, border};
 use wineo_core::cancel::Token;
 use wineo_core::config::{Arch, GlobalConfig};
-use wineo_core::desktop;
+use wineo_core::environment::EnvironmentIdentity;
 use wineo_core::external_runners::Source;
 use wineo_core::import::{self, ImportRequest, Inspection};
 use wineo_core::paths::Paths;
 use wineo_core::runner::Runner;
 use wineo_core::runners::Runners;
 
-use super::artwork::{ArtOffer, FetchParts, Fetcher, default_fetcher, fetch_art_parts};
+use super::artwork::{
+    ArtOffer, EntriesError, FetchError, FetchParts, Fetcher, default_fetcher, fetch_art_parts,
+    refresh_entries,
+};
 use super::frame;
 use crate::chips::input_style;
 use crate::runner_label;
@@ -41,9 +44,9 @@ pub(crate) enum Event {
     Import,
     ImportFinished(u64, Result<Box<ImportOutcome>, String>),
     RetryArt,
-    ArtRetried(u64, Result<(), String>),
+    ArtRetried(u64, Result<(), EntriesError>),
     SkipArt,
-    ArtSkipped(u64, Result<(), String>),
+    ArtSkipped(u64, Result<(), EntriesError>),
     SkipFetch,
     /// The fetch after the import, with its own sequence number.
     ArtFetched(u64, FetchParts),
@@ -96,7 +99,9 @@ pub(crate) struct Review {
 pub(crate) struct ImportOutcome {
     name: String,
     /// Why the desktop entry couldn't be refreshed after the import.
-    entry_error: Option<String>,
+    entry_error: Option<EntriesError>,
+    /// What the import handed back for its art step to carry.
+    identity: Option<EnvironmentIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +150,14 @@ pub(crate) struct Page {
     fetcher: Fetcher,
     /// Whether ArtFailed came from the fetch, not the desktop entry.
     fetch_failed: bool,
+    /// Whether the fetch found the environment isn't the imported one, so
+    /// only Skip is offered and it leaves the desktop entries alone.
+    fetch_changed: bool,
+    /// Whether the desktop entries were left alone because `library.toml`
+    /// can't be read, so Skip finishes without touching them.
+    entries_unreadable: bool,
+    /// The identity the import returned, which every fetch and Retry uses.
+    identity: Option<EnvironmentIdentity>,
     /// Whether the fetch has run and got through, so Retry only has the
     /// desktop entry left to redo.
     fetch_done: bool,
@@ -183,6 +196,9 @@ impl Page {
             fetch_sequence: 0,
             fetcher: default_fetcher(),
             fetch_failed: false,
+            fetch_changed: false,
+            entries_unreadable: false,
+            identity: None,
             fetch_done: false,
             notes: Vec::new(),
             imported_name: None,
@@ -355,8 +371,9 @@ impl Page {
                     Ok(outcome) => {
                         let outcome = *outcome;
                         self.imported_name = Some(outcome.name);
+                        self.identity = outcome.identity;
                         if let Some(error) = outcome.entry_error {
-                            self.error = Some(error);
+                            self.entries_failed(&error);
                             self.fetch_failed = false;
                             self.step = Step::ArtFailed;
                         } else if self.fetch_art {
@@ -391,7 +408,7 @@ impl Page {
                         self.step = Step::Finished;
                     }
                     Err(error) => {
-                        self.error = Some(error);
+                        self.entries_failed(&error);
                         self.step = Step::ArtFailed;
                     }
                 }
@@ -404,7 +421,7 @@ impl Page {
                 }
                 self.token = None;
                 self.step = Step::Finished;
-                self.error = result.err();
+                self.error = result.err().map(|error| error.to_string());
                 // Only art that was still to be fetched is skipped.
                 if self.fetch_art && !self.fetch_done {
                     self.notes.push("Artwork skipped".to_owned());
@@ -424,16 +441,25 @@ impl Page {
                     .fetch_token
                     .take()
                     .is_some_and(|token| token.is_canceled());
-                let (fetched, entry) = result;
-                match (fetched, entry) {
+                let FetchParts {
+                    art,
+                    entries,
+                    identity,
+                } = result;
+                // Only an import that handed over none takes the fetch's.
+                self.identity = self.identity.or(identity);
+                match (art, entries) {
                     (Ok(notes), entry) => {
                         // The art is in, so only the entry is left to retry.
                         self.fetch_done = true;
                         self.notes.extend(notes);
-                        (self.error, self.step) = match entry {
-                            Ok(()) => (None, Step::Finished),
-                            Err(error) => (Some(error), Step::ArtFailed),
-                        };
+                        match entry {
+                            Ok(()) => (self.error, self.step) = (None, Step::Finished),
+                            Err(error) => {
+                                self.entries_failed(&error);
+                                self.step = Step::ArtFailed;
+                            }
+                        }
                     }
                     (Err(_), _) if skipped => {
                         self.notes.push("Artwork skipped".to_owned());
@@ -441,9 +467,12 @@ impl Page {
                         self.step = Step::Finished;
                     }
                     (Err(error), entry) => {
+                        self.fetch_changed = error.is_changed();
+                        self.entries_unreadable =
+                            matches!(entry, Err(EntriesError::LibraryUnreadable(_)));
                         self.error = Some(match entry {
-                            Ok(()) => error,
-                            Err(entry) => format!("{error}; desktop entry: {entry}"),
+                            Ok(()) => error.to_string(),
+                            Err(entry) => error.with_entries(&entry).to_string(),
                         });
                         self.fetch_failed = true;
                         self.step = Step::ArtFailed;
@@ -542,11 +571,12 @@ impl Page {
             .into(),
             Step::ArtFailed => column![
                 text(self.art_failed_line()).color(palette.warning),
-                row![
-                    secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
-                    secondary_button("Skip artwork", palette).on_press(Event::SkipArt)
-                ]
-                .spacing(8),
+                row![]
+                    .push((!self.fetch_changed).then(|| {
+                        secondary_button("Retry artwork", palette).on_press(Event::RetryArt)
+                    }))
+                    .push(secondary_button("Skip artwork", palette).on_press(Event::SkipArt))
+                    .spacing(8),
             ]
             .spacing(12)
             .into(),
@@ -948,7 +978,7 @@ impl Page {
                 task::join(
                     move || {
                         let global = GlobalConfig::load(&paths)?;
-                        let (imported, _) = import::execute_reviewed(
+                        let (imported, identity) = import::execute_reviewed(
                             &paths,
                             &global,
                             request,
@@ -978,10 +1008,12 @@ impl Page {
                         )?;
                         // Art leaves the worker, but the entry still gets
                         // refreshed, so a card made from the import has one.
-                        let entry_error = refresh_entry(&paths, &imported.name).err();
+                        let entry_error =
+                            refresh_entries(&paths, &imported.name, identity, true).err();
                         Ok::<_, anyhow::Error>(ImportOutcome {
                             name: imported.name,
                             entry_error,
+                            identity,
                         })
                     },
                     anyhow::Error::from,
@@ -995,7 +1027,7 @@ impl Page {
     }
 
     fn retry_art(&mut self) -> Task<Event> {
-        if self.step != Step::ArtFailed || self.busy() {
+        if self.step != Step::ArtFailed || self.busy() || self.fetch_changed {
             return Task::none();
         }
         let Some(name) = self.imported_name.clone() else {
@@ -1009,13 +1041,20 @@ impl Page {
         self.step = Step::Working;
         self.status = "Refreshing desktop entries...".to_owned();
         self.error = None;
+        self.entries_unreadable = false;
         self.token = Some(Token::new());
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
-        task::blocking(
-            move || refresh_entry(&paths, &name),
-            move |result| Event::ArtRetried(generation, result),
+        let identity = self.identity;
+        task::blocking_value(
+            move || refresh_entries(&paths, &name, identity, true),
+            move |result| {
+                Event::ArtRetried(
+                    generation,
+                    result.unwrap_or_else(|error| Err(EntriesError::Failed(error))),
+                )
+            },
         )
     }
 
@@ -1033,6 +1072,7 @@ impl Page {
         self.token = None;
         self.fetching = true;
         self.fetch_failed = false;
+        self.fetch_changed = false;
         self.step = Step::Working;
         self.status = "Fetching artwork...".to_owned();
         self.error = None;
@@ -1040,13 +1080,18 @@ impl Page {
         // The Name as typed, since Import prefix has no separate title.
         let title = self.name.clone();
         let fetcher = self.fetcher.clone();
+        let identity = self.identity;
         task::blocking_value(
-            move || fetch_art_parts(&paths, &name, &title, &token, &fetcher),
+            move || fetch_art_parts(&paths, &name, &title, identity, &token, &fetcher),
             // A worker that panicked counts as a failed fetch.
             move |result| {
                 Event::ArtFetched(
                     sequence,
-                    result.unwrap_or_else(|error| (Err(error), Ok(()))),
+                    result.unwrap_or_else(|error| FetchParts {
+                        art: Err(FetchError::Other(error)),
+                        entries: Ok(()),
+                        identity,
+                    }),
                 )
             },
         )
@@ -1071,16 +1116,41 @@ impl Page {
         let Some(name) = self.imported_name.clone() else {
             return Task::none();
         };
+        // Its desktop entries belong to whatever replaced the import, or
+        // can't be told apart from a replacement's.
+        if self.fetch_changed || self.entries_unreadable {
+            self.fetch_changed = false;
+            self.entries_unreadable = false;
+            self.error = None;
+            if self.fetch_art && !self.fetch_done {
+                self.notes.push("Artwork skipped".to_owned());
+            }
+            self.step = Step::Finished;
+            return Task::none();
+        }
         self.step = Step::Working;
         self.status = "Refreshing desktop entries...".to_owned();
         self.error = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let paths = self.paths.clone();
-        task::blocking(
-            move || refresh_entry(&paths, &name),
-            move |result| Event::ArtSkipped(generation, result),
+        let identity = self.identity;
+        task::blocking_value(
+            move || refresh_entries(&paths, &name, identity, true),
+            move |result| {
+                Event::ArtSkipped(
+                    generation,
+                    result.unwrap_or_else(|error| Err(EntriesError::Failed(error))),
+                )
+            },
         )
+    }
+
+    /// Shows why the desktop entries weren't refreshed.
+    fn entries_failed(&mut self, error: &EntriesError) {
+        self.entries_unreadable = matches!(error, EntriesError::LibraryUnreadable(_));
+        self.fetch_failed = false;
+        self.error = Some(error.to_string());
     }
 
     fn clear_review(&mut self) {
@@ -1125,12 +1195,6 @@ fn choice(paths: &Paths, runner: Runner) -> RunnerChoice {
         proton: runner.is_proton(),
         launcher: runner_label::launcher(paths, &runner),
     }
-}
-
-fn refresh_entry(paths: &Paths, name: &str) -> Result<(), String> {
-    desktop::apply(paths, name, false)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
 }
 
 fn inspect_review(
@@ -1522,7 +1586,7 @@ mod tests {
         let _ = page.update_with_key_availability(Event::RetryArt, false);
         let generation = page.generation;
         let _ = page.update_with_key_availability(
-            Event::ArtRetried(generation, Err("boom".to_owned())),
+            Event::ArtRetried(generation, Err(EntriesError::Failed("boom".to_owned()))),
             false,
         );
         assert_eq!(page.step, Step::ArtFailed);
@@ -1536,8 +1600,10 @@ mod tests {
         let mut page = art_failed_page(root.path());
         let _ = page.update_with_key_availability(Event::RetryArt, false);
         let stale = page.generation.wrapping_sub(1);
-        let _ = page
-            .update_with_key_availability(Event::ArtRetried(stale, Err("stale".to_owned())), false);
+        let _ = page.update_with_key_availability(
+            Event::ArtRetried(stale, Err(EntriesError::Failed("stale".to_owned()))),
+            false,
+        );
         assert_eq!(page.step, Step::Working);
         assert!(page.busy());
         assert!(page.token.is_some());

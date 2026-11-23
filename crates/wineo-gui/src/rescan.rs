@@ -217,6 +217,17 @@ impl Watch {
         shown.revisions.art += 1;
     }
 
+    /// The shown Art page took `identity` from a write, which the next
+    /// scan compares with.
+    pub(crate) fn adopt_art(&self, name: &str, identity: EnvironmentIdentity) {
+        let mut shown = self.shown();
+        if let Some((shown_name, held, _)) = &mut shown.art
+            && shown_name == name
+        {
+            *held = identity;
+        }
+    }
+
     pub(crate) fn forget_art(&self) {
         let mut shown = self.shown();
         shown.art = None;

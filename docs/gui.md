@@ -795,6 +795,22 @@ appears:
 Changes apply right away. The card, panel, and desktop entry update to
 match.
 
+The page belongs to the environment it was opened for. Editing that
+environment elsewhere, in its settings, with `wineo set`, or by restoring a
+snapshot, leaves the page open and a download under way still lands. If the
+environment is removed and another is made under its name, the page closes,
+and a change that was under way isn't stored: `` `hades` was replaced.
+Artwork wasn't stored. `` An environment from before 1.10 is recognized this
+way from its first art change on; until then an edit closes its page, as
+before. `wineo art` follows the same rules; see
+[Fetching during new and import](art.md#fetching-during-new-and-import).
+
+If `library.toml` can't be read, the page stays open and a change says
+`` library.toml can't be read. Artwork for `hades` wasn't stored. `` When an
+icon was stored but the environment couldn't be confirmed afterward, it says
+the desktop entries weren't updated; a portable folder has no desktop
+entries, so it never says that there.
+
 The header shows the SteamGridDB game the art comes from, looked up by its
 saved ID, and **Change** searches for a different one, like `wineo art fetch
 --search`. Its search starts from the title the card shows, or the
@@ -1088,7 +1104,15 @@ written. A search that's already under way finishes first, which takes at
 most 10 seconds. The desktop entry is refreshed afterward so its icon uses
 the new art. Closing the window during the fetch doesn't ask, and stops it.
 A failed fetch shows on the finished page with **Retry artwork** and **Skip
-artwork**. The finished page's **Choose artwork...** opens the new card's
+artwork**. Retry keeps the environment the flow created: editing it during
+the fetch, in its settings or with `wineo set`, doesn't stop the art from
+landing, and a Retry never moves to an environment made since. If the
+environment was removed and made again under the same name meanwhile, the
+page says `` `hades` was replaced. Artwork wasn't stored. `` and offers only
+**Skip artwork**, which leaves the new environment's desktop entries alone.
+The target step does the same before it writes: `` `hades` was replaced.
+The target wasn't added. `` When `library.toml` can't be read, the page says
+so and Retry stays. The finished page's **Choose artwork...** opens the new card's
 Art page, without launching it.
 
 Import prefix works the same way: the same checkbox and notes on Details,
@@ -1096,6 +1120,10 @@ and the fetch runs once the import is registered, searching for the Name as
 typed, with **Skip**. The import refreshes the desktop entry either way. If
 the fetch or the entry fails, the page says which, with **Retry artwork**
 and **Skip artwork**; Retry fetches again only if the fetch itself failed.
+A replaced environment offers only Skip, as in New, and neither button
+touches its desktop entries. If the art went in but `library.toml` couldn't
+be read for the entries, the page says the desktop entries weren't updated:
+Retry tries them again, and Skip leaves them as they are.
 The finished page lists what the fetch couldn't find and offers **Choose
 artwork...** beside **Set up targets**; local art files go through the Art
 page's **Browse...**.
@@ -1108,7 +1136,10 @@ the global **Art to fetch** switches: after you search and choose a match,
 each enabled kind downloads right away and appears in its tile, and the
 import stores those images without downloading them again. Local files can
 be mixed with fetched art, and the local choice wins for that kind. If
-artwork fails after registration, retry or skip it.
+artwork fails after registration, retry or skip it; an environment replaced
+meanwhile offers only Skip, and its desktop entries are left alone. A bulk
+import skips the desktop entries of a game replaced during its art and says
+so in that game's notes.
 
 Windows creation keeps runner, architecture, and prefix overrides under
 **Additional wine options**. The architecture list starts with **Use

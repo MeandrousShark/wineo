@@ -269,6 +269,16 @@ impl EnvironmentIdentity {
         }
     }
 
+    /// For a holder that just saved the config itself, like a flow adding
+    /// a target between creation and its art: an id is unchanged by that,
+    /// and a fingerprint is taken again. None when the config is gone.
+    pub fn after_own_write(self, paths: &Paths, name: &str) -> Option<Self> {
+        match self.0 {
+            Held::Id(_) => Some(self),
+            Held::File(_) => Self::fingerprint(paths, name),
+        }
+    }
+
     pub(crate) fn fingerprint(paths: &Paths, name: &str) -> Option<Self> {
         Fingerprint::read(paths, name).map(|fingerprint| Self(Held::File(fingerprint)))
     }

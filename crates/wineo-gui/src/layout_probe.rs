@@ -115,6 +115,24 @@ pub(crate) fn lay_out<'a, M>(mut element: Element<'a, M>, size: Size) -> Laid<'a
     }
 }
 
+/// Each text `element` shows laid out in `size`, in tree order.
+pub(crate) fn texts<M>(element: Element<'_, M>, size: Size) -> Vec<String> {
+    use std::sync::{Arc, Mutex};
+    struct Texts(Arc<Mutex<Vec<String>>>);
+    impl Operation for Texts {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn text(&mut self, _id: Option<&Id>, _bounds: Rectangle, text: &str) {
+            self.0.lock().unwrap().push(text.to_owned());
+        }
+    }
+    let found = Arc::new(Mutex::new(Vec::new()));
+    lay_out(element, size).run(Box::new(Texts(found.clone())));
+    found.lock().unwrap().clone()
+}
+
 /// Lays out `element` over `tree` from an earlier layout, diffed the way
 /// the runtime does after an update, so widget state carries over.
 pub(crate) fn relay_out<'a, M>(element: Element<'a, M>, mut tree: Tree, size: Size) -> Laid<'a, M> {

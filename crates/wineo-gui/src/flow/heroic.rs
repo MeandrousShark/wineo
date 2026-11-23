@@ -31,9 +31,11 @@ use crate::focus_button::ListRows;
 use crate::runner_label::{self, Choice};
 use crate::task;
 use crate::theme::Palette;
+#[cfg(test)]
+use work::store_heroic_poster;
 use work::{
-    BatchPoster, CopyProgress, apply_game, batch_options, heroic_id, hook_paths, import_status,
-    plan_review, prepare_game, quote_args, refresh, store_heroic_poster,
+    BatchPoster, CopyProgress, apply_game, batch_options, finish_batch_game, finish_entries,
+    heroic_id, hook_paths, import_status, plan_review, prepare_game, quote_args, refresh,
 };
 pub(super) use work::{
     Prerequisite, install_prerequisite, playtime_note, review_warnings, runner_choices, suggest,
@@ -43,11 +45,11 @@ const SOURCE_LIST: &str = "heroic-sources";
 
 /// A batch game's notes from its art fetch. A cancel stops the fetch with
 /// whichever step it reached, so it reads the same however far it got.
-fn art_notes(fetched: Result<Vec<String>, String>, token: &Token) -> Vec<String> {
+fn art_notes(fetched: Result<Vec<String>, artwork::FetchError>, token: &Token) -> Vec<String> {
     match fetched {
         Ok(notes) => notes,
         Err(_) if token.is_canceled() => vec!["Artwork canceled".to_owned()],
-        Err(error) => vec![format!("Artwork: {error}")],
+        Err(error) => vec![error.note()],
     }
 }
 
@@ -316,7 +318,7 @@ pub(crate) enum Event {
     BatchFinished(u64, Result<(bool, bool), String>),
     RetryArt,
     SkipArt,
-    ArtFinished(u64, Result<Vec<String>, String>),
+    ArtFinished(u64, artwork::Fetched),
     FinishedRegistered(u64, Result<Vec<String>, String>),
     Art(u64, artwork::Event),
     OpenSettings,
@@ -346,6 +348,12 @@ pub(crate) struct Page {
     art: artwork::Draft,
     art_generation: u64,
     registered: Option<Arc<Registered>>,
+    /// The identity art is written with: the import's, or when it handed
+    /// over none, the one the first art step took. Every Retry reuses it.
+    art_identity: Option<environment::EnvironmentIdentity>,
+    /// Whether the art step found the environment isn't the imported one,
+    /// so only Skip is offered and the desktop entries are left alone.
+    art_changed: bool,
     token: Option<Token>,
     status: String,
     results: Vec<(String, Result<Vec<String>, String>)>,
@@ -383,6 +391,8 @@ impl Page {
             art: artwork::Draft::new(),
             art_generation: 0,
             registered: None,
+            art_identity: None,
+            art_changed: false,
             token: None,
             status: "Finding Heroic configuration...".to_owned(),
             results: Vec::new(),
@@ -1113,27 +1123,24 @@ impl Page {
                                 if let Some(note) = playtime_note(&registered.playtime) {
                                     notes.push(note);
                                 }
-                                let _ = sender.unbounded_send(status(Some("adding artwork")));
+                                let fetch = |identity| {
+                                    artwork::fetch_default(
+                                        &paths, &name, &title, identity, &https, &token,
+                                    )
+                                };
                                 let app = heroic_id(&game);
-                                notes.extend(store_heroic_poster(
+                                notes.extend(finish_batch_game(
                                     &paths,
-                                    &name,
-                                    app,
+                                    &global,
+                                    (&name, app),
                                     posters.get(app),
+                                    &registered,
+                                    fetch_batch_art.then_some(&fetch as &dyn Fn(_) -> _),
+                                    &token,
+                                    |phase| {
+                                        let _ = sender.unbounded_send(status(Some(phase)));
+                                    },
                                 ));
-                                if fetch_batch_art {
-                                    notes.extend(art_notes(
-                                        artwork::fetch_default(
-                                            &paths, &name, &title, &https, &token,
-                                        ),
-                                        &token,
-                                    ));
-                                }
-                                let _ = sender
-                                    .unbounded_send(status(Some("finalizing desktop entries")));
-                                if let Err(error) = registered.finish(&paths, &global) {
-                                    notes.push(format!("Desktop entry: {error}"));
-                                }
                                 Ok::<_, anyhow::Error>(notes)
                             })()
                             .map_err(|error| {
@@ -1164,18 +1171,21 @@ impl Page {
         let paths = self.paths.clone();
         let generation = self.next_generation();
         self.status = "Finalizing desktop entries...".to_owned();
+        let identity = self.art_identity;
         task::blocking(
             move || {
                 let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                registered
-                    .finish(&paths, &global)
-                    .map(|changes| {
-                        changes
-                            .into_iter()
-                            .map(|change| crate::settings::desktop_line(&change))
-                            .collect()
-                    })
-                    .map_err(|e| e.to_string())
+                let name = &registered.environment.name;
+                match finish_entries(&paths, &global, name, &registered, identity) {
+                    Ok(changes) => Ok(changes
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|change| crate::settings::desktop_line(&change))
+                        .collect()),
+                    // A note, since the import itself is done.
+                    Err(artwork::EntriesError::LibraryUnreadable(sentence)) => Ok(vec![sentence]),
+                    Err(artwork::EntriesError::Failed(error)) => Err(error),
+                }
             },
             move |result| Event::FinishedRegistered(generation, result),
         )

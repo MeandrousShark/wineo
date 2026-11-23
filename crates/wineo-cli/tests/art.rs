@@ -519,27 +519,6 @@ fn set_and_rm_give_an_environment_from_before_ids_one() {
     }
 }
 
-/// What `art set` said before it took an identity: the same checks, made
-/// with one that is only looked at.
-fn set_error(f: &Fixture, spot: &str, kind: wineo_core::art::Kind, file: &str) -> String {
-    let paths = f.paths();
-    let (env, target) = match spot.split_once('.') {
-        Some((env, target)) => (env, Some(target)),
-        None => (spot, None),
-    };
-    let identity = wineo_core::test_support::identity(&paths, env);
-    let error = wineo_core::art::set_manual(
-        &paths,
-        env,
-        target,
-        kind,
-        std::path::Path::new(file),
-        identity,
-    )
-    .unwrap_err();
-    format!("{:#}", anyhow::Error::from(error))
-}
-
 #[test]
 fn a_set_that_cant_write_gives_an_old_environment_no_id() {
     use wineo_core::art::Kind;
@@ -557,15 +536,44 @@ fn a_set_that_cant_write_gives_an_old_environment_no_id() {
         .set_len(wineo_core::art::MAX_BYTES + 1)
         .unwrap();
     let big = big.display().to_string();
-    for (spot, kind, file) in [
-        ("hades.nope", Kind::Icon, png.as_str()),
-        ("hades.bad name", Kind::Icon, png.as_str()),
-        ("hades", Kind::Icon, missing.as_str()),
-        ("hades", Kind::Icon, folder.as_str()),
-        ("hades", Kind::Hero, big.as_str()),
-        ("hades", Kind::Icon, text.as_str()),
+    for (spot, kind, file, expected) in [
+        (
+            "hades.nope",
+            Kind::Icon,
+            png.as_str(),
+            "environment `hades` has no target `nope`".to_owned(),
+        ),
+        (
+            "hades.bad name",
+            Kind::Icon,
+            png.as_str(),
+            "environment `hades` has no target `bad name`".to_owned(),
+        ),
+        (
+            "hades",
+            Kind::Icon,
+            missing.as_str(),
+            format!("failed to read {missing}: No such file or directory (os error 2)"),
+        ),
+        (
+            "hades",
+            Kind::Icon,
+            folder.as_str(),
+            format!("failed to read {folder}: Is a directory (os error 21)"),
+        ),
+        (
+            "hades",
+            Kind::Hero,
+            big.as_str(),
+            format!("{big} is larger than 32 MiB"),
+        ),
+        (
+            "hades",
+            Kind::Icon,
+            text.as_str(),
+            format!("{text} is not a PNG, SVG, ICO, or JPEG image"),
+        ),
     ] {
-        let expected = set_error(&f, spot, kind, file);
         let set = f.run(&["art", "set", spot, kind.as_str(), file]);
         assert_refused(&set, &expected);
         assert_eq!(library(&f), None, "{spot} {file}");
@@ -574,10 +582,13 @@ fn a_set_that_cant_write_gives_an_old_environment_no_id() {
     // A target whose config doesn't parse.
     let config = f.paths().environment_config("hades");
     fs::write(&config, "this isn't toml [").unwrap();
-    let expected = set_error(&f, "hades.server", Kind::Icon, &png);
     assert_refused(
         &f.run(&["art", "set", "hades.server", "icon", &png]),
-        &expected,
+        &format!(
+            "invalid config {}: TOML parse error at line 1, column 6\n  |\n\
+             1 | this isn't toml [\n  |      ^\nkey with no value, expected `=`\n",
+            config.display()
+        ),
     );
     assert_eq!(library(&f), None);
 }
@@ -590,6 +601,10 @@ fn an_rm_with_nothing_to_remove_gives_an_old_environment_no_id() {
         ("hades", "`hades` has no grid art"),
         ("hades.server", "`hades.server` has no grid art"),
         ("hades.nope", "`hades.nope` has no grid art"),
+        (
+            "hades.bad name",
+            "invalid name `bad name`: use letters, digits, `-`, and `_`",
+        ),
     ] {
         assert_refused(&f.run(&["art", "rm", spot, "grid"]), error);
         assert_eq!(library(&f), None, "{spot}");
