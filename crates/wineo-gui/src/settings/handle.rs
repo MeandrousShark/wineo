@@ -298,6 +298,11 @@ impl Page {
                 }
                 Step::none()
             }
+            // The adapter is read through the Controller switch, so the choice
+            // is locked without it, like the remap rows.
+            Event::GlobalGamecubeAdapter(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.input.controller) => {
+                Step::none()
+            }
             Event::GlobalGamecubeAdapter(on) => {
                 self.edited();
                 if let View::Global(editor) = &mut self.view {

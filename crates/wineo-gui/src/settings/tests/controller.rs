@@ -202,7 +202,7 @@ fn a_saved_gamecube_switch_is_not_an_outside_change() {
         &paths,
         Event::Checked(1, sequence, load::Texts::read_global(&paths)),
     );
-    assert!(!page.changed_on_disk);
+    assert!(!page.changed_on_disk && !page.loading());
     assert!(!page.is_dirty());
 }
 
@@ -289,4 +289,25 @@ fn a_saving_page_and_an_environment_page_ignore_the_gamecube_event() {
     let _ = env.update(&paths, Event::GlobalGamecubeAdapter(true));
     assert!(!env.is_dirty());
     assert_eq!(env.notes, ["Installed DXVK 2.4"]);
+}
+
+#[test]
+fn the_gamecube_event_does_nothing_while_the_draft_controller_switch_is_off() {
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    let _ = page.update(&paths, Event::GlobalController(false));
+    // A handled edit clears these, so they show the event was dropped.
+    page.notes = vec!["Installed DXVK 2.4".to_owned()];
+    page.error = Some("earlier".to_owned());
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(true));
+    assert!(!gamecube(&page));
+    assert_eq!(page.notes, ["Installed DXVK 2.4"]);
+    assert_eq!(page.error.as_deref(), Some("earlier"));
+    assert_eq!(page.changes(), 1, "only the Controller switch changed");
+
+    let _ = page.update(&paths, Event::GlobalController(true));
+    let _ = page.update(&paths, Event::GlobalGamecubeAdapter(true));
+    assert!(gamecube(&page));
+    assert!(page.notes.is_empty() && page.error.is_none());
+    assert_eq!(page.changes(), 1, "only the adapter switch differs now");
 }
