@@ -273,3 +273,20 @@ fn the_gamecube_switch_waits_for_the_controller_switch_like_the_remap_rows() {
     page.saving = true;
     assert!(click_switch(&page, &paths, label).is_empty());
 }
+
+#[test]
+fn a_saving_page_and_an_environment_page_ignore_the_gamecube_event() {
+    let (_root, paths) = setup();
+    let mut saving = controller_tab(&paths);
+    saving.saving = true;
+    let _ = saving.update(&paths, Event::GlobalGamecubeAdapter(true));
+    assert!(!gamecube(&saving) && !saving.is_dirty());
+
+    write(&paths, GAME);
+    let mut env = page(&paths);
+    // A handled edit clears the notes, so they show the event was dropped.
+    env.notes = vec!["Installed DXVK 2.4".to_owned()];
+    let _ = env.update(&paths, Event::GlobalGamecubeAdapter(true));
+    assert!(!env.is_dirty());
+    assert_eq!(env.notes, ["Installed DXVK 2.4"]);
+}
