@@ -374,20 +374,17 @@ impl App {
         }
     }
 
-    /// Both the Controller and GameCube adapter switches are on, each saved
-    /// or in the Settings draft, the way `sync_input` counts the first, so
-    /// a remap row hears a GameCube pad before Save.
+    /// Both the Controller and GameCube adapter switches are on, both saved
+    /// or both in the Settings draft, the way `sync_input` counts the first,
+    /// so a remap row hears a GameCube pad before Save. One switch's saved
+    /// value never pairs with the other's draft: neither side asked for that.
     fn adapter_switches_on(&self) -> bool {
-        let page = self.settings.as_ref();
-        let controller = self.input.controller
-            || page
-                .and_then(|page| page.draft_controller())
-                .unwrap_or(false);
-        let adapter = self.input.gamecube_adapter
-            || page
-                .and_then(|page| page.draft_gamecube_adapter())
-                .unwrap_or(false);
-        controller && adapter
+        let saved = self.input.controller && self.input.gamecube_adapter;
+        let draft = self.settings.as_ref().is_some_and(|page| {
+            page.draft_controller().unwrap_or(false)
+                && page.draft_gamecube_adapter().unwrap_or(false)
+        });
+        saved || draft
     }
 
     /// The adapter's reader runs. Off, nothing opens or watches USB.

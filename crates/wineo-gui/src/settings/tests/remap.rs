@@ -770,4 +770,75 @@ mod app {
         let _ = app.update(Message::Settings(Event::GlobalController(false)));
         assert!(!app.adapter_subscribed());
     }
+
+    #[test]
+    fn one_switchs_saved_value_never_pairs_with_the_others_draft() {
+        let (_root, paths) = setup();
+        // Saved: controller on, adapter off. The draft turns the adapter on,
+        // then the Controller off.
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = true\ngamecube_adapter = false\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(true)));
+        assert!(app.adapter_subscribed());
+        let _ = app.update(Message::Settings(Event::GlobalController(false)));
+        assert_eq!(page(&app).draft_gamecube_adapter(), Some(true));
+        assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+
+        // The mirror: saved controller off, adapter on; the draft turns the
+        // Controller on, then the adapter off.
+        let (_root, paths) = setup();
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = false\ngamecube_adapter = true\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        let _ = app.update(Message::Settings(Event::GlobalController(true)));
+        assert!(app.adapter_subscribed());
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(false)));
+        assert_eq!(page(&app).draft_controller(), Some(true));
+        assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+    }
+
+    /// Runs a save the way the worker does and lands it and the reload after.
+    fn save_app(app: &mut App, paths: &Paths) {
+        let _ = app.update(Message::Settings(Event::Save));
+        assert!(page(app).saving, "Save started");
+        let report = super::save(paths, page(app));
+        let generation = page(app).generation;
+        let _ = app.update(Message::Settings(Event::Saved(generation, Ok(report))));
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(paths),
+        )));
+    }
+
+    #[test]
+    fn both_saved_on_holds_until_a_draft_with_one_off_is_saved() {
+        for adapter_off in [true, false] {
+            let (_root, paths) = setup();
+            write_library(
+                &paths,
+                "schema_version = 1\n\n[input]\ncontroller = true\ngamecube_adapter = true\n",
+            );
+            let (mut app, _) = app_in(&paths);
+            assert!(app.adapter_wanted() && *app.adapter.link().wanted.borrow());
+            let event = if adapter_off {
+                Event::GlobalGamecubeAdapter(false)
+            } else {
+                Event::GlobalController(false)
+            };
+            let _ = app.update(Message::Settings(event));
+            assert!(app.adapter_wanted(), "adapter off: {adapter_off}");
+            assert!(*app.adapter.link().wanted.borrow());
+            save_app(&mut app, &paths);
+            assert!(!page(&app).is_dirty());
+            assert_eq!(app.input.gamecube_adapter, !adapter_off);
+            assert_eq!(app.input.controller, adapter_off);
+            assert!(!app.adapter_subscribed(), "adapter off: {adapter_off}");
+            assert!(!*app.adapter.link().wanted.borrow());
+        }
+    }
 }
