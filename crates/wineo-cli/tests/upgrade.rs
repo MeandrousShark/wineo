@@ -17,6 +17,8 @@ use std::process::{Command, Output};
 use std::time::SystemTime;
 
 use serde_json::Value;
+use wineo_core::environment::EnvironmentIdentity;
+use wineo_core::library;
 use wineo_core::paths::Paths;
 
 use common::{Fixture, stderr, stdout};
@@ -212,6 +214,28 @@ impl Set {
         match root {
             "portable" => self.portable(),
             _ => self.home(),
+        }
+    }
+
+    /// The paths the CLI resolves for the named root.
+    fn paths(&self, root: &str) -> Paths {
+        let home = self.f.root.path().to_owned();
+        match root {
+            "portable" => Paths::select(
+                move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+                Some(&self.portable()),
+            )
+            .unwrap(),
+            _ => {
+                let home = self.home();
+                Paths::from_lookup(move |key| match key {
+                    "HOME" => Some(OsString::from(home.as_os_str())),
+                    "XDG_CONFIG_HOME" => Some(home.join(".config").into_os_string()),
+                    "XDG_DATA_HOME" => Some(home.join(".local/share").into_os_string()),
+                    _ => None,
+                })
+                .unwrap()
+            }
         }
     }
 
@@ -729,5 +753,108 @@ fn status_and_list_show_what_the_files_say() {
                 }
             }
         }
+    }
+}
+
+/// Enough of a PNG for wineo to store as art.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+/// Stores art in `environment` the way an art write starts, which gives an
+/// environment from before ids one. Returns the id.
+fn write_art(paths: &Paths, environment: &str) -> wineo_core::library::Id {
+    let identity = EnvironmentIdentity::acquire(paths, environment)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{environment} isn't there"));
+    let id = identity
+        .id()
+        .unwrap_or_else(|| panic!("{environment} got no id"));
+    wineo_core::art::set_manual_bytes(
+        paths,
+        environment,
+        None,
+        wineo_core::art::Kind::Grid,
+        PNG,
+        "grid.png",
+        Some(identity),
+    )
+    .unwrap_or_else(|error| panic!("{environment}: {error}"));
+    id
+}
+
+/// How many problems `validate` finds in `library.toml`'s keys and values.
+fn library_findings(report: &Value) -> usize {
+    problems(report)
+        .iter()
+        .filter(|(_, code, _)| code == "library_key_unknown" || code == "library_field_invalid")
+        .count()
+}
+
+#[test]
+fn the_first_art_write_gives_an_old_environment_an_id_without_touching_its_config() {
+    for name in sets() {
+        let set = Set::new(&name);
+        for root in ROOTS {
+            let paths = set.paths(root);
+            let findings = library_findings(&set.json(root, &["validate", "--json"]));
+            for environment in set.environments(root) {
+                let config = set
+                    .config_dir(root)
+                    .join("environments")
+                    .join(format!("{environment}.toml"));
+                let before = fs::read(&config).unwrap();
+                assert_eq!(
+                    library::load(&paths)
+                        .environments
+                        .get(&environment)
+                        .and_then(|entry| entry.id),
+                    None,
+                    "{name} {root} {environment}: an older wineo wrote an id"
+                );
+                let id = write_art(&paths, &environment);
+                assert_eq!(
+                    fs::read(&config).unwrap(),
+                    before,
+                    "{name} {root} {environment}"
+                );
+                assert_eq!(
+                    library::load(&paths).environments[&environment].id,
+                    Some(id),
+                    "{name} {root} {environment}"
+                );
+            }
+            // The id is this release's own key, so it adds no finding.
+            let report = set.json(root, &["validate", "--json"]);
+            assert_eq!(
+                library_findings(&report),
+                findings,
+                "{name} {root}: {report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_trash_entry_from_1_9_0_restores_and_its_first_art_write_gives_it_an_id() {
+    let set = Set::new("v1.9.0");
+    let paths = set.paths("portable");
+    let trash = set.portable().join("data/trash");
+    for dir in state_entries("v1.9.0", "trash", &trash, true) {
+        let id = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let manifest = top_level(&fs::read_to_string(dir.join("manifest.toml")).unwrap());
+        let environment = unquote(&manifest["name"]).to_owned();
+        set.run("portable", &["restore", &id]);
+        assert_eq!(
+            library::load(&paths)
+                .environments
+                .get(&environment)
+                .and_then(|entry| entry.id),
+            None,
+            "{environment}"
+        );
+        let minted = write_art(&paths, &environment);
+        assert_eq!(
+            library::load(&paths).environments[&environment].id,
+            Some(minted)
+        );
     }
 }

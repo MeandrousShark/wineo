@@ -1498,6 +1498,33 @@ fn a_batch_poster_is_stored_only_in_the_environment_it_was_registered_as() {
     }
 }
 
+#[test]
+fn a_batch_import_only_gives_an_old_environment_an_id_when_it_has_a_poster() {
+    let root = tempdir().unwrap();
+    let page = grid_page(root.path());
+    let posters = page.batch_posters();
+    let paths = page.paths.clone();
+    let name = "dusk";
+    let config = paths.environment_config(name);
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    assert_eq!(
+        super::work::store_heroic_poster(&paths, name, name, None),
+        None
+    );
+    assert!(!paths.library_file().exists());
+    assert_eq!(
+        super::work::store_heroic_poster(&paths, name, name, posters.get(name)),
+        None
+    );
+    assert!(paths.art_dir(name).join("grid.png").exists());
+    assert!(
+        wineo_core::library::load(&paths).environments[name]
+            .id
+            .is_some()
+    );
+}
+
 fn fake_proton(dir: &std::path::Path) {
     for program in ["proton", "files/bin/wine", "files/bin/wineserver"] {
         let file = dir.join(program);

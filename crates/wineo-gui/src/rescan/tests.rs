@@ -343,6 +343,86 @@ fn an_open_art_page_sees_icon_and_game_only_changes() {
     }
 }
 
+/// `art_app` for an environment from before ids, whose page holds the
+/// config's fingerprint.
+fn legacy_art_app() -> (tempfile::TempDir, App) {
+    let (root, mut app) = fixture();
+    native(&app.paths, "game");
+    let _ = app.update(Message::Loaded(library(&app.paths)));
+    let _ = app.update(Message::TrashBadgeLoaded(TrashBadge::read(&app.paths)));
+    app.selected = Some("game".into());
+    let _ = app.update(Message::OpenArt);
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    load_art(&mut app);
+    (root, app)
+}
+
+/// Applies a rescan, checking it doesn't reload the open Art page, then
+/// lets the page check its identity again, as its next event does.
+fn rescan_without_an_art_reload(app: &mut App) {
+    if let Some(changed) = app.shown.changes(rescan(app, false), now()) {
+        assert!(changed.art.is_none(), "the Art page would reload");
+        let _ = app.update(Message::Rescanned(Box::new(changed)));
+    }
+    let _ = app.update(Message::Loaded(library(&app.paths)));
+    load_art(app);
+}
+
+/// Saves the config through a new file, as every edit does.
+fn edit_config(paths: &Paths) {
+    let config = paths.environment_config("game");
+    let text = fs::read_to_string(&config).unwrap();
+    let staged = config.with_extension("saving");
+    fs::write(&staged, format!("# edited\n{text}")).unwrap();
+    fs::rename(&staged, &config).unwrap();
+}
+
+#[test]
+fn an_art_page_holding_an_id_stays_open_across_a_config_edit() {
+    let (_root, mut app) = art_app();
+    let held = app.art_pages["game"].identity;
+    assert!(held.id().is_some());
+    edit_config(&app.paths);
+    rescan_without_an_art_reload(&mut app);
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert_eq!(app.art_pages["game"].identity, held);
+}
+
+#[test]
+fn a_page_holding_a_fingerprint_stays_when_another_process_gives_its_environment_an_id() {
+    let (_root, mut app) = legacy_art_app();
+    let held = app.art_pages["game"].identity;
+    assert_eq!(held.id(), None);
+    let minted = art_page::EnvironmentIdentity::acquire(&app.paths, "game")
+        .unwrap()
+        .unwrap();
+    assert!(minted.id().is_some());
+    rescan_without_an_art_reload(&mut app);
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert_eq!(app.art_pages["game"].identity, held);
+}
+
+#[test]
+fn an_old_environments_art_page_never_writes_the_library() {
+    let (_root, mut app) = fixture();
+    native(&app.paths, "game");
+    // A legacy entry, which a mint would add an id to.
+    fs::write(
+        app.paths.library_file(),
+        "schema_version = 1\n[environments.game]\nfavorite = true\n",
+    )
+    .unwrap();
+    let before = fs::read(app.paths.library_file()).unwrap();
+    let _ = app.update(Message::Loaded(library(&app.paths)));
+    app.selected = Some("game".into());
+    let _ = app.update(Message::OpenArt);
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    load_art(&mut app);
+    rescan_without_an_art_reload(&mut app);
+    assert_eq!(app.art_pages["game"].identity.id(), None);
+    assert_eq!(fs::read(app.paths.library_file()).unwrap(), before);
+}
+
 #[test]
 fn a_recreated_environment_closes_its_art_page() {
     let (_root, mut app) = art_app();
