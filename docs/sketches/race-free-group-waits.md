@@ -1,6 +1,6 @@
 ---
-type: notes
-status: active
+type: proposal
+status: parked
 tags: [core]
 ---
 # Race-free process group waits

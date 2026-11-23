@@ -1,5 +1,5 @@
 ---
-type: notes
+type: proposal
 status: active
 tags: [imports, library]
 ---

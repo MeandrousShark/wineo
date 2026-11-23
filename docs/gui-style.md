@@ -1,5 +1,5 @@
 ---
-type: reference
+type: guide
 status: active
 tags: [gui, design]
 ---

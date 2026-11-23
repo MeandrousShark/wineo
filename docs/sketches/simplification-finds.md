@@ -1,5 +1,5 @@
 ---
-type: notes
+type: proposal
 status: done
 tags: [core, perf]
 ---

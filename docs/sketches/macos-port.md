@@ -1,6 +1,6 @@
 ---
-type: notes
-status: active
+type: proposal
+status: parked
 tags: [macos, runners]
 ---
 # macOS port
