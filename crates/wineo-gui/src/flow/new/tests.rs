@@ -4217,7 +4217,13 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
         &Token::new(),
         &move || Ok((Box::new(answers.clone()), "key".to_owned())),
     );
-    assert_eq!(result.art, Err(FetchError::Changed { id: true }));
+    assert_eq!(
+        result.art,
+        Err(FetchError::Changed {
+            env: "hades".into(),
+            id: true
+        })
+    );
     assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
     assert!(!paths.art_dir("hades").join("icon.png").exists());
 }
@@ -4277,11 +4283,18 @@ fn a_replacement_during_the_fetch_offers_only_skip() {
         drive(&mut page, task, true);
         assert_eq!(page.stage, Stage::Finished, "id {id}");
         let error = page.report.as_ref().unwrap().art_error.clone();
-        assert_eq!(error, Some(FetchError::Changed { id }));
+        assert_eq!(
+            error,
+            Some(FetchError::Changed {
+                env: "hades".into(),
+                id
+            })
+        );
         assert!(!paths.art_dir("hades").join("icon.png").exists(), "id {id}");
         assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
         let shown = finished_texts(&page);
-        let message = format!("Artwork: {}", crate::flow::artwork::changed_message(id));
+        let message =
+            crate::flow::artwork::changed_message("hades", id, crate::flow::artwork::NOT_STORED);
         assert!(shown.contains(&message), "id {id}: {shown:?}");
         assert!(
             !shown.contains(&"Retry artwork".to_owned()),
@@ -4332,12 +4345,20 @@ fn retry_reuses_the_identity_the_flow_holds() {
     page.fetcher = fetcher;
     let task = page.finish();
     drive(&mut page, task, true);
-    // Replaced between tries, so a Retry that read again would get another.
-    for _ in 0..2 {
-        wineo_core::test_support::replace_environment(&paths, "hollow-knight").unwrap();
-        let task = page.update(Event::RetryArt);
-        drive(&mut page, task, true);
-    }
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    // Replaced before the next try, so a Retry that read again would get
+    // another; with the one it holds, the failure is now "changed".
+    wineo_core::test_support::replace_environment(&paths, "hollow-knight").unwrap();
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::Changed {
+            env: "hollow-knight".into(),
+            id: true
+        })
+    );
     let seen: Vec<_> = calls
         .lock()
         .unwrap()
@@ -4349,7 +4370,17 @@ fn retry_reuses_the_identity_the_flow_holds() {
     // A flow whose creation handed over none keeps what its first fetch
     // took, so a Retry never acquires another.
     let (mut page, _) = registered(true);
-    let taken = EnvironmentIdentity::peek(&paths, "hollow-knight");
+    let paths = page.paths.clone();
+    let (_, taken) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hollow-knight",
+        None,
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     page.fetcher = Arc::new({
         let calls = calls.clone();
@@ -4369,7 +4400,7 @@ fn retry_reuses_the_identity_the_flow_holds() {
 }
 
 #[test]
-fn installer_then_target_then_art_lands_on_the_fingerprint_fallback() {
+fn target_then_art_lands_on_the_fingerprint_fallback() {
     let (mut page, _) = registered(true);
     page.draft.title = "Hades".to_owned();
     let paths = page.paths.clone();
@@ -4440,4 +4471,114 @@ fn a_config_edit_between_creation_and_the_art_lands_the_art() {
     let config = fs::read_to_string(paths.environment_config("hades")).unwrap();
     assert!(config.starts_with("# edited\n"), "the edit happened");
     assert!(paths.art_dir("hades").join("icon.png").exists());
+}
+
+/// A page on Target for `hades`, created on the fingerprint fallback (a
+/// library this release can't write), with a program to add and the
+/// production fetch over canned answers. Returns it with the identity
+/// creation handed back.
+fn on_target_on_the_fingerprint_fallback() -> (Page, EnvironmentIdentity) {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let created = created.unwrap();
+    assert_eq!(created.id(), None);
+    let report = page.report.as_mut().unwrap();
+    report.identity = Some(created);
+    report.offer_programs = true;
+    page.fetcher = canned_hades().fetcher();
+    let program = paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    (page, created)
+}
+
+#[test]
+fn a_replacement_during_the_target_stage_gets_no_target_and_the_art_step_reads_changed() {
+    let (mut page, created) = on_target_on_the_fingerprint_fallback();
+    let paths = page.paths.clone();
+    wineo_core::test_support::replace_environment(&paths, "hades").unwrap();
+    let before = fs::read(paths.environment_config("hades")).unwrap();
+    let task = page.update(Event::AddTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Target);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("`hades` changed. The target wasn't added.")
+    );
+    assert_eq!(fs::read(paths.environment_config("hades")).unwrap(), before);
+    assert_eq!(page.report.as_ref().unwrap().identity, Some(created));
+
+    let task = page.update(Event::SkipTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::Changed {
+            env: "hades".into(),
+            id: false
+        })
+    );
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+    let shown = finished_texts(&page);
+    assert!(!shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Skip artwork".to_owned()), "{shown:?}");
+}
+
+#[test]
+fn a_target_add_that_hands_back_no_identity_keeps_the_flows() {
+    let (mut page, created) = on_target_on_the_fingerprint_fallback();
+    page.stage = Stage::Working;
+    for result in [Err("gone".to_owned()), Ok(Vec::new())] {
+        page.stage = Stage::Working;
+        let _ = page.update(Event::TargetAdded(page.generation, result, None));
+        assert_eq!(page.report.as_ref().unwrap().identity, Some(created));
+    }
+}
+
+#[test]
+fn a_library_that_cant_be_read_says_so_and_offers_retry_in_the_new_flow() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        false,
+        |_| {},
+    )
+    .unwrap();
+    page.report.as_mut().unwrap().identity = created;
+    page.fetcher = canned_hades()
+        .on("/search/", {
+            let paths = paths.clone();
+            move || fs::write(paths.library_file(), "[broken\n").unwrap()
+        })
+        .fetcher();
+    let task = page.finish();
+    drive(&mut page, task, true);
+    let sentence = "library.toml can't be read. Artwork for `hades` wasn't stored.";
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::LibraryUnreadable(sentence.to_owned()))
+    );
+    let shown = finished_texts(&page);
+    assert!(shown.contains(&sentence.to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
 }

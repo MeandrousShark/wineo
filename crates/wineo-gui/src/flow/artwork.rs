@@ -453,51 +453,18 @@ impl Draft {
             .collect()
     }
 
-    /// Whether `apply` would write anything.
-    fn has_work(&self) -> bool {
-        self.local.values().any(|local| !local.path.is_empty())
-            || (self.fetch && self.selected.is_some() && !self.fetch_kinds().is_empty())
-    }
-
     /// Stores the draft's art in `name` while the environment is still the
     /// one `identity` names, the identity the flow's creation returned.
-    /// Without one, one is acquired, and only when there is something to
-    /// write, so a draft with nothing in it never gives an environment an
-    /// id.
+    /// Without one, one is acquired at the first write, after the local
+    /// files are resolved and decoded, so a draft with nothing it can write
+    /// never gives an environment an id.
     pub(crate) fn apply(
         &self,
         paths: &Paths,
         name: &str,
         identity: Option<EnvironmentIdentity>,
     ) -> Fetched {
-        if !self.has_work() {
-            return Fetched {
-                art: Ok(Vec::new()),
-                identity,
-                icon: false,
-            };
-        }
-        let identity = match identity {
-            Some(identity) => Ok(identity),
-            // A name core would refuse, or a missing environment, gets no
-            // identity, and that error for each kind.
-            None => EnvironmentIdentity::acquire_existing(paths, name).map_err(|e| e.to_string()),
-        };
-        self.apply_for(paths, name, identity)
-    }
-
-    /// `apply`, storing the art only while the environment is still the one
-    /// `identity` was read from. Without one, each kind fails with why there
-    /// is none.
-    fn apply_for(
-        &self,
-        paths: &Paths,
-        name: &str,
-        identity: Result<EnvironmentIdentity, String>,
-    ) -> Fetched {
-        let held_id = identity
-            .as_ref()
-            .is_ok_and(|identity| identity.id().is_some());
+        let mut held = identity.map(Ok);
         let mut notes = Vec::new();
         let mut failures = Vec::new();
         let mut icon = false;
@@ -506,17 +473,21 @@ impl Draft {
                 continue;
             }
             let could_not = |error: String| format!("Could not store {kind}: {error}");
-            let path = match resolve(Some(paths), &local.path) {
+            let path = match resolve(Some(paths), &local.path).and_then(|path| {
+                art::check_manual_file(&path, *kind)
+                    .map(|()| path)
+                    .map_err(|error| error.to_string())
+            }) {
                 Ok(path) => path,
                 Err(error) => {
                     failures.push(FetchError::Other(could_not(error)));
                     continue;
                 }
             };
-            let identity = match &identity {
-                Ok(identity) => *identity,
+            let identity = match take(&mut held, paths, name) {
+                Ok(identity) => identity,
                 Err(error) => {
-                    failures.push(FetchError::Other(could_not(error.clone())));
+                    failures.push(FetchError::Other(could_not(error)));
                     continue;
                 }
             };
@@ -534,7 +505,11 @@ impl Draft {
             };
             match stored {
                 Ok(_) => icon |= *kind == Kind::Icon,
-                Err(error) => failures.push(FetchError::from_core(error, held_id, could_not)),
+                Err(error) => failures.push(FetchError::from_core(
+                    error,
+                    identity.id().is_some(),
+                    could_not,
+                )),
             }
         }
         let kinds = self.fetch_kinds();
@@ -543,11 +518,11 @@ impl Draft {
             && !kinds.is_empty()
         {
             let failed = |error: String| format!("Art fetching failed: {error}");
-            let saved = match &identity {
-                Ok(identity) => art::save_game_for(paths, name, game.0.id, *identity, None)
-                    .map(|()| *identity)
-                    .map_err(|error| FetchError::from_core(error, held_id, failed)),
-                Err(error) => Err(FetchError::Other(failed(error.clone()))),
+            let saved = match take(&mut held, paths, name) {
+                Ok(identity) => art::save_game_for(paths, name, game.0.id, identity, None)
+                    .map(|()| identity)
+                    .map_err(|error| FetchError::from_core(error, identity.id().is_some(), failed)),
+                Err(error) => Err(FetchError::Other(failed(error))),
             };
             match saved {
                 Err(error) => failures.push(error),
@@ -579,7 +554,7 @@ impl Draft {
         }
         Fetched {
             art: FetchError::combine(failures).map_or(Ok(notes), Err),
-            identity: identity.ok(),
+            identity: held.and_then(Result::ok),
             icon,
         }
     }
@@ -884,6 +859,20 @@ fn outline(status: button::Status, selected: bool, palette: Palette) -> Color {
     }
 }
 
+/// The identity a write uses: the one held, or acquired on first need. A
+/// name core would refuse, or a missing environment, gets no identity, and
+/// that error each time.
+fn take(
+    held: &mut Option<Result<EnvironmentIdentity, String>>,
+    paths: &Paths,
+    name: &str,
+) -> Result<EnvironmentIdentity, String> {
+    held.get_or_insert_with(|| {
+        EnvironmentIdentity::acquire_existing(paths, name).map_err(|error| error.to_string())
+    })
+    .clone()
+}
+
 /// Largest decoded preview per kind, sized for where each kind is shown so
 /// the hero banner stays sharp while small tiles stay cheap.
 fn preview_bounds(kind: Kind) -> (u32, u32) {
@@ -1122,9 +1111,11 @@ pub(crate) fn fetch_default(
 /// replace so nothing reaches SteamGridDB.
 pub(crate) type Connect<'a> = &'a dyn Fn() -> Result<(Box<dyn Transport>, String), String>;
 
-/// `fetch_default` over `connect`. The identity is settled before the
-/// search: the flow's own, or when no creation step handed one over, one
-/// acquired here, once there are kinds to fetch.
+/// `fetch_default` over `connect`. The identity is the flow's own, or when
+/// no creation step handed one over, the one the environment shows before
+/// the search, upgraded to an id only once a game matched, so a fetch that
+/// writes nothing gives an environment from before ids none. Such an
+/// environment edited during the search is refused, as in the CLI.
 pub(crate) fn fetch_default_over(
     paths: &Paths,
     name: &str,
@@ -1157,50 +1148,87 @@ pub(crate) fn fetch_default_over(
             wineo_core::error::Error::Canceled("artwork").to_string(),
         )));
     }
-    let identity = match identity {
-        Some(identity) => identity,
-        None => match EnvironmentIdentity::acquire_existing(paths, name) {
-            Ok(identity) => identity,
-            Err(error) => return unwritten(Err(FetchError::Other(error.to_string()))),
+    let (held, owned) = match identity {
+        Some(identity) => (identity, true),
+        None => match EnvironmentIdentity::peek(paths, name) {
+            Some(identity) => (identity, false),
+            None => {
+                let error = match wineo_core::environment::Environment::ensure_exists(paths, name) {
+                    Err(error) => error,
+                    Ok(()) => wineo_core::Error::UnknownEnvironment(name.to_owned()),
+                };
+                return unwritten(Err(FetchError::Other(error.to_string())));
+            }
         },
     };
-    let held = |art, icon| Fetched {
+    // Until it is upgraded, a peeked fingerprint isn't the flow's to keep,
+    // so a Retry looks again rather than holding one nothing was written
+    // with.
+    let kept = (owned || held.id().is_some()).then_some(held);
+    let unmatched = |art| Fetched {
         art,
-        identity: Some(identity),
-        icon,
+        identity: kept,
+        icon: false,
     };
     let (transport, key) = match connect() {
         Ok(connected) => connected,
-        Err(error) => return held(Err(FetchError::Other(error)), false),
+        Err(error) => return unmatched(Err(FetchError::Other(error))),
     };
     let api = Api::new(&*transport, &key);
-    match api.search(title).map(|games| games.into_iter().next()) {
-        Err(error) => held(Err(FetchError::Other(error.to_string())), false),
-        Ok(Some(game)) => {
-            let (fetched, icon) = fetch_with((paths, name), &api, &game, &kinds, identity, token);
-            held(
-                fetched.map(|more| {
-                    notes.extend(more);
-                    notes
-                }),
-                icon,
-            )
-        }
+    let game = match api.search(title).map(|games| games.into_iter().next()) {
+        Err(error) => return unmatched(Err(FetchError::Other(error.to_string()))),
         Ok(None) => {
             notes.push(format!("No artwork match for {title}"));
-            held(Ok(notes), false)
+            return unmatched(Ok(notes));
         }
+        Ok(Some(game)) => game,
+    };
+    if token.is_canceled() {
+        return unmatched(Err(FetchError::Other(
+            wineo_core::error::Error::Canceled("artwork").to_string(),
+        )));
+    }
+    let identity = if owned {
+        held
+    } else {
+        match held.upgrade(paths, name) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return unmatched(Err(FetchError::from_core(
+                    error,
+                    held.id().is_some(),
+                    |e| e,
+                )));
+            }
+        }
+    };
+    let (fetched, icon) = fetch_with((paths, name), &api, &game, &kinds, identity, token);
+    Fetched {
+        art: fetched.map(|more| {
+            notes.extend(more);
+            notes
+        }),
+        identity: Some(identity),
+        icon,
     }
 }
 
-/// What a flow says when its art wasn't stored because its environment is
-/// no longer the one it holds: replaced, for an id, or changed, for the
-/// fingerprint kept when the environment has no id.
-pub(crate) fn changed_message(id: bool) -> &'static str {
+/// What wasn't done to the art because its environment is no longer the
+/// one the operation holds.
+pub(crate) const NOT_STORED: &str = "Artwork wasn't stored.";
+pub(crate) const NOT_REMOVED: &str = "Artwork wasn't removed.";
+/// For the new-environment flow's Target stage, which saves the config.
+pub(crate) const TARGET_NOT_ADDED: &str = "The target wasn't added.";
+
+/// What the flows and the Art page say when `name` is no longer the
+/// environment they hold: replaced, for an id, or changed, for the
+/// fingerprint kept when the environment has no id. `outcome` says what
+/// wasn't done, like `NOT_STORED`.
+pub(crate) fn changed_message(name: &str, id: bool, outcome: &str) -> String {
     if id {
-        "Artwork wasn't stored because the environment was replaced."
+        format!("`{name}` was replaced. {outcome}")
     } else {
-        "Artwork wasn't stored because the environment changed."
+        format!("`{name}` changed. {outcome}")
     }
 }
 
@@ -1218,6 +1246,7 @@ pub(crate) enum FetchError {
     /// id rather than the fingerprint. Retrying with the same identity can
     /// only fail again, so only Skip is offered.
     Changed {
+        env: String,
         id: bool,
     },
     /// `library.toml` can't be read: its sentence, then any other failures.
@@ -1228,6 +1257,21 @@ pub(crate) enum FetchError {
 impl FetchError {
     pub(crate) fn is_changed(&self) -> bool {
         matches!(self, Self::Changed { .. })
+    }
+
+    /// The failure as a note, with "Artwork: " in front unless it already
+    /// names the environment and its artwork.
+    pub(crate) fn note(&self) -> String {
+        match self {
+            Self::Other(error) => format!("Artwork: {error}"),
+            error => error.to_string(),
+        }
+    }
+
+    /// Whether the message names the environment itself, so a note listing
+    /// several needs no name in front.
+    pub(crate) fn names_environment(&self) -> bool {
+        !matches!(self, Self::Other(_))
     }
 
     /// Sorts a failed write by core's error, with `describe` wording any
@@ -1241,7 +1285,10 @@ impl FetchError {
             .chain()
             .find_map(|cause| cause.downcast_ref::<wineo_core::Error>())
         {
-            Some(wineo_core::Error::ArtEnvironmentChanged(_)) => Self::Changed { id: held_id },
+            Some(wineo_core::Error::ArtEnvironmentChanged(env)) => Self::Changed {
+                env: env.clone(),
+                id: held_id,
+            },
             Some(unreadable @ wineo_core::Error::ArtLibraryUnreadable { .. }) => {
                 Self::LibraryUnreadable(unreadable.to_string())
             }
@@ -1314,7 +1361,7 @@ impl FetchError {
 impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Changed { id } => f.write_str(changed_message(*id)),
+            Self::Changed { env, id } => f.write_str(&changed_message(env, *id, NOT_STORED)),
             Self::LibraryUnreadable(message) | Self::Other(message) => f.write_str(message),
         }
     }
@@ -1456,38 +1503,67 @@ pub(crate) fn fetch_art_parts(
     fetcher: &Fetcher,
 ) -> FetchParts {
     let fetched = fetcher(paths, name, title, identity, token);
-    let parts = |entries| FetchParts {
-        art: fetched.art.clone(),
+    let parts = |art, entries| FetchParts {
+        art,
         entries,
         identity: fetched.identity,
     };
     // Skipped, so nothing more is written; a later launch refreshes the entry.
     if fetched.art.is_err() && token.is_canceled() {
-        return parts(Ok(()));
+        return parts(fetched.art.clone(), Ok(()));
     }
     // A replacement environment's entries are not this fetch's to touch.
     if fetched.art.as_ref().is_err_and(FetchError::is_changed) {
-        return parts(Ok(()));
+        return parts(fetched.art.clone(), Ok(()));
     }
-    match fetched.identity.map(|held| held.is_current(paths, name)) {
-        None | Some(Currency::Current) => {}
-        Some(Currency::Changed) => return parts(Ok(())),
-        // Said only when the entries would have shown a new icon, and never
-        // for a portable root, which has none.
-        Some(Currency::LibraryUnreadable) => {
-            let said = fetched.icon && desktop::supported(paths).is_ok();
-            return parts(if said {
-                Err(EntriesError::LibraryUnreadable(entries_unreadable(name)))
-            } else {
-                Ok(())
-            });
-        }
+    let currency = fetched.identity.map(|held| held.is_current(paths, name));
+    // A failure of any kind in an environment replaced since is that
+    // replacement, so Retry can't help and Skip must leave its entries.
+    if fetched.art.is_err()
+        && currency == Some(Currency::Changed)
+        && let Some(held) = fetched.identity
+    {
+        let changed = FetchError::Changed {
+            env: name.to_owned(),
+            id: held.id().is_some(),
+        };
+        return parts(Err(changed), Ok(()));
     }
-    parts(
-        desktop::apply(paths, name, false)
+    let entries = entries_for(paths, name, currency, fetched.icon);
+    parts(fetched.art.clone(), entries)
+}
+
+/// Brings `name`'s desktop entries in line, only while it is still the
+/// environment `identity` names. A replacement's are left alone without a
+/// word; when `library.toml` can't be read, nothing is written and, if
+/// `say` (an icon changed) and the root isn't portable, the entries
+/// sentence is the error. With no identity they are refreshed as before.
+pub(crate) fn refresh_entries(
+    paths: &Paths,
+    name: &str,
+    identity: Option<EnvironmentIdentity>,
+    say: bool,
+) -> Result<(), EntriesError> {
+    let currency = identity.map(|held| held.is_current(paths, name));
+    entries_for(paths, name, currency, say)
+}
+
+fn entries_for(
+    paths: &Paths,
+    name: &str,
+    currency: Option<Currency>,
+    say: bool,
+) -> Result<(), EntriesError> {
+    match currency {
+        None | Some(Currency::Current) => desktop::apply(paths, name, false)
             .map(|_| ())
             .map_err(|error| EntriesError::Failed(error.to_string())),
-    )
+        Some(Currency::Changed) => Ok(()),
+        Some(Currency::LibraryUnreadable) if say && desktop::supported(paths).is_ok() => {
+            Err(EntriesError::LibraryUnreadable(entries_unreadable(name)))
+        }
+        Some(Currency::LibraryUnreadable) => Ok(()),
+    }
 }
 
 /// `fetch_art_parts` as one result, for a page that shows a single error.

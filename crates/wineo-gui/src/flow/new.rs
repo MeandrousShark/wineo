@@ -27,7 +27,9 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
-use super::artwork::{ArtOffer, FetchError, Fetcher, default_fetcher, fetch_art};
+use super::artwork::{
+    ArtOffer, FetchError, Fetcher, TARGET_NOT_ADDED, changed_message, default_fetcher, fetch_art,
+};
 use super::{Action, frame};
 use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
@@ -1138,6 +1140,13 @@ impl Page {
         desktop: bool,
         identity: &mut Option<EnvironmentIdentity>,
     ) -> Result<Vec<String>, String> {
+        // A target is never added to a replacement, and the flow keeps what
+        // it held, so its art step reads "changed" too.
+        if let Some(held) = *identity
+            && held.is_current(paths, name).is_changed()
+        {
+            return Err(changed_message(name, held.id().is_some(), TARGET_NOT_ADDED));
+        }
         let environment = Environment::load(paths, name).map_err(|e| e.to_string())?;
         let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
         if let Some(wine) = environment.config.wine() {
@@ -1161,7 +1170,11 @@ impl Page {
                 return Err("Targets changed on disk. Open Settings and review them.".to_owned());
             }
         }
-        *identity = identity.and_then(|identity| identity.after_own_write(paths, name));
+        // Gone since the write, it keeps the one it had, which then reads
+        // "changed" rather than being acquired again.
+        if let Some(retaken) = identity.and_then(|held| held.after_own_write(paths, name)) {
+            *identity = Some(retaken);
+        }
         let environment = Environment::load(paths, name).map_err(|e| e.to_string())?;
         let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
         let note = if let Some(wine) = environment.config.wine() {
@@ -1459,7 +1472,9 @@ impl Page {
             Event::TargetAdded(generation, result, identity)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
-                if let Some(report) = &mut self.report {
+                if let Some(report) = &mut self.report
+                    && identity.is_some()
+                {
                     report.identity = identity;
                 }
                 match result {
@@ -2109,7 +2124,7 @@ impl Page {
                         );
                     }
                     if let Some(error) = &report.art_error {
-                        body = body.push(text(format!("Artwork: {error}")).color(palette.warning));
+                        body = body.push(text(error.note()).color(palette.warning));
                         // Retrying with the same identity can only fail again.
                         if !error.is_changed() {
                             body = body.push(

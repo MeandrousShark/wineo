@@ -31,9 +31,11 @@ use crate::focus_button::ListRows;
 use crate::runner_label::{self, Choice};
 use crate::task;
 use crate::theme::Palette;
+#[cfg(test)]
+use work::store_heroic_poster;
 use work::{
-    BatchPoster, CopyProgress, apply_game, batch_options, finish_batch_entries, heroic_id,
-    hook_paths, import_status, plan_review, prepare_game, quote_args, refresh, store_heroic_poster,
+    BatchPoster, CopyProgress, apply_game, batch_options, finish_batch_game, finish_entries,
+    heroic_id, hook_paths, import_status, plan_review, prepare_game, quote_args, refresh,
 };
 pub(super) use work::{
     Prerequisite, install_prerequisite, playtime_note, review_warnings, runner_choices, suggest,
@@ -47,7 +49,7 @@ fn art_notes(fetched: Result<Vec<String>, artwork::FetchError>, token: &Token) -
     match fetched {
         Ok(notes) => notes,
         Err(_) if token.is_canceled() => vec!["Artwork canceled".to_owned()],
-        Err(error) => vec![format!("Artwork: {error}")],
+        Err(error) => vec![error.note()],
     }
 }
 
@@ -1121,32 +1123,23 @@ impl Page {
                                 if let Some(note) = playtime_note(&registered.playtime) {
                                     notes.push(note);
                                 }
-                                let _ = sender.unbounded_send(status(Some("adding artwork")));
+                                let fetch = |identity| {
+                                    artwork::fetch_default(
+                                        &paths, &name, &title, identity, &https, &token,
+                                    )
+                                };
                                 let app = heroic_id(&game);
-                                let identity = registered.identity;
-                                notes.extend(store_heroic_poster(
-                                    &paths,
-                                    &name,
-                                    app,
-                                    posters.get(app),
-                                    identity,
-                                ));
-                                if fetch_batch_art {
-                                    notes.extend(art_notes(
-                                        artwork::fetch_default(
-                                            &paths, &name, &title, identity, &https, &token,
-                                        )
-                                        .art,
-                                        &token,
-                                    ));
-                                }
-                                let _ = sender
-                                    .unbounded_send(status(Some("finalizing desktop entries")));
-                                notes.extend(finish_batch_entries(
+                                notes.extend(finish_batch_game(
                                     &paths,
                                     &global,
-                                    &name,
+                                    (&name, app),
+                                    posters.get(app),
                                     &registered,
+                                    fetch_batch_art.then_some(&fetch as &dyn Fn(_) -> _),
+                                    &token,
+                                    |phase| {
+                                        let _ = sender.unbounded_send(status(Some(phase)));
+                                    },
                                 ));
                                 Ok::<_, anyhow::Error>(notes)
                             })()
@@ -1178,18 +1171,21 @@ impl Page {
         let paths = self.paths.clone();
         let generation = self.next_generation();
         self.status = "Finalizing desktop entries...".to_owned();
+        let identity = self.art_identity;
         task::blocking(
             move || {
                 let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                registered
-                    .finish(&paths, &global)
-                    .map(|changes| {
-                        changes
-                            .into_iter()
-                            .map(|change| crate::settings::desktop_line(&change))
-                            .collect()
-                    })
-                    .map_err(|e| e.to_string())
+                let name = &registered.environment.name;
+                match finish_entries(&paths, &global, name, &registered, identity) {
+                    Ok(changes) => Ok(changes
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|change| crate::settings::desktop_line(&change))
+                        .collect()),
+                    // A note, since the import itself is done.
+                    Err(artwork::EntriesError::LibraryUnreadable(sentence)) => Ok(vec![sentence]),
+                    Err(artwork::EntriesError::Failed(error)) => Err(error),
+                }
             },
             move |result| Event::FinishedRegistered(generation, result),
         )

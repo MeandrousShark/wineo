@@ -142,8 +142,10 @@ impl Page {
                 Task::none()
             }
             Err(artwork::FetchError::LibraryUnreadable(error)) => {
+                // Other kinds' lines may follow the library's sentence.
+                let end = if error.ends_with('.') { "" } else { "." };
                 self.error = Some(format!(
-                    "{error} The environment is registered. Retry or skip artwork."
+                    "{error}{end} The environment is registered. Retry or skip artwork."
                 ));
                 self.finish_art()
             }

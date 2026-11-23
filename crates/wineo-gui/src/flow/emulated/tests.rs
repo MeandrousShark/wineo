@@ -1593,7 +1593,10 @@ fn each_games_art_is_fetched_with_the_identity_its_import_returned() {
         move |_: &Paths, _: &str, _: &str, identity: Option<EnvironmentIdentity>, _: &Token| {
             seen.lock().unwrap().push(identity);
             crate::flow::artwork::Fetched::answer(
-                Err(crate::flow::artwork::FetchError::Changed { id: true }),
+                Err(crate::flow::artwork::FetchError::Changed {
+                    env: "zelda".into(),
+                    id: true,
+                }),
                 identity,
             )
         },
@@ -1611,9 +1614,6 @@ fn each_games_art_is_fetched_with_the_identity_its_import_returned() {
     assert_eq!(handed[0].and_then(|identity| identity.id()), id);
     assert_eq!(
         page.report.as_ref().unwrap().warnings,
-        [format!(
-            "zelda: Artwork: {}",
-            crate::flow::artwork::changed_message(true)
-        )]
+        ["`zelda` was replaced. Artwork wasn't stored."]
     );
 }
