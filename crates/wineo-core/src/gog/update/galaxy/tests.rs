@@ -454,6 +454,16 @@ fn assert_installed(fx: &Fixture) {
 }
 
 #[test]
+fn a_galaxy_install_returns_the_new_environments_id() {
+    let fx = Fixture::new();
+    fx.content.add_build(Fixture::game("100"));
+    let installed = fx.install();
+    let id = installed.identity.and_then(|identity| identity.id());
+    assert!(id.is_some());
+    assert_eq!(id, crate::library::load(&fx.paths).environments["game"].id);
+}
+
+#[test]
 fn a_galaxy_install_downloads_every_file_and_commits() {
     let fx = Fixture::new();
     fx.content.add_build(Fixture::game("100"));

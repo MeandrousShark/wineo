@@ -1086,3 +1086,45 @@ fn after_install_offers_programs_once_wine_has_settled_whatever_the_exit_code() 
         assert_eq!(after_install(&outcome, resolved), next, "{outcome:?}");
     }
 }
+
+#[test]
+fn creation_returns_its_new_id_or_a_fingerprint_taken_after_its_target() {
+    use crate::environment::Currency;
+    for broken in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fake_runner(&paths, "fake");
+        if broken {
+            fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+            fs::write(paths.library_file(), "[broken\n").unwrap();
+        }
+        let exe = root.path().join("game.exe");
+        fs::write(&exe, "").unwrap();
+        let mut request = request("game");
+        request.exe = Some(exe.display().to_string());
+        let created = apply(
+            &paths,
+            plan(&paths, request).unwrap(),
+            &Token::new(),
+            |event| {
+                if let CreateEvent::BuildingPrefix { dir, .. } = event {
+                    fs::write(dir.join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(created.target, TargetOutcome::Added);
+        let identity = created.identity.unwrap();
+        if broken {
+            // Taken after the target's write, so it is still current.
+            assert_eq!(identity.id(), None);
+            assert_eq!(identity.is_current(&paths, "game"), Currency::Current);
+        } else {
+            assert!(identity.id().is_some());
+            assert_eq!(
+                identity.id(),
+                crate::library::load(&paths).environments["game"].id
+            );
+        }
+    }
+}

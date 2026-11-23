@@ -448,6 +448,59 @@ fn an_environment_replaced_while_fetching_gets_no_playtime() {
 }
 
 #[test]
+fn an_environment_edited_while_fetching_still_gets_its_playtime_and_art() {
+    let fixture = Fixture::new();
+    fixture.login();
+    let config = fixture.paths.environment_config("rimworld");
+    let art = art_body(&[]);
+    let server = Scripted::start(move |line| {
+        if line.contains("/sessions") {
+            // Saved through a new file, as every edit is.
+            let next = config.with_extension("next");
+            let text = fs::read_to_string(&config).unwrap();
+            fs::write(&next, format!("# edited\n{text}")).unwrap();
+            fs::rename(&next, &config).unwrap();
+        }
+        gog(Some(30), art.clone())(line)
+    });
+    let mut session = fixture.session(&server.base);
+    let report = go(&fixture, Some(&mut session), &server, &images(), &ALL).unwrap();
+    assert_eq!(report.notes, Vec::<String>::new());
+    assert_eq!(report.playtime.unwrap().after_seconds, 1800);
+    assert_eq!(fixture.imported().unwrap().seconds, 1800);
+    assert_eq!(report.art.len(), 4, "{:?}", report.art);
+}
+
+#[test]
+fn nothing_to_write_gives_an_old_environment_no_id() {
+    let fixture = Fixture::new();
+    let server = Scripted::start(gog(Some(30), art_body(&[])));
+    let report = go(
+        &fixture,
+        None,
+        &server,
+        &images(),
+        &Options {
+            kinds: &[],
+            key: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        report.notes,
+        ["Skipped GOG playtime: not logged in to GOG."]
+    );
+    assert!(!fixture.paths.library_file().exists());
+    // With something to write, it gets one.
+    go(&fixture, None, &server, &images(), &ALL).unwrap();
+    assert!(
+        crate::library::load(&fixture.paths).environments["rimworld"]
+            .id
+            .is_some()
+    );
+}
+
+#[test]
 fn gog_art_fills_every_empty_kind_recorded_with_source_gog() {
     let fixture = Fixture::new();
     let server = Scripted::start(gog(None, art_body(&[])));

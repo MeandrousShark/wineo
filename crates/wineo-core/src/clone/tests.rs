@@ -485,3 +485,29 @@ fn a_native_clone_keeps_emulation_so_it_counts_as_the_same_rom() {
     let text = fs::read_to_string(paths.environment_config("prime-copy")).unwrap();
     assert!(text.contains(emulation), "{text}");
 }
+
+#[test]
+fn a_clone_gets_an_id_of_its_own() {
+    let root = tempfile::tempdir().unwrap();
+    let (paths, _, _) = setup(root.path(), false);
+    let source = crate::environment::EnvironmentIdentity::acquire(&paths, "source")
+        .unwrap()
+        .unwrap()
+        .id()
+        .unwrap();
+    let review = inspect(&paths, &GlobalConfig::default(), "source", "copy", None).unwrap();
+    execute_reviewed(
+        &paths,
+        &GlobalConfig::default(),
+        &review,
+        &Token::new(),
+        |_| {},
+    )
+    .unwrap();
+    let library = crate::library::load(&paths);
+    let copy = library.environments["copy"]
+        .id
+        .expect("the clone has an id");
+    assert_ne!(copy, source);
+    assert_eq!(library.environments["source"].id, Some(source));
+}

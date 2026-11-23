@@ -2507,3 +2507,76 @@ fn list_column_edits_work_in_an_inline_list_columns_table() {
         fixture.read()
     );
 }
+
+const ID: &str = "3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5";
+
+#[test]
+fn an_id_reads_back_and_anything_malformed_reads_as_none() {
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[environments.good]\nid = \"{ID}\"\n[environments.short]\nid = \"3f9c\"\n[environments.upper]\nid = \"{}\"\n[environments.number]\nid = 5\n",
+        ID.to_uppercase()
+    ));
+    let library = load(&fixture.paths);
+    assert_eq!(library.environments["good"].id, Id::parse(ID));
+    assert!(library.environments["good"].id.is_some());
+    for name in ["short", "upper", "number"] {
+        assert_eq!(library.environments[name].id, None, "{name}");
+    }
+}
+
+#[test]
+fn put_writes_an_id_only_when_there_is_one_and_replaces_a_malformed_one() {
+    let fixture = Fixture::new();
+    let plain = Entry {
+        favorite: true,
+        ..Entry::default()
+    };
+    let with_id = Entry {
+        id: Id::parse(ID),
+        ..plain.clone()
+    };
+    assert!(put(&fixture.paths, "game", Some(&plain)).unwrap());
+    assert!(!fixture.read().contains("id ="), "{}", fixture.read());
+    assert!(put(&fixture.paths, "game", Some(&with_id)).unwrap());
+    assert!(fixture.read().contains(&format!("id = \"{ID}\"")));
+    assert_eq!(load(&fixture.paths).environments["game"], with_id);
+    assert!(!put(&fixture.paths, "game", Some(&with_id)).unwrap());
+
+    // An entry without the id it should have, or with a stale one, is
+    // replaced too.
+    assert!(put(&fixture.paths, "game", Some(&plain)).unwrap());
+    assert!(!fixture.read().contains("id ="), "{}", fixture.read());
+    for bad in ["\"bad\"", "5", "\"00000000000000000000000000000001\""] {
+        fixture.write(&format!(
+            "schema_version = 1\n[environments.game]\nfavorite = true\nid = {bad}\n"
+        ));
+        assert!(
+            put(&fixture.paths, "game", Some(&with_id)).unwrap(),
+            "{bad}"
+        );
+        assert_eq!(load(&fixture.paths).environments["game"], with_id, "{bad}");
+    }
+}
+
+#[test]
+fn a_saved_entry_keeps_its_id_and_reads_a_malformed_one_as_none() {
+    let with_id = Entry {
+        hidden: true,
+        id: Id::parse(ID),
+        ..Entry::default()
+    };
+    let text = toml::to_string(&with_id).unwrap();
+    assert!(text.contains(&format!("id = \"{ID}\"")), "{text}");
+    assert_eq!(toml::from_str::<Entry>(&text).unwrap(), with_id);
+    let without = Entry {
+        hidden: true,
+        ..Entry::default()
+    };
+    assert!(!toml::to_string(&without).unwrap().contains("id ="));
+    for bad in ["\"bad\"", "5", "[1, 2]"] {
+        let entry: Entry = toml::from_str(&format!("hidden = true\nid = {bad}\n"))
+            .unwrap_or_else(|error| panic!("{bad}: {error}"));
+        assert_eq!(entry, without, "{bad}");
+    }
+}

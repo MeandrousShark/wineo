@@ -523,3 +523,17 @@ fn a_failed_stamp_over_a_stale_entry_returns_the_fingerprint_not_the_stale_id() 
     );
     assert_eq!(library::load(&paths).environments["other"].id, Some(stale));
 }
+
+#[test]
+fn trash_and_restore_keep_the_id() {
+    let (_root, paths) = legacy();
+    let identity = EnvironmentIdentity::acquire(&paths, "game")
+        .unwrap()
+        .unwrap();
+    assert!(identity.id().is_some());
+    let entry = crate::trash::remove(&paths, "game", false).unwrap();
+    assert_eq!(identity.is_current(&paths, "game"), Currency::Changed);
+    assert!(crate::trash::restore(&paths, &entry.id).unwrap().is_empty());
+    assert_eq!(identity.is_current(&paths, "game"), Currency::Current);
+    store(&paths, identity).unwrap();
+}
