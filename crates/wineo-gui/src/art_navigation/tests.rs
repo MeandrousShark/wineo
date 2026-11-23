@@ -181,7 +181,15 @@ fn browse_completion_refreshes_the_card_and_evicts_old_art_cache() {
     let (root, mut app) = fixture();
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(2, 3).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     app.merge(crate::library::load_library(&app.paths).unwrap());
     let old = app
         .cards
@@ -334,7 +342,15 @@ fn refresh_reloads_open_art_after_an_external_art_change() {
     let generation = app.art_pages["game"].generation;
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(10, 15).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     fs::write(
         app.paths.environment_config("game"),
         "schema_version = 1\nkind = 'native'\n[targets.fresh]\nexe = 'notepad'\n",
@@ -392,7 +408,15 @@ fn late_lookup_and_preview_results_after_close_are_dropped() {
     let (root, mut app) = fixture();
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(10, 15).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     art::save_game(&app.paths, "game", 77).unwrap();
 
     let _ = app.update(Message::ContextArt("game".into()));
@@ -599,7 +623,15 @@ fn closing_during_picker_use_cancels_and_waits_even_after_leaving() {
     let (root, mut app) = fixture();
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(2, 3).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     let before = fs::read(app.paths.art_dir("game").join("grid.png")).unwrap();
     let (generation, visit, token) = start_picker_use(&mut app);
     let _ = app.update(Message::Section(sidebar::Section::Trash));

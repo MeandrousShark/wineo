@@ -156,14 +156,15 @@ fn review_art<I: Input, W: Write>(
     Ok(ArtChoice::checked(check, title))
 }
 
-/// Fetches art for a registered import. Callers run it before the desktop
+/// Fetches art for a registered import, into the environment its
+/// registration returned the identity of. Callers run it before the desktop
 /// reconcile, so the entry has the art icon from the start. Only a canceled
 /// pick list is an error.
 fn fetch_art<I: Input, W: Write>(
     paths: &Paths,
     global: &GlobalConfig,
     access: &Access,
-    env: &str,
+    registered: &Registered,
     art: &ArtChoice,
     pick: Pick<I, W>,
     err: &mut dyn Write,
@@ -172,11 +173,11 @@ fn fetch_art<I: Input, W: Write>(
         return Ok(());
     };
     let request = AutoFetch {
-        env,
+        env: &registered.environment.name,
         term: &art.term,
         kinds: global.art.fetch,
     };
-    access.fetch(paths, key, &request, pick, err)
+    access.fetch(paths, key, &request, registered.identity, pick, err)
 }
 
 pub fn run(
@@ -309,7 +310,7 @@ fn run_with_access(
             paths,
             &global,
             access,
-            &environment.name,
+            &registered,
             &art,
             pick,
             &mut crate::output::stderr(),
@@ -600,7 +601,7 @@ fn guided<I: Input, W: Write>(
         paths,
         global,
         access,
-        &environment.name,
+        &registered,
         &art,
         Pick::Ask(prompt),
         &mut crate::output::stderr(),

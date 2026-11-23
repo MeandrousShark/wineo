@@ -1606,7 +1606,7 @@ fn restoring_a_snapshot_keeps_the_environments_id_current() {
         crate::art::Kind::Grid,
         b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
         "grid.png",
-        Some(identity),
+        identity,
     )
     .unwrap();
 }

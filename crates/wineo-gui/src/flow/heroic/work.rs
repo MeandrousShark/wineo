@@ -428,33 +428,51 @@ pub(super) fn store_heroic_poster(
     app: &str,
     poster: Option<&BatchPoster>,
 ) -> Option<String> {
+    let poster = poster.filter(|poster| decodes(paths, poster))?;
     // Only with a poster to store, so an import with none never gives the
-    // environment an id. A name core would refuse gets no identity, and
-    // core's own error.
-    let identity = poster.and_then(|_| EnvironmentIdentity::acquire(paths, name).ok().flatten());
-    store_heroic_poster_for(paths, name, app, poster, identity)
+    // environment an id. A name core would refuse, or a missing
+    // environment, gets that error.
+    match EnvironmentIdentity::acquire_existing(paths, name) {
+        Ok(identity) => store_decoded_poster(paths, name, app, poster, identity),
+        Err(error) => Some(poster_failed(error)),
+    }
 }
 
 /// `store_heroic_poster`, stored only while the environment is still the one
 /// `identity` was read from, which is checked under the art lock.
+#[cfg(test)]
 pub(super) fn store_heroic_poster_for(
     paths: &Paths,
     name: &str,
     app: &str,
     poster: Option<&BatchPoster>,
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
 ) -> Option<String> {
-    let poster = poster?;
-    // Core only checks the signature, so the image has to decode first.
-    if !poster.decoded
-        && !posters::decode_waiting(&poster.path, &paths.art_cache_dir(), None)
+    let poster = poster.filter(|poster| decodes(paths, poster))?;
+    store_decoded_poster(paths, name, app, poster, identity)
+}
+
+/// Whether the poster decodes, since core only checks the signature.
+fn decodes(paths: &Paths, poster: &BatchPoster) -> bool {
+    poster.decoded
+        || posters::decode_waiting(&poster.path, &paths.art_cache_dir(), None)
             .is_some_and(|decoded| decoded.is_ok())
-    {
-        return None;
-    }
+}
+
+fn store_decoded_poster(
+    paths: &Paths,
+    name: &str,
+    app: &str,
+    poster: &BatchPoster,
+    identity: EnvironmentIdentity,
+) -> Option<String> {
     heroic_import::store_poster(paths, name, app, &poster.path, identity)
         .err()
-        .map(|error| format!("Heroic poster: {error}"))
+        .map(poster_failed)
+}
+
+fn poster_failed(error: impl std::fmt::Display) -> String {
+    format!("Heroic poster: {error}")
 }
 
 /// How often copy progress reaches the UI. Core reports every copied file,

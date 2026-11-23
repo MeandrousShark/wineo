@@ -441,19 +441,21 @@ impl Draft {
     }
 
     pub(crate) fn apply(&self, paths: &Paths, name: &str) -> Result<Vec<String>, String> {
-        // A name core would refuse gets no identity, and core's own error
-        // for each kind.
-        let identity = EnvironmentIdentity::acquire(paths, name).ok().flatten();
+        // A name core would refuse, or a missing environment, gets no
+        // identity, and that error for each kind.
+        let identity =
+            EnvironmentIdentity::acquire_existing(paths, name).map_err(|e| e.to_string());
         self.apply_for(paths, name, identity)
     }
 
     /// `apply`, storing the fetched art only while the environment is still
-    /// the one `identity` was read from.
+    /// the one `identity` was read from. Without one, each kind fails with
+    /// why there is none.
     fn apply_for(
         &self,
         paths: &Paths,
         name: &str,
-        identity: Option<EnvironmentIdentity>,
+        identity: Result<EnvironmentIdentity, String>,
     ) -> Result<Vec<String>, String> {
         let mut notes = Vec::new();
         let mut failures = Vec::new();
@@ -462,6 +464,7 @@ impl Draft {
                 continue;
             }
             let result = resolve(Some(paths), &local.path).and_then(|path| {
+                let identity = identity.clone()?;
                 match &local.prefilled {
                     Some(prefilled) => art::set_manual_as(
                         paths,
@@ -494,28 +497,36 @@ impl Draft {
                 })
                 .collect();
             if !kinds.is_empty() {
-                if let Err(error) = art::save_game_for(paths, name, game.0.id, identity, None) {
-                    failures.push(format!("Art fetching failed: {error}"));
-                } else {
-                    let missing = self.publish_held(
-                        paths,
-                        name,
-                        &game.0,
-                        &kinds,
-                        identity,
-                        (&mut notes, &mut failures),
-                    );
-                    if !missing.is_empty() {
-                        let fetched = fetch(
-                            (paths, name),
+                let saved = identity.clone().and_then(|identity| {
+                    art::save_game_for(paths, name, game.0.id, identity, None)
+                        .map(|()| identity)
+                        .map_err(|e| e.to_string())
+                });
+                match saved {
+                    Err(error) => failures.push(format!("Art fetching failed: {error}")),
+                    Ok(identity) => {
+                        let missing = self.publish_held(
+                            paths,
+                            name,
                             &game.0,
-                            &missing,
+                            &kinds,
                             identity,
-                            (&Lazy::new(), &Token::new()),
+                            (&mut notes, &mut failures),
                         );
-                        match fetched {
-                            Ok(fetched) => notes.extend(fetched),
-                            Err(error) => failures.push(format!("Art fetching failed: {error}")),
+                        if !missing.is_empty() {
+                            let fetched = fetch(
+                                (paths, name),
+                                &game.0,
+                                &missing,
+                                identity,
+                                (&Lazy::new(), &Token::new()),
+                            );
+                            match fetched {
+                                Ok(fetched) => notes.extend(fetched),
+                                Err(error) => {
+                                    failures.push(format!("Art fetching failed: {error}"))
+                                }
+                            }
                         }
                     }
                 }
@@ -537,7 +548,7 @@ impl Draft {
         name: &str,
         game: &Game,
         kinds: &[Kind],
-        identity: Option<EnvironmentIdentity>,
+        identity: EnvironmentIdentity,
         (notes, failures): (&mut Vec<String>, &mut Vec<String>),
     ) -> Vec<Kind> {
         let mut missing = Vec::new();
@@ -977,7 +988,7 @@ fn fetch(
     (paths, name): (&Paths, &str),
     game: &Game,
     kinds: &[Kind],
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
     (https, token): (&Lazy<Https>, &Token),
 ) -> Result<Vec<String>, String> {
     let key = steamgriddb::require_key(
@@ -996,7 +1007,7 @@ fn fetch_with(
     api: &Api,
     game: &Game,
     kinds: &[Kind],
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
     token: &Token,
 ) -> Result<Vec<String>, String> {
     let language = steamgriddb::language(|key| std::env::var_os(key));
@@ -1080,7 +1091,8 @@ pub(crate) fn fetch_default_over(
         .next()
     {
         Some(game) => {
-            let identity = EnvironmentIdentity::acquire(paths, name).ok().flatten();
+            let identity =
+                EnvironmentIdentity::acquire_existing(paths, name).map_err(|e| e.to_string())?;
             notes.extend(fetch_with(
                 (paths, name),
                 &api,

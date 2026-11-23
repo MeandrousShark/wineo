@@ -11,7 +11,7 @@ use wineo_core::art_fetch::{self, Fetched, Mode};
 use wineo_core::cancel::Token;
 use wineo_core::config::ArtFetch;
 use wineo_core::download::{Https, Lazy, Transport};
-use wineo_core::environment::{Environment, EnvironmentIdentity};
+use wineo_core::environment::{Currency, Environment, EnvironmentIdentity};
 use wineo_core::paths::Paths;
 use wineo_core::secret_service::SecretServiceKeyring;
 use wineo_core::steamgriddb::{self, Api, Game, KEY_VAR, Key, Keyring, Removed, Saved};
@@ -97,10 +97,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     match args.command {
         Command::Set { spot, kind, file } => {
             let (env, target) = split(&spot);
-            art::set_manual(paths, env, target, kind, &file, None)?;
+            let (_, identity) = art::set_manual_acquiring(paths, env, target, kind, &file)?;
             println!("Set {kind} for {spot}");
             if kind == Kind::Icon {
-                apply_desktop(paths, env)?;
+                apply_desktop_for(paths, env, identity, &mut crate::output::stderr())?;
             }
         }
         Command::List { env } => {
@@ -147,10 +147,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         }
         Command::Rm { spot, kind } => {
             let (env, target) = split(&spot);
-            art::remove(paths, env, target, kind, None)?;
+            let (_, identity) = art::remove_acquiring(paths, env, target, kind)?;
             println!("Removed {kind} from {spot}");
             if kind == Kind::Icon {
-                apply_desktop(paths, env)?;
+                apply_desktop_for(paths, env, identity, &mut crate::output::stderr())?;
             }
         }
     }
@@ -161,6 +161,21 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 /// none, so they get nothing said about them either.
 pub(crate) fn apply_desktop(paths: &Paths, env: &str) -> anyhow::Result<()> {
     if wineo_core::desktop::supported(paths).is_err() {
+        return Ok(());
+    }
+    desktop::apply(paths, env, false)
+}
+
+/// `apply_desktop`, only while `env` is still the environment `identity`
+/// names, which `unchanged` decides and warns for. Portable environments have
+/// no entries, so nothing is checked or said for them.
+fn apply_desktop_for(
+    paths: &Paths,
+    env: &str,
+    identity: EnvironmentIdentity,
+    err: &mut dyn Write,
+) -> anyhow::Result<()> {
+    if wineo_core::desktop::supported(paths).is_err() || !unchanged(paths, env, identity, err) {
         return Ok(());
     }
     desktop::apply(paths, env, false)
@@ -251,7 +266,12 @@ fn fetch(paths: &Paths, request: &FetchRequest) -> anyhow::Result<bool> {
     let key = steamgriddb::require_key(paths, |var| std::env::var_os(var), &*keyring())?;
     let transport = Https::new()?;
     let api = Api::new(&transport, &key.value);
-    fetch_with(paths, request, &api, &mut crate::output::stdout())
+    fetch_with(
+        paths,
+        request,
+        &api,
+        (&mut crate::output::stdout(), &mut crate::output::stderr()),
+    )
 }
 
 /// `fetch` once there is a connection. Nothing is stored if the environment
@@ -260,24 +280,19 @@ fn fetch_with(
     paths: &Paths,
     request: &FetchRequest,
     api: &Api,
-    out: &mut dyn io::Write,
-) -> anyhow::Result<bool> {
-    let (env, _) = split(request.spot);
-    let identity = EnvironmentIdentity::acquire(paths, env)?;
-    fetch_checked(paths, request, api, identity, out)
-}
-
-fn fetch_checked(
-    paths: &Paths,
-    request: &FetchRequest,
-    api: &Api,
-    identity: Option<EnvironmentIdentity>,
-    out: &mut dyn io::Write,
+    (out, err): (&mut dyn io::Write, &mut dyn io::Write),
 ) -> anyhow::Result<bool> {
     let (env, target) = split(request.spot);
+    // Only looked at before the pick, which can stay open for minutes, so
+    // a replacement while it is open is refused and picking nothing writes
+    // nothing.
+    let Some(seen) = EnvironmentIdentity::peek(paths, env) else {
+        return Err(wineo_core::Error::UnknownEnvironment(env.to_owned()).into());
+    };
     let Some(game) = fetch_game(paths, env, request, api)? else {
         return Ok(true);
     };
+    let identity = seen.upgrade(paths, env)?;
     if art::saved_game(paths, env)? != Some(game) {
         art::save_game_for(paths, env, game, identity, None)?;
     }
@@ -291,16 +306,29 @@ fn fetch_checked(
     let mut icon = false;
     let fetched = fetch_kinds(&spot, request, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store.
-    if icon && unchanged(paths, env, identity) {
-        apply_desktop(paths, env)?;
+    if icon {
+        apply_desktop_for(paths, env, identity, err)?;
     }
     fetched
 }
 
 /// Whether `env` is still the environment `identity` was read from, which
-/// the desktop entries are only updated for. Without one, it can't tell.
-fn unchanged(paths: &Paths, env: &str, identity: Option<EnvironmentIdentity>) -> bool {
-    identity.is_none_or(|identity| identity.is_current(paths, env).is_current())
+/// the desktop entries are only updated for. A replacement's entries are
+/// left alone without a word, since the art itself already failed for it,
+/// but entries skipped because `library.toml` can't be read are warned
+/// about on `err`.
+fn unchanged(paths: &Paths, env: &str, identity: EnvironmentIdentity, err: &mut dyn Write) -> bool {
+    match identity.is_current(paths, env) {
+        Currency::Current => true,
+        Currency::Changed => false,
+        Currency::LibraryUnreadable => {
+            let line = format!(
+                "warning: library.toml can't be read. The desktop entries for `{env}` weren't updated."
+            );
+            let _ = writeln!(err, "{}", style::warning_stderr(line));
+            false
+        }
+    }
 }
 
 fn fetch_game(
@@ -340,7 +368,7 @@ struct Spot<'a> {
     target: Option<&'a str>,
     /// What the environment was when the fetch began. Nothing is written
     /// once it has been replaced.
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
 }
 
 /// Fetches each kind the request asks for, printing a line per kind as it
@@ -541,6 +569,7 @@ impl<'a> Access<'a> {
         paths: &Paths,
         key: &Key,
         request: &AutoFetch,
+        identity: Option<EnvironmentIdentity>,
         pick: Pick<I, W>,
         err: &mut dyn Write,
     ) -> Result<(), Canceled> {
@@ -548,7 +577,7 @@ impl<'a> Access<'a> {
             return Ok(());
         }
         match (self.transport)() {
-            Ok(transport) => fetch_new(paths, &*transport, key, request, pick, err),
+            Ok(transport) => fetch_new(paths, &*transport, key, request, identity, pick, err),
             Err(error) => {
                 warn_failed(&error, err);
                 Ok(())
@@ -594,8 +623,9 @@ impl Access<'_> {
     }
 
     /// The downloading half: records the game `pick` chose and fetches into
-    /// the environment, which has to exist and, when `identity` is given,
-    /// still be the one it was read from. Failures are warnings on `err`.
+    /// the environment, which has to still be the one `identity` is, the
+    /// identity its creation returned. Without one, one is acquired here.
+    /// Failures are warnings on `err`.
     pub fn fetch_picked(
         &self,
         paths: &Paths,
@@ -608,13 +638,14 @@ impl Access<'_> {
         let result = (|| {
             let transport = (self.transport)()?;
             let api = Api::new(&*transport, &key.value);
+            let identity = created_or_acquired(paths, request.env, identity)?;
             store_art(
                 paths,
                 &api,
                 request,
                 (picked.game, &picked.term),
                 identity,
-                out,
+                (out, &mut *err),
             )
         })();
         if let Err(error) = result {
@@ -636,22 +667,38 @@ pub(crate) fn warn_failed(error: &anyhow::Error, err: &mut dyn Write) {
     let _ = writeln!(err, "{}", style::warning_stderr(line));
 }
 
+/// The identity creation returned, or for a creation that returned none, one
+/// acquired now. A missing environment is "does not exist".
+fn created_or_acquired(
+    paths: &Paths,
+    env: &str,
+    created: Option<EnvironmentIdentity>,
+) -> anyhow::Result<EnvironmentIdentity> {
+    match created {
+        Some(identity) => Ok(identity),
+        None => Ok(EnvironmentIdentity::acquire_existing(paths, env)?),
+    }
+}
+
 /// Fetches art into the environment's store with `Mode::Fill`, printing its
-/// lines through the prompt or the `Top` writer. Any failure is a warning on
-/// `err` and kinds already stored stay, so art never changes how
-/// `new` or `import` ends. Only canceling the pick list is an error.
+/// lines through the prompt or the `Top` writer. Nothing is stored once the
+/// environment is no longer the one `identity`, the identity its creation
+/// returned, names. Any failure is a warning on `err` and kinds already
+/// stored stay, so art never changes how `new` or `import` ends. Only
+/// canceling the pick list is an error.
 pub fn fetch_new<I: Input, W: Write>(
     paths: &Paths,
     transport: &dyn Transport,
     key: &Key,
     request: &AutoFetch,
+    identity: Option<EnvironmentIdentity>,
     pick: Pick<I, W>,
     err: &mut dyn Write,
 ) -> Result<(), Canceled> {
     if request.kinds.kinds().is_empty() {
         return Ok(());
     }
-    match try_fetch_new(paths, transport, key, request, pick) {
+    match try_fetch_new(paths, transport, key, request, identity, pick, err) {
         Ok(()) => Ok(()),
         Err(error) if cancel::prompted(&error) => Err(Canceled),
         Err(error) => {
@@ -666,15 +713,37 @@ fn try_fetch_new<I: Input, W: Write>(
     transport: &dyn Transport,
     key: &Key,
     request: &AutoFetch,
+    identity: Option<EnvironmentIdentity>,
     pick: Pick<I, W>,
+    err: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let api = Api::new(transport, &key.value);
-    // Before the pick, so a replacement while the questions are asked counts.
-    let identity = EnvironmentIdentity::acquire(paths, request.env)?;
+    // Without one from creation, only looked at before the pick, so a
+    // replacement while the questions are asked counts and a pick that
+    // ends with nothing writes nothing.
+    let seen = match identity {
+        Some(identity) => Held::Created(identity),
+        None => Held::Seen(
+            EnvironmentIdentity::peek(paths, request.env)
+                .ok_or_else(|| wineo_core::Error::UnknownEnvironment(request.env.to_owned()))?,
+        ),
+    };
     let Some((game, term, out)) = choose_game(&api, request, pick)? else {
         return Ok(());
     };
-    store_art(paths, &api, request, (game, &term), identity, out)
+    let identity = match seen {
+        Held::Created(identity) => identity,
+        Held::Seen(seen) => seen.upgrade(paths, request.env)?,
+    };
+    store_art(paths, &api, request, (game, &term), identity, (out, err))
+}
+
+/// The identity a fetch holds through its pick.
+enum Held {
+    /// What creation returned, used as it is.
+    Created(EnvironmentIdentity),
+    /// What was there before the pick, upgraded once something is picked.
+    Seen(EnvironmentIdentity),
 }
 
 /// Picks the game from the search results, naming a skipped pick. `out` is
@@ -720,8 +789,8 @@ fn store_art(
     api: &Api,
     request: &AutoFetch,
     (game, term): (u64, &str),
-    identity: Option<EnvironmentIdentity>,
-    out: &mut dyn Write,
+    identity: EnvironmentIdentity,
+    (out, err): (&mut dyn Write, &mut dyn Write),
 ) -> anyhow::Result<()> {
     let env = request.env;
     if art::saved_game(paths, env)? != Some(game) {
@@ -746,8 +815,8 @@ fn store_art(
     let fetched = fetch_kinds(&spot, &fetch, api, game, &language, &mut icon, out);
     // An icon fetched before a later kind failed is still in the store, but
     // a replacement environment's entries are not this fetch's to touch.
-    if icon && unchanged(paths, env, identity) {
-        apply_desktop(paths, env)?;
+    if icon {
+        apply_desktop_for(paths, env, identity, err)?;
     }
     fetched.map(drop)
 }

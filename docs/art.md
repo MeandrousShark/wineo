@@ -309,6 +309,26 @@ warn, as above, but `art fetch` fails like its other errors, with exit code
 error: environment `hades` changed before artwork could be written
 ```
 
+`art fetch` notes which environment it is before it shows the pick list,
+so one removed and created again while you choose gets nothing either.
+`art set` and `art rm` check the same way.
+
+wineo tells a new environment from the old one by the `id` in its
+`library.toml` entry (see [config-files.md](config-files.md)), so editing
+an environment's config while art is fetched changes nothing. An
+environment from before 1.10.0 gets its id the first time art is written
+for it. A command that fails first, or a pick list you skip, writes none.
+
+If `library.toml` can't be read, wineo can't check the id and stores
+nothing rather than guess:
+
+```
+error: library.toml can't be read. Artwork for `hades` wasn't stored.
+```
+
+`art rm` says `wasn't removed`. `wineo validate` shows what is wrong with
+the file.
+
 Failures never stop the flow. A rejected key, a failed download, or a
 search with no matches when there's no pick list prints a warning such as
 `warning: art fetch failed: ...` and the command carries on; kinds fetched before the error stay. Art never
@@ -360,6 +380,13 @@ icon costs nothing on the next reconcile.
 Icon art that wineo can't decode falls back to the exe's icon, when there
 is one, printing
 `Icon art for <target> in <env> could not be read` once per bad file.
+
+If `library.toml` stops being readable just after an icon is stored, the
+icon stays and the entries wait for the next launch:
+
+```
+warning: library.toml can't be read. The desktop entries for `hades` weren't updated.
+```
 
 Portable environments still get no desktop entries.
 

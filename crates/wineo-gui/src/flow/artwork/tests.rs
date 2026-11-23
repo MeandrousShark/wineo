@@ -633,11 +633,11 @@ fn apply_stores_nothing_in_an_environment_replaced_since_it_started() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::acquire(&paths, "game").unwrap();
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
         if replaced {
             wineo_core::test_support::replace_environment(&paths, "game").unwrap();
         }
-        let result = draft_with_held_grid().apply_for(&paths, "game", identity);
+        let result = draft_with_held_grid().apply_for(&paths, "game", Ok(identity));
         let grid = paths.art_dir("game").join("grid.png");
         if replaced {
             assert_eq!(
@@ -669,7 +669,7 @@ fn local_tiles_are_stored_only_in_the_environment_they_started_with() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::acquire(&paths, "game").unwrap();
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
         let picked = root.path().join("mine.png");
         let poster = root.path().join("poster.png");
         std::fs::write(&picked, PNG).unwrap();
@@ -697,7 +697,7 @@ fn local_tiles_are_stored_only_in_the_environment_they_started_with() {
         if replaced {
             wineo_core::test_support::replace_environment(&paths, "game").unwrap();
         }
-        let result = draft.apply_for(&paths, "game", identity);
+        let result = draft.apply_for(&paths, "game", Ok(identity));
         let art = paths.art_dir("game");
         if replaced {
             let changed = "environment `game` changed before artwork could be written";
@@ -727,7 +727,7 @@ fn held_art_is_published_only_into_the_environment_it_was_read_from() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::acquire(&paths, "game").unwrap();
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
         // Past the game record, which `apply` saves first under the same
         // check, so this is the publish's own.
         art::save_game(&paths, "game", 7).unwrap();

@@ -1478,7 +1478,7 @@ fn a_batch_poster_is_stored_only_in_the_environment_it_was_registered_as() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::acquire(&paths, name).unwrap();
+        let identity = EnvironmentIdentity::acquire_existing(&paths, name).unwrap();
         if replaced {
             replace_environment(&paths, name);
         }

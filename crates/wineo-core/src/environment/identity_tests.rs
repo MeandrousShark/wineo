@@ -32,15 +32,7 @@ fn library_bytes(paths: &Paths) -> Option<Vec<u8>> {
 }
 
 fn store(paths: &Paths, identity: EnvironmentIdentity) -> Result<art::Stored> {
-    art::set_manual_bytes(
-        paths,
-        "game",
-        None,
-        Kind::Grid,
-        PNG,
-        "grid.png",
-        Some(identity),
-    )
+    art::set_manual_bytes(paths, "game", None, Kind::Grid, PNG, "grid.png", identity)
 }
 
 /// Rewrites the config through a new file, as an editor saving it would.
@@ -311,7 +303,7 @@ fn an_edit_keeps_an_id_current_and_the_art_lands() {
             Currency::Current,
             "{how}"
         );
-        art::set_manual_bytes(&paths, "game", None, kind, PNG, "art.png", Some(identity))
+        art::set_manual_bytes(&paths, "game", None, kind, PNG, "art.png", identity)
             .unwrap_or_else(|error| panic!("{how}: {error}"));
     }
 }
@@ -369,7 +361,7 @@ fn an_id_holder_whose_library_breaks_is_told_so_not_that_it_changed() {
         error.to_string(),
         "library.toml can't be read. Artwork for `game` wasn't stored."
     );
-    let error = art::remove(&paths, "game", None, Kind::Grid, Some(identity)).unwrap_err();
+    let error = art::remove(&paths, "game", None, Kind::Grid, identity).unwrap_err();
     assert_eq!(
         error.to_string(),
         "library.toml can't be read. Artwork for `game` wasn't removed."

@@ -357,9 +357,15 @@ fn a_heroic_poster_is_stored_as_manual_grid_art_that_fetching_keeps() {
     let registered = apply(&paths, &global, &source, &plan, &Token::new(), |_| {}).unwrap();
     let name = registered.environment.name.as_str();
 
-    let stored = store_poster(&paths, name, "a", &poster, None)
-        .unwrap()
-        .unwrap();
+    let stored = store_poster(
+        &paths,
+        name,
+        "a",
+        &poster,
+        crate::test_support::identity(&paths, name),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(stored.format, art::Format::Jpeg);
     assert_eq!(
         fs::read(paths.art_dir(name).join("grid.jpg")).unwrap(),
@@ -402,9 +408,15 @@ fn a_poster_is_judged_by_its_signature_alone() {
     let name = registered.environment.name.as_str();
     let poster = root.path().join("corrupt");
     fs::write(&poster, CORRUPT).unwrap();
-    let stored = store_poster(&paths, name, "a", &poster, None)
-        .unwrap()
-        .unwrap();
+    let stored = store_poster(
+        &paths,
+        name,
+        "a",
+        &poster,
+        crate::test_support::identity(&paths, name),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(stored.format, art::Format::Jpeg);
     assert_eq!(fs::read(stored.path).unwrap(), CORRUPT);
 }
@@ -418,7 +430,14 @@ fn a_missing_or_unusable_poster_is_skipped() {
     let name = registered.environment.name.as_str();
     let missing = root.path().join("gone");
     assert_eq!(
-        store_poster(&paths, name, "a", &missing, None).unwrap(),
+        store_poster(
+            &paths,
+            name,
+            "a",
+            &missing,
+            crate::test_support::identity(&paths, name)
+        )
+        .unwrap(),
         None
     );
     // Icons can be ICO, but Grid art can't.
@@ -429,9 +448,29 @@ fn a_missing_or_unusable_poster_is_skipped() {
     bytes.extend([0; 4]);
     assert_eq!(art::detect(&bytes), Some(art::Format::Ico));
     fs::write(&ico, bytes).unwrap();
-    assert_eq!(store_poster(&paths, name, "a", &ico, None).unwrap(), None);
+    assert_eq!(
+        store_poster(
+            &paths,
+            name,
+            "a",
+            &ico,
+            crate::test_support::identity(&paths, name)
+        )
+        .unwrap(),
+        None
+    );
     let text = root.path().join("text");
     fs::write(&text, b"not an image").unwrap();
-    assert_eq!(store_poster(&paths, name, "a", &text, None).unwrap(), None);
+    assert_eq!(
+        store_poster(
+            &paths,
+            name,
+            "a",
+            &text,
+            crate::test_support::identity(&paths, name)
+        )
+        .unwrap(),
+        None
+    );
     assert!(!paths.art_dir(name).join(art::ART_FILE).exists());
 }

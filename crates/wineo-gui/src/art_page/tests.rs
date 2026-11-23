@@ -415,7 +415,15 @@ fn reload_picks_up_art_changed_outside_the_page() {
     assert!(!page.has_override(Kind::Grid));
 
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     snapshot(&mut page, &paths);
 
     assert!(page.has_override(Kind::Grid));
@@ -444,7 +452,15 @@ fn late_lookup_and_preview_results_are_discarded_after_leaving() {
     assert_eq!(page.game_label(true), "123");
 
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     snapshot(&mut page, &paths);
     let sequence = page.load_sequence;
     let spot = (None, Kind::Grid);
@@ -583,7 +599,15 @@ fn picker_use_publishes_exact_image_and_refreshes_the_kind() {
 fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
     let (root, paths, page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     let before = fs::read(paths.art_dir("game").join("grid.png")).unwrap();
     let image = chosen_image();
     let transport = ImageApi {
@@ -849,7 +873,15 @@ fn picker_use_refuses_replacement_in_the_last_progress_callback() {
         |received, _| {
             if received == bytes.len() as u64 && !replaced {
                 replace_environment(&paths);
-                art::set_manual(&paths, "game", None, Kind::Grid, &replacement, None).unwrap();
+                art::set_manual(
+                    &paths,
+                    "game",
+                    None,
+                    Kind::Grid,
+                    &replacement,
+                    wineo_core::test_support::identity(&paths, "game"),
+                )
+                .unwrap();
                 replaced = true;
             }
         },
@@ -966,7 +998,15 @@ fn reopening_another_kind_abandons_queued_thumbnails() {
 fn browse_write_rechecks_identity_after_art_lock_contention() {
     let (root, paths, page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     let art_dir = paths.art_dir("game");
     let held = wineo_core::operation::Locks::new(&paths)
         .config(&art_dir.join(art::ART_FILE))
@@ -1076,7 +1116,15 @@ fn replaced_while_waiting_for_the_art_lock<R: Send + 'static>(
 fn remove_checks_identity_under_the_art_lock() {
     let (root, paths, page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     let grid = paths.art_dir("game").join("grid.png");
     let outcome = replaced_while_waiting_for_the_art_lock(&paths, {
         let paths = paths.clone();
@@ -1408,7 +1456,15 @@ fn art_picker_keeps_controls_whole_at_narrow_and_wide_widths() {
 fn leaving_drops_decoded_previews() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     snapshot(&mut page, &paths);
     let spot = (None, Kind::Grid);
     let _ = page.update(
@@ -1449,7 +1505,15 @@ fn deliver_preview(page: &mut Page, paths: &Paths, spot: Spot) {
 fn reload_with_unchanged_files_keeps_previews_and_decodes_nothing() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     assert_eq!(reload_units(&mut page, &paths), 1);
     let spot = (None, Kind::Grid);
     deliver_preview(&mut page, &paths, spot.clone());
@@ -1464,7 +1528,15 @@ fn reload_with_unchanged_files_keeps_previews_and_decodes_nothing() {
 fn reload_keeps_a_failed_decode_without_retrying_it() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let spot = (None, Kind::Grid);
     let _ = page.update(
@@ -1484,8 +1556,24 @@ fn reload_keeps_a_failed_decode_without_retrying_it() {
 fn reload_redecodes_only_the_row_whose_file_changed() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
-    art::set_manual(&paths, "game", None, Kind::Hero, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Hero,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     assert_eq!(reload_units(&mut page, &paths), 2);
     let grid = (None, Kind::Grid);
     let hero = (None, Kind::Hero);
@@ -1513,7 +1601,15 @@ fn reload_redecodes_only_the_row_whose_file_changed() {
 fn reload_drops_the_preview_of_a_removed_row() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let spot = (None, Kind::Grid);
     deliver_preview(&mut page, &paths, spot.clone());
@@ -1535,7 +1631,15 @@ fn reload_drops_the_preview_of_a_removed_row() {
 fn a_decode_from_before_a_reload_cannot_land_on_the_new_row() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let stale = page.load_sequence;
     reload_units(&mut page, &paths);
@@ -1566,7 +1670,15 @@ fn a_failed_decode_does_not_read_as_loading() {
 fn leaving_clears_a_failed_decode_so_reopening_retries() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let spot = (None, Kind::Grid);
     let _ = page.update(

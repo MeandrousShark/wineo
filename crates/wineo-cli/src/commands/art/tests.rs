@@ -77,7 +77,7 @@ fn steam_fetch_uses_the_app_id_even_with_a_saved_game() {
         paths: &paths,
         env: "hades",
         target: None,
-        identity: EnvironmentIdentity::acquire(&paths, "hades").unwrap(),
+        identity: EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap(),
     };
     let mut icon = false;
     let mut out = Vec::new();
@@ -187,7 +187,7 @@ fn run(paths: &Paths, fake: &Fake, only: Option<Kind>) -> (anyhow::Result<bool>,
         paths,
         env: "hades",
         target: None,
-        identity: EnvironmentIdentity::acquire(paths, "hades").unwrap(),
+        identity: EnvironmentIdentity::acquire_existing(paths, "hades").unwrap(),
     };
     let mut out = Vec::new();
     let mut icon = false;
@@ -284,7 +284,7 @@ fn fetch_new_with(
         Some(prompt) => Pick::Ask(prompt),
         None => Pick::Top(&mut out),
     };
-    let result = fetch_new(paths, fake, &key(), &request, pick, &mut err);
+    let result = fetch_new(paths, fake, &key(), &request, None, pick, &mut err);
     if let Some(prompt) = prompt {
         out = prompt.output().clone();
     }
@@ -678,6 +678,7 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
         &swap,
         &key(),
         &request,
+        None,
         Pick::<Script, Vec<u8>>::Top(&mut out),
         &mut err,
     );
@@ -699,9 +700,16 @@ fn art_fetch_fails_when_the_environment_is_replaced() {
         request.game = Some(7);
         // Without a swap the same fetch stores its icon.
         swap.done.set(!replaced);
-        let mut out = Vec::new();
-        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = fetch_with(
+            &paths,
+            &request,
+            &Api::new(&swap, "k"),
+            (&mut out, &mut err),
+        );
         let icon = paths.art_dir("hades").join("icon.png").exists();
+        // A replacement is the error alone, with nothing said about entries.
+        assert_eq!(String::from_utf8(err).unwrap(), "");
         if replaced {
             // `main` prints this as `error: ...` and exits 1.
             assert_eq!(result.unwrap_err().to_string(), CHANGED_ERROR);
@@ -758,6 +766,7 @@ fn an_environment_replaced_after_the_icon_gets_no_desktop_update() {
             &swap,
             &key(),
             &request,
+            None,
             Pick::<Script, Vec<u8>>::Top(&mut out),
             &mut err,
         );
@@ -793,13 +802,480 @@ fn art_fetch_leaves_a_replacement_environments_entry_alone() {
         let mut request = fetch_request();
         request.game = Some(7);
         request.only = None;
-        let mut out = Vec::new();
-        let result = fetch_with(&paths, &request, &Api::new(&swap, "k"), &mut out);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = fetch_with(
+            &paths,
+            &request,
+            &Api::new(&swap, "k"),
+            (&mut out, &mut err),
+        );
         assert!(paths.art_dir("hades").join("icon.png").exists());
         assert_eq!(entry(&paths).exists(), !replaced);
+        assert_eq!(String::from_utf8(err).unwrap(), "");
         match result {
             Err(error) => assert!(replaced && error.to_string() == CHANGED_ERROR),
             Ok(found) => assert!(!replaced && found),
         }
     }
+}
+
+/// A `Fake` that runs `then` once, at the first request other than a search
+/// whose address contains `at`.
+struct At {
+    fake: Fake,
+    at: &'static str,
+    then: std::cell::RefCell<Option<Box<dyn FnOnce()>>>,
+}
+
+impl At {
+    fn new(fake: Fake, at: &'static str, then: impl FnOnce() + 'static) -> Self {
+        Self {
+            fake,
+            at,
+            then: std::cell::RefCell::new(Some(Box::new(then))),
+        }
+    }
+
+    fn note(&self, url: &str) {
+        if !url.contains("/search/")
+            && url.contains(self.at)
+            && let Some(then) = self.then.borrow_mut().take()
+        {
+            then();
+        }
+    }
+}
+
+impl Transport for At {
+    fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
+        self.note(url);
+        self.fake.get(url)
+    }
+
+    fn request(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> anyhow::Result<wineo_core::download::Response> {
+        self.note(url);
+        self.fake.request(url, bearer)
+    }
+}
+
+fn library_id(paths: &Paths) -> Option<wineo_core::library::Id> {
+    wineo_core::library::load(paths)
+        .environments
+        .get("hades")
+        .and_then(|entry| entry.id)
+}
+
+/// `fetch_new` for the icon of `hades`, given the identity its creation
+/// returned, or None.
+fn fetch_new_for(paths: &Paths, identity: Option<EnvironmentIdentity>) -> String {
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    fake.icon_only();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::Icon,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        paths,
+        &fake,
+        &key(),
+        &request,
+        identity,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    String::from_utf8(err).unwrap()
+}
+
+#[test]
+fn a_fetch_after_creation_holds_to_the_identity_creation_returned() {
+    for replaced in [false, true] {
+        let (_root, paths) = paths();
+        let created = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+        // Between creation and the fetch, where a fresh read would take the
+        // replacement for the environment that was made.
+        if replaced {
+            super::fake::replace_environment(&paths, "hades");
+        }
+        let err = fetch_new_for(&paths, Some(created));
+        let icon = paths.art_dir("hades").join("icon.png").exists();
+        if replaced {
+            assert_eq!(err, CHANGED);
+            assert!(!icon);
+        } else {
+            assert_eq!(err, "");
+            assert!(icon);
+        }
+    }
+}
+
+#[test]
+fn a_fetch_after_a_creation_that_returned_no_identity_acquires_one() {
+    let (_root, paths) = paths();
+    assert_eq!(library_id(&paths), None);
+    assert_eq!(fetch_new_for(&paths, None), "");
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(library_id(&paths).is_some());
+}
+
+/// A Steam environment, whose SteamGridDB game is looked up while `art
+/// fetch` would otherwise be asking which game it is.
+fn steam_environment(paths: &Paths) -> Fake {
+    fs::write(
+        paths.environment_config("hades"),
+        "kind = \"proxied\"\nlauncher = \"steam\"\napp_id = \"1145360\"\n",
+    )
+    .unwrap();
+    let mut fake = Fake::default();
+    fake.0.insert(
+        format!("{}/games/steam/1145360", steamgriddb::API),
+        (
+            200,
+            br#"{"success":true,"data":{"id":7,"name":"Hades"}}"#.to_vec(),
+        ),
+    );
+    fake.icon_only();
+    fake
+}
+
+fn icon_request() -> FetchRequest<'static> {
+    FetchRequest {
+        only: None,
+        kinds: ArtFetch::Icon,
+        ..fetch_request()
+    }
+}
+
+#[test]
+fn art_fetch_refuses_an_environment_replaced_while_the_game_is_picked() {
+    for with_id in [false, true] {
+        let (_root, paths) = paths();
+        let fake = steam_environment(&paths);
+        if with_id {
+            EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+        }
+        let swap = super::fake::Swap::new(fake, &paths, "hades").at("/games/steam/");
+        let mut out = Vec::new();
+        let result = fetch_with(
+            &paths,
+            &icon_request(),
+            &Api::new(&swap, "k"),
+            (&mut out, &mut Vec::new()),
+        );
+        assert!(swap.done.get());
+        assert_eq!(result.unwrap_err().to_string(), CHANGED_ERROR, "{with_id}");
+        assert_eq!(String::from_utf8(out).unwrap(), "");
+        assert!(!paths.art_dir("hades").join("icon.png").exists());
+        assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+    }
+}
+
+#[test]
+fn art_fetch_gives_an_old_environment_an_id_only_once_a_game_is_picked() {
+    let (_root, paths) = paths();
+    let mut fake = steam_environment(&paths);
+    let lookup = format!("{}/games/steam/1145360", steamgriddb::API);
+    let answer = fake.0.remove(&lookup).unwrap();
+    // No game, so nothing is picked and nothing is written.
+    let result = fetch_with(
+        &paths,
+        &icon_request(),
+        &Api::new(&fake, "k"),
+        (&mut Vec::new(), &mut Vec::new()),
+    );
+    assert!(result.is_err());
+    assert!(!paths.library_file().exists());
+
+    fake.0.insert(lookup, answer);
+    let result = fetch_with(
+        &paths,
+        &icon_request(),
+        &Api::new(&fake, "k"),
+        (&mut Vec::new(), &mut Vec::new()),
+    );
+    assert!(result.unwrap());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(library_id(&paths).is_some());
+}
+
+const ENTRIES_SKIPPED: &str =
+    "warning: library.toml can't be read. The desktop entries for `hades` weren't updated.\n";
+const NOT_STORED: &str = "library.toml can't be read. Artwork for `hades` wasn't stored.";
+
+/// A game with an icon, after which `library.toml` stops being readable.
+fn library_breaks_after_the_icon(paths: &Paths) -> At {
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    fake.icon_only();
+    let library = paths.library_file();
+    At::new(fake, "/grids/", move || {
+        fs::write(library, "not [toml").unwrap();
+    })
+}
+
+#[test]
+fn entries_skipped_because_the_library_cant_be_read_are_warned_about() {
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::All,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        &paths,
+        &library_breaks_after_the_icon(&paths),
+        &key(),
+        &request,
+        None,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(!entry(&paths).exists());
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        format!("{ENTRIES_SKIPPED}warning: art fetch failed: {NOT_STORED}\n")
+    );
+}
+
+#[test]
+fn art_fetch_warns_about_entries_skipped_because_the_library_cant_be_read() {
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let mut request = fetch_request();
+    request.game = Some(7);
+    request.only = None;
+    let transport = library_breaks_after_the_icon(&paths);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_with(
+        &paths,
+        &request,
+        &Api::new(&transport, "k"),
+        (&mut out, &mut err),
+    );
+    assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert!(!entry(&paths).exists());
+    assert_eq!(String::from_utf8(err).unwrap(), ENTRIES_SKIPPED);
+}
+
+/// Like `paths`, but a portable folder, which has no desktop entries.
+fn portable_paths() -> (tempfile::TempDir, Paths) {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().to_owned();
+    let paths = Paths::select(
+        move |key| (key == "HOME").then(|| OsString::from(home.as_os_str())),
+        Some(&root.path().join("usb")),
+    )
+    .unwrap();
+    let config = paths.environment_config("hades");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        config,
+        "prefix = \"p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.game]\nexe = \"game.exe\"\ndesktop = true\n",
+    )
+    .unwrap();
+    (root, paths)
+}
+
+#[test]
+fn a_portable_fetch_says_nothing_about_entries() {
+    let (_root, paths) = portable_paths();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::All,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let result = fetch_new(
+        &paths,
+        &library_breaks_after_the_icon(&paths),
+        &key(),
+        &request,
+        None,
+        Pick::<Script, Vec<u8>>::Top(&mut out),
+        &mut err,
+    );
+    assert!(result.is_ok());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        format!("warning: art fetch failed: {NOT_STORED}\n")
+    );
+
+    let (_root, paths) = portable_paths();
+    let mut request = fetch_request();
+    request.game = Some(7);
+    request.only = None;
+    let transport = library_breaks_after_the_icon(&paths);
+    let mut err = Vec::new();
+    let result = fetch_with(
+        &paths,
+        &request,
+        &Api::new(&transport, "k"),
+        (&mut Vec::new(), &mut err),
+    );
+    assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+}
+
+#[test]
+fn no_icon_stored_means_nothing_said_about_entries() {
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    for kind in [Kind::Icon, Kind::Grid, Kind::Hero, Kind::Logo] {
+        fake.page(kind, &[]);
+    }
+    let library = paths.library_file();
+    let transport = At::new(fake, "/grids/", move || {
+        fs::write(library, "not [toml").unwrap();
+    });
+    let mut request = fetch_request();
+    request.game = Some(7);
+    request.only = None;
+    let mut err = Vec::new();
+    let result = fetch_with(
+        &paths,
+        &request,
+        &Api::new(&transport, "k"),
+        (&mut Vec::new(), &mut err),
+    );
+    assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+    assert!(!entry(&paths).exists());
+}
+
+/// `wineo art fetch` of the icon for the Steam environment, with `then` run
+/// while the game is looked up, which stands in for the pick.
+fn fetch_during_the_pick(paths: &Paths, then: impl FnOnce() + 'static) -> anyhow::Result<bool> {
+    let transport = At::new(steam_environment(paths), "/games/steam/", then);
+    fetch_with(
+        paths,
+        &icon_request(),
+        &Api::new(&transport, "k"),
+        (&mut Vec::new(), &mut Vec::new()),
+    )
+}
+
+#[test]
+fn art_fetch_lands_through_an_edit_made_during_the_pick() {
+    let (_root, paths) = paths();
+    // Written first, so the edit below is the only change.
+    steam_environment(&paths);
+    EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    let config = paths.environment_config("hades");
+    let result = fetch_during_the_pick(&paths, move || {
+        // Saved the way every config edit is, through a new file.
+        let text = fs::read_to_string(&config).unwrap();
+        let staged = config.with_extension("edit");
+        fs::write(&staged, text + "title = \"Hades\"\n").unwrap();
+        fs::rename(&staged, &config).unwrap();
+    });
+    assert!(result.unwrap());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(art::saved_game(&paths, "hades").unwrap(), Some(7));
+}
+
+#[test]
+fn art_fetch_falls_back_to_the_file_when_the_library_cant_be_read_at_the_peek() {
+    let (_root, paths) = paths();
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::write(&library, "not [toml").unwrap();
+    let result = fetch_during_the_pick(&paths, || {});
+    assert!(result.unwrap());
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(fs::read(&library).unwrap(), b"not [toml");
+}
+
+#[test]
+fn art_fetch_with_the_library_unreadable_at_the_upgrade() {
+    for with_id in [false, true] {
+        let (_root, paths) = paths();
+        steam_environment(&paths);
+        if with_id {
+            EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+        }
+        let library = paths.library_file();
+        let result = fetch_during_the_pick(&paths, move || {
+            fs::create_dir_all(library.parent().unwrap()).unwrap();
+            fs::write(library, "not [toml").unwrap();
+        });
+        let icon = paths.art_dir("hades").join("icon.png").exists();
+        if with_id {
+            // The id can't be confirmed, so nothing is stored.
+            assert_eq!(result.unwrap_err().to_string(), NOT_STORED);
+            assert!(!icon);
+            assert_eq!(art::saved_game(&paths, "hades").unwrap(), None);
+        } else {
+            // A fingerprint needs no library, as in 1.9.0.
+            assert!(result.unwrap());
+            assert!(icon);
+        }
+    }
+}
+
+#[test]
+fn a_fetch_without_a_creation_identity_writes_nothing_until_a_game_is_picked() {
+    let (_root, paths) = paths();
+    let request = AutoFetch {
+        env: "hades",
+        term: "hades",
+        kinds: ArtFetch::Icon,
+    };
+    // A failed search, then a skipped pick.
+    let mut fake = Fake::default();
+    fake.search("hades", true);
+    for answers in [None, Some(&["4"][..])] {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut prompt = answers.map(|answers| Prompt::new(Script::new(answers), Vec::new()));
+        let pick = match &mut prompt {
+            Some(prompt) => Pick::Ask(prompt),
+            None => Pick::Top(&mut out),
+        };
+        let transport: &dyn Transport = match answers {
+            Some(_) => &fake,
+            None => &Fake::default(),
+        };
+        let result = fetch_new(&paths, transport, &key(), &request, None, pick, &mut err);
+        assert!(result.is_ok());
+        assert!(!paths.library_file().exists(), "{answers:?}");
+    }
+}
+
+#[test]
+fn set_and_rm_update_entries_only_for_the_environment_they_wrote_to() {
+    // `art set` and `art rm` hand their identity here once the icon changed.
+    let (_root, paths) = paths();
+    desktop_environment(&paths);
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    let mut err = Vec::new();
+    apply_desktop_for(&paths, "hades", identity, &mut err).unwrap();
+    assert!(entry(&paths).exists());
+    fs::remove_file(entry(&paths)).unwrap();
+
+    super::fake::replace_environment(&paths, "hades");
+    apply_desktop_for(&paths, "hades", identity, &mut err).unwrap();
+    assert!(!entry(&paths).exists());
+    assert_eq!(String::from_utf8(err).unwrap(), "");
+
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    fs::write(paths.library_file(), "not [toml").unwrap();
+    let mut err = Vec::new();
+    apply_desktop_for(&paths, "hades", identity, &mut err).unwrap();
+    assert!(!entry(&paths).exists());
+    assert_eq!(String::from_utf8(err).unwrap(), ENTRIES_SKIPPED);
 }
