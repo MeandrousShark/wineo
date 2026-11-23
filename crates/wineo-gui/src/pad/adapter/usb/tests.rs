@@ -212,6 +212,49 @@ async fn stick(held: &mut Held, name: &str, x: usize, center: [u8; 2]) {
     );
 }
 
+/// The four ports' status bytes, in report order.
+fn statuses(report: &[u8]) -> Option<[u8; 4]> {
+    (report.len() >= 37 && report[0] == 0x21)
+        .then(|| [report[1], report[10], report[19], report[28]])
+}
+
+/// What the status bytes do when the grey plug, which powers rumble, comes
+/// out. Doing nothing is a fine answer: the prompt then runs out.
+async fn grey_plug(held: &mut Held) {
+    say("Unplug the adapter's grey USB plug if it has two, or wait");
+    let mut seen: Vec<[u8; 4]> = Vec::new();
+    let mut ended = None;
+    let deadline = tokio::time::Instant::now() + PROMPT;
+    while tokio::time::Instant::now() < deadline {
+        // A read that stops here is recorded, not a failure: the plug may
+        // take the reports with it.
+        match tokio::time::timeout(READ, held.read()).await {
+            Ok(Ok(report)) => {
+                if let Some(status) = statuses(&report)
+                    && seen.last() != Some(&status)
+                {
+                    seen.push(status);
+                }
+            }
+            Ok(Err(lost)) => {
+                ended = Some(format!("the read failed: {lost:?}"));
+                break;
+            }
+            Err(_) => {
+                ended = Some(format!("no report for {READ:?}"));
+                break;
+            }
+        }
+    }
+    println!("- the four status bytes, each change in order:");
+    for status in &seen {
+        println!("  {}", hex(status));
+    }
+    if let Some(ended) = ended {
+        println!("- the reads stopped: {ended}");
+    }
+}
+
 async fn record() {
     let info = Usb::find().expect("no GameCube adapter (057e:0337) is plugged in");
     let dir = interface_dir(info.sysfs_path());
@@ -228,7 +271,10 @@ async fn record() {
     std::thread::sleep(Duration::from_secs(3));
     let mut held = Held::claim(&info).expect("the claim failed");
     println!("- control request: {:?}", held.control().await);
-    println!("- start byte: {:?}", held.start().await);
+    match tokio::time::timeout(READ, held.start()).await {
+        Ok(result) => println!("- start byte: {result:?}"),
+        Err(_) => panic!("the start byte wasn't taken in {READ:?}"),
+    }
 
     let mut first = Vec::new();
     for _ in 0..10 {
@@ -255,31 +301,38 @@ async fn record() {
 
     say("Unplug the controller from port 1, wait a second, and plug it back in");
     let mut empty_status = None;
-    let finished = until(&mut held, |report| {
+    let mut back = None;
+    until(&mut held, |report| {
         let Some(bytes) = port(report) else {
             return false;
         };
         if !controller(bytes) {
             empty_status.get_or_insert(bytes[0]);
         }
-        empty_status.is_some() && controller(bytes)
+        let done = empty_status.is_some() && controller(bytes);
+        if done {
+            back = Some(report.to_vec());
+        }
+        done
     })
     .await;
-    if finished {
-        let mut after = Vec::new();
-        for _ in 0..10 {
+    if let Some(back) = back {
+        // The report that showed it back is the one the reader takes its
+        // centers and rests from, so it comes first.
+        let mut after = vec![back];
+        for _ in 0..9 {
             after.push(next(&mut held).await);
         }
         println!("- port 1's status while empty: {empty_status:02x?}");
         println!("- first reports after the controller came back:");
-        // The report that showed it back was read inside `until`, so these
-        // start one later.
         for report in &after {
             println!("  `{}`", hex(report));
         }
     } else {
         println!("- unplug and replug: not seen");
     }
+
+    grey_plug(&mut held).await;
 
     drop(held);
     println!();
