@@ -1206,3 +1206,102 @@ fn a_removed_environment_reads_as_changed_before_anything_else() {
         set_manual_bytes(&paths, "hades", None, Kind::Grid, PNG, "grid.png", identity).unwrap_err()
     ));
 }
+
+/// `store`, with a library entry from before ids, as 1.9.0 left it.
+fn old_store() -> (tempfile::TempDir, Paths, PathBuf) {
+    let (root, paths) = store();
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::write(
+        &library,
+        "schema_version = 1\n\n[environments.hades]\nfavorite = true\n",
+    )
+    .unwrap();
+    (root, paths, library)
+}
+
+#[test]
+fn an_acquiring_set_mints_only_when_it_writes() {
+    let (root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    let text = source(root.path(), "notes.png", b"just some notes\n");
+    assert!(matches!(
+        set_manual_acquiring(&paths, "hades", None, Kind::Grid, &text).unwrap_err(),
+        Error::ArtFormat { .. }
+    ));
+    assert!(matches!(
+        set_manual_acquiring(&paths, "hades", Some("nope"), Kind::Grid, &text).unwrap_err(),
+        Error::UnknownTarget { .. }
+    ));
+    assert_eq!(fs::read(&library).unwrap(), before);
+
+    let file = source(root.path(), "grid.png", PNG);
+    let (stored, identity) =
+        set_manual_acquiring(&paths, "hades", None, Kind::Grid, &file).unwrap();
+    assert!(stored.path.is_file());
+    let id = crate::library::read_id(&paths, "hades").unwrap();
+    assert!(id.is_some());
+    assert_eq!(identity.id(), id);
+}
+
+#[test]
+fn an_acquiring_removal_mints_only_when_it_removes() {
+    let (root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    assert!(matches!(
+        remove_acquiring(&paths, "hades", None, Kind::Grid).unwrap_err(),
+        Error::NoArt { .. }
+    ));
+    assert!(matches!(
+        remove_acquiring(&paths, "hades", Some("../x"), Kind::Grid).unwrap_err(),
+        Error::InvalidName(name) if name == "../x"
+    ));
+    assert_eq!(fs::read(&library).unwrap(), before);
+
+    let file = source(root.path(), "grid.png", PNG);
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&library).unwrap(), before);
+    let (removed, identity) = remove_acquiring(&paths, "hades", None, Kind::Grid).unwrap();
+    assert!(removed.record);
+    let id = crate::library::read_id(&paths, "hades").unwrap();
+    assert!(id.is_some());
+    assert_eq!(identity.id(), id);
+}
+
+#[test]
+fn acquiring_writes_say_a_missing_environment_does_not_exist() {
+    let (root, paths, _) = old_store();
+    let file = source(root.path(), "grid.png", PNG);
+    let unknown = |error: Error| matches!(error, Error::UnknownEnvironment(name) if name == "gone");
+    assert!(unknown(
+        set_manual_acquiring(&paths, "gone", None, Kind::Grid, &file).unwrap_err()
+    ));
+    assert!(unknown(
+        remove_acquiring(&paths, "gone", None, Kind::Grid).unwrap_err()
+    ));
+    assert_eq!(crate::library::read_id(&paths, "gone").unwrap(), None);
+}
+
+#[test]
+fn an_acquiring_removal_with_an_unreadable_art_file_mints_nothing() {
+    let (_root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    let art = paths.art_dir("hades");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join(ART_FILE), "[broken\n").unwrap();
+    let locked = {
+        let guard = Locks::new(&paths).config(&art.join(ART_FILE)).unwrap();
+        crate::error::chain(&ArtFile::open_locked(&art, &guard).err().unwrap())
+    };
+    let error = remove_acquiring(&paths, "hades", None, Kind::Grid).unwrap_err();
+    assert_eq!(crate::error::chain(&error), locked);
+    assert_eq!(fs::read(&library).unwrap(), before);
+}

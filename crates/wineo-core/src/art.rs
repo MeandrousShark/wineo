@@ -804,12 +804,10 @@ pub fn remove_acquiring(
     Environment::ensure_exists(paths, env)?;
     let art_dir = paths.art_dir(env);
     let dir = spot_dir(&art_dir, target);
-    // An art.toml that can't be read here is left to the locked read, which
-    // reports it as it always has.
-    if let Ok(config) = ArtConfig::load(&art_dir)
-        && config.record(target, kind).is_none()
-        && matches!(find(&dir, kind, None), Ok(None))
-    {
+    // An art.toml that can't be read fails here with the error the locked
+    // read would give, so a removal that can't happen mints no id.
+    let config = ArtConfig::load(&art_dir)?;
+    if config.record(target, kind).is_none() && matches!(find(&dir, kind, None), Ok(None)) {
         return Err(Error::NoArt {
             spot: spot_name(env, target),
             kind,
