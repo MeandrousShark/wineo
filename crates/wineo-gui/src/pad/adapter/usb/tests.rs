@@ -145,7 +145,10 @@ async fn next(held: &mut Held) -> Vec<u8> {
 
 fn say(prompt: &str) {
     println!();
-    println!(">>> {prompt} (gives up after {} s)", PROMPT.as_secs());
+    println!(
+        ">>> {prompt} (ends after {} s, or when the reads stop)",
+        PROMPT.as_secs()
+    );
 }
 
 /// Reads until `done` says so or the prompt gives up, and returns whether
