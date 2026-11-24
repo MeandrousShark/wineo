@@ -98,6 +98,9 @@ const PROMPT: Duration = Duration::from_secs(20);
 /// How long a read may take before the adapter counts as silent.
 const READ: Duration = Duration::from_secs(2);
 const PORT: usize = 0;
+/// How many reports a take may open with before port 1 has to show its
+/// controller.
+const LEAD: usize = 100;
 
 /// What one prompt saw of port 1.
 #[derive(Debug, Default)]
@@ -288,21 +291,34 @@ async fn record() {
         Err(_) => panic!("the start byte wasn't taken in {READ:?}"),
     }
 
+    // A real adapter says every port is empty for its first few reports
+    // after a take, so the controller's first report isn't the take's.
+    let mut before = Vec::new();
     let mut first = Vec::new();
-    for _ in 0..10 {
+    while first.is_empty() && before.len() < LEAD {
+        let report = next(&mut held).await;
+        if port(&report).is_some_and(controller) {
+            first.push(report);
+        } else {
+            before.push(report);
+        }
+    }
+    println!("- reports before port 1 showed a controller:");
+    for report in &before {
+        println!("  `{}`", hex(report));
+    }
+    assert!(
+        !first.is_empty(),
+        "no controller in port 1 after {LEAD} reports; plug one in and run again"
+    );
+    for _ in 0..9 {
         first.push(next(&mut held).await);
     }
-    println!("- first reports after the take:");
+    println!("- first reports with the controller:");
     for report in &first {
         println!("  `{}`", hex(report));
     }
-    let Some(rest) = first.first().and_then(|report| port(report)) else {
-        panic!("the first report isn't one: {}", hex(&first[0]));
-    };
-    assert!(
-        controller(rest),
-        "no controller in port 1; plug one in and run again"
-    );
+    let rest = port(&first[0]).expect("checked above");
     let main_center = [rest[3], rest[4]];
     let c_center = [rest[5], rest[6]];
 
