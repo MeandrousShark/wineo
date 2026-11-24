@@ -11,6 +11,7 @@ fn input(controller: bool, buttons: &[(PadAction, PadButton)]) -> Input {
     Input {
         controller,
         gamecube_adapter: false,
+        hint_bar: true,
         buttons: buttons.iter().copied().collect::<BTreeMap<_, _>>(),
     }
 }
