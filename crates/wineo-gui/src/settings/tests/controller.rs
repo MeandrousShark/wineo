@@ -364,6 +364,10 @@ fn the_adapter_has_a_line_while_wineo_isnt_holding_it() {
     page.adapter = State::Held;
     page.pads = vec!["GameCube controller (port 1)".to_owned()];
     assert_eq!(shown(&page), ["GameCube controller (port 1)"]);
+    // Held with every port empty: the plain line, not "No controller found.",
+    // so the list doesn't flip as the window gains and loses focus.
+    page.pads.clear();
+    assert_eq!(shown(&page), ["GameCube adapter"]);
 }
 
 #[test]

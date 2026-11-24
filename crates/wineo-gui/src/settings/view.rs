@@ -928,7 +928,7 @@ fn controller_rows<'a>(
         locked || !input.controller,
         palette,
     ));
-    let adapter = adapter_line(page.adapter);
+    let adapter = adapter_line(page.adapter, page.pads.is_empty());
     if page.pads.is_empty() && adapter.is_none() {
         rows = rows.push(text(NO_CONTROLLER).size(13).color(palette.muted));
     }
@@ -973,11 +973,17 @@ fn controller_rows<'a>(
 
 /// The adapter's line in the pad list while wineo isn't holding it, so the
 /// list doesn't fall back to "No controller found." when the window loses
-/// focus. Held, its pads show instead; used by the kernel, gilrs lists them.
-pub(super) fn adapter_line(state: crate::pad::adapter::State) -> Option<&'static str> {
+/// focus. Held, its pads show instead; held with every port empty there are
+/// none to show, and the plain line keeps the list from flipping with focus.
+/// Used by the kernel, gilrs lists them.
+pub(super) fn adapter_line(
+    state: crate::pad::adapter::State,
+    no_pads: bool,
+) -> Option<&'static str> {
     use crate::pad::adapter::State;
     match state {
         State::Free => Some(ADAPTER_FREE),
+        State::Held if no_pads => Some(ADAPTER_FREE),
         State::Busy => Some(ADAPTER_BUSY),
         State::NoAccess => Some(ADAPTER_NO_ACCESS),
         State::Absent | State::Held | State::Kernel => None,
