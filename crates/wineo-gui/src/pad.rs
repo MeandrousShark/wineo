@@ -11,6 +11,7 @@ use crate::keys::Direction;
 
 pub(crate) mod adapter;
 pub(crate) mod glyph;
+pub(crate) mod hint_fit;
 pub(crate) mod reader;
 
 /// A pad's id, stable while it stays connected. gilrs and the GameCube

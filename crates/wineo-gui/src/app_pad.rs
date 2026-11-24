@@ -346,20 +346,29 @@ impl App {
 
     pub(crate) fn pad_hint_view(&self) -> Option<iced::Element<'_, Message>> {
         let style = self.pad_hint.filter(|_| self.pad_hint_shown())?;
-        Some(pad::glyph::bar(self.pad_hints(), style, self.palette))
+        Some(pad::glyph::bar(
+            self.pad_hints(),
+            style,
+            self.palette,
+            self.hint_room(),
+        ))
     }
 
     /// The bar's hints. A panel a coverflow card hides isn't open to A,
-    /// which opens the card's section instead. A hint whose button the last
-    /// pad lacks is left out, since that pad can't do it.
-    pub(crate) fn pad_hints(&self) -> Vec<(wineo_core::library::PadButton, &'static str)> {
+    /// which opens the card's section instead. A button the last pad lacks
+    /// is left out, since that pad can't press it, and a hint left with no
+    /// button goes too.
+    pub(crate) fn pad_hints(&self) -> Vec<pad::glyph::Hint> {
         let style = self.pad_hint.unwrap_or_default();
         let mut hints = pad::glyph::hints(
             &self.input.bindings(),
             self.panel_open && !self.panel_hidden_by_card(),
             self.header_cursor().is_some(),
         );
-        hints.retain(|(button, _)| style.has(*button));
+        for hint in &mut hints {
+            hint.buttons.retain(|button| style.has(*button));
+        }
+        hints.retain(|hint| !hint.buttons.is_empty());
         hints
     }
 

@@ -12,6 +12,8 @@ use crate::pad::{Axis, PadEvent, PadId, PadInfo, Raw};
 use crate::test_tasks::each_ready;
 use crate::tests::card;
 
+mod hints;
+
 fn xbox() -> PadInfo {
     PadInfo {
         name: "Xbox Wireless Controller".to_owned(),
@@ -903,6 +905,11 @@ fn the_hint_bar_follows_the_last_pad_and_hides_on_mouse_or_keys() {
     assert!(app.pad_hint_view().is_some());
 }
 
+/// Each hint's word, in the bar's order.
+fn words(hints: &[crate::pad::glyph::Hint]) -> Vec<&'static str> {
+    hints.iter().map(|hint| hint.word).collect()
+}
+
 /// What the app asks iced to listen to, which is all a test can know of
 /// the pointer listener.
 fn listeners(app: &App) -> usize {
@@ -995,20 +1002,31 @@ fn turning_the_hint_bar_off_clears_a_bar_that_is_showing() {
 
 #[test]
 fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
+    use crate::pad::glyph::hints;
     let input = wineo_core::library::Input::default();
-    let hints = crate::pad::glyph::hints(&input.bindings(), false, false);
-    let words: Vec<_> = hints.iter().map(|(_, word)| *word).collect();
-    assert_eq!(words, ["Open", "Back", "Favorite", "Mark", "Random"]);
     assert_eq!(
-        crate::pad::glyph::hints(&input.bindings(), true, false)[0].1,
-        "Play"
+        words(&hints(&input.bindings(), false, false)),
+        [
+            "Open",
+            "Back",
+            "Favorite",
+            "Mark",
+            "Random",
+            "Page",
+            "Layout",
+            "Full screen"
+        ]
+    );
+    // With a game's panel open, Layout and Full screen leave; Page stays.
+    assert_eq!(
+        words(&hints(&input.bindings(), true, false)),
+        ["Play", "Back", "Favorite", "Mark", "Random", "Page"]
     );
     // A section's header or collapsed card has nothing to favorite or mark.
-    let words: Vec<_> = crate::pad::glyph::hints(&input.bindings(), false, true)
-        .iter()
-        .map(|(_, word)| *word)
-        .collect();
-    assert_eq!(words, ["Open", "Back", "Random"]);
+    assert_eq!(
+        words(&hints(&input.bindings(), false, true)),
+        ["Open", "Back", "Random", "Page", "Layout", "Full screen"]
+    );
     use crate::pad::Style;
     use crate::pad::glyph::{Glyph, glyph};
     use wineo_core::library::PadButton;
@@ -1017,12 +1035,16 @@ fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
         glyph(Style::Xbox, PadButton::A),
         glyph(Style::PlayStation, PadButton::A)
     );
-    assert_eq!(
+    assert_ne!(
         glyph(Style::Xbox, PadButton::A),
         glyph(Style::Nintendo, PadButton::A)
     );
-    assert_eq!(glyph(Style::Nintendo, PadButton::Lt), Glyph::Label("ZL"));
-    assert_eq!(glyph(Style::PlayStation, PadButton::Rb), Glyph::Label("R1"));
+    let text = |style, button| match glyph(style, button) {
+        Glyph::Label { text, .. } => text,
+        Glyph::Face { .. } => "face",
+    };
+    assert_eq!(text(Style::Nintendo, PadButton::Lt), "ZL");
+    assert_eq!(text(Style::PlayStation, PadButton::Rb), "R1");
 }
 
 #[test]
@@ -1038,8 +1060,12 @@ fn a_remap_changes_what_a_press_does_and_what_the_hints_say() {
     tap(&mut app, Raw::West);
     assert!(app.panel_open);
     let hints = crate::pad::glyph::hints(&app.input.bindings(), true, false);
-    assert_eq!(hints[0], (PadButton::X, "Play"));
-    assert!(hints.contains(&(PadButton::A, "Mark")));
+    let hint = |button, word| crate::pad::glyph::Hint {
+        buttons: vec![button],
+        word,
+    };
+    assert_eq!(hints[0], hint(PadButton::X, "Play"));
+    assert!(hints.contains(&hint(PadButton::A, "Mark")));
 }
 
 #[test]
@@ -1120,9 +1146,7 @@ fn on_a_coverflow_card_the_hints_drop_favorite_and_mark_and_a_opens() {
     tap(&mut app, Raw::DPadRight);
     tap(&mut app, Raw::South);
     assert!(app.panel_open);
-    let words = |app: &App| -> Vec<&'static str> {
-        app.pad_hints().into_iter().map(|(_, word)| word).collect()
-    };
+    let words = |app: &App| words(&app.pad_hints());
     assert!(words(&app).contains(&"Play"));
     assert!(words(&app).contains(&"Favorite"));
     tap(&mut app, Raw::DPadRight);
@@ -1395,13 +1419,22 @@ fn a_gamecube_a_confirms_and_l_r_z_and_the_c_stick_follow_the_map() {
 fn the_hint_bar_leaves_out_what_a_gamecube_pad_lacks() {
     use wineo_core::library::{PadAction, PadButton};
     let (_home, mut app) = adapter_ready();
-    let words = |app: &App| -> Vec<&'static str> {
-        app.pad_hints().into_iter().map(|(_, word)| word).collect()
-    };
+    let words = |app: &App| words(&app.pad_hints());
     app.pad_hint = Some(crate::pad::Style::Xbox);
     assert!(words(&app).contains(&"Random"));
     app.pad_hint = Some(crate::pad::Style::GameCube);
-    assert_eq!(words(&app), ["Open", "Back", "Favorite", "Mark"]);
+    assert_eq!(
+        words(&app),
+        [
+            "Open",
+            "Back",
+            "Favorite",
+            "Mark",
+            "Page",
+            "Layout",
+            "Full screen"
+        ]
+    );
     // Back once it's on a button the pad has, the C-stick included.
     app.input.buttons.insert(PadAction::Layout, PadButton::Ls);
     app.input.buttons.insert(PadAction::Random, PadButton::View);

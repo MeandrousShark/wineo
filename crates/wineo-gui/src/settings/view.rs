@@ -955,7 +955,18 @@ fn controller_rows<'a>(
             text(CAPTURE_PROMPT).size(13).color(palette.muted).into()
         } else {
             match bindings.button(action) {
-                Some(button) => crate::pad::glyph::glyph_view(page.pad_style, button, palette),
+                // Dimmed while locked, so a full-color button doesn't look
+                // live.
+                Some(button) => crate::pad::glyph::glyph_view(
+                    page.pad_style,
+                    button,
+                    palette,
+                    if rows_locked {
+                        crate::panel::DIMMED_OPACITY
+                    } else {
+                        1.0
+                    },
+                ),
                 None => text(UNBOUND).size(13).color(palette.warning).into(),
             }
         };
