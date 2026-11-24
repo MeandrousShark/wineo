@@ -614,12 +614,22 @@ Library's size.
   without Favorite and Mark on a section header or collapsed card. Symbols
   follow the last controller pressed: letter rings for Xbox and Nintendo,
   the four shapes for PlayStation, and words like LB, L1, or ZL for the
-  rest. It shows after a controller press and hides on any mouse move or
-  click, with no timer.
+  rest. A GameCube controller on the adapter has its own words: L, R, Z,
+  Start, C left, and C right, with letter rings for A, B, X, and Y where
+  they are printed. A hint whose button the last controller can't press
+  is left out (a GameCube controller has no stick clicks). It shows after
+  a controller press or stick move and hides on any mouse move or click,
+  with no timer.
 - Each remap row in Global settings is a button showing the action and its
   symbol, or "Unbound" in the warning color. A waiting row says "Press a
   button..." for 5 s. Reset to defaults is enabled only while something is
   remapped.
+- The controller list in Global settings names each pad on a line. A
+  device wineo knows about but isn't reading gets one muted 13 px line
+  under the names, the device first and the reason after a colon, like
+  "GameCube adapter: in use by another program."; a device that is simply
+  idle is its name alone. A switch that depends on another is locked with
+  it, as the remap rows are.
 
 ## Reviews and management pages
 

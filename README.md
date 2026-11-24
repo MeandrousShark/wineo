@@ -312,7 +312,8 @@ couple of seconds.
 - **Keyboard and controller.** Arrow keys move between cards, Enter opens a
   card and then plays it, F stars it, Ctrl+= and Ctrl+- zoom, and F11 goes
   full screen. An Xbox, PlayStation, or Nintendo controller drives the
-  library too, with buttons you can remap in Settings.
+  library too, with buttons you can remap in Settings, and so does a
+  GameCube controller on Nintendo's USB adapter.
 
 Start it with `wineo-gui`, or from your app menu once it has an entry (see
 [After installing](#after-installing)). Everything it does is covered in

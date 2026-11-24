@@ -37,18 +37,22 @@ pub(crate) enum LogSource {
     Install(Token),
 }
 
+/// Starts `name`, once `let_go` is done: the GameCube adapter's let-go, so
+/// a game or hook that opens it finds it free.
 pub(crate) fn start(
     paths: Paths,
     name: String,
     target: String,
     token: Token,
     install_done: Token,
+    let_go: impl Future<Output = ()> + Send + 'static,
 ) -> Task<Message> {
     let (sender, receiver) = unbounded();
     let progress_name = name.clone();
     let finish_name = name.clone();
     let work = Task::perform(
         async move {
+            let_go.await;
             task::join(
                 move || {
                     let work = || -> anyhow::Result<_> {

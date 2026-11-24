@@ -9,11 +9,19 @@ use wineo_core::library::PadButton;
 
 use crate::keys::Direction;
 
+pub(crate) mod adapter;
 pub(crate) mod glyph;
 pub(crate) mod reader;
 
-/// The id the reader gives a pad, stable while it stays connected.
-pub(crate) type PadId = usize;
+/// A pad's id, stable while it stays connected. gilrs and the GameCube
+/// adapter both number from zero, so each has its own kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PadId {
+    /// gilrs's index.
+    Gilrs(usize),
+    /// A port on the GameCube adapter, from zero.
+    Adapter(u8),
+}
 
 /// A button by where it sits, the way the SDL mapping database names it:
 /// `South` is the bottom face button on every pad, whatever is printed on
@@ -65,7 +73,9 @@ pub(crate) struct PadInfo {
 }
 
 impl PadInfo {
-    pub(crate) fn style(&self) -> Style {
+    /// Whose labels a gilrs pad carries. Adapter pads are GameCube by their
+    /// id instead (`style_of`), since their vendor is Nintendo's.
+    fn style(&self) -> Style {
         match self.vendor {
             Some(NINTENDO) => Style::Nintendo,
             Some(SONY) => Style::PlayStation,
@@ -102,6 +112,26 @@ pub(crate) enum Style {
     Xbox,
     PlayStation,
     Nintendo,
+    /// A pad on the GameCube adapter. Its buttons carry their own labels,
+    /// so there's no swap.
+    GameCube,
+}
+
+impl Style {
+    /// Whether a pad of this style has `button`. A GameCube pad has no
+    /// stick clicks; its C-stick stands in for the triggers.
+    pub(crate) fn has(self, button: PadButton) -> bool {
+        !(self == Self::GameCube && matches!(button, PadButton::Ls | PadButton::Rs))
+    }
+}
+
+/// Whose labels the pad `id` carries: GameCube for an adapter port, never
+/// Nintendo's swap, else by its vendor.
+fn style_of(id: PadId, info: &PadInfo) -> Style {
+    match id {
+        PadId::Adapter(_) => Style::GameCube,
+        PadId::Gilrs(_) => info.style(),
+    }
 }
 
 /// The printed label of a raw button. A Nintendo pad prints A on the east
@@ -210,7 +240,7 @@ impl Pads {
             self.connected
                 .iter()
                 .find(|(id, _)| self.read(**id))
-                .map(|(_, info)| info.style())
+                .map(|(id, info)| style_of(*id, info))
                 .unwrap_or_default()
         })
     }
@@ -218,7 +248,7 @@ impl Pads {
     fn style(&self, id: PadId) -> Style {
         self.connected
             .get(&id)
-            .map(PadInfo::style)
+            .map(|info| style_of(id, info))
             .unwrap_or_default()
     }
 
@@ -270,6 +300,11 @@ impl Pads {
                 if let Some(direction) = was {
                     self.let_go(direction, Source::Stick(id));
                 }
+                // A move names the pad like a press, so someone who only
+                // used the stick still sees its labels.
+                if now_pressed.is_some() {
+                    self.last_style = Some(style);
+                }
                 now_pressed.map(|direction| self.hold(direction, Source::Stick(id), style, now))
             }
         }
@@ -308,6 +343,21 @@ impl Pads {
         }
         held.next = now + REPEAT_EVERY;
         Some(Input::Move(held.direction, held.style))
+    }
+
+    /// Disconnects every adapter pad, for when the adapter's reader goes
+    /// away without a word, like its switch turning off.
+    pub(crate) fn drop_adapter(&mut self) -> bool {
+        let ports: Vec<PadId> = self
+            .connected
+            .keys()
+            .copied()
+            .filter(|id| matches!(id, PadId::Adapter(_)))
+            .collect();
+        for id in &ports {
+            self.event(PadEvent::Disconnected(*id), Instant::now());
+        }
+        !ports.is_empty()
     }
 
     /// Stops any repeat, for when the pad gate closes or the switch goes

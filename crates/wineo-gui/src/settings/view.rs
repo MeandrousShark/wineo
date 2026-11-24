@@ -928,11 +928,15 @@ fn controller_rows<'a>(
         locked || !input.controller,
         palette,
     ));
-    if page.pads.is_empty() {
+    let adapter = adapter_line(page.adapter, page.pads.is_empty());
+    if page.pads.is_empty() && adapter.is_none() {
         rows = rows.push(text(NO_CONTROLLER).size(13).color(palette.muted));
     }
     for name in &page.pads {
         rows = rows.push(text(name.clone()).size(14).color(palette.foreground));
+    }
+    if let Some(line) = adapter {
+        rows = rows.push(text(line).size(13).color(palette.muted));
     }
     let bindings = input.bindings();
     // The rows wait for a pad, so they need the switch on.
@@ -967,6 +971,25 @@ fn controller_rows<'a>(
     rows.into()
 }
 
+/// The adapter's line in the pad list while wineo isn't holding it, so the
+/// list doesn't fall back to "No controller found." when the window loses
+/// focus. Held, its pads show instead; held with every port empty there are
+/// none to show, and the plain line keeps the list from flipping with focus.
+/// Used by the kernel, gilrs lists them.
+pub(super) fn adapter_line(
+    state: crate::pad::adapter::State,
+    no_pads: bool,
+) -> Option<&'static str> {
+    use crate::pad::adapter::State;
+    match state {
+        State::Free => Some(ADAPTER_FREE),
+        State::Held if no_pads => Some(ADAPTER_FREE),
+        State::Busy => Some(ADAPTER_BUSY),
+        State::NoAccess => Some(ADAPTER_NO_ACCESS),
+        State::Absent | State::Held | State::Kernel => None,
+    }
+}
+
 /// The focus id of `action`'s remap row.
 pub(super) fn remap_id(action: PadAction) -> String {
     format!("settings-remap-{}", action.as_str())
@@ -995,6 +1018,9 @@ pub(super) const RESET_BUTTONS: &str = "Reset to defaults";
 pub(super) const CONTROLLER_SWITCH: &str = "Use a controller in the Library";
 pub(super) const GAMECUBE_ADAPTER_SWITCH: &str = "Use a GameCube adapter";
 pub(super) const NO_CONTROLLER: &str = "No controller found.";
+pub(super) const ADAPTER_FREE: &str = "GameCube adapter";
+pub(super) const ADAPTER_BUSY: &str = "GameCube adapter: in use by another program.";
+pub(super) const ADAPTER_NO_ACCESS: &str = "GameCube adapter: no access. See the docs.";
 
 pub(super) fn version_line() -> String {
     format!("wineo {}", wineo_core::version::VERSION)

@@ -36,6 +36,7 @@ pub(crate) enum Glyph {
 pub(crate) fn glyph(style: Style, button: PadButton) -> Glyph {
     let playstation = style == Style::PlayStation;
     let nintendo = style == Style::Nintendo;
+    let gamecube = style == Style::GameCube;
     match button {
         PadButton::A if playstation => Glyph::Face(CROSS),
         PadButton::B if playstation => Glyph::Face(CIRCLE),
@@ -53,6 +54,12 @@ pub(crate) fn glyph(style: Style, button: PadButton) -> Glyph {
         PadButton::Start if playstation => Glyph::Label("Options"),
         PadButton::Ls if playstation => Glyph::Label("L3"),
         PadButton::Rs if playstation => Glyph::Label("R3"),
+        PadButton::Lb if gamecube => Glyph::Label("L"),
+        PadButton::Rb if gamecube => Glyph::Label("R"),
+        PadButton::View if gamecube => Glyph::Label("Z"),
+        PadButton::Start if gamecube => Glyph::Label("Start"),
+        PadButton::Lt if gamecube => Glyph::Label("C left"),
+        PadButton::Rt if gamecube => Glyph::Label("C right"),
         PadButton::Lb if nintendo => Glyph::Label("L"),
         PadButton::Rb if nintendo => Glyph::Label("R"),
         PadButton::Lt if nintendo => Glyph::Label("ZL"),

@@ -445,3 +445,25 @@ fn a_retroarch_quit_file_that_cant_be_written_reaches_the_panel_as_a_note() {
         "{notes:?}"
     );
 }
+
+#[test]
+fn a_start_waits_for_the_let_go_before_it_launches() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| root.path().as_os_str().to_owned()))
+            .unwrap();
+    let let_go = Arc::new(AtomicBool::new(false));
+    let flag = let_go.clone();
+    // An environment that doesn't exist, so the launch errors out at once
+    // and nothing real starts.
+    let task = start(
+        paths,
+        "qa-no-such-environment".to_owned(),
+        "none".to_owned(),
+        Token::new(),
+        Token::new(),
+        async move { flag.store(true, Ordering::SeqCst) },
+    );
+    crate::test_tasks::each_action(task, |_| {});
+    assert!(let_go.load(Ordering::SeqCst));
+}

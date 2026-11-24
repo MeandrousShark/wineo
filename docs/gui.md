@@ -1277,7 +1277,12 @@ wrap onto more lines.
 
 **Controller** holds **Use a controller in the Library**, on by default,
 and the names of the connected controllers, or "No controller found."
-Below them, each controller action has a row showing its button. Click a
+Under it, **Use a GameCube adapter**, off by default, reads Nintendo's
+GameCube adapter; the list then shows its controllers as "GameCube
+controller (port 1)", or a line about the adapter when wineo isn't reading
+it or it has no controller plugged in (see
+[GameCube adapter](#gamecube-adapter)). The switch is locked while
+the first one is off. Below them, each controller action has a row showing its button. Click a
 row, or press Enter or Space on it, and it says "Press a button..." for 5
 seconds; the next controller button takes the action. A button another
 action had swaps with it, so every button stays used once. Any key, click,
@@ -1541,9 +1546,10 @@ On a Nintendo controller, the button printed A confirms and the one printed
 B goes back, wherever they sit. Every button above can be changed in
 [Global settings](#global-settings); movement can't.
 
-After you press a button, a bar at the bottom of the Library shows what the
-main buttons do, in your controller's own symbols. Moving or clicking the
-mouse hides it.
+After you press a button or move the stick, a bar at the bottom of the
+Library shows what the main buttons do, in your controller's own symbols.
+A hint whose button your controller doesn't have is left out. Moving or
+clicking the mouse hides it.
 
 The controller only works while wineo's window has focus and you've used
 it, so presses meant for a game don't reach the Library. Starting a game,
@@ -1551,6 +1557,62 @@ running a tool, or hiding the window stops it until the window has focus
 again or you press a key or click. With Steam running, Steam's desktop
 layout can turn controller presses into keys, which moves twice for each
 press; turn that off in Steam's controller settings.
+
+### GameCube adapter
+
+Linux has no driver for Nintendo's GameCube controller adapter (the Wii U
+and Switch one), so a GameCube controller on it isn't a game controller to
+the system. Turn on **Use a GameCube adapter** in
+[Global settings](#global-settings) and wineo reads the adapter itself.
+It's off by default, and while it's off wineo never looks for the adapter.
+Third-party adapters in their Wii U mode look the same to wineo and should
+work; they aren't tested.
+
+| Button | Does |
+|---|---|
+| D-pad, control stick | Move |
+| A, B, X, Y | The same as on any controller, by the letter printed on them |
+| L, R | A screenful back or forward |
+| C-stick left, right | First or last game |
+| Z | Next layout |
+| Start | Full screen |
+
+L and R press halfway down, or at the click on a controller whose triggers
+have little travel. The C-stick does nothing up or down. No button picks at
+random until you give it one: the remap rows work as for any controller,
+and show the buttons as L, R, Z, C left, and C right. A button, trigger, or
+C-stick direction that is already down when wineo starts reading does
+nothing until you let go and press again.
+
+Only one program can read the adapter at a time. wineo holds it only while
+its window has focus and you're using a controller there, and lets go
+before a game starts, so Dolphin can take it. A game start waits up to a
+quarter second for that; tools and Steam games don't wait. While another
+program has it, the list in Settings says "GameCube adapter: in use by
+another program." and wineo tries again each second while its window has
+focus. The line shows what wineo last saw, so it can be out of date while
+the window is in the background. With no controller plugged into the
+adapter, the list says "GameCube adapter".
+
+If the adapter stops answering while it's still plugged in, as it can
+after the computer wakes from sleep, wineo takes it again about a second
+later.
+
+"GameCube adapter: no access. See the docs." means your user can't open
+the device. The rule that allows it comes with Dolphin's package on most
+distributions, with Valve's `steam-devices`, and with `game-devices-udev`.
+Without one of those, put this line in
+`/etc/udev/rules.d/51-gamecube-adapter.rules`, then unplug the adapter and
+plug it back in:
+
+```
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0337", TAG+="uaccess"
+```
+
+With a kernel module for the adapter installed, its controllers are
+ordinary game controllers already; wineo leaves the adapter alone and the
+switch does nothing. One adapter is read. Rumble, and using the triggers
+or C-stick as more than buttons, aren't supported.
 
 ## Look
 

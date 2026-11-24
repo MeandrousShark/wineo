@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use iced::Subscription;
 use iced::futures::{SinkExt, Stream};
 
-use super::{Axis, PadEvent, PadInfo, Raw};
+use super::{Axis, PadEvent, PadId, PadInfo, Raw};
 use crate::Message;
 
 /// What one read found.
@@ -148,7 +148,7 @@ impl Gilrs {
     fn connected(&self) -> Vec<PadEvent> {
         self.0
             .gamepads()
-            .map(|(id, pad)| PadEvent::Connected(id.into(), info(&pad)))
+            .map(|(id, pad)| PadEvent::Connected(PadId::Gilrs(id.into()), info(&pad)))
             .collect()
     }
 }
@@ -158,7 +158,7 @@ impl Source for Gilrs {
         let Some(event) = self.0.next_event_blocking(None) else {
             return Read::Nothing;
         };
-        let id = usize::from(event.id);
+        let id = PadId::Gilrs(usize::from(event.id));
         let translated = match event.event {
             gilrs::EventType::Connected => {
                 Some(PadEvent::Connected(id, info(&self.0.gamepad(event.id))))

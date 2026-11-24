@@ -338,7 +338,7 @@ mod app {
 
     use super::*;
     use crate::Message;
-    use crate::pad::{PadEvent, PadInfo, Raw};
+    use crate::pad::{PadEvent, PadId, PadInfo, Raw};
 
     fn xbox() -> PadInfo {
         PadInfo {
@@ -354,7 +354,7 @@ mod app {
         let mut app = App::boot(paths.clone()).0;
         let start = Instant::now();
         app.pad_clock = Some(start);
-        let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+        let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(0), xbox())));
         let id = app.main_window.unwrap();
         let _ = app.update(Message::Window(id, window::Event::Focused));
         let _ = app.open_global_settings();
@@ -372,8 +372,8 @@ mod app {
     }
 
     fn press(app: &mut App, raw: Raw) {
-        let _ = app.update(Message::Pad(PadEvent::Pressed(0, raw)));
-        let _ = app.update(Message::Pad(PadEvent::Released(0, raw)));
+        let _ = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), raw)));
+        let _ = app.update(Message::Pad(PadEvent::Released(PadId::Gilrs(0), raw)));
     }
 
     fn start_capture(app: &mut App, action: PadAction) {
@@ -467,7 +467,10 @@ mod app {
             vendor: Some(0x054c),
             product: Some(0x0ce6),
         };
-        let _ = app.update(Message::Pad(PadEvent::Connected(0, dualsense)));
+        let _ = app.update(Message::Pad(PadEvent::Connected(
+            PadId::Gilrs(0),
+            dualsense,
+        )));
         let _ = app.open_global_settings();
         assert_eq!(page(&app).pad_style, crate::pad::Style::PlayStation);
         let generation = page(&app).generation;
@@ -520,7 +523,7 @@ mod app {
         let _ = app.update(Message::Window(id, window::Event::Focused));
 
         start_capture(&mut app, PadAction::Favorite);
-        let _ = app.update(Message::Pad(PadEvent::Disconnected(0)));
+        let _ = app.update(Message::Pad(PadEvent::Disconnected(PadId::Gilrs(0))));
         assert_eq!(page(&app).capturing(), None);
         assert!(!page(&app).is_dirty());
     }
@@ -696,9 +699,146 @@ mod app {
             vendor: Some(0x057e),
             product: Some(0x2009),
         };
-        let _ = app.update(Message::Pad(PadEvent::Connected(1, nintendo)));
+        let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(1), nintendo)));
         assert_eq!(page(&app).pad_style, crate::pad::Style::Xbox);
-        let _ = app.update(Message::Pad(PadEvent::Pressed(1, Raw::LeftBumper)));
+        let _ = app.update(Message::Pad(PadEvent::Pressed(
+            PadId::Gilrs(1),
+            Raw::LeftBumper,
+        )));
         assert_eq!(page(&app).pad_style, crate::pad::Style::Nintendo);
+    }
+
+    #[test]
+    fn a_waiting_row_takes_a_c_stick_push_with_the_adapter_on_in_the_draft() {
+        use crate::pad::adapter::{Report, State, port_info};
+        let (_root, paths) = setup();
+        let (mut app, _) = app_in(&paths);
+        let port = PadId::Adapter(0);
+        let adapter = |app: &mut App, report| {
+            let _ = app.update(Message::Adapter(report));
+        };
+        // Saved off: what an old reader sends is dropped.
+        assert!(!app.adapter_subscribed());
+        adapter(
+            &mut app,
+            Report::Pad(PadEvent::Connected(port, port_info(0))),
+        );
+        assert_eq!(page(&app).pads, ["Xbox Wireless Controller"]);
+
+        // On in the draft, before any save.
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(true)));
+        assert!(app.adapter_subscribed() && app.adapter_wanted());
+        assert!(!app.input.gamecube_adapter, "the saved switch is still off");
+        adapter(&mut app, Report::State(State::Held));
+        adapter(
+            &mut app,
+            Report::Pad(PadEvent::Connected(port, port_info(0))),
+        );
+        assert_eq!(
+            page(&app).pads,
+            ["Xbox Wireless Controller", "GameCube controller (port 1)"]
+        );
+        start_capture(&mut app, PadAction::Random);
+        adapter(
+            &mut app,
+            Report::Pad(PadEvent::Pressed(port, Raw::LeftTrigger)),
+        );
+        assert_eq!(page(&app).capturing(), None);
+        assert_eq!(button(page(&app), PadAction::Random), Some(PadButton::Lt));
+        // The rows now read in its words.
+        assert_eq!(page(&app).pad_style, crate::pad::Style::GameCube);
+
+        // Off in the draft again: the reader and its pads go.
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(false)));
+        assert!(!app.adapter_subscribed());
+        assert_eq!(page(&app).pads, ["Xbox Wireless Controller"]);
+        assert_eq!(page(&app).adapter, State::Absent);
+    }
+
+    #[test]
+    fn with_the_controller_switch_saved_off_the_drafts_switch_starts_the_adapters_reader() {
+        let (_root, paths) = setup();
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = false\ngamecube_adapter = true\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        assert!(app.input.gamecube_adapter && !app.input.controller);
+        assert!(!app.adapter_subscribed());
+        let _ = app.update(Message::Settings(Event::GlobalController(true)));
+        assert!(app.adapter_subscribed() && app.adapter_wanted());
+        let _ = app.update(Message::Settings(Event::GlobalController(false)));
+        assert!(!app.adapter_subscribed());
+    }
+
+    #[test]
+    fn one_switchs_saved_value_never_pairs_with_the_others_draft() {
+        let (_root, paths) = setup();
+        // Saved: controller on, adapter off. The draft turns the adapter on,
+        // then the Controller off.
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = true\ngamecube_adapter = false\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(true)));
+        assert!(app.adapter_subscribed());
+        let _ = app.update(Message::Settings(Event::GlobalController(false)));
+        assert_eq!(page(&app).draft_gamecube_adapter(), Some(true));
+        assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+
+        // The mirror: saved controller off, adapter on; the draft turns the
+        // Controller on, then the adapter off.
+        let (_root, paths) = setup();
+        write_library(
+            &paths,
+            "schema_version = 1\n\n[input]\ncontroller = false\ngamecube_adapter = true\n",
+        );
+        let (mut app, _) = app_in(&paths);
+        let _ = app.update(Message::Settings(Event::GlobalController(true)));
+        assert!(app.adapter_subscribed());
+        let _ = app.update(Message::Settings(Event::GlobalGamecubeAdapter(false)));
+        assert_eq!(page(&app).draft_controller(), Some(true));
+        assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+    }
+
+    /// Runs a save the way the worker does and lands it and the reload after.
+    fn save_app(app: &mut App, paths: &Paths) {
+        let _ = app.update(Message::Settings(Event::Save));
+        assert!(page(app).saving, "Save started");
+        let report = super::save(paths, page(app));
+        let generation = page(app).generation;
+        let _ = app.update(Message::Settings(Event::Saved(generation, Ok(report))));
+        let _ = app.update(Message::Settings(Event::Loaded(
+            generation,
+            load::snapshot_global(paths),
+        )));
+    }
+
+    #[test]
+    fn both_saved_on_holds_until_a_draft_with_one_off_is_saved() {
+        for adapter_off in [true, false] {
+            let (_root, paths) = setup();
+            write_library(
+                &paths,
+                "schema_version = 1\n\n[input]\ncontroller = true\ngamecube_adapter = true\n",
+            );
+            let (mut app, _) = app_in(&paths);
+            assert!(app.adapter_wanted() && *app.adapter.link().wanted.borrow());
+            let event = if adapter_off {
+                Event::GlobalGamecubeAdapter(false)
+            } else {
+                Event::GlobalController(false)
+            };
+            let _ = app.update(Message::Settings(event));
+            assert!(app.adapter_wanted(), "adapter off: {adapter_off}");
+            assert!(*app.adapter.link().wanted.borrow());
+            save_app(&mut app, &paths);
+            assert!(!page(&app).is_dirty());
+            assert_eq!(app.input.gamecube_adapter, !adapter_off);
+            assert_eq!(app.input.controller, adapter_off);
+            assert!(!app.adapter_subscribed(), "adapter off: {adapter_off}");
+            assert!(!*app.adapter.link().wanted.borrow());
+        }
     }
 }

@@ -2,7 +2,7 @@
 //! `library.toml`'s `[input]`, and the pads connected now.
 
 use super::*;
-use crate::pad::{PadEvent, PadInfo};
+use crate::pad::{PadEvent, PadId, PadInfo};
 
 fn save(paths: &Paths, page: &Page) -> load::Report {
     let form = &global_editor(page).form;
@@ -81,7 +81,10 @@ fn the_app_keeps_the_pads_and_the_saved_switch_current() {
         vendor: Some(0x045e),
         product: Some(0x0b13),
     };
-    let _ = app.update(crate::Message::Pad(PadEvent::Connected(0, xbox)));
+    let _ = app.update(crate::Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(0),
+        xbox,
+    )));
     assert!(app.input.controller);
     // Another window turned it off since this one started.
     wineo_core::library::set_input(
@@ -103,7 +106,7 @@ fn the_app_keeps_the_pads_and_the_saved_switch_current() {
         load::snapshot_global(&paths),
     )));
     assert!(!app.input.controller);
-    let _ = app.update(crate::Message::Pad(PadEvent::Disconnected(0)));
+    let _ = app.update(crate::Message::Pad(PadEvent::Disconnected(PadId::Gilrs(0))));
     assert!(app.settings.as_ref().unwrap().pads.is_empty());
 
     // An edit isn't saved yet, so the app keeps what's on disk.
@@ -310,4 +313,88 @@ fn the_gamecube_event_does_nothing_while_the_draft_controller_switch_is_off() {
     assert!(gamecube(&page));
     assert!(page.notes.is_empty() && page.error.is_none());
     assert_eq!(page.changes(), 1, "only the adapter switch differs now");
+}
+
+#[test]
+fn the_adapter_has_a_line_while_wineo_isnt_holding_it() {
+    use crate::pad::adapter::State;
+    assert_eq!(view::ADAPTER_FREE, "GameCube adapter");
+    assert_eq!(
+        view::ADAPTER_BUSY,
+        "GameCube adapter: in use by another program."
+    );
+    assert_eq!(
+        view::ADAPTER_NO_ACCESS,
+        "GameCube adapter: no access. See the docs."
+    );
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    let watched = [
+        view::ADAPTER_FREE,
+        view::ADAPTER_BUSY,
+        view::ADAPTER_NO_ACCESS,
+        view::NO_CONTROLLER,
+        "Xbox Wireless Controller",
+        "GameCube controller (port 1)",
+    ];
+    let shown = |page: &Page| -> Vec<String> {
+        page_texts(page, &paths)
+            .into_iter()
+            .filter(|text| watched.contains(&text.as_str()))
+            .collect()
+    };
+    for (state, line) in [
+        (State::Free, view::ADAPTER_FREE),
+        (State::Busy, view::ADAPTER_BUSY),
+        (State::NoAccess, view::ADAPTER_NO_ACCESS),
+    ] {
+        page.adapter = state;
+        assert_eq!(shown(&page), [line], "{state:?}");
+        // After any pads, never in place of them.
+        page.pads = vec!["Xbox Wireless Controller".to_owned()];
+        assert_eq!(shown(&page), ["Xbox Wireless Controller", line]);
+        page.pads.clear();
+    }
+    // Used by the kernel or gone: no line, and nothing found without pads.
+    for state in [State::Kernel, State::Absent] {
+        page.adapter = state;
+        assert_eq!(shown(&page), [view::NO_CONTROLLER], "{state:?}");
+    }
+    // Held, its pads show instead.
+    page.adapter = State::Held;
+    page.pads = vec!["GameCube controller (port 1)".to_owned()];
+    assert_eq!(shown(&page), ["GameCube controller (port 1)"]);
+    // Held with every port empty: the plain line, not "No controller found.",
+    // so the list doesn't flip as the window gains and loses focus.
+    page.pads.clear();
+    assert_eq!(shown(&page), ["GameCube adapter"]);
+    // Any pad counts, not only the adapter's own.
+    page.pads = vec!["Xbox Wireless Controller".to_owned()];
+    assert_eq!(shown(&page), ["Xbox Wireless Controller"]);
+}
+
+#[test]
+fn the_app_keeps_the_adapters_line_current() {
+    use crate::pad::adapter::{Report, State};
+    let (_root, paths) = setup();
+    let mut app = App::boot(paths.clone()).0;
+    let _ = app.open_global_settings();
+    let generation = app.settings.as_ref().unwrap().generation;
+    let _ = app.update(crate::Message::Settings(Event::Loaded(
+        generation,
+        load::snapshot_global(&paths),
+    )));
+    let _ = app.update(crate::Message::Settings(Event::GlobalGamecubeAdapter(true)));
+    let _ = app.update(crate::Message::Adapter(Report::State(State::Busy)));
+    assert_eq!(app.settings.as_ref().unwrap().adapter, State::Busy);
+    // A page opened later starts from what the app last heard.
+    let _ = app.update(crate::Message::Settings(Event::GlobalGamecubeAdapter(
+        false,
+    )));
+    assert_eq!(app.settings.as_ref().unwrap().adapter, State::Absent);
+    app.settings = None;
+    app.input.gamecube_adapter = true;
+    let _ = app.update(crate::Message::Adapter(Report::State(State::NoAccess)));
+    let _ = app.open_global_settings();
+    assert_eq!(app.settings.as_ref().unwrap().adapter, State::NoAccess);
 }

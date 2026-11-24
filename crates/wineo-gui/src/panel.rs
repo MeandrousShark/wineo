@@ -396,7 +396,16 @@ impl App {
             after_hook: false,
         });
         self.clear_panel_messages(&name);
-        worker::start(self.paths.clone(), name, target, token, install_done)
+        // Asked here, before `sync_adapter` tells the reader to let go.
+        let let_go = crate::pad::adapter::let_go(self.adapter.held());
+        worker::start(
+            self.paths.clone(),
+            name,
+            target,
+            token,
+            install_done,
+            let_go,
+        )
     }
     pub(crate) fn install_selected(&mut self) -> Task<Message> {
         let Some(card) = self
