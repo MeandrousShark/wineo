@@ -542,12 +542,8 @@ fn the_other_toasts_stay_centered_in_the_window_above_the_bar() {
 fn a_bar_with_no_room_for_its_first_hint_draws_no_pixel() {
     let size = Size::new(240.0, 60.0);
     let drawn = |room: f32| {
-        let mut bar: iced::Element<'_, Message> = crate::pad::glyph::bar(
-            all_hints(),
-            Style::Xbox,
-            crate::theme::Palette::DARK,
-            room,
-        );
+        let mut bar: iced::Element<'_, Message> =
+            crate::pad::glyph::bar(all_hints(), Style::Xbox, crate::theme::Palette::DARK, room);
         crate::layout_probe::render(&mut bar, size)
             .chunks(4)
             .filter(|pixel| pixel[3] != 0)
