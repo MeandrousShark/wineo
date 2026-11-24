@@ -252,6 +252,23 @@ fn a_first_report_outside_the_band_or_of_zeros_centers_on_128() {
     );
 }
 
+#[test]
+fn the_center_band_takes_32_from_128_and_not_33() {
+    for x in [160, 96] {
+        let (_, events) = taken(REST.stick(x, 128));
+        assert_eq!(events, [PadEvent::Connected(PORT1, port_info(0))], "{x}");
+    }
+    for (x, value) in [(161, 33.0 / 90.0), (95, -33.0 / 90.0)] {
+        let (_, events) = taken(REST.stick(x, 128));
+        assert_eq!(events[1..], [PadEvent::Stick(PORT1, Axis::X, value)], "{x}");
+    }
+    // The same on y.
+    let (_, events) = taken(REST.stick(128, 160));
+    assert_eq!(events, [PadEvent::Connected(PORT1, port_info(0))]);
+    let (_, events) = taken(REST.stick(128, 95));
+    assert_eq!(events[1..], [PadEvent::Stick(PORT1, Axis::Y, -33.0 / 90.0)]);
+}
+
 fn decoder_zeros() -> (Decoder, Vec<PadEvent>) {
     taken(Pad {
         status: 0x14,
@@ -337,6 +354,22 @@ fn wobbling_the_c_stick_across_a_diagonal_sends_no_second_press() {
     // Straight up from there lets go, since left fell under the release.
     assert_eq!(
         feed(&mut decoder, REST.c(132, 255)),
+        released(Raw::LeftTrigger)
+    );
+}
+
+#[test]
+fn a_side_still_past_the_release_keeps_its_press_while_up_dominates() {
+    let mut decoder = rested();
+    assert_eq!(
+        feed(&mut decoder, REST.c(70, 187)),
+        pressed(Raw::LeftTrigger)
+    );
+    // Left at 36 of 90, 0.4, between the thresholds; up at 0.64 is stronger.
+    assert!(feed(&mut decoder, REST.c(96, 190)).is_empty());
+    // At 31 of 90, under the release, left lets go.
+    assert_eq!(
+        feed(&mut decoder, REST.c(101, 190)),
         released(Raw::LeftTrigger)
     );
 }
@@ -654,6 +687,8 @@ struct Bus {
     held: bool,
     let_go: usize,
     reads: VecDeque<Result<Vec<u8>, Lost>>,
+    /// Runs inside the device's drop, while the reader is letting go.
+    on_let_go: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[derive(Clone)]
@@ -680,10 +715,14 @@ struct FakeDevice(Shared);
 
 impl Drop for FakeDevice {
     fn drop(&mut self) {
-        self.0.with(|bus| {
+        let on_let_go = self.0.with(|bus| {
             bus.held = false;
             bus.let_go += 1;
+            bus.on_let_go.take()
         });
+        if let Some(on_let_go) = on_let_go {
+            on_let_go();
+        }
     }
 }
 
@@ -766,6 +805,7 @@ fn harness(seen: Seen, wanted: bool, change: impl FnOnce(&mut Bus)) -> Harness {
         held: false,
         let_go: 0,
         reads: VecDeque::new(),
+        on_let_go: None,
     };
     change(&mut bus);
     let shared = Shared(Arc::new(Mutex::new(bus)), Arc::new(Notify::new()));
@@ -1001,6 +1041,17 @@ async fn a_failed_read_lets_go_and_tries_again_a_second_later() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_failed_claim_tries_again_a_second_later() {
+    let mut reader = harness(Seen::Found, true, |bus| {
+        bus.claims = [Refused::Failed].into();
+    });
+    reader.wait(5000).await;
+    assert_eq!(reader.claim_times(), [0, 1000]);
+    assert!(reader.held());
+    assert_eq!(reader.states(), [State::Free, State::Held]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn no_access_waits_for_a_replug_or_the_next_want() {
     let mut reader = harness(Seen::Found, true, |bus| {
         bus.claims = [Refused::NoAccess; 3].into();
@@ -1107,6 +1158,36 @@ async fn a_want_right_after_the_let_go_takes_it_again() {
     assert_eq!(reader.claims(), 2);
     assert_eq!(*reader.state.borrow(), State::Held);
     assert_eq!(reader.states(), [State::Held, State::Free, State::Held]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_want_that_arrives_while_letting_go_takes_it_again() {
+    let mut reader = harness(Seen::Found, true, |_| {});
+    reader.settle().await;
+    reader.shared.push(Ok(hex(PROBE_FIRST)));
+    reader.settle().await;
+    reader.sent();
+    let wanted = reader.wanted.clone();
+    reader.shared.with(|bus| {
+        bus.on_let_go = Some(Box::new(move || {
+            wanted.send_replace(true);
+        }));
+    });
+    let let_go_at = reader.now();
+    reader.want(false);
+    reader.settle().await;
+    assert_eq!(reader.shared.with(|bus| bus.let_go), 1);
+    assert!(reader.held());
+    // Taken again at once, not after a retry's second.
+    assert_eq!(reader.claim_times(), [0, let_go_at]);
+    assert_eq!(
+        reader.sent(),
+        [
+            Report::Pad(PadEvent::Disconnected(PORT1)),
+            Report::State(State::Free),
+            Report::State(State::Held)
+        ]
+    );
 }
 
 #[tokio::test(start_paused = true)]
