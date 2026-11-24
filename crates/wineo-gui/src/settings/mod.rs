@@ -102,6 +102,8 @@ pub(crate) enum Event {
     GlobalOnStop(wineo_core::library::OnStop),
     /// Controller's switch.
     GlobalController(bool),
+    /// Controller's Show button hints switch.
+    GlobalHintBar(bool),
     /// Controller's GameCube adapter switch.
     GlobalGamecubeAdapter(bool),
     /// A remap row: waits for the next pad button for that action, or
@@ -342,6 +344,7 @@ impl Event {
                 | Event::GlobalOnStart(_)
                 | Event::GlobalOnStop(_)
                 | Event::GlobalController(_)
+                | Event::GlobalHintBar(_)
                 | Event::GlobalGamecubeAdapter(_)
                 | Event::ResetButtons
                 | Event::Appearance(_)

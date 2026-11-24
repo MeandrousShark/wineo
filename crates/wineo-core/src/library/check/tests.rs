@@ -744,6 +744,20 @@ fn the_gamecube_adapter_key_is_known_and_a_wrong_type_warns() {
 }
 
 #[test]
+fn the_hint_bar_key_is_known_and_a_wrong_type_warns() {
+    let inspection = inspect_text("[input]\ncontroller = true\nhint_bar = true\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\nhint_bar = false\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\nhint_bar = \"false\"\n");
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: input.hint_bar: expected true or false, found \"false\""]
+    );
+}
+
+#[test]
 fn bad_input_values_are_field_findings_and_unknown_keys_are_reported() {
     let inspection = inspect_text(
         "[input]\ncontroller = \"yes\"\nextra = true\n[input.buttons]\nmark = \"z\"\nfavorite = 3\njump = \"a\"\nback = \"b\"\n",
