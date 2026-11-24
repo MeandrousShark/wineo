@@ -444,7 +444,15 @@ pub(crate) async fn run<T: Transport>(
                         want = false;
                         reader.set(look_state(&transport.look()));
                     }
-                    Ended::Lost(Lost::Unplugged) => reader.set(State::Absent),
+                    // A USB link reset (after a suspend) reads as a disconnect
+                    // with the adapter still there, so look before believing it.
+                    Ended::Lost(Lost::Unplugged) => {
+                        let look = transport.look();
+                        reader.set(look_state(&look));
+                        if !matches!(look, Look::Absent) {
+                            retry = Some(tokio::time::Instant::now() + RETRY);
+                        }
+                    }
                     Ended::Lost(Lost::Failed) => {
                         reader.set(look_state(&transport.look()));
                         retry = Some(tokio::time::Instant::now() + RETRY);

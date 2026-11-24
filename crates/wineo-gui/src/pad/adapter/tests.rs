@@ -1113,7 +1113,8 @@ async fn an_unplug_while_reading_lets_go_until_it_comes_back() {
     reader.shared.push(Ok(hex(PROBE_FIRST)));
     reader.settle().await;
     reader.sent();
-    // Even with the bus still showing it, nothing is tried until it's back.
+    // With the bus showing nothing, it really is gone, so nothing is tried.
+    reader.shared.with(|bus| bus.seen = Seen::Absent);
     reader.shared.push(Err(Lost::Unplugged));
     reader.settle().await;
     assert!(!reader.held());
@@ -1127,15 +1128,86 @@ async fn an_unplug_while_reading_lets_go_until_it_comes_back() {
     reader.wait(5000).await;
     assert_eq!(reader.claims(), 1);
 
+    reader.shared.with(|bus| bus.seen = Seen::Found);
     reader.hotplug.send(Hotplug::Arrived).unwrap();
     reader.settle().await;
     assert!(reader.held());
 
-    // Hotplug saying it left ends the hold too.
+    // Hotplug saying it left ends the hold too, and the look agrees.
+    reader.shared.with(|bus| bus.seen = Seen::Absent);
     reader.hotplug.send(Hotplug::Left).unwrap();
     reader.settle().await;
     assert!(!reader.held());
     assert_eq!(*reader.state.borrow(), State::Absent);
+}
+
+/// A reader holding the adapter after one report, with its events drained.
+async fn holding() -> Harness {
+    let mut reader = harness(Seen::Found, true, |_| {});
+    reader.settle().await;
+    reader.shared.push(Ok(hex(PROBE_FIRST)));
+    reader.settle().await;
+    reader.sent();
+    reader
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disconnect_with_the_adapter_still_there_is_tried_again_a_second_later() {
+    let mut reader = holding().await;
+    let lost_at = reader.now();
+    reader.shared.push(Err(Lost::Unplugged));
+    reader.settle().await;
+    assert!(!reader.held());
+    assert_eq!(
+        reader.sent(),
+        [
+            Report::Pad(PadEvent::Disconnected(PORT1)),
+            Report::State(State::Free)
+        ]
+    );
+    assert_eq!(reader.claims(), 1);
+    reader.wait(1000).await;
+    assert!(reader.held());
+    assert_eq!(reader.claim_times(), [0, lost_at + 1000]);
+    assert_eq!(*reader.state.borrow(), State::Held);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disconnect_that_a_look_confirms_is_not_tried_again() {
+    let mut reader = holding().await;
+    reader.shared.with(|bus| bus.seen = Seen::Absent);
+    reader.shared.push(Err(Lost::Unplugged));
+    reader.settle().await;
+    // One look to confirm it, and none after: nothing is scheduled.
+    let looks = reader.shared.with(|bus| bus.looks);
+    reader.wait(5000).await;
+    assert_eq!(reader.shared.with(|bus| bus.looks), looks);
+    assert_eq!(reader.claims(), 1);
+    assert_eq!(*reader.state.borrow(), State::Absent);
+    assert!(!reader.held());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hotplug_left_after_a_disconnect_cancels_its_retry() {
+    let mut reader = holding().await;
+    reader.shared.push(Err(Lost::Unplugged));
+    reader.wait(300).await;
+    reader.hotplug.send(Hotplug::Left).unwrap();
+    reader.wait(5000).await;
+    assert_eq!(reader.claims(), 1);
+    assert!(!reader.held());
+    assert_eq!(*reader.state.borrow(), State::Absent);
+}
+
+#[tokio::test(start_paused = true)]
+async fn losing_the_want_before_a_disconnects_retry_means_no_claim() {
+    let mut reader = holding().await;
+    reader.shared.push(Err(Lost::Unplugged));
+    reader.wait(300).await;
+    reader.want(false);
+    reader.wait(5000).await;
+    assert_eq!(reader.claims(), 1);
+    assert!(!reader.held());
 }
 
 #[tokio::test(start_paused = true)]
