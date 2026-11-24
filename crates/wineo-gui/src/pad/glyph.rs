@@ -168,35 +168,50 @@ fn pill_colors(style: Style, button: PadButton) -> (Rgb, Rgb) {
     }
 }
 
-/// The actions the bar names, in its order.
-const HINTED: [PadAction; 5] = [
-    PadAction::Confirm,
-    PadAction::Back,
-    PadAction::Favorite,
-    PadAction::Mark,
-    PadAction::Random,
+/// What the bar names, in its order: each hint's actions and its word.
+/// Page's two halves share one hint. First and Last get none, to keep the
+/// bar short.
+const HINTED: [(&[PadAction], &str); 8] = [
+    (&[PadAction::Confirm], "Open"),
+    (&[PadAction::Back], "Back"),
+    (&[PadAction::Favorite], "Favorite"),
+    (&[PadAction::Mark], "Mark"),
+    (&[PadAction::Random], "Random"),
+    (&[PadAction::PageLeft, PadAction::PageRight], "Page"),
+    (&[PadAction::Layout], "Layout"),
+    (&[PadAction::Fullscreen], "Full screen"),
 ];
 
-/// What the bar says for each bound action: the button and its word. On a
-/// section's header or card there's no game to favorite or mark.
-pub(crate) fn hints(
-    bindings: &Bindings,
-    panel_open: bool,
-    on_header: bool,
-) -> Vec<(PadButton, &'static str)> {
+/// One hint: the one or two buttons it names and its word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Hint {
+    pub(crate) buttons: Vec<PadButton>,
+    pub(crate) word: &'static str,
+}
+
+/// What the bar says for each bound action. On a section's header or card
+/// there's no game to favorite or mark. With a game's panel open, Layout
+/// and Full screen are left out to keep the bar short beside it. A Page
+/// half that is unbound is left out and the other shows.
+pub(crate) fn hints(bindings: &Bindings, panel_open: bool, on_header: bool) -> Vec<Hint> {
     HINTED
         .into_iter()
-        .filter(|action| !(on_header && matches!(action, PadAction::Favorite | PadAction::Mark)))
-        .filter_map(|action| {
-            let word = match action {
-                PadAction::Confirm if panel_open => "Play",
-                PadAction::Confirm => "Open",
-                PadAction::Back => "Back",
-                PadAction::Favorite => "Favorite",
-                PadAction::Mark => "Mark",
-                _ => "Random",
+        .filter(|(actions, _)| {
+            !(on_header && matches!(actions, [PadAction::Favorite | PadAction::Mark]))
+        })
+        .filter(|(actions, _)| {
+            !(panel_open && matches!(actions, [PadAction::Layout | PadAction::Fullscreen]))
+        })
+        .filter_map(|(actions, word)| {
+            let word = match actions {
+                [PadAction::Confirm] if panel_open => "Play",
+                _ => word,
             };
-            Some((bindings.button(action)?, word))
+            let buttons: Vec<PadButton> = actions
+                .iter()
+                .filter_map(|action| bindings.button(*action))
+                .collect();
+            (!buttons.is_empty()).then_some(Hint { buttons, word })
         })
         .collect()
 }
@@ -259,31 +274,34 @@ pub(crate) fn glyph_view<'a, M: 'a>(
     }
 }
 
-/// The slim bar: each hint's glyph and word, in the last pad's labels.
+/// The gap between Page's two buttons.
+const PAIR_SPACING: f32 = 4.0;
+
+/// The slim bar: each hint's glyphs and word, in the last pad's labels,
+/// as many from the start as fit in `room`.
 pub(crate) fn bar<'a, M: 'a>(
-    hints: Vec<(PadButton, &'static str)>,
+    hints: Vec<Hint>,
     style: Style,
     palette: Palette,
+    room: f32,
 ) -> Element<'a, M> {
-    let items = hints.into_iter().map(|(button, word)| {
-        row![
-            glyph_view(style, button, palette, 1.0),
-            text(word).size(13).color(palette.foreground),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .into()
-    });
-    container(
-        Row::with_children(items)
-            .spacing(16)
-            .align_y(Alignment::Center),
-    )
-    .padding([0, 12])
-    .height(HINT_HEIGHT)
-    .center_y(HINT_HEIGHT)
-    .style(move |_| crate::library_menu::surface_style(palette))
-    .into()
+    let items = hints
+        .into_iter()
+        .map(|hint| {
+            let glyphs = Row::with_children(
+                hint.buttons
+                    .into_iter()
+                    .map(|button| glyph_view(style, button, palette, 1.0)),
+            )
+            .spacing(PAIR_SPACING)
+            .align_y(Alignment::Center);
+            row![glyphs, text(hint.word).size(13).color(palette.foreground)]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into()
+        })
+        .collect();
+    super::hint_fit::fit(items, room, palette)
 }
 
 #[cfg(test)]
