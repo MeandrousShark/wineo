@@ -477,7 +477,11 @@ pub(crate) async fn run<T: Transport>(
                 }
             }
             hotplug = transport.hotplug() => match hotplug {
-                Hotplug::Left => reader.set(State::Absent),
+                // Gone, there is nothing to look at again until it's back.
+                Hotplug::Left => {
+                    retry = None;
+                    reader.set(State::Absent);
+                }
                 Hotplug::Arrived if want => try_now = true,
                 Hotplug::Arrived => reader.set(look_state(&transport.look())),
             },

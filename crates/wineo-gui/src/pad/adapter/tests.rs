@@ -687,6 +687,7 @@ struct Bus {
     held: bool,
     let_go: usize,
     reads: VecDeque<Result<Vec<u8>, Lost>>,
+    looks: usize,
     /// Runs inside the device's drop, while the reader is letting go.
     on_let_go: Option<Box<dyn FnOnce() + Send>>,
 }
@@ -731,7 +732,11 @@ impl Transport for Fake {
     type Device = FakeDevice;
 
     fn look(&mut self) -> Look<()> {
-        match self.shared.with(|bus| bus.seen) {
+        let seen = self.shared.with(|bus| {
+            bus.looks += 1;
+            bus.seen
+        });
+        match seen {
             Seen::Absent => Look::Absent,
             Seen::Kernel => Look::Kernel,
             Seen::Program => Look::Program,
@@ -805,6 +810,7 @@ fn harness(seen: Seen, wanted: bool, change: impl FnOnce(&mut Bus)) -> Harness {
         held: false,
         let_go: 0,
         reads: VecDeque::new(),
+        looks: 0,
         on_let_go: None,
     };
     change(&mut bus);
@@ -1130,6 +1136,25 @@ async fn an_unplug_while_reading_lets_go_until_it_comes_back() {
     reader.settle().await;
     assert!(!reader.held());
     assert_eq!(*reader.state.borrow(), State::Absent);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unplug_drops_a_pending_retry() {
+    let mut reader = harness(Seen::Program, true, |_| {});
+    reader.wait(500).await;
+    assert_eq!(reader.states(), [State::Busy]);
+    let looks = reader.shared.with(|bus| bus.looks);
+    reader.shared.with(|bus| bus.seen = Seen::Absent);
+    reader.hotplug.send(Hotplug::Left).unwrap();
+    reader.wait(5000).await;
+    assert_eq!(reader.states(), [State::Absent]);
+    assert_eq!(reader.shared.with(|bus| bus.looks), looks);
+
+    // It still comes back on the next arrival.
+    reader.shared.with(|bus| bus.seen = Seen::Found);
+    reader.hotplug.send(Hotplug::Arrived).unwrap();
+    reader.settle().await;
+    assert!(reader.held());
 }
 
 #[tokio::test(start_paused = true)]
