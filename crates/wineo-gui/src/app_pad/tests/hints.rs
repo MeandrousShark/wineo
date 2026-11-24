@@ -537,3 +537,35 @@ fn the_other_toasts_stay_centered_in_the_window_above_the_bar() {
     assert!((bottom - slot).abs() <= 0.5, "{bottom} {slot}");
     assert!(bottom < shown.bar().y);
 }
+
+#[test]
+fn a_bar_with_no_room_for_its_first_hint_draws_no_pixel() {
+    let size = Size::new(240.0, 60.0);
+    let drawn = |room: f32| {
+        let mut bar: iced::Element<'_, Message> = crate::pad::glyph::bar(
+            all_hints(),
+            Style::Xbox,
+            crate::theme::Palette::DARK,
+            room,
+        );
+        crate::layout_probe::render(&mut bar, size)
+            .chunks(4)
+            .filter(|pixel| pixel[3] != 0)
+            .count()
+    };
+    // Room for Open alone draws it; a pixel less draws nothing at all, no
+    // empty pill and no shadow.
+    let (_home, app) = showing(Style::Xbox);
+    let seen = seen(&app);
+    let open = seen
+        .in_bar()
+        .into_iter()
+        .find(|(text, _)| *text == "Open")
+        .expect("Open")
+        .1;
+    let needed = right(open) - seen.bar().x + PADDING;
+    assert!(drawn(needed + 0.5) > 0);
+    assert_eq!(drawn(needed - 1.0), 0);
+    assert_eq!(drawn(0.0), 0);
+    assert_eq!(drawn(-100.0), 0);
+}
