@@ -96,7 +96,11 @@ colors no theme controls, or read as depth on any ground:
 - scrims, dialog and Settings, in black;
 - shadows, black at 16 to 20%;
 - accent hover and press, which blend toward white and black, with the
-  label picked again for the result.
+  label picked again for the result;
+- controller button glyphs: a glyph stands for a physical button, so its
+  fill and its mark keep that button's colors. Its 1 px edge is `muted`,
+  which is what keeps a dark button visible on a dark surface and a light
+  one on a light surface.
 
 Anything else takes its color from a role.
 
@@ -219,7 +223,8 @@ Plan 0054 added these.
   at a time.
 - Icons that Noto Sans lacks (arrows, chevron, check, star, crossed-out
   eye, search, die) are inline SVGs tinted with palette tokens, never
-  glyphs.
+  glyphs. Controller button faces are the exception: they are drawn in
+  their own colors, untinted, over an edge that is tinted.
 - A tooltip is 13 px text padded 4 by 8 on the surface color, with a 1 px
   border, 8 px corners, and a 6 px gap. Toolbar tooltips sit below their
   button. The direction button's names the current order ("Most played
@@ -393,7 +398,8 @@ Plan 0063 added these, under Settings, Appearance.
   stays in logical pixels: never scale a size by hand, and never read the
   physical window size for layout. The window keeps its size on screen, so
   a bigger interface shows less, and anything that can run out of room
-  folds, wraps, or scrolls instead of clipping. Layouts can count on at
+  folds, wraps, or scrolls instead of clipping. The controller hint bar
+  has a fourth way: it drops whole hints from its end. Layouts can count on at
   least 400 by 300: the window's minimum size is that in interface pixels,
   so it grows on screen with the interface size and follows a change live.
   Some compositors, like Hyprland, don't enforce it.
@@ -609,19 +615,35 @@ Library's size.
 ## Controller hints and remapping
 
 - The hint bar is 32 px at the bottom of the Library, under the marks bar:
-  a 20 px button symbol in a pill and a word for Open (Play with the panel
-  open), Back, Favorite, Mark, and Random, each only when bound, and
-  without Favorite and Mark on a section header or collapsed card. Symbols
-  follow the last controller pressed: letter rings for Xbox and Nintendo,
-  the four shapes for PlayStation, and words like LB, L1, or ZL for the
-  rest. A GameCube controller on the adapter has its own words: L, R, Z,
-  Start, C left, and C right, with letter rings for A, B, X, and Y where
-  they are printed. A hint whose button the last controller can't press
-  is left out (a GameCube controller has no stick clicks). It shows after
-  a controller press or stick move and hides on any mouse move or click,
-  with no timer.
+  a 20 px button glyph and a word for Open (Play with the panel open),
+  Back, Favorite, Mark, Random, Page, Layout, and Full screen, in that
+  order, each only when bound. Page shows the two paging buttons 4 px
+  apart with one word, or the one that is bound. Favorite and Mark are
+  left out on a section header or collapsed card, and Layout and Full
+  screen while a game's panel is open. A hint whose button the last
+  controller can't press is left out (a GameCube controller has no stick
+  clicks). First and Last get no hint.
+- Glyphs follow the last controller pressed and look like its buttons.
+  A, B, X, and Y are drawn faces: on a GameCube controller a large green
+  disc, a smaller red disc, and two grey beans curved around A; on Xbox
+  dark discs with green, red, blue, and yellow letters; on PlayStation
+  dark discs with the four shapes in their colors; on Nintendo dark discs
+  with light letters. Every other button is a filled pill with 11 px
+  semibold text: dark with light text, except a GameCube controller's
+  grey L, R, and Start, purple Z, and yellow C left and C right. Every
+  glyph has a 1 px `muted` edge. A mark is at least 3:1 against its
+  button and a pill's text at least 4.5:1 against its pill.
+- The bar fits its room and never clips or wraps: a hint that doesn't fit
+  goes whole, with every hint after it, and with no room for the first
+  the bar isn't drawn. With no panel the room is the window and the bar is
+  centered in it. While the panel's room is reserved, the room is between
+  the sidebar and the panel and the bar is centered there, never over the
+  panel. The other toasts stay centered in the window.
+- The bar shows after a controller press or stick move and hides on any
+  mouse move or click, with no timer. "Show button hints" in Global
+  settings turns it off: no bar and no room kept for it.
 - Each remap row in Global settings is a button showing the action and its
-  symbol, or "Unbound" in the warning color. A waiting row says "Press a
+  glyph, dimmed while the row is locked, or "Unbound" in the warning color. A waiting row says "Press a
   button..." for 5 s. Reset to defaults is enabled only while something is
   remapped.
 - The controller list in Global settings names each pad on a line. A

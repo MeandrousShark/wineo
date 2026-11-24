@@ -1549,9 +1549,16 @@ B goes back, wherever they sit. Every button above can be changed in
 [Global settings](#global-settings); movement can't.
 
 After you press a button or move the stick, a bar at the bottom of the
-Library shows what the main buttons do, in your controller's own symbols.
-A hint whose button your controller doesn't have is left out. Moving or
-clicking the mouse hides it.
+Library shows what the buttons do: open or play, back, favorite, mark,
+pick at random, a screenful back or forward ("Page"), next layout, and
+full screen. Each button is drawn as it looks on your controller, in its
+own shape and colors: a GameCube controller's green A, red B, and grey X
+and Y, an Xbox controller's colored letters, a PlayStation controller's
+colored shapes. A hint whose button your controller doesn't have is left
+out. With a game's panel open the bar sits beside the panel and leaves out
+Layout and Full screen, and in a narrow window it drops hints from the
+right until it fits. Moving or clicking the mouse hides it, and **Show
+button hints** in [Global settings](#global-settings) turns it off.
 
 The controller only works while wineo's window has focus and you've used
 it, so presses meant for a game don't reach the Library. Starting a game,
