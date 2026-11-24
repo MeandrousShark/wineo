@@ -228,7 +228,8 @@ impl App {
             return Task::none();
         }
         let (Input::Button(_, style) | Input::Move(_, style)) = input;
-        self.pad_hint = Some(style);
+        // Only the saved switch counts: an open Settings page hides the bar.
+        self.pad_hint = self.input.hint_bar.then_some(style);
         let (key, modifiers) = match input {
             Input::Move(direction, _) => (arrow(direction), Modifiers::empty()),
             Input::Button(button, _) => match self.input.bindings().action(button) {
@@ -331,6 +332,7 @@ impl App {
     pub(crate) fn pad_hint_shown(&self) -> bool {
         self.pad_hint.is_some()
             && self.input.controller
+            && self.input.hint_bar
             && self.section == sidebar::Section::Library
             && !self.panel_hidden_for_pad()
     }
@@ -461,6 +463,8 @@ impl App {
         }
         if !self.input.controller {
             self.pads.release_all();
+        }
+        if !self.input.controller || !self.input.hint_bar {
             self.pad_hint = None;
         }
     }

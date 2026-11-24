@@ -260,6 +260,9 @@ impl Form {
         if self.draft.input.controller == self.loaded.input.controller {
             self.draft.input.controller = values.input.controller;
         }
+        if self.draft.input.hint_bar == self.loaded.input.hint_bar {
+            self.draft.input.hint_bar = values.input.hint_bar;
+        }
         if self.draft.input.gamecube_adapter == self.loaded.input.gamecube_adapter {
             self.draft.input.gamecube_adapter = values.input.gamecube_adapter;
         }
@@ -563,6 +566,7 @@ fn same_input(a: &wineo_core::library::Input, b: &wineo_core::library::Input) ->
             .collect()
     };
     a.controller == b.controller
+        && a.hint_bar == b.hint_bar
         && a.gamecube_adapter == b.gamecube_adapter
         && changed(a) == changed(b)
 }

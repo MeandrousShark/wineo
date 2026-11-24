@@ -1269,7 +1269,7 @@ impl App {
                 Subscription::none()
             },
             // Only the hints have a pointer move to hear.
-            if self.pad_hint.is_some() {
+            if self.pad_hint.is_some() && self.input.hint_bar {
                 iced::event::listen_with(|event, _, _| {
                     matches!(
                         event,

@@ -903,6 +903,96 @@ fn the_hint_bar_follows_the_last_pad_and_hides_on_mouse_or_keys() {
     assert!(app.pad_hint_view().is_some());
 }
 
+/// What the app asks iced to listen to, which is all a test can know of
+/// the pointer listener.
+fn listeners(app: &App) -> usize {
+    iced::advanced::subscription::into_recipes(app.subscription()).len()
+}
+
+#[test]
+fn with_the_hint_bar_off_a_press_shows_no_bar_but_still_drives_the_library() {
+    let (_home, mut app) = ready();
+    app.input.hint_bar = false;
+    tap(&mut app, Raw::DPadRight);
+    assert!(app.pad_hint.is_none());
+    assert!(app.pad_hint_view().is_none());
+    assert_eq!(app.bar_room(), 0.0);
+    // The pad still moves the cursor and opens the card.
+    assert_eq!(app.selected.as_deref(), Some("beta"));
+    tap(&mut app, Raw::South);
+    assert!(app.panel_open);
+    assert!(app.pad_hint.is_none());
+
+    // On again: the next press brings the bar back.
+    app.input.hint_bar = true;
+    tap(&mut app, Raw::DPadDown);
+    assert_eq!(app.pad_hint, Some(crate::pad::Style::Xbox));
+    assert!(app.pad_hint_view().is_some());
+}
+
+#[test]
+fn with_the_hint_bar_off_no_room_is_kept_in_grid_list_or_coverflow() {
+    use crate::grid_motion::ViewLayout;
+    for layout in [ViewLayout::Grid, ViewLayout::List, ViewLayout::Coverflow] {
+        let (_home, mut app) = ready();
+        let _ = app.switch_layout(layout);
+        // The bar is up from a press, as far as the app can tell.
+        app.pad_hint = Some(crate::pad::Style::Xbox);
+        assert!(app.bar_room() > 0.0, "{layout:?} keeps room while on");
+        app.input.hint_bar = false;
+        assert!(!app.pad_hint_shown(), "{layout:?}");
+        assert!(app.pad_hint_view().is_none(), "{layout:?}");
+        assert_eq!(app.bar_room(), 0.0, "{layout:?}");
+    }
+}
+
+#[test]
+fn with_the_hint_bar_off_nothing_listens_for_the_pointer_to_hide_it() {
+    let (_home, mut app) = ready();
+    let idle = listeners(&app);
+    app.pad_hint = Some(crate::pad::Style::Xbox);
+    assert_eq!(listeners(&app), idle + 1, "the pointer listener while on");
+    app.input.hint_bar = false;
+    assert_eq!(listeners(&app), idle, "none while off");
+}
+
+#[test]
+fn a_press_read_with_the_hint_bar_off_never_sets_the_hint() {
+    // `update` clears a stale hint after every message, so the press is fed
+    // to the reader directly to see what it sets itself.
+    let (_home, mut app) = ready();
+    app.input.hint_bar = false;
+    let _ = app.pad_input(crate::pad::Input::Button(
+        wineo_core::library::PadButton::A,
+        crate::pad::Style::Xbox,
+    ));
+    assert!(app.pad_hint.is_none());
+    app.input.hint_bar = true;
+    let _ = app.pad_input(crate::pad::Input::Button(
+        wineo_core::library::PadButton::A,
+        crate::pad::Style::Xbox,
+    ));
+    assert_eq!(app.pad_hint, Some(crate::pad::Style::Xbox));
+}
+
+#[test]
+fn turning_the_hint_bar_off_clears_a_bar_that_is_showing() {
+    let (_home, mut app) = ready();
+    tap(&mut app, Raw::DPadDown);
+    assert!(app.pad_hint_view().is_some());
+    let on = listeners(&app);
+    app.input.hint_bar = false;
+    app.sync_input();
+    assert!(app.pad_hint.is_none());
+    assert!(app.pad_hint_view().is_none());
+    assert_eq!(app.bar_room(), 0.0);
+    assert_eq!(listeners(&app), on - 1);
+    // Back on, it stays gone until a pad is used again.
+    app.input.hint_bar = true;
+    app.sync_input();
+    assert!(app.pad_hint.is_none());
+}
+
 #[test]
 fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
     let input = wineo_core::library::Input::default();

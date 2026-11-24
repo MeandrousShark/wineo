@@ -816,6 +816,34 @@ mod app {
     }
 
     #[test]
+    fn a_bar_showing_when_the_hint_switch_is_saved_off_is_gone_when_settings_closes() {
+        let (_root, paths) = setup();
+        let (mut app, _) = app_in(&paths);
+        // A press showed the bar before Settings opened over it.
+        app.pad_hint = Some(crate::pad::Style::Xbox);
+        let _ = app.update(Message::Settings(Event::GlobalHintBar(false)));
+        assert!(app.input.hint_bar, "only the saved value counts");
+        assert!(app.pad_hint.is_some());
+        save_app(&mut app, &paths);
+        assert!(!app.input.hint_bar);
+        assert!(app.pad_hint.is_none());
+
+        app.settings = None;
+        assert!(app.pad_hint_view().is_none());
+        assert_eq!(app.bar_room(), 0.0);
+    }
+
+    #[test]
+    fn a_hint_switch_off_in_the_draft_alone_leaves_the_bar_as_it_is() {
+        let (_root, paths) = setup();
+        let (mut app, _) = app_in(&paths);
+        app.pad_hint = Some(crate::pad::Style::Xbox);
+        let _ = app.update(Message::Settings(Event::GlobalHintBar(false)));
+        app.settings = None;
+        assert!(app.pad_hint_view().is_some());
+    }
+
+    #[test]
     fn both_saved_on_holds_until_a_draft_with_one_off_is_saved() {
         for adapter_off in [true, false] {
             let (_root, paths) = setup();
