@@ -440,6 +440,7 @@ on_stop = "restore"       # restore (default) or show
 [input]
 controller = false        # read game controllers (default true)
 gamecube_adapter = true   # read Nintendo's GameCube adapter (default false)
+hint_bar = false          # show the bar of button hints (default true)
 
 [input.buttons]
 favorite = "rb"           # only the actions moved off their default
@@ -591,15 +592,18 @@ between ends either. A value of the wrong type, or an unknown
 when the app saves, and `validate` reports it; repair keeps any boolean
 `tray` and any string `close`, `on_start`, or `on_stop` and drops other
 types. An older wineo warns about this table in `validate`, and its repair
-drops it. wineo 1.6 to 1.9 ignore `gamecube_adapter`, keep it on edits, and
-call it an unknown key in `validate`.
+drops it. wineo 1.6 to 1.9 ignore `gamecube_adapter` and `hint_bar`, keep
+them on edits, and call each an unknown key in `validate`.
 
 `[input]` (plan 0066) is how the desktop app reads game controllers.
 `controller` defaults to `true`, and turning it off in Settings writes
 `false`. `gamecube_adapter` (1.10.0, plan 0072) defaults to `false`, unlike
 `controller`: it's absent until turned on in Settings, which writes `true`,
 and turning it back off writes `false`. It does nothing while `controller`
-is off. A value of the wrong type reads as off. `[input.buttons]` moves pad actions to other buttons, one key per
+is off. A value of the wrong type reads as off. `hint_bar` (1.10.0, plan
+0072) defaults to `true`: turning the Library's bar of button hints off in
+Settings writes `false`, and a value of the wrong type reads as on. It
+does nothing while `controller` is off. `[input.buttons]` moves pad actions to other buttons, one key per
 action that isn't on its default, so it's absent until you remap
 something. The actions and their default buttons are `confirm` (`a`),
 `back` (`b`), `favorite` (`y`), `mark` (`x`), `page_left` (`lb`),
@@ -612,7 +616,7 @@ unknown action or button counts as unset for that key only. When two
 actions name one button, the earlier one in the list above keeps it, and
 the later one goes back to its default button if that's free or has no
 button otherwise; `validate` reports all three. Repair keeps any boolean
-`controller` or `gamecube_adapter` and any string under `[input.buttons]` and drops other
+`controller`, `gamecube_adapter`, or `hint_bar` and any string under `[input.buttons]` and drops other
 types. An older wineo warns about this table in `validate`, and its repair
 drops it.
 

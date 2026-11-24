@@ -1277,11 +1277,13 @@ wrap onto more lines.
 
 **Controller** holds **Use a controller in the Library**, on by default,
 and the names of the connected controllers, or "No controller found."
-Under it, **Use a GameCube adapter**, off by default, reads Nintendo's
+Under it, **Show button hints**, on by default, shows the bar of button
+hints at the bottom of the Library while a controller is in use; off, the
+bar never shows. Then **Use a GameCube adapter**, off by default, reads Nintendo's
 GameCube adapter; the list then shows its controllers as "GameCube
 controller (port 1)", or a line about the adapter when wineo isn't reading
 it or it has no controller plugged in (see
-[GameCube adapter](#gamecube-adapter)). The switch is locked while
+[GameCube adapter](#gamecube-adapter)). Both switches are locked while
 the first one is off. Below them, each controller action has a row showing its button. Click a
 row, or press Enter or Space on it, and it says "Press a button..." for 5
 seconds; the next controller button takes the action. A button another
