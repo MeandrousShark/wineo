@@ -409,13 +409,13 @@ fn the_c_sticks_center_follows_the_band_rule() {
 #[test]
 fn a_trigger_presses_halfway_and_the_release_threshold_lets_go() {
     let mut decoder = rested();
-    // L rests at 34: half of 140 is 70.
-    assert!(feed(&mut decoder, REST.l(103)).is_empty());
-    assert_eq!(feed(&mut decoder, REST.l(104)), pressed(Raw::LeftBumper));
-    assert!(feed(&mut decoder, REST.l(83)).is_empty());
-    assert_eq!(feed(&mut decoder, REST.l(82)), released(Raw::LeftBumper));
+    // L rests at 34: half of 200 is 100 above it, and 0.35 of it is 70.
+    assert!(feed(&mut decoder, REST.l(133)).is_empty());
+    assert_eq!(feed(&mut decoder, REST.l(134)), pressed(Raw::LeftBumper));
+    assert!(feed(&mut decoder, REST.l(104)).is_empty());
+    assert_eq!(feed(&mut decoder, REST.l(103)), released(Raw::LeftBumper));
     // R rests at 29.
-    assert_eq!(feed(&mut decoder, REST.r(99)), pressed(Raw::RightBumper));
+    assert_eq!(feed(&mut decoder, REST.r(129)), pressed(Raw::RightBumper));
     assert_eq!(feed(&mut decoder, REST), released(Raw::RightBumper));
 }
 
@@ -435,27 +435,28 @@ fn the_click_presses_with_the_byte_at_rest() {
 
 #[test]
 fn a_first_trigger_byte_above_64_or_below_8_rests_at_32() {
-    // Rest 70 would need 140 to press; at 32, 102 is half.
+    // Rest 70 would press at 170; at 32, 132 is half of 200 above it.
     let (mut decoder, _) = taken(REST.l(70));
-    assert!(feed(&mut decoder, REST.l(101)).is_empty());
-    assert_eq!(feed(&mut decoder, REST.l(102)), pressed(Raw::LeftBumper));
-    // Rest 5 would press at 75; at 32 it takes 102.
+    assert!(feed(&mut decoder, REST.l(131)).is_empty());
+    assert_eq!(feed(&mut decoder, REST.l(132)), pressed(Raw::LeftBumper));
+    // Rest 5 would press at 105; at 32 it takes 132.
     let (mut decoder, _) = taken(REST.l(5));
-    assert!(feed(&mut decoder, REST.l(75)).is_empty());
-    assert_eq!(feed(&mut decoder, REST.l(102)), pressed(Raw::LeftBumper));
+    assert!(feed(&mut decoder, REST.l(105)).is_empty());
+    assert_eq!(feed(&mut decoder, REST.l(132)), pressed(Raw::LeftBumper));
     // The edges of the range are a rest.
     let (mut decoder, _) = taken(REST.l(64));
-    assert!(feed(&mut decoder, REST.l(133)).is_empty());
-    assert_eq!(feed(&mut decoder, REST.l(134)), pressed(Raw::LeftBumper));
+    assert!(feed(&mut decoder, REST.l(163)).is_empty());
+    assert_eq!(feed(&mut decoder, REST.l(164)), pressed(Raw::LeftBumper));
     let (mut decoder, _) = taken(REST.l(8));
-    assert_eq!(feed(&mut decoder, REST.l(78)), pressed(Raw::LeftBumper));
+    assert!(feed(&mut decoder, REST.l(107)).is_empty());
+    assert_eq!(feed(&mut decoder, REST.l(108)), pressed(Raw::LeftBumper));
 }
 
 #[test]
 fn a_byte_below_rest_is_no_travel() {
     let (mut decoder, _) = taken(REST.l(64));
     assert!(feed(&mut decoder, REST.l(0)).is_empty());
-    assert_eq!(feed(&mut decoder, REST.l(134)), pressed(Raw::LeftBumper));
+    assert_eq!(feed(&mut decoder, REST.l(164)), pressed(Raw::LeftBumper));
     // Far below rest lets go, rather than reading as travel the other way.
     assert_eq!(feed(&mut decoder, REST.l(0)), released(Raw::LeftBumper));
 }
@@ -464,13 +465,13 @@ fn a_byte_below_rest_is_no_travel() {
 fn a_trigger_wobbling_at_or_between_the_thresholds_is_one_press() {
     let mut decoder = rested();
     let mut events = Vec::new();
-    for l in [103, 104, 103, 104, 103, 90, 84, 99, 84, 104, 83] {
+    for l in [133, 134, 133, 134, 133, 120, 105, 119, 105, 134, 104] {
         events.extend(feed(&mut decoder, REST.l(l)));
     }
     assert_eq!(events, pressed(Raw::LeftBumper));
     // Between the thresholds from below never presses.
     let mut decoder = rested();
-    for l in [83, 90, 103, 90, 85] {
+    for l in [104, 120, 133, 120, 105] {
         assert!(feed(&mut decoder, REST.l(l)).is_empty());
     }
 }
@@ -484,7 +485,7 @@ fn analog_and_click_together_are_one_press_and_one_release() {
     let mut decoder = rested();
     let mut events = Vec::new();
     for pad in [
-        REST.l(104),
+        REST.l(134),
         REST.l(200),
         REST.l(255).buttons(L_CLICK),
         REST.l(60).buttons(L_CLICK),
@@ -586,7 +587,7 @@ fn report_bytes_reach_pads_as_lt_from_the_c_stick_and_lb_from_a_half_trigger() {
         hex(PROBE_FIRST),
         one(REST.c(30, 132)),
         one(REST),
-        one(REST.l(110)),
+        one(REST.l(134)),
     ] {
         for event in decoder.report(&bytes) {
             inputs.extend(pads.event(event, Instant::now()));

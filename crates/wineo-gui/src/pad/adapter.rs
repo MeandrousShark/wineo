@@ -29,11 +29,13 @@ const WIRED: u8 = 0x10;
 const WAVEBIRD: u8 = 0x20;
 
 /// A stick's travel each way, and a trigger's full travel above its rest,
-/// in report steps. Both are unmeasured guesses: the tools assume 88 to 108
-/// for a stick, and nothing has recorded a trigger's full press. The
-/// `--ignored` test on a real adapter records both, to correct them.
+/// in report steps. Measured on a real adapter with a wired controller: the
+/// triggers rest at 28 to 32 and reach 227 to 241 at the click (199 to 209
+/// of travel), the C-stick 89 to 94 from its center and the main stick 93
+/// to 105. The stick's 90 sits at the smallest reach, so every direction
+/// gets to full travel or within a step of it.
 const STICK_TRAVEL: f32 = 90.0;
-const TRIGGER_TRAVEL: f32 = 140.0;
+const TRIGGER_TRAVEL: f32 = 200.0;
 /// A stick's first report is its center only this close to the middle, so
 /// a thumb on it or a report of zeros can't set a center that reads as a
 /// direction held forever.
