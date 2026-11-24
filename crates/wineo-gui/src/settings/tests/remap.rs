@@ -848,22 +848,26 @@ fn a_locked_rows_glyph_is_dimmed() {
     let (_root, paths) = setup();
     let mut page = controller_page(&paths);
     page.pad_style = crate::pad::Style::GameCube;
-    // The GameCube A's green, which only Confirm's row shows.
+    // The GameCube A's green, which only Confirm's row shows, and Z's
+    // purple pill, which only Layout's does.
     let green = [0x16, 0xa4, 0x88];
-    let shows_green = |page: &Page| {
+    let purple = [0x6a, 0x55, 0xc8];
+    let shown = |page: &Page| {
         let pixels = crate::layout_probe::render(
             &mut page.view(&paths, crate::theme::Palette::DARK),
             iced::Size::new(900.0, 3000.0),
         );
-        pixels.chunks(4).any(|pixel| {
-            pixel[3] == 255
-                && pixel[..3]
-                    .iter()
-                    .zip(green)
-                    .all(|(found, wanted)| found.abs_diff(wanted) <= 3)
+        [green, purple].map(|color| {
+            pixels.chunks(4).any(|pixel| {
+                pixel[3] == 255
+                    && pixel[..3]
+                        .iter()
+                        .zip(color)
+                        .all(|(found, wanted)| found.abs_diff(wanted) <= 3)
+            })
         })
     };
-    assert!(shows_green(&page), "at full strength while unlocked");
+    assert_eq!(shown(&page), [true, true], "full strength while unlocked");
     let _ = page.update(&paths, Event::GlobalController(false));
-    assert!(!shows_green(&page), "dimmed while locked");
+    assert_eq!(shown(&page), [false, false], "dimmed while locked");
 }
