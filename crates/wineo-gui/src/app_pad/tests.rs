@@ -1189,6 +1189,27 @@ fn closing_exiting_a_closed_window_focus_and_starts_let_go() {
 }
 
 #[test]
+fn a_start_while_the_adapter_is_held_waits_on_its_state() {
+    let (_home, mut app) = adapter_ready();
+    // Not held: the start has nothing to wait on.
+    let task = app.update(Message::Play);
+    assert!(app.operation.is_some());
+    assert_eq!(app.adapter.state.receiver_count(), 0);
+    drop(task);
+
+    let (_home, mut app) = adapter_ready();
+    let _ = app.update(Message::Adapter(Report::State(adapter::State::Held)));
+    app.adapter.state.send_replace(adapter::State::Held);
+    assert_eq!(app.adapter.state.receiver_count(), 0);
+    // The start's task holds the state, never run here, so nothing launches.
+    let task = app.update(Message::Play);
+    assert!(app.operation.is_some());
+    assert_eq!(app.adapter.state.receiver_count(), 1);
+    drop(task);
+    assert_eq!(app.adapter.state.receiver_count(), 0);
+}
+
+#[test]
 fn the_first_focus_before_the_reader_exists_still_takes() {
     let (_home, mut app) = closed_app();
     app.input.gamecube_adapter = true;
