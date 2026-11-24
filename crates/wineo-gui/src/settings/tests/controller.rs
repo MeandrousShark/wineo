@@ -368,6 +368,9 @@ fn the_adapter_has_a_line_while_wineo_isnt_holding_it() {
     // so the list doesn't flip as the window gains and loses focus.
     page.pads.clear();
     assert_eq!(shown(&page), ["GameCube adapter"]);
+    // Any pad counts, not only the adapter's own.
+    page.pads = vec!["Xbox Wireless Controller".to_owned()];
+    assert_eq!(shown(&page), ["Xbox Wireless Controller"]);
 }
 
 #[test]
