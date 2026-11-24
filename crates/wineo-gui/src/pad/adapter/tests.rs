@@ -1174,7 +1174,7 @@ async fn a_disconnect_with_the_adapter_still_there_is_tried_again_a_second_later
 
 #[tokio::test(start_paused = true)]
 async fn a_disconnect_that_a_look_confirms_is_not_tried_again() {
-    let mut reader = holding().await;
+    let reader = holding().await;
     reader.shared.with(|bus| bus.seen = Seen::Absent);
     reader.shared.push(Err(Lost::Unplugged));
     reader.settle().await;
@@ -1189,7 +1189,7 @@ async fn a_disconnect_that_a_look_confirms_is_not_tried_again() {
 
 #[tokio::test(start_paused = true)]
 async fn a_hotplug_left_after_a_disconnect_cancels_its_retry() {
-    let mut reader = holding().await;
+    let reader = holding().await;
     reader.shared.push(Err(Lost::Unplugged));
     reader.wait(300).await;
     reader.hotplug.send(Hotplug::Left).unwrap();
@@ -1201,7 +1201,7 @@ async fn a_hotplug_left_after_a_disconnect_cancels_its_retry() {
 
 #[tokio::test(start_paused = true)]
 async fn losing_the_want_before_a_disconnects_retry_means_no_claim() {
-    let mut reader = holding().await;
+    let reader = holding().await;
     reader.shared.push(Err(Lost::Unplugged));
     reader.wait(300).await;
     reader.want(false);
