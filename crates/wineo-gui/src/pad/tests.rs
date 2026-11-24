@@ -641,8 +641,8 @@ fn a_gamecube_pad_lacks_only_the_stick_clicks() {
 fn gamecube_glyphs_are_its_own_words() {
     use glyph::{Glyph, glyph};
     let word = |button| match glyph(Style::GameCube, button) {
-        Glyph::Label(label) => label,
-        Glyph::Face(_) => "face",
+        Glyph::Label { text, .. } => text,
+        Glyph::Face { .. } => "face",
     };
     assert_eq!(word(PadButton::Lb), "L");
     assert_eq!(word(PadButton::Rb), "R");
@@ -653,8 +653,10 @@ fn gamecube_glyphs_are_its_own_words() {
     // The stick clicks it lacks fall through to the generic words.
     assert_eq!(word(PadButton::Ls), "LS");
     assert_eq!(word(PadButton::Rs), "RS");
+    // A, B, X, and Y are its own green, red, and grey buttons.
     for button in [PadButton::A, PadButton::B, PadButton::X, PadButton::Y] {
-        assert_eq!(
+        assert_eq!(word(button), "face", "{button:?}");
+        assert_ne!(
             glyph(Style::GameCube, button),
             glyph(Style::Xbox, button),
             "{button:?}"

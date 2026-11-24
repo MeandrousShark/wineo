@@ -927,12 +927,16 @@ fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
         glyph(Style::Xbox, PadButton::A),
         glyph(Style::PlayStation, PadButton::A)
     );
-    assert_eq!(
+    assert_ne!(
         glyph(Style::Xbox, PadButton::A),
         glyph(Style::Nintendo, PadButton::A)
     );
-    assert_eq!(glyph(Style::Nintendo, PadButton::Lt), Glyph::Label("ZL"));
-    assert_eq!(glyph(Style::PlayStation, PadButton::Rb), Glyph::Label("R1"));
+    let text = |style, button| match glyph(style, button) {
+        Glyph::Label { text, .. } => text,
+        Glyph::Face { .. } => "face",
+    };
+    assert_eq!(text(Style::Nintendo, PadButton::Lt), "ZL");
+    assert_eq!(text(Style::PlayStation, PadButton::Rb), "R1");
 }
 
 #[test]
