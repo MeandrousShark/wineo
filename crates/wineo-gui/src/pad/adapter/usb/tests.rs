@@ -53,6 +53,15 @@ fn another_driver_or_an_input_device_is_the_kernels() {
 }
 
 #[test]
+fn a_driver_name_that_isnt_utf8_is_the_kernels() {
+    use std::os::unix::ffi::OsStrExt;
+    let (_root, dir) = interface(None);
+    let name = OsStr::from_bytes(b"../../../bus/usb/drivers/usb\xffhid");
+    symlink(name, dir.join("driver")).unwrap();
+    assert_eq!(check(&dir), Sysfs::Kernel);
+}
+
+#[test]
 fn links_under_the_interface_are_not_followed() {
     let (root, dir) = interface(Some("usbhid"));
     // A link that leads to an input device elsewhere, like `subsystem`.

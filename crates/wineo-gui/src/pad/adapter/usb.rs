@@ -56,14 +56,15 @@ pub(crate) fn interface_dir(device: &Path) -> PathBuf {
 }
 
 /// Who has the interface at `interface`. `usbhid` gives the adapter only a
-/// root-only hidraw node, so taking it from there loses nothing.
+/// root-only hidraw node, so taking it from there loses nothing. A driver
+/// whose name can't be read is still a driver, and not one wineo knows.
 pub(crate) fn check(interface: &Path) -> Sysfs {
     let driver = std::fs::read_link(interface.join("driver"))
         .ok()
-        .and_then(|link| link.file_name().map(OsStr::to_owned));
-    match driver.as_deref().and_then(OsStr::to_str) {
-        Some("usbfs") => Sysfs::Program,
-        None | Some("usbhid") if !has_input(interface, INPUT_DEPTH) => Sysfs::Free,
+        .map(|link| link.file_name().map(OsStr::to_owned).unwrap_or_default());
+    match driver.as_deref().map(OsStr::as_encoded_bytes) {
+        Some(b"usbfs") => Sysfs::Program,
+        None | Some(b"usbhid") if !has_input(interface, INPUT_DEPTH) => Sysfs::Free,
         _ => Sysfs::Kernel,
     }
 }
