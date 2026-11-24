@@ -136,8 +136,11 @@ fn the_gamecube_switch_is_off_on_a_library_with_no_key_and_sits_under_the_contro
         .iter()
         .position(|text| text == view::CONTROLLER_SWITCH)
         .unwrap();
-    // Each switch row's blank source label sits between them.
-    assert_eq!(texts[first + 2], view::GAMECUBE_ADAPTER_SWITCH, "{texts:?}");
+    // Each switch row's blank source label sits between them, and the hint
+    // switch sits between the two, since it has nothing to do with the
+    // adapter.
+    assert_eq!(texts[first + 2], view::HINT_BAR_SWITCH, "{texts:?}");
+    assert_eq!(texts[first + 4], view::GAMECUBE_ADAPTER_SWITCH, "{texts:?}");
 
     // A file with only the controller switch reads the same.
     write_library_text(&paths, "schema_version = 1\n[input]\ncontroller = true\n");
@@ -397,4 +400,152 @@ fn the_app_keeps_the_adapters_line_current() {
     let _ = app.update(crate::Message::Adapter(Report::State(State::NoAccess)));
     let _ = app.open_global_settings();
     assert_eq!(app.settings.as_ref().unwrap().adapter, State::NoAccess);
+}
+
+fn hint_bar(page: &Page) -> bool {
+    global_editor(page).form.draft.input.hint_bar
+}
+
+#[test]
+fn the_hint_switch_is_on_on_a_library_with_no_key_and_is_worded_as_planned() {
+    let (_root, paths) = setup();
+    let page = controller_tab(&paths);
+    assert!(hint_bar(&page));
+    assert!(!page.is_dirty());
+    assert_eq!(view::HINT_BAR_SWITCH, "Show button hints");
+
+    // A file with only the controller switch reads the same, and so does a
+    // wrong type.
+    write_library_text(&paths, "schema_version = 1\n[input]\ncontroller = true\n");
+    assert!(hint_bar(&controller_tab(&paths)));
+    write_library_text(
+        &paths,
+        "schema_version = 1\n[input]\nhint_bar = \"false\"\n",
+    );
+    assert!(hint_bar(&controller_tab(&paths)));
+    write_library_text(&paths, "schema_version = 1\n[input]\nhint_bar = false\n");
+    assert!(!hint_bar(&controller_tab(&paths)));
+}
+
+#[test]
+fn flipping_the_hint_switch_enables_save_by_itself_and_saving_stores_the_key() {
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    assert!(!page.can_save());
+    let _ = page.update(&paths, Event::GlobalHintBar(false));
+    assert!(page.is_dirty() && page.can_save());
+    assert_eq!(page.changes(), 1);
+    assert!(global_editor(&page).form.edits().is_empty());
+    assert!(!global_editor(&page).form.library_edits().is_empty());
+
+    // Flipped back before saving, it is no change at all.
+    let _ = page.update(&paths, Event::GlobalHintBar(true));
+    assert!(!page.is_dirty() && !page.can_save());
+    assert_eq!(page.changes(), 0);
+    let _ = page.update(&paths, Event::GlobalHintBar(false));
+
+    assert!(save(&paths, &page).failed.is_none());
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[input]\nhint_bar = false\n"
+    );
+    assert!(!paths.global_config().exists());
+
+    // Back on is stored as true, and the other switches are untouched.
+    let mut page = controller_tab(&paths);
+    assert!(!hint_bar(&page) && controller(&page) && !gamecube(&page));
+    let _ = page.update(&paths, Event::GlobalHintBar(true));
+    assert!(save(&paths, &page).failed.is_none());
+    assert_eq!(
+        fs::read_to_string(paths.library_file()).unwrap(),
+        "schema_version = 1\n\n[input]\nhint_bar = true\n"
+    );
+}
+
+#[test]
+fn a_saved_hint_switch_is_not_an_outside_change() {
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    let _ = page.update(&paths, Event::GlobalHintBar(false));
+    let _ = page.update(&paths, Event::Save);
+    assert!(page.saving);
+    let report = save(&paths, &page);
+    let _ = page.update(&paths, Event::Saved(1, Ok(report)));
+    let _ = page.update(&paths, Event::Loaded(1, load::snapshot_global(&paths)));
+    assert!(!page.is_dirty());
+    assert!(!hint_bar(&page));
+
+    // The check that follows reads the file this page just wrote.
+    let sequence = page.check_sequence + 1;
+    page.check_sequence = sequence;
+    page.checking = true;
+    let _ = page.update(
+        &paths,
+        Event::Checked(1, sequence, load::Texts::read_global(&paths)),
+    );
+    assert!(!page.changed_on_disk && !page.loading());
+    assert!(!page.is_dirty());
+}
+
+#[test]
+fn the_hint_switch_waits_for_the_controller_switch_like_the_adapter_one() {
+    let (_root, paths) = setup();
+    let label = view::HINT_BAR_SWITCH;
+    let mut page = controller_tab(&paths);
+
+    let messages = click_switch(&page, &paths, label);
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [crate::Message::Settings(Event::GlobalHintBar(false))]
+        ),
+        "{messages:?}"
+    );
+
+    // The Controller switch off: the switch is as locked as a remap row.
+    let _ = page.update(&paths, Event::GlobalController(false));
+    assert!(click_switch(&page, &paths, label).is_empty());
+    let _ = page.update(&paths, Event::GlobalController(true));
+    assert_eq!(click_switch(&page, &paths, label).len(), 1);
+
+    // A page that is saving locks it too, as it does every control.
+    page.saving = true;
+    assert!(click_switch(&page, &paths, label).is_empty());
+}
+
+#[test]
+fn the_hint_event_does_nothing_while_the_draft_controller_switch_is_off() {
+    let (_root, paths) = setup();
+    let mut page = controller_tab(&paths);
+    let _ = page.update(&paths, Event::GlobalController(false));
+    // A handled edit clears these, so they show the event was dropped.
+    page.notes = vec!["Installed DXVK 2.4".to_owned()];
+    page.error = Some("earlier".to_owned());
+    let _ = page.update(&paths, Event::GlobalHintBar(false));
+    assert!(hint_bar(&page));
+    assert_eq!(page.notes, ["Installed DXVK 2.4"]);
+    assert_eq!(page.error.as_deref(), Some("earlier"));
+    assert_eq!(page.changes(), 1, "only the Controller switch changed");
+
+    let _ = page.update(&paths, Event::GlobalController(true));
+    let _ = page.update(&paths, Event::GlobalHintBar(false));
+    assert!(!hint_bar(&page));
+    assert!(page.notes.is_empty() && page.error.is_none());
+    assert_eq!(page.changes(), 1, "only the hint switch differs now");
+}
+
+#[test]
+fn a_saving_page_and_an_environment_page_ignore_the_hint_event() {
+    let (_root, paths) = setup();
+    let mut saving = controller_tab(&paths);
+    saving.saving = true;
+    let _ = saving.update(&paths, Event::GlobalHintBar(false));
+    assert!(hint_bar(&saving) && !saving.is_dirty());
+
+    write(&paths, GAME);
+    let mut env = page(&paths);
+    env.notes = vec!["Installed DXVK 2.4".to_owned()];
+    let _ = env.update(&paths, Event::GlobalHintBar(false));
+    assert!(!env.is_dirty());
+    assert_eq!(env.notes, ["Installed DXVK 2.4"]);
 }

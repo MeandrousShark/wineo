@@ -2057,6 +2057,7 @@ fn set_input_writes_only_what_changes() {
     let remapped = Input {
         controller: false,
         gamecube_adapter: false,
+        hint_bar: true,
         buttons: BTreeMap::from([(PadAction::Favorite, PadButton::Rb)]),
     };
     assert!(set_input(&fixture.paths, &remapped).unwrap());
@@ -2161,6 +2162,108 @@ fn a_no_op_gamecube_adapter_edit_leaves_the_file_alone_and_a_change_keeps_commen
 
     // A bad value reads as off, so asking for off writes nothing.
     let bad = "schema_version = 1\n[input]\ngamecube_adapter = \"true\"\n";
+    fixture.write(bad);
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(fixture.read(), bad);
+}
+
+#[test]
+fn the_hint_bar_defaults_to_on_and_an_absent_key_reads_as_on() {
+    assert!(Input::default().hint_bar);
+    let fixture = Fixture::new();
+    assert!(load(&fixture.paths).input.hint_bar);
+    fixture.write("schema_version = 1\n");
+    assert!(load(&fixture.paths).input.hint_bar);
+    // Another key in the table must not drag it along.
+    fixture.write("schema_version = 1\n[input]\ncontroller = false\n");
+    let input = load(&fixture.paths).input;
+    assert!(input.hint_bar);
+    assert!(!input.controller);
+    fixture.write("schema_version = 1\n[input]\nhint_bar = false\n");
+    let input = load(&fixture.paths).input;
+    assert!(!input.hint_bar);
+    assert!(input.controller);
+    fixture.write("schema_version = 1\n[input]\nhint_bar = true\n");
+    assert!(load(&fixture.paths).input.hint_bar);
+}
+
+#[test]
+fn a_hint_bar_value_of_the_wrong_type_reads_as_on() {
+    let fixture = Fixture::new();
+    // The string "false" is the case that catches a truthiness read: a
+    // stored false is off, a bad value is the default.
+    for bad in ["\"false\"", "\"no\"", "0", "[false]", "{ on = false }"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[input]\ncontroller = false\nhint_bar = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(library.input.hint_bar, "{bad}");
+        assert!(!library.input.controller, "{bad}");
+    }
+}
+
+#[test]
+fn set_input_stores_the_hint_bar_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let off = Input {
+        hint_bar: false,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\nhint_bar = false\n"
+    );
+    assert_eq!(load(&fixture.paths).input, off);
+    assert!(!set_input(&fixture.paths, &off).unwrap());
+
+    // On again is written as true, not removed, like the other bools.
+    assert!(set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\nhint_bar = true\n"
+    );
+    assert_eq!(load(&fixture.paths).input, Input::default());
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+}
+
+#[test]
+fn the_default_hint_bar_writes_no_key_and_a_no_op_edit_leaves_the_file_alone() {
+    let fixture = Fixture::new();
+    // A file that never had the key stays as it is when something else
+    // is saved.
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+    let off = Input {
+        controller: false,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert!(!fixture.read().contains("hint_bar"), "{}", fixture.read());
+
+    let text = "# mine\nschema_version = 1\n\n[input]\ncontroller = false # no pads\n# hints\nhint_bar   =   false\nfuture = 1\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).input;
+    assert!(!read.hint_bar);
+    assert!(!set_input(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    let on = Input {
+        hint_bar: true,
+        ..read
+    };
+    assert!(set_input(&fixture.paths, &on).unwrap());
+    assert_eq!(
+        fixture.read(),
+        text.replace("false\nfuture", "true\nfuture")
+    );
+
+    // A bad value reads as on, so asking for on writes nothing.
+    let bad = "schema_version = 1\n[input]\nhint_bar = \"false\"\n";
     fixture.write(bad);
     assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
     assert_eq!(fixture.read(), bad);

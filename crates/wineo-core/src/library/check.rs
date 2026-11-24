@@ -447,6 +447,8 @@ fn inspect_input(item: &Item, inspection: &mut Inspection) {
             "controller" => inspection.findings.push(invalid(None, &path, BOOL, value)),
             "gamecube_adapter" if value.as_bool().is_some() => {}
             "gamecube_adapter" => inspection.findings.push(invalid(None, &path, BOOL, value)),
+            "hint_bar" if value.as_bool().is_some() => {}
+            "hint_bar" => inspection.findings.push(invalid(None, &path, BOOL, value)),
             "buttons" => inspect_buttons(value, inspection),
             _ => inspection.findings.push(unknown(None, &path)),
         }

@@ -753,7 +753,7 @@ impl InputSection {
 /// unknown one is reported.
 fn valid_input_field(key: &str, item: &Item) -> bool {
     match key {
-        "controller" | "gamecube_adapter" => item.as_bool().is_some(),
+        "controller" | "gamecube_adapter" | "hint_bar" => item.as_bool().is_some(),
         _ => true,
     }
 }

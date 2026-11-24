@@ -918,7 +918,16 @@ fn controller_rows<'a>(
         palette,
     )]
     .spacing(12);
-    // Waits for the Controller switch like the remap rows below.
+    // Both wait for the Controller switch like the remap rows below.
+    rows = rows.push(switch_row(
+        HINT_BAR_SWITCH,
+        input.hint_bar,
+        None,
+        |on| send(Event::GlobalHintBar(on)),
+        None,
+        locked || !input.controller,
+        palette,
+    ));
     rows = rows.push(switch_row(
         GAMECUBE_ADAPTER_SWITCH,
         input.gamecube_adapter,
@@ -1027,6 +1036,7 @@ pub(super) const CAPTURE_PROMPT: &str = "Press a button...";
 pub(super) const UNBOUND: &str = "Unbound";
 pub(super) const RESET_BUTTONS: &str = "Reset to defaults";
 pub(super) const CONTROLLER_SWITCH: &str = "Use a controller in the Library";
+pub(super) const HINT_BAR_SWITCH: &str = "Show button hints";
 pub(super) const GAMECUBE_ADAPTER_SWITCH: &str = "Use a GameCube adapter";
 pub(super) const NO_CONTROLLER: &str = "No controller found.";
 pub(super) const ADAPTER_FREE: &str = "GameCube adapter";
