@@ -1280,7 +1280,8 @@ and the names of the connected controllers, or "No controller found."
 Under it, **Use a GameCube adapter**, off by default, reads Nintendo's
 GameCube adapter; the list then shows its controllers as "GameCube
 controller (port 1)", or a line about the adapter when wineo isn't reading
-it (see [GameCube adapter](#gamecube-adapter)). The switch is locked while
+it or it has no controller plugged in (see
+[GameCube adapter](#gamecube-adapter)). The switch is locked while
 the first one is off. Below them, each controller action has a row showing its button. Click a
 row, or press Enter or Space on it, and it says "Press a button..." for 5
 seconds; the next controller button takes the action. A button another
@@ -1590,7 +1591,12 @@ quarter second for that; tools and Steam games don't wait. While another
 program has it, the list in Settings says "GameCube adapter: in use by
 another program." and wineo tries again each second while its window has
 focus. The line shows what wineo last saw, so it can be out of date while
-the window is in the background.
+the window is in the background. With no controller plugged into the
+adapter, the list says "GameCube adapter".
+
+If the adapter stops answering while it's still plugged in, as it can
+after the computer wakes from sleep, wineo takes it again about a second
+later.
 
 "GameCube adapter: no access. See the docs." means your user can't open
 the device. The rule that allows it comes with Dolphin's package on most
