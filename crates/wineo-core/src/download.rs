@@ -54,7 +54,16 @@ impl Provider {
             "baseline"
         }
     }
-    fn root(self, paths: &Paths, global: &GlobalConfig) -> Result<PathBuf> {
+    /// How the family is written in a message, as opposed to `id`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GeProton => "GE-Proton",
+            Self::ProtonCachyos => "Proton-CachyOS",
+            Self::Dxvk => "DXVK",
+            Self::Vkd3d => "vkd3d-proton",
+        }
+    }
+    pub(crate) fn root(self, paths: &Paths, global: &GlobalConfig) -> Result<PathBuf> {
         Ok(match self {
             Self::GeProton | Self::ProtonCachyos => global.runner_root(paths)?,
             Self::Dxvk => match &global.defaults.dxvk_root {
@@ -128,6 +137,11 @@ impl Release {
             methods.join(" + ")
         }
     }
+    /// Whether `install` has a checksum to verify the archive against, read
+    /// from the release metadata without fetching anything.
+    pub fn verifiable(&self) -> bool {
+        self.asset.digest.is_some() || !self.checksums.is_empty()
+    }
 }
 #[derive(Debug)]
 pub struct Catalog {
@@ -169,14 +183,122 @@ pub trait Transport {
         self.request(url, bearer).map(|response| (response, None))
     }
 }
-/// Clones share one connection pool and its worker thread.
+/// Clones share one connection pool and its worker thread. The origin is
+/// the one place plain HTTP may go, set only for a debug build's test catalog.
 #[derive(Clone)]
-pub struct Https(reqwest::blocking::Client);
+pub struct Https(reqwest::blocking::Client, Option<Origin>);
 impl Https {
     /// An HTTPS client for API requests.
     pub fn new() -> Result<Self> {
-        Ok(Self(http_client(true, Duration::from_secs(10))?))
+        Ok(Self(http_client(true, Duration::from_secs(10))?, None))
     }
+
+    fn allows(&self, url: &str) -> Result<bool> {
+        let url = reqwest::Url::parse(url)?;
+        Ok(url.scheme() == "https"
+            || url.scheme() == "http" && self.1.as_ref().is_some_and(|origin| origin.admits(&url)))
+    }
+}
+
+/// GitHub's answer once the rate limit is used up. It travels inside
+/// `Error::Network`, so it reads and classifies like any network error, and
+/// a batch can still tell it apart and stop asking.
+#[derive(Debug, Clone)]
+pub struct RateLimited(String);
+impl fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for RateLimited {}
+impl RateLimited {
+    pub(crate) fn status(status: reqwest::StatusCode) -> Self {
+        Self(format!(
+            "GitHub denied or rate-limited the request ({status}); try again later"
+        ))
+    }
+
+    /// The same answer again, for a request that was never sent.
+    pub fn to_error(&self) -> anyhow::Error {
+        Error::Network(Box::new(self.clone())).into()
+    }
+}
+
+/// The rate-limit answer somewhere in `error`, if that is what it was.
+pub fn rate_limited(error: &anyhow::Error) -> Option<RateLimited> {
+    error
+        .chain()
+        .find_map(|cause| match cause.downcast_ref::<Error>() {
+            Some(Error::Network(inner)) => inner.downcast_ref::<RateLimited>().cloned(),
+            _ => cause.downcast_ref::<RateLimited>().cloned(),
+        })
+}
+
+const GITHUB_API: &str = "https://api.github.com";
+
+/// A host and port plain HTTP may reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Origin {
+    host: String,
+    port: u16,
+}
+impl Origin {
+    fn admits(&self, url: &reqwest::Url) -> bool {
+        url.host_str() == Some(self.host.as_str()) && url.port_or_known_default() == Some(self.port)
+    }
+}
+
+/// Where the release catalog lives, and the one origin plain HTTP may reach.
+#[derive(Debug, PartialEq, Eq)]
+struct Endpoints {
+    api: String,
+    plain_http: Option<Origin>,
+}
+
+/// GitHub, except that a debug build given `WINEO_TEST_RELEASES_API` asks the
+/// plain HTTP server it names, so CLI tests can stand in for GitHub. A
+/// release build passes `debug` false and gets the constants whatever the
+/// variable says.
+fn endpoints(debug: bool, test_api: Option<&str>) -> Result<Endpoints> {
+    let Some(base) = test_api.filter(|base| debug && !base.is_empty()) else {
+        return Ok(Endpoints {
+            api: GITHUB_API.into(),
+            plain_http: None,
+        });
+    };
+    let url = reqwest::Url::parse(base).context("WINEO_TEST_RELEASES_API is not a URL")?;
+    ensure!(
+        url.scheme() == "http",
+        "WINEO_TEST_RELEASES_API must be a plain http:// address"
+    );
+    let origin = Origin {
+        host: url
+            .host_str()
+            .context("WINEO_TEST_RELEASES_API has no host")?
+            .to_owned(),
+        port: url
+            .port_or_known_default()
+            .context("WINEO_TEST_RELEASES_API has no port")?,
+    };
+    Ok(Endpoints {
+        api: base.trim_end_matches('/').into(),
+        plain_http: Some(origin),
+    })
+}
+
+/// Redirects that stay on the test catalog's host and port, as many as the
+/// default policy allows.
+fn redirects_within(origin: Origin) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 10 {
+            attempt.error("too many redirects")
+        } else if origin.admits(attempt.url()) {
+            attempt.follow()
+        } else {
+            let refused = format!("redirect outside the test catalog: {}", attempt.url());
+            attempt.error(refused)
+        }
+    })
 }
 
 /// Something a batch builds once, when its first item needs it, instead of
@@ -222,10 +344,7 @@ impl Transport for Https {
         url: &str,
         bearer: Option<&str>,
     ) -> Result<(Response, Option<u64>)> {
-        ensure!(
-            reqwest::Url::parse(url)?.scheme() == "https",
-            "API URL must use HTTPS"
-        );
+        ensure!(self.allows(url)?, "API URL must use HTTPS");
         let mut request = self.0.get(url);
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
@@ -245,10 +364,7 @@ impl Transport for Https {
     }
 
     fn get(&self, url: &str) -> Result<Box<dyn Read>> {
-        ensure!(
-            reqwest::Url::parse(url)?.scheme() == "https",
-            "download URL must use HTTPS"
-        );
+        ensure!(self.allows(url)?, "download URL must use HTTPS");
         let response = self
             .0
             .get(url)
@@ -257,11 +373,7 @@ impl Transport for Https {
             .with_context(|| format!("request failed: {url}"))?;
         let status = response.status();
         if status.as_u16() == 403 || status.as_u16() == 429 {
-            return Err(Error::Network(
-                format!("GitHub denied or rate-limited the request ({status}); try again later")
-                    .into(),
-            )
-            .into());
+            return Err(RateLimited::status(status).to_error());
         }
         Ok(Box::new(
             response
@@ -273,6 +385,7 @@ impl Transport for Https {
 }
 pub struct Client<T = Https> {
     transport: T,
+    api: String,
 }
 impl Client<Https> {
     pub fn new() -> Result<Self> {
@@ -280,8 +393,21 @@ impl Client<Https> {
             cfg!(all(target_os = "linux", target_arch = "x86_64")),
             "downloads currently support Linux x86_64 hosts only"
         );
+        #[cfg(debug_assertions)]
+        let test_api = std::env::var("WINEO_TEST_RELEASES_API").ok();
+        #[cfg(not(debug_assertions))]
+        let test_api: Option<String> = None;
+        let endpoints = endpoints(cfg!(debug_assertions), test_api.as_deref())?;
+        let timeout = Duration::from_secs(5);
+        let client = match &endpoints.plain_http {
+            None => http_client(true, timeout)?,
+            Some(origin) => {
+                http_client_following(false, timeout, redirects_within(origin.clone()))?
+            }
+        };
         Ok(Self {
-            transport: Https(http_client(true, Duration::from_secs(5))?),
+            transport: Https(client, endpoints.plain_http),
+            api: endpoints.api,
         })
     }
 }
@@ -309,7 +435,10 @@ pub(crate) fn http_client_following(
 
 impl<T: Transport> Client<T> {
     pub fn with_transport(transport: T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            api: GITHUB_API.into(),
+        }
     }
     fn metadata<U: serde::de::DeserializeOwned>(&self, url: &str) -> Result<U> {
         let mut data = Vec::new();
@@ -327,7 +456,8 @@ impl<T: Transport> Client<T> {
     pub fn list(&self, provider: Provider, page: u32) -> Result<Catalog> {
         ensure!(page > 0, "release page starts at 1");
         let releases: Vec<UpstreamRelease> = self.metadata(&format!(
-            "https://api.github.com/repos/{}/releases?per_page=30&page={page}",
+            "{}/repos/{}/releases?per_page=30&page={page}",
+            self.api,
             provider.repo()
         ))?;
         let has_more = releases.len() == 30;
@@ -348,7 +478,8 @@ impl<T: Transport> Client<T> {
     pub fn select(&self, provider: Provider, tag: Option<&str>) -> Result<Release> {
         if let Some(tag) = tag {
             let mut url = reqwest::Url::parse(&format!(
-                "https://api.github.com/repos/{}/releases/tags/",
+                "{}/repos/{}/releases/tags/",
+                self.api,
                 provider.repo()
             ))?;
             url.path_segments_mut()
