@@ -389,15 +389,29 @@ impl Runners {
         if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
             return Err(failure("only Linux x86_64 builds are supported".to_owned()));
         }
-        // The aliases mean what `wineo download` fetched, so only wineo's own
-        // builds count.
-        self.list_root()?.runners.into_iter()
-            .filter(Runner::is_proton)
-            .filter(|runner| crate::runner_alias::complete_proton(&self.root.join(runner.name())))
-            .filter_map(|runner| crate::runner_alias::version(&self.root, runner.name(), alias).map(|version| (version, runner)))
-            .max_by(|(a, ar), (b, br)| a.cmp(b).then_with(|| ar.name().cmp(br.name())))
+        self.newest_in_family(alias)?
             .map(|(_, runner)| runner.with_selection(alias))
             .ok_or_else(|| failure(format!("no compatible stable release is installed; use `wineo download {}` or select an installed version", if alias == "GE-Proton-Latest" { "ge-proton" } else { "proton-cachyos" })))
+    }
+
+    /// The newest build of an alias's family in this root, with its version,
+    /// or None when the family isn't installed. The alias and the update
+    /// check both go by this, so a build can never count for one and not
+    /// the other.
+    pub(crate) fn newest_in_family(&self, alias: &str) -> Result<Option<(Vec<u64>, Runner)>> {
+        // The aliases mean what `wineo download` fetched, so only wineo's own
+        // builds count.
+        Ok(self
+            .list_root()?
+            .runners
+            .into_iter()
+            .filter(Runner::is_proton)
+            .filter(|runner| crate::runner_alias::complete_proton(&self.root.join(runner.name())))
+            .filter_map(|runner| {
+                crate::runner_alias::version(&self.root, runner.name(), alias)
+                    .map(|version| (version, runner))
+            })
+            .max_by(|(a, ar), (b, br)| a.cmp(b).then_with(|| ar.name().cmp(br.name()))))
     }
 
     /// The newest Proton build installed, going by the version numbers in

@@ -335,6 +335,13 @@ fn version_key(name: &str) -> Vec<u64> {
     key
 }
 
+/// `latest`'s order key for a build name, for comparing an installed build
+/// with a release's folder name. Only names compare with names: a tag drops
+/// the project's prefix, and the 3 in `vkd3d` counts.
+pub fn build_version(name: &str) -> Vec<u64> {
+    version_key(name)
+}
+
 /// Size of a concrete managed build, in logical file bytes.
 pub fn size(paths: &Paths, component: Component, name: &str) -> Result<u64> {
     let directory = removable_directory(paths, component, name)?;

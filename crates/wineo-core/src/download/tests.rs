@@ -655,7 +655,11 @@ fn blocking_http_body_reads_without_an_async_runtime() {
     response.read_to_string(&mut body).unwrap();
     assert_eq!(body, "fixture");
     server.join().unwrap();
-    assert!(Https(client).get("http://example.invalid/fixture").is_err());
+    assert!(
+        Https(client, None)
+            .get("http://example.invalid/fixture")
+            .is_err()
+    );
 }
 
 #[test]
@@ -770,4 +774,160 @@ fn a_lazy_https_hands_every_item_the_same_client() {
     let first: *const Https = lazy.https().unwrap();
     let second: *const Https = lazy.https().unwrap();
     assert_eq!(first, second);
+}
+
+#[test]
+fn a_release_build_never_uses_the_test_catalog_address() {
+    let github = Endpoints {
+        api: GITHUB_API.into(),
+        plain_http: None,
+    };
+    for variable in [None, Some(""), Some("http://127.0.0.1:9")] {
+        assert_eq!(endpoints(false, variable).unwrap(), github, "{variable:?}");
+    }
+    for variable in [None, Some("")] {
+        assert_eq!(endpoints(true, variable).unwrap(), github, "{variable:?}");
+    }
+    assert_eq!(
+        endpoints(true, Some("http://127.0.0.1:9/")).unwrap(),
+        Endpoints {
+            api: "http://127.0.0.1:9".into(),
+            plain_http: Some(Origin {
+                host: "127.0.0.1".into(),
+                port: 9,
+            }),
+        }
+    );
+    for refused in ["https://127.0.0.1:9", "file:///tmp", "not a url"] {
+        assert!(endpoints(true, Some(refused)).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn plain_http_reaches_the_test_catalog_and_nowhere_else() {
+    let origin = Origin {
+        host: "127.0.0.1".into(),
+        port: 9,
+    };
+    let client = || http_client(false, Duration::from_secs(2)).unwrap();
+    let test = Https(client(), Some(origin));
+    for (url, allowed) in [
+        ("http://127.0.0.1:9/repos", true),
+        ("https://example.invalid/asset", true),
+        ("http://127.0.0.1:10/repos", false),
+        ("http://127.0.0.1/repos", false),
+        ("http://localhost:9/repos", false),
+    ] {
+        assert_eq!(test.allows(url).unwrap(), allowed, "{url}");
+    }
+    assert!(!Https(client(), None).allows("http://127.0.0.1:9/").unwrap());
+    // Refused before any request is made.
+    let error = test.get("http://example.invalid:9/asset").err().unwrap();
+    assert_eq!(error.to_string(), "download URL must use HTTPS");
+    let error = test.request("http://127.0.0.1:10/", None).err().unwrap();
+    assert_eq!(error.to_string(), "API URL must use HTTPS");
+}
+
+/// Answers each connection on `listener` with the next of `replies`.
+fn serve(listener: std::net::TcpListener, replies: Vec<String>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(reply.as_bytes()).unwrap();
+        }
+    })
+}
+
+fn local_origin(listener: &std::net::TcpListener) -> Origin {
+    Origin {
+        host: "127.0.0.1".into(),
+        port: listener.local_addr().unwrap().port(),
+    }
+}
+
+#[test]
+fn a_rate_limit_answer_is_told_apart_from_other_failures() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = local_origin(&listener);
+    let base = format!("http://127.0.0.1:{}", origin.port);
+    let answer = |status: &str| {
+        format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    };
+    let server = serve(
+        listener,
+        vec![
+            answer("403 Forbidden"),
+            answer("429 Too Many Requests"),
+            answer("404 Not Found"),
+        ],
+    );
+    let https = Https(
+        http_client(false, Duration::from_secs(2)).unwrap(),
+        Some(origin),
+    );
+    for status in ["403 Forbidden", "429 Too Many Requests"] {
+        let error = https.get(&format!("{base}/limited")).err().unwrap();
+        assert!(rate_limited(&error).is_some(), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!("GitHub denied or rate-limited the request ({status}); try again later")
+        );
+        // Still a network error to everything that classifies them.
+        assert!(matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::Network(_))
+        ));
+    }
+    let error = https.get(&format!("{base}/missing")).err().unwrap();
+    assert!(rate_limited(&error).is_none(), "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn redirects_never_leave_the_test_catalog() {
+    let catalog = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let elsewhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    elsewhere.set_nonblocking(true).unwrap();
+    let origin = local_origin(&catalog);
+    let base = format!("http://127.0.0.1:{}", origin.port);
+    let moved = |to: &str| {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    };
+    let server = serve(
+        catalog,
+        vec![
+            moved(&format!("{base}/here")),
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nhere".into(),
+            moved(&format!(
+                "http://127.0.0.1:{}/there",
+                elsewhere.local_addr().unwrap().port()
+            )),
+        ],
+    );
+    let https = Https(
+        http_client_following(
+            false,
+            Duration::from_secs(2),
+            redirects_within(origin.clone()),
+        )
+        .unwrap(),
+        Some(origin),
+    );
+    let mut body = String::new();
+    https
+        .get(&format!("{base}/start"))
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "here");
+    assert!(https.get(&format!("{base}/away")).is_err());
+    server.join().unwrap();
+    assert_eq!(
+        elsewhere.accept().err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::WouldBlock)
+    );
 }
