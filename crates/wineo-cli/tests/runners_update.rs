@@ -476,6 +476,8 @@ fn interrupted(
     pidfd_send_signal(&pidfd, Signal::INT).unwrap();
     after();
 
+    // Its own limit, so a slow start doesn't eat into the time to exit.
+    let deadline = Instant::now() + Duration::from_secs(20);
     let mut status = None;
     while status.is_none() {
         assert!(Instant::now() < deadline, "wineo ignored Ctrl+C:\n{text}");
@@ -522,8 +524,12 @@ fn a_download_that_fails_after_ctrl_c_is_part_of_the_cancel_not_an_error() {
     // on it after the signal, so the download fails on its own.
     api.stall(Repo::Dxvk, "v2.7.1", "dxvk-2.7.1.tar.gz", 4 << 20);
     let (code, text) = interrupted(&f, &api, "Downloading dxvk-2.7.1", || {
-        // Long enough for wineo's signal thread to have raised the token.
-        thread::sleep(Duration::from_millis(500));
+        // Nothing shows that wineo has taken the signal: it prints nothing on
+        // Ctrl+C and is blocked reading the stalled archive. So this assumes
+        // its signal thread raises the token within 2 s, which holds even on a
+        // loaded machine. If it hasn't, the hang-up is a real failure and the
+        // test fails.
+        thread::sleep(Duration::from_secs(2));
         api.release_stalls();
     });
     assert_eq!(code, Some(130), "{text}");
