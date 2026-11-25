@@ -15,6 +15,7 @@ pub mod download;
 pub mod edit;
 pub mod emulator;
 pub mod environment;
+pub mod epic;
 pub mod error;
 pub mod external_runners;
 mod files;

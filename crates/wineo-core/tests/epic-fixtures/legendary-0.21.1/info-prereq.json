@@ -1,0 +1,60 @@
+{
+ "game": {
+  "app_name": "AppPrereq",
+  "cloud_save_folder": null,
+  "cloud_save_folder_mac": null,
+  "cloud_saves_supported": false,
+  "command_line": null,
+  "external_activation": null,
+  "grant_date": "2020-09-23T19:27:36.043Z",
+  "is_dlc": false,
+  "launch_options": [
+   {
+    "name": "Launch without Anti-Cheat",
+    "parameters": "-noeac"
+   }
+  ],
+  "owned_dlc": [],
+  "platform_versions": {
+   "Windows": "++Example+Update1.0-CL-100000"
+  },
+  "title": "Prereq Game®",
+  "version": "++Example+Update1.0-CL-100000"
+ },
+ "install": null,
+ "manifest": {
+  "app_name": "AppPrereqStaging",
+  "build_id": "ZQZ8wk3IWUi9fUzwjlL3_w",
+  "build_version": "++Example+Update1.0-CL-100000",
+  "compressed": true,
+  "disk_size": 44267336990,
+  "download_size": 40778528323,
+  "encrypted": false,
+  "feature_level": 21,
+  "install_tags": [
+   ""
+  ],
+  "is_preloaded": false,
+  "launch_command": "",
+  "launch_exe": "Binaries/Win64/Launcher.exe",
+  "num_chunks": 39625,
+  "num_files": 21124,
+  "prerequisites": {
+   "args": "install 0000000000000000000000000000001b",
+   "ids": [
+    "EAC_Service"
+   ],
+   "name": "",
+   "path": "Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe"
+  },
+  "size": 4470549,
+  "tag_disk_size": [],
+  "tag_download_size": [],
+  "type": "binary",
+  "uninstaller": {
+   "args": "uninstall 0000000000000000000000000000001b",
+   "path": "Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe"
+  },
+  "version": 21
+ }
+}

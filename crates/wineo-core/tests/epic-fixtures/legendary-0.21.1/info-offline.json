@@ -1,0 +1,45 @@
+{
+ "game": {
+  "app_name": "AppOffline",
+  "cloud_save_folder": "{AppData}/../LocalLow/Example Publisher/Offline Game/Saves/",
+  "cloud_save_folder_mac": null,
+  "cloud_saves_supported": true,
+  "command_line": null,
+  "external_activation": null,
+  "grant_date": "2020-07-16T05:09:58.752Z",
+  "is_dlc": false,
+  "launch_options": [],
+  "owned_dlc": [],
+  "platform_versions": {
+   "Windows": "0.24"
+  },
+  "title": "Offline Game",
+  "version": "0.24"
+ },
+ "install": null,
+ "manifest": {
+  "app_name": "AppOfflineStaging",
+  "build_id": "-NykxKTi03XWLmX7Rqy8MTaS1Is",
+  "build_version": "0.24",
+  "compressed": true,
+  "disk_size": 2491276428,
+  "download_size": 1513683825,
+  "encrypted": false,
+  "feature_level": 17,
+  "install_tags": [
+   ""
+  ],
+  "is_preloaded": false,
+  "launch_command": "",
+  "launch_exe": "OfflineGame.exe",
+  "num_chunks": 2374,
+  "num_files": 1287,
+  "prerequisites": null,
+  "size": 207813,
+  "tag_disk_size": [],
+  "tag_download_size": [],
+  "type": "binary",
+  "uninstaller": null,
+  "version": 17
+ }
+}

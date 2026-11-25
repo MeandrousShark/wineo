@@ -1,0 +1,144 @@
+{
+ "game": {
+  "app_name": "Dlc Game",
+  "cloud_save_folder": null,
+  "cloud_save_folder_mac": null,
+  "cloud_saves_supported": false,
+  "command_line": null,
+  "external_activation": null,
+  "grant_date": "2017-12-28T19:03:31.223Z",
+  "is_dlc": false,
+  "launch_options": [],
+  "owned_dlc": [
+   {
+    "app_name": "0000000000000000000000000000000c",
+    "id": "0000000000000000000000000000000d",
+    "installable": [
+     {
+      "appId": "0000000000000000000000000000000c",
+      "id": "0000000000000000000000000000001d",
+      "platform": [
+       "Windows"
+      ]
+     }
+    ],
+    "title": "Dlc Game Extra One Content"
+   },
+   {
+    "app_name": "0000000000000000000000000000000e",
+    "id": "0000000000000000000000000000000f",
+    "installable": [
+     {
+      "appId": "0000000000000000000000000000000e",
+      "id": "0000000000000000000000000000001e",
+      "platform": [
+       "Windows"
+      ]
+     }
+    ],
+    "title": "Extra Two Dlc Game Content"
+   }
+  ],
+  "platform_versions": {
+   "Windows": "++Dlc Game+Release-43.11-CL-60803671-Windows"
+  },
+  "title": "Dlc Game",
+  "version": "++Dlc Game+Release-43.11-CL-60803671-Windows"
+ },
+ "install": null,
+ "manifest": {
+  "app_name": "Dlc GameReleaseBuilds",
+  "build_id": "Ndd0awZk8k6dHn6Rd_n7_A",
+  "build_version": "++Dlc Game+Release-43.11-CL-60803671-Windows",
+  "compressed": true,
+  "disk_size": 163315444480,
+  "download_size": 156518026736,
+  "encrypted": false,
+  "feature_level": 21,
+  "install_tags": [
+   "",
+   "CosmeticPreInstall",
+   "CosmeticPreInstallOptional",
+   "DefaultGameplayChunk",
+   "DefaultGameplayChunkOptional",
+   "Encrypted"
+  ],
+  "is_preloaded": false,
+  "launch_command": " -obfuscationid=JB1eDzbCF_ygWtQrFUSHHqYuhGeimw",
+  "launch_exe": "Dlc GameGame/Binaries/Win64/Dlc GameBootstrapper.exe",
+  "num_chunks": 154903,
+  "num_files": 1023,
+  "prerequisites": null,
+  "size": 10548822,
+  "tag_disk_size": [
+   {
+    "count": 5,
+    "size": 3578014479,
+    "tag": ""
+   },
+   {
+    "count": 6,
+    "size": 797328317,
+    "tag": "CosmeticPreInstall"
+   },
+   {
+    "count": 1,
+    "size": 50,
+    "tag": "CosmeticPreInstallOptional"
+   },
+   {
+    "count": 5,
+    "size": 162724520,
+    "tag": "DefaultGameplayChunk"
+   },
+   {
+    "count": 1,
+    "size": 50,
+    "tag": "DefaultGameplayChunkOptional"
+   },
+   {
+    "count": 117,
+    "size": 2865660122,
+    "tag": "Encrypted"
+   }
+  ],
+  "tag_download_size": [
+   {
+    "count": 3412,
+    "size": 3388013102,
+    "tag": ""
+   },
+   {
+    "count": 764,
+    "size": 740777491,
+    "tag": "CosmeticPreInstall"
+   },
+   {
+    "count": 1,
+    "size": 1048642,
+    "tag": "CosmeticPreInstallOptional"
+   },
+   {
+    "count": 158,
+    "size": 150509195,
+    "tag": "DefaultGameplayChunk"
+   },
+   {
+    "count": 1,
+    "size": 1048642,
+    "tag": "DefaultGameplayChunkOptional"
+   },
+   {
+    "count": 2736,
+    "size": 2866714410,
+    "tag": "Encrypted"
+   }
+  ],
+  "type": "binary",
+  "uninstaller": {
+   "args": "-GameName=Dlc GameGame -InstallDir=../../../ -InstallDirRelativeToExecutableDir=1 -UninstallActionsManifest=UninstallActionsManifest-Win64.txt",
+   "path": "Engine/Binaries/Win64/UninstallHelper-Win64-Shipping.exe"
+  },
+  "version": 21
+ }
+}

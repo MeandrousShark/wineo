@@ -922,21 +922,7 @@ pub struct InstallLock {
 }
 impl InstallLock {
     pub fn acquire(destination: &Path) -> Result<Self> {
-        let destination = destination_identity(destination)?;
-        let parent = destination.parent().context("destination has no parent")?;
-        fs::create_dir_all(parent)?;
-        let key = format!(
-            "{:x}",
-            Sha256::digest(destination.as_os_str().as_encoded_bytes())
-        );
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(parent.join(format!(".wineo-lock-{key}")))?;
+        let file = Self::open(destination)?;
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {}
             Err(rustix::io::Errno::WOULDBLOCK) => {
@@ -946,6 +932,44 @@ impl InstallLock {
             Err(error) => return Err(error).context("couldn't lock the destination"),
         }
         Ok(Self { file })
+    }
+
+    /// The same lock, waiting for another holder to finish instead of
+    /// failing, so the second of two downloads finds the first one's file.
+    /// A cancel stops the wait.
+    pub(crate) fn acquire_waiting(destination: &Path, cancelled: &Token) -> Result<Self> {
+        let file = Self::open(destination)?;
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(Self { file }),
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    check_cancel(cancelled)?;
+                    cancelled.wait_timeout(Duration::from_millis(50));
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::from(std::io::Error::from(error))
+                        .context("failed to lock the download destination"));
+                }
+            }
+        }
+    }
+
+    fn open(destination: &Path) -> Result<File> {
+        let destination = destination_identity(destination)?;
+        let parent = destination.parent().context("destination has no parent")?;
+        fs::create_dir_all(parent)?;
+        let key = format!(
+            "{:x}",
+            Sha256::digest(destination.as_os_str().as_encoded_bytes())
+        );
+        Ok(OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(parent.join(format!(".wineo-lock-{key}")))?)
     }
 }
 impl Drop for InstallLock {

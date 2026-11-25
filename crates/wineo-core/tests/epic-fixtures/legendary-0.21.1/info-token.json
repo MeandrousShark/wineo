@@ -1,0 +1,45 @@
+{
+ "game": {
+  "app_name": "AppToken",
+  "cloud_save_folder": null,
+  "cloud_save_folder_mac": null,
+  "cloud_saves_supported": false,
+  "command_line": null,
+  "external_activation": null,
+  "grant_date": "2020-09-23T19:30:47.688Z",
+  "is_dlc": false,
+  "launch_options": [],
+  "owned_dlc": [],
+  "platform_versions": {
+   "Windows": "1260-win"
+  },
+  "title": "Token Game 2020",
+  "version": "1260-win"
+ },
+ "install": null,
+ "manifest": {
+  "app_name": "0000000000000000000000000000001c",
+  "build_id": "m11Xf2rxcDjQYqcMYdhacFguUIM",
+  "build_version": "1260-win",
+  "compressed": false,
+  "disk_size": 5848099972,
+  "download_size": 4304106669,
+  "encrypted": false,
+  "feature_level": 13,
+  "install_tags": [
+   ""
+  ],
+  "is_preloaded": false,
+  "launch_command": "",
+  "launch_exe": "token.exe",
+  "num_chunks": 5564,
+  "num_files": 1077,
+  "prerequisites": null,
+  "size": 2128088,
+  "tag_disk_size": [],
+  "tag_download_size": [],
+  "type": "json",
+  "uninstaller": null,
+  "version": 13
+ }
+}

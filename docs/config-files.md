@@ -154,6 +154,19 @@ wineo set --global steam=flatpak
 wineo set --global --unset steam
 ```
 
+One global key is for Epic games (plan 0073), and needed no schema bump:
+`[epic] legendary`, the path of the Legendary program to use. wineo talks
+to Epic through Legendary, and looks for it here first, then for its own
+downloaded copy, then for `legendary` on `PATH`. Leave it unset unless you
+want a particular copy. A path that isn't there, can't be run, or is
+older than 0.21.1 is an error that names it, and wineo doesn't fall back
+to another copy.
+
+```toml
+[epic]
+legendary = "~/.local/bin/legendary"
+```
+
 Two global keys are for installing GOG games, and needed no schema bump:
 
 - `defaults.games_root`, where new GOG games install, each in a folder

@@ -1,0 +1,90 @@
+[
+ {
+  "app_name": "AppToken",
+  "base_urls": [
+   "https://example.invalid/x",
+   "https://example.invalid/x",
+   "https://example.invalid/x"
+  ],
+  "can_run_offline": true,
+  "egl_guid": "",
+  "executable": "token.exe",
+  "install_path": "/home/user/.local/share/wineo/epic/games/Token Game 2020",
+  "install_size": 5848099972,
+  "install_tags": [],
+  "is_dlc": false,
+  "is_preloaded": false,
+  "launch_parameters": "",
+  "manifest_path": null,
+  "needs_verification": false,
+  "platform": "Windows",
+  "prereq_info": null,
+  "requires_ot": true,
+  "save_path": null,
+  "title": "Token Game 2020",
+  "uninstaller": null,
+  "version": "1260-win"
+ },
+ {
+  "app_name": "AppPrereq",
+  "base_urls": [
+   "https://example.invalid/x",
+   "https://example.invalid/x",
+   "https://example.invalid/x"
+  ],
+  "can_run_offline": true,
+  "egl_guid": "",
+  "executable": "Binaries/Win64/Launcher.exe",
+  "install_path": "/home/user/.local/share/wineo/epic/games/prereqgame",
+  "install_size": 44267336990,
+  "install_tags": [],
+  "is_dlc": false,
+  "is_preloaded": false,
+  "launch_parameters": "",
+  "manifest_path": null,
+  "needs_verification": false,
+  "platform": "Windows",
+  "prereq_info": {
+   "args": "install 0000000000000000000000000000001b",
+   "ids": [
+    "EAC_Service"
+   ],
+   "name": "",
+   "path": "Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe"
+  },
+  "requires_ot": false,
+  "save_path": null,
+  "title": "Prereq Game®",
+  "uninstaller": {
+   "args": "uninstall 0000000000000000000000000000001b",
+   "path": "Binaries/Win64/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe"
+  },
+  "version": "++Example+Update1.0-CL-100000"
+ },
+ {
+  "app_name": "AppOffline",
+  "base_urls": [
+   "https://example.invalid/x",
+   "https://example.invalid/x",
+   "https://example.invalid/x"
+  ],
+  "can_run_offline": true,
+  "egl_guid": "",
+  "executable": "OfflineGame.exe",
+  "install_path": "/home/user/.local/share/wineo/epic/games/Offline Game",
+  "install_size": 2491276428,
+  "install_tags": [],
+  "is_dlc": false,
+  "is_preloaded": false,
+  "launch_parameters": "",
+  "manifest_path": null,
+  "needs_verification": false,
+  "platform": "Windows",
+  "prereq_info": null,
+  "requires_ot": false,
+  "save_path": null,
+  "title": "Offline Game",
+  "uninstaller": null,
+  "version": "0.24"
+ }
+]
