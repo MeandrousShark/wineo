@@ -775,6 +775,26 @@ fn a_cancel_between_two_downloads_keeps_the_first_and_skips_the_rest() {
 }
 
 #[test]
+fn a_download_that_fails_after_a_cancel_counts_as_canceled() {
+    let home = Home::new();
+    let token = Token::new();
+    let mut fake = Fake::default();
+    two_updates(&home, &mut fake);
+    // The request for the first archive is what the cancel lands on, and it
+    // then fails for its own reason before anything looks at the token.
+    fake.cancel_on = Some((asset_url("dxvk-2.7.tar.gz"), token.clone()));
+    fake.reply(asset_url("dxvk-2.7.tar.gz"), Reply::RateLimited);
+    let (_, applied, _) = check_and_apply(&home, fake, &token);
+    assert_eq!(
+        outcomes(&applied),
+        [
+            "dxvk failed: download canceled",
+            "vkd3d failed: download canceled"
+        ]
+    );
+}
+
+#[test]
 fn apply_reports_each_step_in_batch_order() {
     let home = Home::new();
     let mut fake = Fake::default();

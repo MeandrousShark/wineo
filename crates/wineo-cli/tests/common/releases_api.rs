@@ -37,18 +37,23 @@ impl Repo {
     }
 }
 
+#[derive(Clone)]
 enum Route {
     Body(Vec<u8>),
     Status(u16),
     /// Announces `total` bytes and sends them a kilobyte at a time, so a
     /// download is still running when the test interrupts it.
     Drip(usize),
+    /// Announces `total` bytes, sends a kilobyte, then hangs up once
+    /// `release_stalls` is called, so the download fails on its own.
+    Stall(usize),
 }
 
 pub struct ReleasesApi {
     pub base: String,
     routes: Arc<Mutex<HashMap<String, Route>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    release: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -64,17 +69,28 @@ impl ReleasesApi {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let routes = Arc::new(Mutex::new(HashMap::new()));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let release = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
-            let (routes, requests, stop) = (routes.clone(), requests.clone(), stop.clone());
+            let (routes, requests, release, stop) = (
+                routes.clone(),
+                requests.clone(),
+                release.clone(),
+                stop.clone(),
+            );
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((stream, _)) = listener.accept() else {
                         thread::sleep(Duration::from_millis(10));
                         continue;
                     };
-                    let (routes, requests, stop) = (routes.clone(), requests.clone(), stop.clone());
-                    thread::spawn(move || serve(stream, &routes, &requests, &stop));
+                    let (routes, requests, release, stop) = (
+                        routes.clone(),
+                        requests.clone(),
+                        release.clone(),
+                        stop.clone(),
+                    );
+                    thread::spawn(move || serve(stream, &routes, &requests, &release, &stop));
                 }
             })
         };
@@ -82,6 +98,7 @@ impl ReleasesApi {
             base,
             routes,
             requests,
+            release,
             stop,
             thread: Some(thread),
         }
@@ -106,6 +123,18 @@ impl ReleasesApi {
     pub fn drip(&self, repo: Repo, tag: &str, asset: &str, size: usize) {
         self.announce(repo, tag, asset, size as u64);
         self.route(&format!("/assets/{asset}"), Route::Drip(size));
+    }
+
+    /// Lists a release whose archive starts and then stalls until
+    /// `release_stalls`, which hangs up on it.
+    pub fn stall(&self, repo: Repo, tag: &str, asset: &str, size: usize) {
+        self.announce(repo, tag, asset, size as u64);
+        self.route(&format!("/assets/{asset}"), Route::Stall(size));
+    }
+
+    /// Hangs up on every stalled download.
+    pub fn release_stalls(&self) {
+        self.release.store(true, Ordering::Relaxed);
     }
 
     /// Answers `path` with an empty reply of this status.
@@ -173,6 +202,7 @@ fn serve(
     mut stream: TcpStream,
     routes: &Mutex<HashMap<String, Route>>,
     requests: &Mutex<Vec<String>>,
+    release: &AtomicBool,
     stop: &AtomicBool,
 ) {
     stream.set_nonblocking(false).unwrap();
@@ -192,12 +222,17 @@ fn serve(
     requests.lock().unwrap().push(line.clone());
     let target = line.split_whitespace().nth(1).unwrap_or_default();
     let path = target.split('?').next().unwrap_or_default();
-    let reply = match routes.lock().unwrap().get(path) {
-        Some(Route::Body(body)) => Some(Ok(body.clone())),
-        Some(Route::Status(code)) => Some(Err(*code)),
+    // Cloned out, so a long download doesn't hold up other requests.
+    let route = routes.lock().unwrap().get(path).cloned();
+    let reply = match route {
+        Some(Route::Body(body)) => Some(Ok(body)),
+        Some(Route::Status(code)) => Some(Err(code)),
         Some(Route::Drip(total)) => {
-            drop(text);
-            drip(&mut stream, *total, stop);
+            drip(&mut stream, total, stop);
+            return;
+        }
+        Some(Route::Stall(total)) => {
+            stall(&mut stream, total, release, stop);
             return;
         }
         None => None,
@@ -222,6 +257,22 @@ fn status(stream: &mut TcpStream, code: u16) -> std::io::Result<()> {
         format!("HTTP/1.1 {code} Reply\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .as_bytes(),
     )
+}
+
+/// Hangs up on release, or after half a minute, so a test that forgets it
+/// can't leave this running.
+fn stall(stream: &mut TcpStream, total: usize, release: &AtomicBool, stop: &AtomicBool) {
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(head.as_bytes()).is_err() || stream.write_all(&[0; 1024]).is_err() {
+        return;
+    }
+    let started = Instant::now();
+    while !release.load(Ordering::Relaxed)
+        && !stop.load(Ordering::Relaxed)
+        && started.elapsed() < Duration::from_secs(30)
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Ends when the client hangs up, the server stops, or a minute has passed,

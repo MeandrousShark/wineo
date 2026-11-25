@@ -192,6 +192,12 @@ pub fn apply<T: Transport>(
             match installed {
                 Ok(path) if already => Outcome::AlreadyThere(path),
                 Ok(path) => Outcome::Installed(path),
+                // A request that was in flight when the batch was stopped can
+                // fail on its own before the next cancel check. That is part
+                // of the stop, not a failure to report.
+                Err(_) if token.is_canceled() => {
+                    Outcome::Failed(Error::Canceled("download").into())
+                }
                 Err(error) => {
                     limited = limited.or_else(|| download::rate_limited(&error));
                     Outcome::Failed(error)

@@ -434,19 +434,16 @@ fn leftovers(root: &Path) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn ctrl_c_stops_the_download_and_exits_130() {
-    let f = Fixture::new();
-    let api = ReleasesApi::start();
-    f.install_proton("GE-Proton10-20");
-    api.drip(
-        Repo::GeProton,
-        "GE-Proton10-27",
-        "GE-Proton10-27.tar.gz",
-        4 << 20,
-    );
+/// Runs `wineo runners update`, waits for `started` on stderr, sends Ctrl+C,
+/// runs `after`, and returns the exit code with everything it printed.
+fn interrupted(
+    f: &Fixture,
+    api: &ReleasesApi,
+    started: &str,
+    after: impl FnOnce(),
+) -> (Option<i32>, String) {
     let mut child = f
-        .releases_command(&api)
+        .releases_command(api)
         .args(["runners", "update"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -466,7 +463,7 @@ fn ctrl_c_stops_the_download_and_exits_130() {
     // Wait until the archive is on its way, so the signal lands mid-download.
     let mut text = String::new();
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !text.contains("Downloading GE-Proton10-27") {
+    while !text.contains(started) {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = seen
             .recv_timeout(left)
@@ -477,6 +474,7 @@ fn ctrl_c_stops_the_download_and_exits_130() {
     let pid = Pid::from_raw(child.id() as i32).unwrap();
     let pidfd = pidfd_open(pid, PidfdFlags::empty()).unwrap();
     pidfd_send_signal(&pidfd, Signal::INT).unwrap();
+    after();
 
     let mut status = None;
     while status.is_none() {
@@ -486,7 +484,22 @@ fn ctrl_c_stops_the_download_and_exits_130() {
     }
     reader.join().unwrap();
     text.extend(seen.try_iter().map(|line| line + "\n"));
-    assert_eq!(status.unwrap().code(), Some(130), "{text}");
+    (status.unwrap().code(), text)
+}
+
+#[test]
+fn ctrl_c_stops_the_download_and_exits_130() {
+    let f = Fixture::new();
+    let api = ReleasesApi::start();
+    f.install_proton("GE-Proton10-20");
+    api.drip(
+        Repo::GeProton,
+        "GE-Proton10-27",
+        "GE-Proton10-27.tar.gz",
+        4 << 20,
+    );
+    let (code, text) = interrupted(&f, &api, "Downloading GE-Proton10-27", || {});
+    assert_eq!(code, Some(130), "{text}");
     assert!(text.contains("Update canceled"), "{text}");
     assert!(!text.contains("Installed"), "{text}");
     // Nothing half-installed, and the old build is where it was.
@@ -497,6 +510,29 @@ fn ctrl_c_stops_the_download_and_exits_130() {
         .filter(|name| !name.starts_with(".wineo-lock-"))
         .collect();
     assert_eq!(left, ["GE-Proton10-20"], "{text}");
+    assert_eq!(leftovers(f.root.path()), Vec::<String>::new());
+}
+
+#[test]
+fn a_download_that_fails_after_ctrl_c_is_part_of_the_cancel_not_an_error() {
+    let f = Fixture::new();
+    let api = ReleasesApi::start();
+    downloadable(&f, &api);
+    // GE-Proton finishes first. DXVK's archive stalls, and the server hangs up
+    // on it after the signal, so the download fails on its own.
+    api.stall(Repo::Dxvk, "v2.7.1", "dxvk-2.7.1.tar.gz", 4 << 20);
+    let (code, text) = interrupted(&f, &api, "Downloading dxvk-2.7.1", || {
+        // Long enough for wineo's signal thread to have raised the token.
+        thread::sleep(Duration::from_millis(500));
+        api.release_stalls();
+    });
+    assert_eq!(code, Some(130), "{text}");
+    assert!(text.contains("Installed GE-Proton10-27.\n"), "{text}");
+    assert!(text.contains("Update canceled"), "{text}");
+    assert!(!text.contains("error:"), "{text}");
+    assert!(!text.contains("Couldn't"), "{text}");
+    assert!(runner_root(&f).join("GE-Proton10-27/proton").is_file());
+    assert!(!f.root.path().join("data/wineo/dxvk/dxvk-2.7.1").exists());
     assert_eq!(leftovers(f.root.path()), Vec::<String>::new());
 }
 
