@@ -1,0 +1,23 @@
+{
+ "egl_parameters": [
+  "-AUTH_LOGIN=unused",
+  "-AUTH_PASSWORD=",
+  "-AUTH_TYPE=exchangecode",
+  "-epicapp=AppOffline",
+  "-epicenv=Prod",
+  "-EpicPortal",
+  "-epicusername=ExampleUser",
+  "-epicuserid=00000000000000000000000000000020",
+  "-epiclocale=en",
+  "-epicsandboxid=00000000000000000000000000000015"
+ ],
+ "environment": {},
+ "game_directory": "/home/user/.local/share/wineo/epic/games/Offline Game",
+ "game_executable": "OfflineGame.exe",
+ "game_parameters": [],
+ "launch_command": [],
+ "pre_launch_command": "",
+ "pre_launch_wait": false,
+ "user_parameters": [],
+ "working_directory": "/home/user/.local/share/wineo/epic/games/Offline Game"
+}

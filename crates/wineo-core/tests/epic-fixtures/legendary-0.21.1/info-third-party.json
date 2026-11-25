@@ -1,0 +1,52 @@
+{
+ "game": {
+  "app_name": "AppThirdParty",
+  "cloud_save_folder": null,
+  "cloud_save_folder_mac": null,
+  "cloud_saves_supported": false,
+  "command_line": null,
+  "external_activation": "UbisoftConnect",
+  "grant_date": "2020-09-23T19:30:29.656Z",
+  "is_dlc": false,
+  "launch_options": [],
+  "owned_dlc": [],
+  "platform_versions": {
+   "Windows": "1.0"
+  },
+  "title": "Third Party Game",
+  "version": "1.0"
+ },
+ "install": null,
+ "manifest": {
+  "app_name": "AppThirdParty",
+  "build_id": "qD3OjHN7qj377J_jTVkuK5t2eXQ",
+  "build_version": "1.0",
+  "compressed": true,
+  "disk_size": 40553819385,
+  "download_size": 40541079165,
+  "encrypted": false,
+  "feature_level": 17,
+  "install_tags": [
+   ""
+  ],
+  "is_preloaded": false,
+  "launch_command": "-UplayId=1",
+  "launch_exe": "UplayLaunch.exe",
+  "num_chunks": 38676,
+  "num_files": 226,
+  "prerequisites": {
+   "args": "/S",
+   "ids": [
+    "uplay"
+   ],
+   "name": "Uplay",
+   "path": "Uplay/UplayInstaller.exe"
+  },
+  "size": 2434690,
+  "tag_disk_size": [],
+  "tag_download_size": [],
+  "type": "binary",
+  "uninstaller": null,
+  "version": 17
+ }
+}
