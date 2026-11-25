@@ -7,7 +7,7 @@
 # Usage: scripts/generate-upgrade-fixtures.sh [--keep-roots] [TAG...]
 #   TAG            one of v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0
 #                  v1.0.0 v1.1.0 v1.2.0 v1.3.0 v1.4.0 v1.5.0 v1.6.0 v1.7.0
-#                  v1.8.0 v1.9.0;
+#                  v1.8.0 v1.9.0 v1.10.0;
 #                  none means all of them
 #   --keep-roots   leave the scratch roots under $WORK/roots for inspection
 #
@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-TAGS_ALL=(v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0 v1.0.0 v1.1.0 v1.2.0 v1.3.0 v1.4.0 v1.5.0 v1.6.0 v1.7.0 v1.8.0 v1.9.0)
+TAGS_ALL=(v0.2.0 v0.7.0 v0.14.0 v0.24.0 v0.28.0 v0.31.0 v0.34.0 v1.0.0 v1.1.0 v1.2.0 v1.3.0 v1.4.0 v1.5.0 v1.6.0 v1.7.0 v1.8.0 v1.9.0 v1.10.0)
 
 repo=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
@@ -457,6 +457,12 @@ sleep 1
     left_out+=("\`heroic_id\`: only a Heroic import writes it, and that needs a Heroic install.")
     left_out+=("\`dxvk\` and \`vkd3d\` on an environment: setting either installs a build, and the release can only download one. The \`full\` template carries both keys instead.")
     left_out+=("A prefix with real contents: prefixes hold only what the fake wine and umu wrote, plus empty fake program files.")
+    if ge "$tag" v1.10.0; then
+        # Only the desktop app writes [input], and no fixture run opens it,
+        # so the upgrade tests would never see the table otherwise.
+        printf '\n[input]\ngamecube_adapter = true\n' >>"$root/config/library.toml"
+        made "appended [input] with gamecube_adapter = true to root/config/library.toml, as the desktop app's Settings switch writes it"
+    fi
     publish "${left_out[@]}"
 }
 

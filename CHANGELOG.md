@@ -4,6 +4,25 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.10.0 - 2026-11-24
+
+Stable environment identity (plan 0071, done) and the GameCube adapter as a
+controller (plan 0072, done).
+
+New in this release:
+
+- GameCube controllers on Nintendo's USB adapter navigate the Library, behind **Use a GameCube adapter** in Settings (`[input] gamecube_adapter` in `library.toml`), off by default.
+- The button hint bar draws each button in its controller's own shape and colors, and adds hints for Page, Layout, and Full screen.
+- **Show button hints**, a new switch in Settings (`[input] hint_bar` in `library.toml`), turns the hint bar off.
+- Each environment gets an `id` in `library.toml` that tells it apart from a later one with the same name.
+
+Behavior changes:
+
+- Editing an environment while its artwork is fetched no longer stops the artwork from being stored; only an environment that was removed and created again is skipped.
+- `wineo art fetch`, `art set`, and `art rm` change nothing when `library.toml` can't be read.
+- The artwork step of the New and import flows offers only **Skip artwork** for an environment that was replaced meanwhile.
+- The hint bar sits beside an open game panel and drops hints from the right in a narrow window.
+
 ## 1.9.0 - 2026-11-22
 
 Settings in tabs (plan 0070, done).

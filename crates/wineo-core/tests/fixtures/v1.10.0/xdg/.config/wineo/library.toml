@@ -1,0 +1,16 @@
+schema_version = 1
+
+[environments.desktop]
+added = 2026-11-25T03:39:07.056586915Z
+id = "d6aa403ffa7fa5ea80b9f17c61e5f2e7"
+
+[environments.external]
+added = 2026-11-25T03:39:07.08557027Z
+id = "a007afc176ed6a459287f4687f8113df"
+
+[environments.steam-game]
+added = 2026-11-25T03:39:07.102106006Z
+id = "5b47ab6dbd5c0eb5f10c80f445dc63a3"
+
+[steam.games]
+1086940 = "imported"
