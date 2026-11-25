@@ -1,0 +1,14 @@
+schema_version = 1
+prefix = "prefixes/plain"
+runner = "wine"
+arch = "win32"
+
+[targets.main]
+exe = 'C:\Games\Plain\Plain.exe'
+default = true
+args = ["-windowed"]
+gamemode = false
+cwd = 'C:\Games\Plain'
+
+[env]
+PLAIN = "1"

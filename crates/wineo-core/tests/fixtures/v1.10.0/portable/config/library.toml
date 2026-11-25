@@ -1,0 +1,20 @@
+schema_version = 1
+
+[environments.plain]
+added = 2026-11-25T03:39:03.707648328Z
+id = "2dd90d246fd4719a80cdd9e92804fa20"
+
+[environments.templated]
+added = 2026-11-25T03:39:03.719457097Z
+id = "ca83bf9206e2faeeff09755d64065014"
+
+[environments.lazy]
+added = 2026-11-25T03:39:03.732633566Z
+id = "bcb6df15db0c4a96211aff7446027ff0"
+
+[environments.tool]
+added = 2026-11-25T03:39:03.775658182Z
+id = "8dcd1f8f754cee6a8023afcc1b2b0a4f"
+
+[input]
+gamecube_adapter = true

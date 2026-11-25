@@ -789,6 +789,19 @@ fn library_findings(report: &Value) -> usize {
         .count()
 }
 
+/// Whether `set` was written before 1.10.0, the first release that gives
+/// an environment an id.
+fn predates_ids(set: &str) -> bool {
+    let Some(version) = set.strip_prefix('v') else {
+        return true;
+    };
+    let parts: Vec<u32> = version
+        .split('.')
+        .map(|part| part.parse().unwrap())
+        .collect();
+    parts < vec![1, 10, 0]
+}
+
 #[test]
 fn the_first_art_write_gives_an_old_environment_an_id_without_touching_its_config() {
     for name in sets() {
@@ -802,15 +815,20 @@ fn the_first_art_write_gives_an_old_environment_an_id_without_touching_its_confi
                     .join("environments")
                     .join(format!("{environment}.toml"));
                 let before = fs::read(&config).unwrap();
+                let had = library::load(&paths)
+                    .environments
+                    .get(&environment)
+                    .and_then(|entry| entry.id);
                 assert_eq!(
-                    library::load(&paths)
-                        .environments
-                        .get(&environment)
-                        .and_then(|entry| entry.id),
-                    None,
-                    "{name} {root} {environment}: an older wineo wrote an id"
+                    had.is_none(),
+                    predates_ids(&name),
+                    "{name} {root} {environment}: ids start with the 1.10.0 set"
                 );
                 let id = write_art(&paths, &environment);
+                // An environment that came with an id keeps it.
+                if let Some(had) = had {
+                    assert_eq!(id, had, "{name} {root} {environment}");
+                }
                 assert_eq!(
                     fs::read(&config).unwrap(),
                     before,
