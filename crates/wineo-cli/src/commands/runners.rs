@@ -24,6 +24,8 @@ enum Action {
     /// Remove an installed runner
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
+    /// Download a runner: GE-Proton or Proton-CachyOS
+    Download(super::download::RunnerArgs),
     /// Download newer builds of what wineo downloaded
     #[command(long_about = UPDATE_ABOUT)]
     Update(super::build_update::Args),
@@ -59,7 +61,7 @@ struct Row {
     last: String,
 }
 
-pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
     match args.action {
         Some(Action::Remove(args)) => {
             return super::remove_build::run(
@@ -72,6 +74,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
                 |paths, name| Ok(wineo_core::runners::remove(paths, name)?),
             );
         }
+        Some(Action::Download(args)) => return super::download::run_runners(paths, args, verbose),
         Some(Action::Update(args)) => return super::build_update::run(paths, args),
         None => {}
     }

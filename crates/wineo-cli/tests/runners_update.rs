@@ -136,7 +136,7 @@ fn check_json_puts_a_family_that_fails_in_errors_and_exits_1() {
     assert!(
         text.ends_with(
             ",{\"provider\":\"vkd3d\",\"message\":\"vkd3d-proton isn't installed. \
-             Download it with wineo download vkd3d.\"}]}\n"
+             Download it with wineo vkd3d download.\"}]}\n"
         ),
         "{text}"
     );
@@ -200,7 +200,7 @@ fn a_named_family_that_isnt_installed_is_an_error_with_a_hint() {
     assert_eq!(stdout(&output), "");
     assert!(
         stderr(&output).contains(
-            "error: GE-Proton isn't installed. Download it with wineo download ge-proton."
+            "error: GE-Proton isn't installed. Download it with wineo runners download ge-proton."
         ),
         "{}",
         stderr(&output)

@@ -147,8 +147,26 @@ impl ReleasesApi {
         self.status(&format!("/assets/{asset}"), code);
     }
 
-    fn list(&self, repo: Repo, tag: &str, asset: &str, size: u64, digest: Option<&str>) {
-        let body = serde_json::json!([{
+    /// Serves `tag` on its own, as `--version TAG` asks for it, with the
+    /// archive. A release that is listed too is the caller's to publish.
+    pub fn publish_tag(&self, repo: Repo, tag: &str, asset: &str, body: Vec<u8>) {
+        let digest = format!("sha256:{:x}", Sha256::digest(&body));
+        let release = self.release(tag, asset, body.len() as u64, Some(&digest));
+        self.route(
+            &format!("{}/tags/{tag}", repo.releases_path()),
+            Route::Body(serde_json::to_vec(&release).unwrap()),
+        );
+        self.route(&format!("/assets/{asset}"), Route::Body(body));
+    }
+
+    fn release(
+        &self,
+        tag: &str,
+        asset: &str,
+        size: u64,
+        digest: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
             "tag_name": tag,
             "assets": [{
                 "name": asset,
@@ -156,7 +174,11 @@ impl ReleasesApi {
                 "size": size,
                 "digest": digest,
             }],
-        }]);
+        })
+    }
+
+    fn list(&self, repo: Repo, tag: &str, asset: &str, size: u64, digest: Option<&str>) {
+        let body = serde_json::json!([self.release(tag, asset, size, digest)]);
         self.route(
             repo.releases_path(),
             Route::Body(serde_json::to_vec(&body).unwrap()),
