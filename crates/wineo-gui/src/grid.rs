@@ -670,6 +670,42 @@ impl App {
         };
         (self.window_size.width - 40.0).clamp(280.0, widest)
     }
+    /// What the controller hint bar keeps clear on its left and right
+    /// beyond `NOTES_MARGIN`. With the panel's room reserved, the bar fits
+    /// and centers between the sidebar and the panel, so it never lies over
+    /// the panel; otherwise it centers in the window as the toasts do.
+    fn hint_sides(&self) -> (f32, f32) {
+        if self.panel_reserved() {
+            (crate::sidebar::WIDTH, crate::grid_motion::DOCK_WIDTH)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+    /// The width the hint bar has, computed from the window since the bar
+    /// can't learn it from the layer it sits in.
+    pub(crate) fn hint_room(&self) -> f32 {
+        let (left, right) = self.hint_sides();
+        self.window_size.width - left - right - 2.0 * NOTES_MARGIN
+    }
+    /// The hint bar's layer, always present so the layers above keep their
+    /// places. A room of zero or less fits no hint, so the bar draws
+    /// nothing.
+    fn hint_layer(&self) -> Element<'_, Message> {
+        let (left, right) = self.hint_sides();
+        match self.pad_hint_view() {
+            Some(bar) => container(bar)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: right + NOTES_MARGIN,
+                    bottom: NOTES_MARGIN,
+                    left: left + NOTES_MARGIN,
+                })
+                .align_bottom(Fill)
+                .center_x(Fill)
+                .into(),
+            None => Space::new().into(),
+        }
+    }
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let content = crate::shortcuts::capture_with_undo(
             self.sidebar_view(),
@@ -746,15 +782,16 @@ impl App {
         } else {
             Space::new().into()
         };
-        // The controller hints sit under everything, the marks bar too.
-        let hint_slot: Element<'_, Message> = match self.pad_hint_view() {
-            Some(hints) => {
-                let above = imported || notice || undo || self.action_bar_shown();
-                container(hints)
-                    .padding(iced::Padding::default().top(if above { GAP } else { 0.0 }))
-                    .into()
-            }
-            None => Space::new().into(),
+        // The controller hints sit under everything, the marks bar too. The
+        // bar draws in a layer of its own, and its slot here keeps the
+        // toasts above it.
+        let hint_slot: Element<'_, Message> = if self.pad_hint_shown() {
+            let above = imported || notice || undo || self.action_bar_shown();
+            Space::new()
+                .height(crate::pad::glyph::HINT_HEIGHT + if above { GAP } else { 0.0 })
+                .into()
+        } else {
+            Space::new().into()
         };
         let toasts =
             column![import_slot, notice_slot, undo_slot, bar_slot, hint_slot].align_x(Center);
@@ -766,6 +803,7 @@ impl App {
                 .align_bottom(Fill)
                 .center_x(Fill),
         );
+        page = page.push(self.hint_layer());
         if self.removal.is_some() {
             page = page.push(iced::widget::opaque(
                 mouse_area(container(self.remove_view()).center(Fill).style(|_| {

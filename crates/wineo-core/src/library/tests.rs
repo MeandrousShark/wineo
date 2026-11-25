@@ -71,6 +71,7 @@ future_entry = "kept"
             favorite: true,
             hidden: true,
             added: Some("2026-10-17T19:20:05Z".parse().unwrap()),
+            id: None,
         }
     );
     assert_eq!(library.problem, None);
@@ -415,16 +416,18 @@ fn missing_schema_version_reads_as_one_and_is_added_on_a_real_edit() {
 fn lifecycle_helpers_replace_stamp_and_remove_entries() {
     let fixture = Fixture::new();
     fixture.write("schema_version = 1\n[environments.hades]\nfavorite = true\nhidden = true\n");
-    assert!(fresh(&fixture.paths, "hades").unwrap());
+    let id = fresh(&fixture.paths, "hades").unwrap();
     let fresh_entry = &load(&fixture.paths).environments["hades"];
     assert!(!fresh_entry.favorite);
     assert!(!fresh_entry.hidden);
     assert!(fresh_entry.added.is_some());
+    assert_eq!(fresh_entry.id, Some(id));
 
     let replacement = Entry {
         favorite: true,
         hidden: false,
         added: Some("2026-10-17T19:20:05Z".parse().unwrap()),
+        id: None,
     };
     assert!(put(&fixture.paths, "hades", Some(&replacement)).unwrap());
     assert_eq!(load(&fixture.paths).environments["hades"], replacement);
@@ -2053,6 +2056,8 @@ fn set_input_writes_only_what_changes() {
 
     let remapped = Input {
         controller: false,
+        gamecube_adapter: false,
+        hint_bar: true,
         buttons: BTreeMap::from([(PadAction::Favorite, PadButton::Rb)]),
     };
     assert!(set_input(&fixture.paths, &remapped).unwrap());
@@ -2069,6 +2074,199 @@ fn set_input_writes_only_what_changes() {
         "schema_version = 1\n\n[input]\ncontroller = true\n"
     );
     assert_eq!(load(&fixture.paths).input, Input::default());
+}
+
+#[test]
+fn the_gamecube_adapter_defaults_to_off_and_an_absent_key_reads_as_off() {
+    // controller defaults to on; this one must not follow it.
+    assert!(!Input::default().gamecube_adapter);
+    let fixture = Fixture::new();
+    assert!(!load(&fixture.paths).input.gamecube_adapter);
+    fixture.write("schema_version = 1\n");
+    assert!(!load(&fixture.paths).input.gamecube_adapter);
+    fixture.write("schema_version = 1\n[input]\ncontroller = false\n");
+    let input = load(&fixture.paths).input;
+    assert!(!input.gamecube_adapter);
+    assert!(!input.controller);
+    fixture.write("schema_version = 1\n[input]\ngamecube_adapter = true\n");
+    let input = load(&fixture.paths).input;
+    assert!(input.gamecube_adapter);
+    assert!(input.controller);
+}
+
+#[test]
+fn a_gamecube_adapter_value_of_the_wrong_type_reads_as_off() {
+    let fixture = Fixture::new();
+    // The string "true" is the case that catches a default of on: a stored
+    // false and a bad value both read as off.
+    for bad in ["\"true\"", "\"yes\"", "1", "[true]", "{ on = true }"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[input]\ncontroller = false\ngamecube_adapter = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(!library.input.gamecube_adapter, "{bad}");
+        assert!(!library.input.controller, "{bad}");
+    }
+    fixture.write("schema_version = 1\n[input]\ngamecube_adapter = true\n");
+    assert!(load(&fixture.paths).input.gamecube_adapter);
+}
+
+#[test]
+fn set_input_stores_the_gamecube_adapter_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let on = Input {
+        gamecube_adapter: true,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &on).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ngamecube_adapter = true\n"
+    );
+    assert_eq!(load(&fixture.paths).input, on);
+    assert!(!set_input(&fixture.paths, &on).unwrap());
+
+    // Off again is written as false, not removed, like controller.
+    assert!(set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\ngamecube_adapter = false\n"
+    );
+    assert_eq!(load(&fixture.paths).input, Input::default());
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+}
+
+#[test]
+fn a_no_op_gamecube_adapter_edit_leaves_the_file_alone_and_a_change_keeps_comments() {
+    let fixture = Fixture::new();
+    let text = "# mine\nschema_version = 1\n\n[input]\ncontroller = false # no pads\n# adapter\ngamecube_adapter   =   true\nfuture = 1\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).input;
+    assert!(read.gamecube_adapter);
+    assert!(!set_input(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    let off = Input {
+        gamecube_adapter: false,
+        ..read
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        text.replace("true\nfuture", "false\nfuture")
+    );
+
+    // A bad value reads as off, so asking for off writes nothing.
+    let bad = "schema_version = 1\n[input]\ngamecube_adapter = \"true\"\n";
+    fixture.write(bad);
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(fixture.read(), bad);
+}
+
+#[test]
+fn the_hint_bar_defaults_to_on_and_an_absent_key_reads_as_on() {
+    assert!(Input::default().hint_bar);
+    let fixture = Fixture::new();
+    assert!(load(&fixture.paths).input.hint_bar);
+    fixture.write("schema_version = 1\n");
+    assert!(load(&fixture.paths).input.hint_bar);
+    // Another key in the table must not drag it along.
+    fixture.write("schema_version = 1\n[input]\ncontroller = false\n");
+    let input = load(&fixture.paths).input;
+    assert!(input.hint_bar);
+    assert!(!input.controller);
+    fixture.write("schema_version = 1\n[input]\nhint_bar = false\n");
+    let input = load(&fixture.paths).input;
+    assert!(!input.hint_bar);
+    assert!(input.controller);
+    fixture.write("schema_version = 1\n[input]\nhint_bar = true\n");
+    assert!(load(&fixture.paths).input.hint_bar);
+}
+
+#[test]
+fn a_hint_bar_value_of_the_wrong_type_reads_as_on() {
+    let fixture = Fixture::new();
+    // The string "false" is the case that catches a truthiness read: a
+    // stored false is off, a bad value is the default.
+    for bad in ["\"false\"", "\"no\"", "0", "[false]", "{ on = false }"] {
+        fixture.write(&format!(
+            "schema_version = 1\n[input]\ncontroller = false\nhint_bar = {bad}\n"
+        ));
+        let library = load(&fixture.paths);
+        assert_eq!(library.problem, None, "{bad}");
+        assert!(library.input.hint_bar, "{bad}");
+        assert!(!library.input.controller, "{bad}");
+    }
+}
+
+#[test]
+fn set_input_stores_the_hint_bar_only_when_it_changes() {
+    let fixture = Fixture::new();
+    let off = Input {
+        hint_bar: false,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\nhint_bar = false\n"
+    );
+    assert_eq!(load(&fixture.paths).input, off);
+    assert!(!set_input(&fixture.paths, &off).unwrap());
+
+    // On again is written as true, not removed, like the other bools.
+    assert!(set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(
+        fixture.read(),
+        "schema_version = 1\n\n[input]\nhint_bar = true\n"
+    );
+    assert_eq!(load(&fixture.paths).input, Input::default());
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+}
+
+#[test]
+fn the_default_hint_bar_writes_no_key_and_a_no_op_edit_leaves_the_file_alone() {
+    let fixture = Fixture::new();
+    // A file that never had the key stays as it is when something else
+    // is saved.
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert!(!fixture.paths.library_file().exists());
+    let off = Input {
+        controller: false,
+        ..Input::default()
+    };
+    assert!(set_input(&fixture.paths, &off).unwrap());
+    assert!(!fixture.read().contains("hint_bar"), "{}", fixture.read());
+
+    let text = "# mine\nschema_version = 1\n\n[input]\ncontroller = false # no pads\n# hints\nhint_bar   =   false\nfuture = 1\n";
+    fixture.write(text);
+    let path = fixture.paths.library_file();
+    let inode = fs::metadata(&path).unwrap().ino();
+    let read = load(&fixture.paths).input;
+    assert!(!read.hint_bar);
+    assert!(!set_input(&fixture.paths, &read).unwrap());
+    assert_eq!(fixture.read(), text);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+
+    let on = Input {
+        hint_bar: true,
+        ..read
+    };
+    assert!(set_input(&fixture.paths, &on).unwrap());
+    assert_eq!(
+        fixture.read(),
+        text.replace("false\nfuture", "true\nfuture")
+    );
+
+    // A bad value reads as on, so asking for on writes nothing.
+    let bad = "schema_version = 1\n[input]\nhint_bar = \"false\"\n";
+    fixture.write(bad);
+    assert!(!set_input(&fixture.paths, &Input::default()).unwrap());
+    assert_eq!(fixture.read(), bad);
 }
 
 #[test]
@@ -2503,4 +2701,77 @@ fn list_column_edits_work_in_an_inline_list_columns_table() {
         "{}",
         fixture.read()
     );
+}
+
+const ID: &str = "3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5";
+
+#[test]
+fn an_id_reads_back_and_anything_malformed_reads_as_none() {
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[environments.good]\nid = \"{ID}\"\n[environments.short]\nid = \"3f9c\"\n[environments.upper]\nid = \"{}\"\n[environments.number]\nid = 5\n",
+        ID.to_uppercase()
+    ));
+    let library = load(&fixture.paths);
+    assert_eq!(library.environments["good"].id, Id::parse(ID));
+    assert!(library.environments["good"].id.is_some());
+    for name in ["short", "upper", "number"] {
+        assert_eq!(library.environments[name].id, None, "{name}");
+    }
+}
+
+#[test]
+fn put_writes_an_id_only_when_there_is_one_and_replaces_a_malformed_one() {
+    let fixture = Fixture::new();
+    let plain = Entry {
+        favorite: true,
+        ..Entry::default()
+    };
+    let with_id = Entry {
+        id: Id::parse(ID),
+        ..plain.clone()
+    };
+    assert!(put(&fixture.paths, "game", Some(&plain)).unwrap());
+    assert!(!fixture.read().contains("id ="), "{}", fixture.read());
+    assert!(put(&fixture.paths, "game", Some(&with_id)).unwrap());
+    assert!(fixture.read().contains(&format!("id = \"{ID}\"")));
+    assert_eq!(load(&fixture.paths).environments["game"], with_id);
+    assert!(!put(&fixture.paths, "game", Some(&with_id)).unwrap());
+
+    // An entry without the id it should have, or with a stale one, is
+    // replaced too.
+    assert!(put(&fixture.paths, "game", Some(&plain)).unwrap());
+    assert!(!fixture.read().contains("id ="), "{}", fixture.read());
+    for bad in ["\"bad\"", "5", "\"00000000000000000000000000000001\""] {
+        fixture.write(&format!(
+            "schema_version = 1\n[environments.game]\nfavorite = true\nid = {bad}\n"
+        ));
+        assert!(
+            put(&fixture.paths, "game", Some(&with_id)).unwrap(),
+            "{bad}"
+        );
+        assert_eq!(load(&fixture.paths).environments["game"], with_id, "{bad}");
+    }
+}
+
+#[test]
+fn a_saved_entry_keeps_its_id_and_reads_a_malformed_one_as_none() {
+    let with_id = Entry {
+        hidden: true,
+        id: Id::parse(ID),
+        ..Entry::default()
+    };
+    let text = toml::to_string(&with_id).unwrap();
+    assert!(text.contains(&format!("id = \"{ID}\"")), "{text}");
+    assert_eq!(toml::from_str::<Entry>(&text).unwrap(), with_id);
+    let without = Entry {
+        hidden: true,
+        ..Entry::default()
+    };
+    assert!(!toml::to_string(&without).unwrap().contains("id ="));
+    for bad in ["\"bad\"", "5", "[1, 2]"] {
+        let entry: Entry = toml::from_str(&format!("hidden = true\nid = {bad}\n"))
+            .unwrap_or_else(|error| panic!("{bad}: {error}"));
+        assert_eq!(entry, without, "{bad}");
+    }
 }

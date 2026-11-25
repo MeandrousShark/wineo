@@ -593,6 +593,29 @@ fn a_second_apply_of_the_same_rom_reports_it_already_imported() {
 }
 
 #[test]
+fn an_import_returns_the_new_environments_id() {
+    let (home, paths, roms) = home();
+    touch(&roms.join("Game.gba"));
+    let mgba = picked(home.path(), Emulator::Mgba);
+    let listing = list(&paths, Emulator::Mgba, &roms);
+    let batch = plan_batch(
+        &paths,
+        &GlobalConfig::default(),
+        &mgba,
+        listing.entries,
+        None,
+    )
+    .unwrap();
+    let ApplyOutcome::Imported(applied) = apply(&paths, &batch.ready[0], &Token::new()).unwrap()
+    else {
+        panic!("not imported");
+    };
+    let id = applied.identity.and_then(|identity| identity.id());
+    assert!(id.is_some());
+    assert_eq!(id, crate::library::load(&paths).environments["game"].id);
+}
+
+#[test]
 fn a_name_taken_after_planning_is_picked_again() {
     let (home, paths, roms) = home();
     touch(&roms.join("A.gba"));

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Client, Provider};
-use wineo_core::environment::EnvironmentIdentity;
+use wineo_core::environment::{Currency, EnvironmentIdentity};
 use wineo_core::heroic::{
     HeroicCandidate, HeroicGameKind, HeroicListing, HeroicSource, SettingsReview,
 };
@@ -18,7 +18,7 @@ use wineo_core::import;
 use wineo_core::paths::Paths;
 use wineo_core::runners::Runners;
 
-use crate::flow::posters;
+use crate::flow::{artwork, posters};
 use crate::runner_label::{self, Choice};
 
 use super::{BatchOptions, Draft, Prepared, Refreshed, Review};
@@ -411,6 +411,62 @@ pub(super) fn heroic_id(game: &Game) -> &str {
     }
 }
 
+/// Brings an imported environment's desktop entries in line, only while it
+/// is still the environment `identity` names: a replacement's are left
+/// alone. When `library.toml` can't be read nothing is written, and the
+/// error is the entries sentence, except on a portable root, which has no
+/// entries. Ok(None) when they were left alone.
+pub(super) fn finish_entries(
+    paths: &Paths,
+    global: &GlobalConfig,
+    name: &str,
+    registered: &Registered,
+    identity: Option<EnvironmentIdentity>,
+) -> Result<Option<Vec<wineo_core::desktop::Change>>, artwork::EntriesError> {
+    match identity.map(|held| held.is_current(paths, name)) {
+        None | Some(Currency::Current) => registered
+            .finish(paths, global)
+            .map(Some)
+            .map_err(|error| artwork::EntriesError::Failed(error.to_string())),
+        Some(Currency::Changed) => Ok(None),
+        Some(Currency::LibraryUnreadable) if wineo_core::desktop::supported(paths).is_ok() => Err(
+            artwork::EntriesError::LibraryUnreadable(artwork::entries_unreadable(name)),
+        ),
+        Some(Currency::LibraryUnreadable) => Ok(None),
+    }
+}
+
+/// What a batch does for one game once it registered: its Heroic poster,
+/// its art when `fetch` is given, then its desktop entries, all with the
+/// identity the import returned. `status` names each phase. Returns the
+/// game's notes.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn finish_batch_game(
+    paths: &Paths,
+    global: &GlobalConfig,
+    (name, app): (&str, &str),
+    poster: Option<&BatchPoster>,
+    registered: &Registered,
+    fetch: Option<&dyn Fn(Option<EnvironmentIdentity>) -> artwork::Fetched>,
+    token: &Token,
+    mut status: impl FnMut(&str),
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    status("adding artwork");
+    let identity = registered.identity;
+    notes.extend(store_heroic_poster(paths, name, app, poster, identity));
+    if let Some(fetch) = fetch {
+        notes.extend(super::art_notes(fetch(identity).art, token));
+    }
+    status("finalizing desktop entries");
+    match finish_entries(paths, global, name, registered, identity) {
+        Ok(_) => {}
+        Err(artwork::EntriesError::LibraryUnreadable(sentence)) => notes.push(sentence),
+        Err(artwork::EntriesError::Failed(error)) => notes.push(format!("Desktop entry: {error}")),
+    }
+    notes
+}
+
 /// A Heroic poster a batch may store, and whether the grid decoded it.
 #[derive(Debug, Clone)]
 pub(super) struct BatchPoster {
@@ -427,36 +483,63 @@ pub(super) fn store_heroic_poster(
     name: &str,
     app: &str,
     poster: Option<&BatchPoster>,
+    identity: Option<EnvironmentIdentity>,
 ) -> Option<String> {
-    store_heroic_poster_for(
-        paths,
-        name,
-        app,
-        poster,
-        EnvironmentIdentity::read(paths, name),
-    )
+    let poster = poster.filter(|poster| decodes(paths, poster))?;
+    let identity = match identity {
+        Some(identity) => identity,
+        // Only with a poster to store, so an import with none never gives
+        // the environment an id. A name core would refuse, or a missing
+        // environment, gets that error.
+        None => match EnvironmentIdentity::acquire_existing(paths, name) {
+            Ok(identity) => identity,
+            Err(error) => return Some(poster_failed(error)),
+        },
+    };
+    store_decoded_poster(paths, name, app, poster, identity)
 }
 
 /// `store_heroic_poster`, stored only while the environment is still the one
 /// `identity` was read from, which is checked under the art lock.
+#[cfg(test)]
 pub(super) fn store_heroic_poster_for(
     paths: &Paths,
     name: &str,
     app: &str,
     poster: Option<&BatchPoster>,
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
 ) -> Option<String> {
-    let poster = poster?;
-    // Core only checks the signature, so the image has to decode first.
-    if !poster.decoded
-        && !posters::decode_waiting(&poster.path, &paths.art_cache_dir(), None)
+    let poster = poster.filter(|poster| decodes(paths, poster))?;
+    store_decoded_poster(paths, name, app, poster, identity)
+}
+
+/// Whether the poster decodes, since core only checks the signature.
+fn decodes(paths: &Paths, poster: &BatchPoster) -> bool {
+    poster.decoded
+        || posters::decode_waiting(&poster.path, &paths.art_cache_dir(), None)
             .is_some_and(|decoded| decoded.is_ok())
-    {
-        return None;
+}
+
+fn store_decoded_poster(
+    paths: &Paths,
+    name: &str,
+    app: &str,
+    poster: &BatchPoster,
+    identity: EnvironmentIdentity,
+) -> Option<String> {
+    match heroic_import::store_poster(paths, name, app, &poster.path, identity) {
+        Ok(_) => None,
+        Err(wineo_core::Error::ArtEnvironmentChanged(_)) => Some(artwork::changed_message(
+            name,
+            identity.id().is_some(),
+            artwork::NOT_STORED,
+        )),
+        Err(error) => Some(poster_failed(error)),
     }
-    heroic_import::store_poster(paths, name, app, &poster.path, identity)
-        .err()
-        .map(|error| format!("Heroic poster: {error}"))
+}
+
+fn poster_failed(error: impl std::fmt::Display) -> String {
+    format!("Heroic poster: {error}")
 }
 
 /// How often copy progress reaches the UI. Core reports every copied file,

@@ -187,6 +187,9 @@ pub(crate) struct App {
     /// A press's text field check is in flight, so a repeat waits for it
     /// rather than queueing another.
     pad_checking: bool,
+    /// The GameCube adapter's reader: whether it's wanted, and where it
+    /// stands.
+    adapter: pad::adapter::Control,
     pub(crate) tray: tray::Tray,
     /// The session bus name this app owns for its root, which other
     /// launches call `Show` on. None in tests and without a bus.
@@ -713,6 +716,8 @@ pub(crate) enum Message {
     Show,
     /// What the controller reader saw.
     Pad(pad::PadEvent),
+    /// What the GameCube adapter's reader saw.
+    Adapter(pad::adapter::Report),
     /// A held direction's repeat is due, tagged with its wakeup.
     PadRepeat(u64),
     /// The key a pad press stands for, and whether a text field had focus
@@ -743,6 +748,7 @@ impl App {
             capture_wake: wake::Wake::default(),
             capture_pressed_off: None,
             pad_checking: false,
+            adapter: pad::adapter::Control::default(),
             tray: tray::Tray::default(),
             instance: None,
             left: false,
@@ -1257,8 +1263,13 @@ impl App {
             } else {
                 Subscription::none()
             },
+            if self.adapter_subscribed() {
+                pad::adapter::usb::subscription(self.adapter.link())
+            } else {
+                Subscription::none()
+            },
             // Only the hints have a pointer move to hear.
-            if self.pad_hint.is_some() {
+            if self.pad_hint.is_some() && self.input.hint_bar {
                 iced::event::listen_with(|event, _, _| {
                     matches!(
                         event,
@@ -1290,6 +1301,7 @@ impl App {
         self.sync_desktop();
         self.sync_input();
         self.sync_tool_starts();
+        self.sync_adapter();
         let fullscreen = self.sync_coverflow_fullscreen();
         if self.tray.service && self.desktop.tray {
             self.sync_tray_menu();
@@ -1879,6 +1891,7 @@ impl App {
             }
             Message::Key(key, modifiers, status) => self.page_key(key, modifiers, status)?,
             Message::Pad(event) => self.pad_event(event),
+            Message::Adapter(report) => self.adapter_report(report),
             Message::PadRepeat(generation) => self.pad_repeat(generation),
             Message::PadKey(key, modifiers, text_focused) => {
                 self.pad_key(key, modifiers, text_focused)

@@ -395,7 +395,9 @@ an older release only loses those preferences. The one exception is
 `~/.config/wineo/library.toml` holds how the desktop app shows each
 environment: favorites, hidden games, when it was added, the saved sort
 and grid view, saved views (presets), the app's theme, the controller's
-buttons, and which Steam games it has dealt with.
+buttons, and which Steam games it has dealt with. It also holds each
+environment's `id`, which `wineo` and the desktop app both use to store
+artwork in the right environment.
 It's written for you, one field at a time, and never stops anything from
 launching. A bad value, like `favorite = "yes"`, counts as unset for that
 field only and stays in the file until you fix it or change that setting.
@@ -437,6 +439,8 @@ on_stop = "restore"       # restore (default) or show
 
 [input]
 controller = false        # read game controllers (default true)
+gamecube_adapter = true   # read Nintendo's GameCube adapter (default false)
+hint_bar = false          # show the bar of button hints (default true)
 
 [input.buttons]
 favorite = "rb"           # only the actions moved off their default
@@ -445,6 +449,7 @@ page_right = "y"
 [environments.hades]
 favorite = true
 added = 2026-10-18T19:30:00Z
+id = "3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5"
 
 [environments.old-demo]
 hidden = true
@@ -587,11 +592,18 @@ between ends either. A value of the wrong type, or an unknown
 when the app saves, and `validate` reports it; repair keeps any boolean
 `tray` and any string `close`, `on_start`, or `on_stop` and drops other
 types. An older wineo warns about this table in `validate`, and its repair
-drops it.
+drops it. wineo 1.6 to 1.9 ignore `gamecube_adapter` and `hint_bar`, keep
+them on edits, and call each an unknown key in `validate`.
 
 `[input]` (plan 0066) is how the desktop app reads game controllers.
 `controller` defaults to `true`, and turning it off in Settings writes
-`false`. `[input.buttons]` moves pad actions to other buttons, one key per
+`false`. `gamecube_adapter` (1.10.0, plan 0072) defaults to `false`, unlike
+`controller`: it's absent until turned on in Settings, which writes `true`,
+and turning it back off writes `false`. It does nothing while `controller`
+is off. A value of the wrong type reads as off. `hint_bar` (1.10.0, plan
+0072) defaults to `true`: turning the Library's bar of button hints off in
+Settings writes `false`, and a value of the wrong type reads as on. It
+does nothing while `controller` is off. `[input.buttons]` moves pad actions to other buttons, one key per
 action that isn't on its default, so it's absent until you remap
 something. The actions and their default buttons are `confirm` (`a`),
 `back` (`b`), `favorite` (`y`), `mark` (`x`), `page_left` (`lb`),
@@ -604,7 +616,7 @@ unknown action or button counts as unset for that key only. When two
 actions name one button, the earlier one in the list above keeps it, and
 the later one goes back to its default button if that's free or has no
 button otherwise; `validate` reports all three. Repair keeps any boolean
-`controller` and any string under `[input.buttons]` and drops other
+`controller`, `gamecube_adapter`, or `hint_bar` and any string under `[input.buttons]` and drops other
 types. An older wineo warns about this table in `validate`, and its repair
 drops it.
 
@@ -624,6 +636,20 @@ when wineo created or imported it, a TOML datetime in UTC; environments
 made before wineo recorded it have none and sort last by date added. A
 clone starts with a fresh entry, a removed environment's entry is dropped
 (and kept with it in the trash), and a portable copy takes its entry along.
+
+`id` is wineo's own: 32 lowercase hex characters, written when an
+environment is created, imported, or cloned. It tells an environment apart
+from a later one with the same name, so artwork that was being fetched for
+one is never stored in the other, while editing an environment keeps its
+id. Don't edit it. An environment from before 1.10.0 gets one the first
+time artwork is written for it, and removing the key only makes wineo
+write a new one then. Anything but 32 lowercase hex characters reads as no
+id with a `validate` warning, and repair drops it. An older wineo ignores
+the key and keeps it, and `validate` there reports it as unknown, once for
+each environment that has one. While `library.toml` can't be written,
+wineo tells environments apart by their config file instead, as 1.9.0
+did, so an edit made while artwork is being fetched stops that artwork
+from being stored.
 
 When the file doesn't parse, or has a `schema_version` this wineo doesn't
 support, favorites and hidden games are off and every write to it is refused,

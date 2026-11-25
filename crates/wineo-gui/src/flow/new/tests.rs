@@ -3,6 +3,8 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 use super::*;
+use crate::flow::artwork::Fetched;
+use crate::flow::artwork::canned::canned_hades;
 use wineo_core::config::TITLE_MAX_CHARS;
 
 /// A new page, on the choice page it opens on.
@@ -1482,16 +1484,18 @@ struct Call {
     title: String,
     /// What `busy_with` said about the environment's lock.
     lock: String,
+    /// What the flow handed it, which a Retry must not read again.
+    identity: Option<EnvironmentIdentity>,
 }
 
 type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 
 /// A fetcher that records each call and answers `answer`, or an error once
 /// its token is canceled.
-fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
+fn fake_fetcher(answer: Result<Vec<String>, FetchError>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, identity, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -1500,11 +1504,12 @@ fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
             name: name.to_owned(),
             title: title.to_owned(),
             lock,
+            identity,
         });
         if token.is_canceled() {
-            return Err("canceled".to_owned());
+            return Fetched::answer(Err(FetchError::Other("canceled".to_owned())), identity);
         }
-        answer.clone()
+        Fetched::answer(answer.clone(), identity)
     });
     (fetcher, calls)
 }
@@ -1549,7 +1554,7 @@ fn drive(page: &mut Page, task: Task<Event>, key_available: bool) {
 
 /// Starts the fetch on `page` with a fetcher answering `answer`, runs it,
 /// and says what it was asked for and how the page ended.
-fn fetched_with(page: &mut Page, answer: Result<Vec<String>, String>) -> (Vec<String>, Stage) {
+fn fetched_with(page: &mut Page, answer: Result<Vec<String>, FetchError>) -> (Vec<String>, Stage) {
     let (fetcher, calls) = fake_fetcher(answer);
     page.fetcher = fetcher;
     let task = page.start_fetch();
@@ -1603,12 +1608,19 @@ fn the_fetch_runs_after_creation_outside_the_create_lock() {
         let report = page.report.as_ref().unwrap();
         assert!(report.registered, "{kind}: {:?}", report.notes);
         assert_eq!(report.art_error, None, "{kind}");
+        // The identity creation handed back, the id its entry got.
+        let created = EnvironmentIdentity::peek(&paths, "hollow-knight");
+        assert!(
+            created.is_some_and(|identity| identity.id().is_some()),
+            "{kind}"
+        );
         assert_eq!(
             *calls.lock().unwrap(),
             [Call {
                 name: "hollow-knight".to_owned(),
                 title: "Hollow Knight".to_owned(),
                 lock: "Ok(None)".to_owned(),
+                identity: created,
             }],
             "{kind}"
         );
@@ -1674,13 +1686,13 @@ fn the_desktop_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
     let token = Token::new();
     token.cancel();
     assert_eq!(
-        fetch_art(&paths, "game", "Game", &token, &fetcher),
-        Err("canceled".to_owned())
+        fetch_art(&paths, "game", "Game", None, &token, &fetcher).0,
+        Err(FetchError::Other("canceled".to_owned()))
     );
     assert!(entries().is_empty(), "a skip writes nothing more");
 
     assert_eq!(
-        fetch_art(&paths, "game", "Game", &Token::new(), &fetcher),
+        fetch_art(&paths, "game", "Game", None, &Token::new(), &fetcher).0,
         Ok(Vec::new())
     );
     assert_eq!(entries().len(), 1);
@@ -1689,13 +1701,13 @@ fn the_desktop_entry_is_reapplied_after_a_fetch_but_not_after_a_skip() {
 #[test]
 fn retry_artwork_fetches_again_through_the_same_skip() {
     let (mut page, calls) = registered(true);
-    let (fetcher, _) = fake_fetcher(Err("offline".to_owned()));
+    let (fetcher, _) = fake_fetcher(Err(FetchError::Other("offline".to_owned())));
     page.fetcher = fetcher;
     let task = page.finish();
     drive(&mut page, task, true);
     assert_eq!(page.stage, Stage::Finished);
     let error = page.report.as_ref().unwrap().art_error.clone().unwrap();
-    assert!(error.starts_with("offline"), "{error}");
+    assert!(error.to_string().starts_with("offline"), "{error}");
 
     // Retry runs the fetch again even though it already ran once.
     let (fetcher, retried) = fake_fetcher(Ok(vec!["No logo artwork found".to_owned()]));
@@ -1713,7 +1725,7 @@ fn retry_artwork_fetches_again_through_the_same_skip() {
     assert!(report.notes.contains(&"Artwork skipped".to_owned()));
 
     // A retry that gets through clears the error and keeps the notes.
-    page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
+    page.report.as_mut().unwrap().art_error = Some(FetchError::Other("offline".to_owned()));
     let task = page.update(Event::RetryArt);
     drive(&mut page, task, true);
     let report = page.report.as_ref().unwrap();
@@ -1827,7 +1839,7 @@ fn the_fetch_waits_for_target_and_runs_once_it_closes() {
     // Confirm's target lands, then the fetch runs.
     let (mut page, calls) = registered(true);
     page.stage = Stage::Working;
-    let task = page.update(Event::TargetAdded(page.generation, Ok(Vec::new())));
+    let task = page.update(Event::TargetAdded(page.generation, Ok(Vec::new()), None));
     assert!(page.fetching);
     drive(&mut page, task, true);
     assert_eq!(call_count(&calls), 1);
@@ -1900,7 +1912,7 @@ fn finished_buttons_wrap_in_small_dialogs() {
     use crate::layout_probe::{bounds_at, probe};
     let (mut page, _) = registered(false);
     page.report.as_mut().unwrap().playable = true;
-    page.report.as_mut().unwrap().art_error = Some("offline".to_owned());
+    page.report.as_mut().unwrap().art_error = Some(FetchError::Other("offline".to_owned()));
     let _ = page.finish();
     // The body's children: the title, the library line, the artwork error,
     // Retry, Skip, the launch checkbox, then Open settings, Choose
@@ -3876,7 +3888,11 @@ fn failed_add(error: &str) -> Page {
     page.target_path = "C:\\Games\\Game\\program-0.exe".to_owned();
     let _ = page.update(Event::AddTarget);
     assert_eq!(page.stage, Stage::Working);
-    let _ = page.update(Event::TargetAdded(page.generation, Err(error.to_owned())));
+    let _ = page.update(Event::TargetAdded(
+        page.generation,
+        Err(error.to_owned()),
+        None,
+    ));
     assert_eq!(page.stage, Stage::Target);
     page
 }
@@ -4116,75 +4132,13 @@ fn windows_and_native_linux_are_separate_sections_with_their_own_headings() {
     );
 }
 
-/// SteamGridDB's answers for a game with an icon, and nothing else, by
-/// address.
-#[derive(Clone)]
-struct Canned(
-    Arc<std::collections::HashMap<String, (u16, Vec<u8>)>>,
-    // Runs the first time an image is asked for.
-    Option<Arc<dyn Fn() + Send + Sync>>,
-);
-
-impl wineo_core::download::Transport for Canned {
-    fn get(&self, url: &str) -> anyhow::Result<Box<dyn std::io::Read>> {
-        anyhow::bail!("unexpected request to {url}")
-    }
-
-    fn request(
-        &self,
-        url: &str,
-        _: Option<&str>,
-    ) -> anyhow::Result<wineo_core::download::Response> {
-        if url.contains("/icons/")
-            && let Some(hook) = &self.1
-        {
-            hook();
-        }
-        let Some((status, body)) = self.0.get(url) else {
-            anyhow::bail!("connection to {url} failed");
-        };
-        Ok(wineo_core::download::Response {
-            status: *status,
-            body: Box::new(std::io::Cursor::new(body.clone())),
-        })
-    }
-}
-
-/// A one pixel PNG, which the desktop entry can decode as its icon.
-const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9c\x63\xf8\xcf\xc0\xf0\x1f\0\x05\0\x01\xff\x89\x99\x3d\x1d\0\0\0\0IEND\xaeB`\x82";
-
-fn canned_hades() -> Canned {
-    use wineo_core::steamgriddb::{API, Api, Filters};
-    let mut answers = std::collections::HashMap::new();
-    let json = |body: &str| (200, body.as_bytes().to_vec());
-    answers.insert(
-        format!("{API}/search/autocomplete/Hades"),
-        json(r#"{"success":true,"data":[{"id":7,"name":"Hades"}]}"#),
-    );
-    for kind in wineo_core::art::Kind::ALL {
-        let page = |number| Api::images_url(7, kind, number, Filters::Ranked);
-        let first = if kind == wineo_core::art::Kind::Icon {
-            r#"{"success":true,"data":[{"id":1,"url":"https://cdn.example/1"}]}"#
-        } else {
-            r#"{"success":true,"data":[]}"#
-        };
-        answers.insert(page(0), json(first));
-        answers.insert(page(1), json(r#"{"success":true,"data":[]}"#));
-    }
-    answers.insert(
-        "https://cdn.example/1".to_owned(),
-        (200, ONE_PIXEL_PNG.to_vec()),
-    );
-    Canned(Arc::new(answers), None)
-}
-
 #[test]
 fn art_lands_after_a_target_was_added_to_the_new_environment() {
     let (mut page, _) = registered(true);
     page.draft.title = "Hades".to_owned();
     let name = page.draft.environment_name();
     let paths = page.paths.clone();
-    Environment::create_native_titled(
+    let (_, created) = Environment::create_native_titled(
         &paths,
         &GlobalConfig::default(),
         &name,
@@ -4194,12 +4148,19 @@ fn art_lands_after_a_target_was_added_to_the_new_environment() {
         |_| {},
     )
     .unwrap();
-    let created = wineo_core::environment::EnvironmentIdentity::read(&paths, &name);
+    let created = created.unwrap();
+    let inode = || {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(paths.environment_config(&name))
+            .unwrap()
+            .ino()
+    };
+    let before = inode();
     // Everything after creation runs the production fetch, over canned answers.
     let answers = canned_hades();
-    page.fetcher = Arc::new(move |paths, name, title, token| {
+    page.fetcher = Arc::new(move |paths, name, title, identity, token| {
         let answers = answers.clone();
-        crate::flow::artwork::fetch_default_over(paths, name, title, token, &move || {
+        crate::flow::artwork::fetch_default_over(paths, name, title, identity, token, &move || {
             Ok((Box::new(answers.clone()), "key".to_owned()))
         })
     });
@@ -4211,11 +4172,8 @@ fn art_lands_after_a_target_was_added_to_the_new_environment() {
     page.target_desktop = true;
     let task = page.update(Event::AddTarget);
     drive(&mut page, task, true);
-    assert_ne!(
-        wineo_core::environment::EnvironmentIdentity::read(&paths, &name),
-        created,
-        "the config was rewritten"
-    );
+    assert_ne!(inode(), before, "the config was rewritten");
+    assert!(created.is_current(&paths, &name).is_current());
     assert_eq!(page.stage, Stage::Finished);
     let report = page.report.as_ref().unwrap();
     assert_eq!(report.art_error, None, "{:?}", report.notes);
@@ -4244,27 +4202,435 @@ fn art_is_not_stored_in_an_environment_replaced_during_the_fetch() {
     let replace = {
         let paths = paths.clone();
         Arc::new(move || {
-            let config = paths.environment_config("hades");
-            let staged = config.with_extension("replacement");
-            std::fs::copy(&config, &staged).unwrap();
-            std::fs::rename(staged, config).unwrap();
+            wineo_core::test_support::replace_environment(&paths, "hades").unwrap();
         })
     };
+    // During the search, so before the game is saved: the identity is
+    // already the environment's, and nothing of the fetch may land.
     let mut answers = canned_hades();
-    answers.1 = Some(replace);
+    answers.1 = Some(("/search/", replace));
     let result = crate::flow::artwork::fetch_default_over(
         &paths,
         "hades",
         "Hades",
+        None,
         &Token::new(),
         &move || Ok((Box::new(answers.clone()), "key".to_owned())),
     );
-    let error = result.unwrap_err();
+    assert_eq!(
+        result.art,
+        Err(FetchError::Changed {
+            env: "hades".into(),
+            id: true
+        })
+    );
+    assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+}
+
+/// Rewrites `name`'s config through a new file, as an editor saving it
+/// would, which changes its fingerprint but not its id.
+fn edit_config(paths: &Paths, name: &str) {
+    let config = paths.environment_config(name);
+    let text = fs::read_to_string(&config).unwrap();
+    let staged = config.with_extension("saving");
+    fs::write(&staged, format!("# edited\n{text}")).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+/// What Finished shows.
+fn finished_texts(page: &Page) -> Vec<String> {
+    texts(page, iced::Size::new(800.0, 1200.0))
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+}
+
+#[test]
+fn a_replacement_during_the_fetch_offers_only_skip() {
+    for id in [true, false] {
+        let (mut page, _) = registered(true);
+        page.draft.title = "Hades".to_owned();
+        let paths = page.paths.clone();
+        let identity = if id {
+            Environment::create_native_titled(
+                &paths,
+                &GlobalConfig::default(),
+                "hades",
+                None,
+                Some("Hades"),
+                false,
+                |_| {},
+            )
+            .unwrap()
+            .1
+        } else {
+            // From before ids, so the flow holds its fingerprint.
+            let config = paths.environment_config("hades");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+            EnvironmentIdentity::peek(&paths, "hades")
+        };
+        assert_eq!(identity.unwrap().id().is_some(), id);
+        page.report.as_mut().unwrap().identity = identity;
+        page.fetcher = canned_hades()
+            .on("/search/", {
+                let paths = paths.clone();
+                move || wineo_core::test_support::replace_environment(&paths, "hades").unwrap()
+            })
+            .fetcher();
+        let task = page.finish();
+        drive(&mut page, task, true);
+        assert_eq!(page.stage, Stage::Finished, "id {id}");
+        let error = page.report.as_ref().unwrap().art_error.clone();
+        assert_eq!(
+            error,
+            Some(FetchError::Changed {
+                env: "hades".into(),
+                id
+            })
+        );
+        assert!(!paths.art_dir("hades").join("icon.png").exists(), "id {id}");
+        assert_eq!(wineo_core::art::saved_game(&paths, "hades").unwrap(), None);
+        let shown = finished_texts(&page);
+        let message =
+            crate::flow::artwork::changed_message("hades", id, crate::flow::artwork::NOT_STORED);
+        assert!(shown.contains(&message), "id {id}: {shown:?}");
+        assert!(
+            !shown.contains(&"Retry artwork".to_owned()),
+            "id {id}: {shown:?}"
+        );
+        assert!(
+            shown.contains(&"Skip artwork".to_owned()),
+            "id {id}: {shown:?}"
+        );
+
+        // Retry would only fail again with the same identity.
+        let task = page.update(Event::RetryArt);
+        assert!(is_none(task), "id {id}");
+        assert!(!page.fetching, "id {id}");
+        let _ = page.update(Event::SkipArt);
+        let report = page.report.as_ref().unwrap();
+        assert_eq!(report.art_error, None, "id {id}");
+        assert!(report.notes.contains(&"Artwork skipped".to_owned()));
+    }
+
+    // Any other failure still offers Retry.
+    let (mut page, _) = registered(true);
+    let (fetcher, _) = fake_fetcher(Err(FetchError::Other("offline".to_owned())));
+    page.fetcher = fetcher;
+    let task = page.finish();
+    drive(&mut page, task, true);
+    let shown = finished_texts(&page);
+    assert!(shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Skip artwork".to_owned()), "{shown:?}");
+}
+
+#[test]
+fn retry_reuses_the_identity_the_flow_holds() {
+    let (mut page, _) = registered(true);
+    let paths = page.paths.clone();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hollow-knight",
+        None,
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
+    page.report.as_mut().unwrap().identity = created;
+    let (fetcher, calls) = fake_fetcher(Err(FetchError::Other("offline".to_owned())));
+    page.fetcher = fetcher;
+    let task = page.finish();
+    drive(&mut page, task, true);
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    // Replaced before the next try, so a Retry that read again would get
+    // another; with the one it holds, the failure is now "changed".
+    wineo_core::test_support::replace_environment(&paths, "hollow-knight").unwrap();
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::Changed {
+            env: "hollow-knight".into(),
+            id: true
+        })
+    );
+    let seen: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| call.identity)
+        .collect();
+    assert_eq!(seen, [created; 3]);
+
+    // A flow whose creation handed over none keeps what its first fetch
+    // took, so a Retry never acquires another.
+    let (mut page, _) = registered(true);
+    let paths = page.paths.clone();
+    let (_, taken) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hollow-knight",
+        None,
+        None,
+        false,
+        |_| {},
+    )
+    .unwrap();
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    page.fetcher = Arc::new({
+        let calls = calls.clone();
+        move |_, _, _, identity, _| {
+            calls.lock().unwrap().push(identity);
+            Fetched::answer(
+                Err(FetchError::Other("offline".to_owned())),
+                identity.or(taken),
+            )
+        }
+    });
+    let task = page.finish();
+    drive(&mut page, task, true);
+    let task = page.update(Event::RetryArt);
+    drive(&mut page, task, true);
+    assert_eq!(*calls.lock().unwrap(), [None, taken]);
+}
+
+#[test]
+fn target_then_art_lands_on_the_fingerprint_fallback() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    // A library this release can't write, so creation's stamp fails and it
+    // hands back the fingerprint.
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(created.unwrap().id(), None, "the fingerprint fallback");
+    let report = page.report.as_mut().unwrap();
+    report.identity = created;
+    report.offer_programs = true;
+    page.fetcher = canned_hades().fetcher();
+    // The installer is done, and Target saves the config again.
+    let program = paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    let task = page.update(Event::AddTarget);
+    drive(&mut page, task, true);
+    assert!(created.unwrap().is_current(&paths, "hades").is_changed());
+    assert_eq!(page.stage, Stage::Finished);
+    let report = page.report.as_ref().unwrap();
+    assert_eq!(report.art_error, None, "{:?}", report.notes);
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(
+        wineo_core::art::saved_game(&paths, "hades").unwrap(),
+        Some(7)
+    );
+}
+
+#[test]
+fn a_config_edit_between_creation_and_the_art_lands_the_art() {
+    let root = tempfile::tempdir().unwrap();
+    let paths =
+        Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
+    let mut page = offer_page(&paths);
+    page.fetcher = canned_hades()
+        .on("/search/", {
+            let paths = paths.clone();
+            move || edit_config(&paths, "hades")
+        })
+        .fetcher();
+    switch(&mut page, Kind::Native, Source::Empty);
+    let _ = page.update(Event::Name("Hades".to_owned()));
+    settle(&mut page);
+    assert!(page.checked().is_ok(), "{:?}", page.summary);
+    let task = page.update_with_key_availability(Event::Create, true);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    let report = page.report.as_ref().unwrap();
+    assert!(report.registered, "{:?}", report.notes);
     assert!(
-        error.starts_with(
-            "Could not fetch icon: environment `hades` changed before artwork could be written"
-        ),
-        "{error}"
+        report
+            .identity
+            .is_some_and(|identity| identity.id().is_some())
+    );
+    assert_eq!(report.art_error, None, "{:?}", report.notes);
+    let config = fs::read_to_string(paths.environment_config("hades")).unwrap();
+    assert!(config.starts_with("# edited\n"), "the edit happened");
+    assert!(paths.art_dir("hades").join("icon.png").exists());
+}
+
+/// A page on Target for `hades`, created on the fingerprint fallback (a
+/// library this release can't write), with a program to add and the
+/// production fetch over canned answers. Returns it with the identity
+/// creation handed back.
+fn on_target_on_the_fingerprint_fallback() -> (Page, EnvironmentIdentity) {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    fs::create_dir_all(paths.library_file().parent().unwrap()).unwrap();
+    fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let created = created.unwrap();
+    assert_eq!(created.id(), None);
+    let report = page.report.as_mut().unwrap();
+    report.identity = Some(created);
+    report.offer_programs = true;
+    page.fetcher = canned_hades().fetcher();
+    let program = paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    (page, created)
+}
+
+#[test]
+fn a_replacement_during_the_target_stage_gets_no_target_and_the_art_step_reads_changed() {
+    let (mut page, created) = on_target_on_the_fingerprint_fallback();
+    let paths = page.paths.clone();
+    wineo_core::test_support::replace_environment(&paths, "hades").unwrap();
+    let before = fs::read(paths.environment_config("hades")).unwrap();
+    let task = page.update(Event::AddTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Target);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("`hades` changed. The target wasn't added.")
+    );
+    assert_eq!(fs::read(paths.environment_config("hades")).unwrap(), before);
+    assert_eq!(page.report.as_ref().unwrap().identity, Some(created));
+
+    let task = page.update(Event::SkipTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::Changed {
+            env: "hades".into(),
+            id: false
+        })
     );
     assert!(!paths.art_dir("hades").join("icon.png").exists());
+    let shown = finished_texts(&page);
+    assert!(!shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Skip artwork".to_owned()), "{shown:?}");
+}
+
+#[test]
+fn a_replacement_during_the_target_stage_on_an_id_says_replaced() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        true,
+        |_| {},
+    )
+    .unwrap();
+    let created = created.unwrap();
+    assert!(created.id().is_some());
+    let report = page.report.as_mut().unwrap();
+    report.identity = Some(created);
+    report.offer_programs = true;
+    page.fetcher = canned_hades().fetcher();
+    let program = paths.config_path("~/hades.sh").unwrap();
+    write_script(&program, "#!/bin/sh\nexit 0\n");
+    page.stage = Stage::Target;
+    page.target_path = program.display().to_string();
+    wineo_core::test_support::replace_environment(&paths, "hades").unwrap();
+    let before = fs::read(paths.environment_config("hades")).unwrap();
+    let task = page.update(Event::AddTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Target);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("`hades` was replaced. The target wasn't added.")
+    );
+    assert_eq!(fs::read(paths.environment_config("hades")).unwrap(), before);
+
+    let task = page.update(Event::SkipTarget);
+    drive(&mut page, task, true);
+    assert_eq!(page.stage, Stage::Finished);
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::Changed {
+            env: "hades".into(),
+            id: true
+        })
+    );
+    assert!(!paths.art_dir("hades").join("icon.png").exists());
+    let shown = finished_texts(&page);
+    assert!(!shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Skip artwork".to_owned()), "{shown:?}");
+}
+
+#[test]
+fn a_target_add_that_hands_back_no_identity_keeps_the_flows() {
+    let (mut page, created) = on_target_on_the_fingerprint_fallback();
+    page.stage = Stage::Working;
+    for result in [Err("gone".to_owned()), Ok(Vec::new())] {
+        page.stage = Stage::Working;
+        let _ = page.update(Event::TargetAdded(page.generation, result, None));
+        assert_eq!(page.report.as_ref().unwrap().identity, Some(created));
+    }
+}
+
+#[test]
+fn a_library_that_cant_be_read_says_so_and_offers_retry_in_the_new_flow() {
+    let (mut page, _) = registered(true);
+    page.draft.title = "Hades".to_owned();
+    let paths = page.paths.clone();
+    let (_, created) = Environment::create_native_titled(
+        &paths,
+        &GlobalConfig::default(),
+        "hades",
+        None,
+        Some("Hades"),
+        false,
+        |_| {},
+    )
+    .unwrap();
+    page.report.as_mut().unwrap().identity = created;
+    page.fetcher = canned_hades()
+        .on("/search/", {
+            let paths = paths.clone();
+            move || fs::write(paths.library_file(), "[broken\n").unwrap()
+        })
+        .fetcher();
+    let task = page.finish();
+    drive(&mut page, task, true);
+    let sentence = "library.toml can't be read. Artwork for `hades` wasn't stored.";
+    assert_eq!(
+        page.report.as_ref().unwrap().art_error,
+        Some(FetchError::LibraryUnreadable(sentence.to_owned()))
+    );
+    let shown = finished_texts(&page);
+    assert!(shown.contains(&sentence.to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Retry artwork".to_owned()), "{shown:?}");
 }

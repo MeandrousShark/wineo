@@ -12,7 +12,7 @@ use wineo_core::config::{Arch, GamescopeSetting, GlobalConfig, title_problem};
 use wineo_core::create::{self, AfterInstall, CreateEvent, CreateRequest, Stepped, TargetOutcome};
 use wineo_core::desktop;
 use wineo_core::download::{Client, Provider};
-use wineo_core::environment::{Environment, NewEnvironment};
+use wineo_core::environment::{Environment, EnvironmentIdentity, NewEnvironment};
 use wineo_core::error::Error as CoreError;
 use wineo_core::install::{self, Wanted};
 use wineo_core::installer::{self, Outcome, Output};
@@ -27,7 +27,9 @@ use wineo_core::supervisor::{Notice, Watched};
 use wineo_core::targets::{self, Batch, Spec, Written};
 use wineo_core::templates::{Template, Templates};
 
-use super::artwork::{ArtOffer, Fetcher, default_fetcher, fetch_art};
+use super::artwork::{
+    ArtOffer, FetchError, Fetcher, TARGET_NOT_ADDED, changed_message, default_fetcher, fetch_art,
+};
 use super::{Action, frame};
 use crate::focus_button::ListRows;
 use crate::logview::{self, LogView};
@@ -238,7 +240,10 @@ pub(crate) struct Report {
     offer_programs: bool,
     notes: Vec<String>,
     programs: Vec<(String, String)>,
-    art_error: Option<String>,
+    art_error: Option<FetchError>,
+    /// What creation handed back, which the art step and every Retry use.
+    /// The Target stage takes a fingerprint again after its own write.
+    identity: Option<EnvironmentIdentity>,
 }
 
 impl Report {
@@ -251,6 +256,7 @@ impl Report {
             notes: Vec::new(),
             programs: Vec::new(),
             art_error: None,
+            identity: None,
         }
     }
 }
@@ -371,8 +377,16 @@ pub(crate) enum Event {
     FetchArt(bool),
     SkipFetch,
     ChooseArt,
-    ArtFetched(u64, Result<Vec<String>, String>),
-    TargetAdded(u64, Result<Vec<String>, String>),
+    ArtFetched(
+        u64,
+        (Result<Vec<String>, FetchError>, Option<EnvironmentIdentity>),
+    ),
+    /// The identity is the one to carry on with after the add's own write.
+    TargetAdded(
+        u64,
+        Result<Vec<String>, String>,
+        Option<EnvironmentIdentity>,
+    ),
     Options(Result<Options, String>),
     /// The answer to using other launchers' builds.
     Offer(bool),
@@ -1043,9 +1057,16 @@ impl Page {
         let name = self.draft.environment_name();
         let title = self.draft.target_title().unwrap_or_else(|| name.clone());
         let fetcher = self.fetcher.clone();
-        task::blocking(
-            move || fetch_art(&paths, &name, &title, &token, &fetcher),
-            move |result| Event::ArtFetched(generation, result),
+        let identity = self.report.as_ref().and_then(|report| report.identity);
+        task::blocking_value(
+            move || fetch_art(&paths, &name, &title, identity, &token, &fetcher),
+            // A worker that panicked counts as a failed fetch.
+            move |result| {
+                Event::ArtFetched(
+                    generation,
+                    result.unwrap_or_else(|error| (Err(FetchError::Other(error)), identity)),
+                )
+            },
         )
     }
 
@@ -1090,57 +1111,86 @@ impl Page {
         let name = self.draft.environment_name();
         let title = self.draft.target_title();
         let desktop = self.target_desktop;
+        let identity = self.report.as_ref().and_then(|report| report.identity);
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.stage = Stage::Working;
         self.status = "Adding target...".to_owned();
-        task::blocking(
+        task::blocking_value(
             move || {
-                let environment = Environment::load(&paths, &name).map_err(|e| e.to_string())?;
-                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                if let Some(wine) = environment.config.wine() {
-                    let runner = Runners::new(&paths, &global)
-                        .and_then(|runners| runners.resolve(&wine.runner))
-                        .map_err(|e| e.to_string())?;
-                    let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
-                    desktop::check(&paths, &runner.wine_prefix(&prefix), &exe)
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    launch::check_native_exe(&paths, &global, &name, &Default::default(), &exe)
-                        .map_err(|e| e.to_string())?;
-                }
-                let mut batch = Batch::new(environment.config.targets);
-                batch
-                    .add(&name, target_spec(exe, title, desktop))
-                    .map_err(|e| e.to_string())?;
-                batch.set_default(Some(&name));
-                match targets::write(&paths, &name, &batch).map_err(|e| e.to_string())? {
-                    Written::Saved => {}
-                    Written::Changed(_) => {
-                        return Err(
-                            "Targets changed on disk. Open Settings and review them.".to_owned()
-                        );
-                    }
-                }
-                let environment = Environment::load(&paths, &name).map_err(|e| e.to_string())?;
-                let global = GlobalConfig::load(&paths).map_err(|e| e.to_string())?;
-                let note = if let Some(wine) = environment.config.wine() {
-                    let runner = Runners::new(&paths, &global)
-                        .and_then(|runners| runners.resolve(&wine.runner))
-                        .map_err(|e| e.to_string())?;
-                    let prefix = environment.prefix(&paths).map_err(|e| e.to_string())?;
-                    desktop::reconcile(&paths, &global, &environment, Some(&runner), &prefix)
-                        .err()
-                        .map(|error| format!("Desktop entry: {error}"))
-                } else {
-                    desktop::reconcile_native(&paths, &global, &environment)
-                        .err()
-                        .map(|error| format!("Desktop entry: {error}"))
-                };
-                Ok::<_, String>(note.into_iter().collect())
+                let mut identity = identity;
+                let added = Self::add_target_to(&paths, &name, exe, title, desktop, &mut identity);
+                (added, identity)
             },
-            move |result| Event::TargetAdded(generation, result),
+            move |result| {
+                let (added, identity) = result.unwrap_or_else(|error| (Err(error), identity));
+                Event::TargetAdded(generation, added, identity)
+            },
         )
+    }
+
+    /// Adds `exe` as `name`'s default target and brings its desktop entries
+    /// in line. `identity` is the flow's, taken again once this has saved
+    /// the config, since a fingerprint names the file that save replaced.
+    fn add_target_to(
+        paths: &Paths,
+        name: &str,
+        exe: String,
+        title: Option<String>,
+        desktop: bool,
+        identity: &mut Option<EnvironmentIdentity>,
+    ) -> Result<Vec<String>, String> {
+        // A target is never added to a replacement, and the flow keeps what
+        // it held, so its art step reads "changed" too.
+        if let Some(held) = *identity
+            && held.is_current(paths, name).is_changed()
+        {
+            return Err(changed_message(name, held.id().is_some(), TARGET_NOT_ADDED));
+        }
+        let environment = Environment::load(paths, name).map_err(|e| e.to_string())?;
+        let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
+        if let Some(wine) = environment.config.wine() {
+            let runner = Runners::new(paths, &global)
+                .and_then(|runners| runners.resolve(&wine.runner))
+                .map_err(|e| e.to_string())?;
+            let prefix = environment.prefix(paths).map_err(|e| e.to_string())?;
+            desktop::check(paths, &runner.wine_prefix(&prefix), &exe).map_err(|e| e.to_string())?;
+        } else {
+            launch::check_native_exe(paths, &global, name, &Default::default(), &exe)
+                .map_err(|e| e.to_string())?;
+        }
+        let mut batch = Batch::new(environment.config.targets);
+        batch
+            .add(name, target_spec(exe, title, desktop))
+            .map_err(|e| e.to_string())?;
+        batch.set_default(Some(name));
+        match targets::write(paths, name, &batch).map_err(|e| e.to_string())? {
+            Written::Saved => {}
+            Written::Changed(_) => {
+                return Err("Targets changed on disk. Open Settings and review them.".to_owned());
+            }
+        }
+        // Gone since the write, it keeps the one it had, which then reads
+        // "changed" rather than being acquired again.
+        if let Some(retaken) = identity.and_then(|held| held.after_own_write(paths, name)) {
+            *identity = Some(retaken);
+        }
+        let environment = Environment::load(paths, name).map_err(|e| e.to_string())?;
+        let global = GlobalConfig::load(paths).map_err(|e| e.to_string())?;
+        let note = if let Some(wine) = environment.config.wine() {
+            let runner = Runners::new(paths, &global)
+                .and_then(|runners| runners.resolve(&wine.runner))
+                .map_err(|e| e.to_string())?;
+            let prefix = environment.prefix(paths).map_err(|e| e.to_string())?;
+            desktop::reconcile(paths, &global, &environment, Some(&runner), &prefix)
+                .err()
+                .map(|error| format!("Desktop entry: {error}"))
+        } else {
+            desktop::reconcile_native(paths, &global, &environment)
+                .err()
+                .map(|error| format!("Desktop entry: {error}"))
+        };
+        Ok(note.into_iter().collect())
     }
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
@@ -1419,9 +1469,14 @@ impl Page {
             Event::Program(exe) if self.stage == Stage::Target => self.target_path = exe,
             Event::AddTarget if self.stage == Stage::Target => return self.add_target(),
             Event::SkipTarget if self.stage == Stage::Target => return self.leave_target(),
-            Event::TargetAdded(generation, result)
+            Event::TargetAdded(generation, result, identity)
                 if generation == self.generation && self.stage == Stage::Working =>
             {
+                if let Some(report) = &mut self.report
+                    && identity.is_some()
+                {
+                    report.identity = identity;
+                }
                 match result {
                     Ok(notes) => {
                         if let Some(report) = &mut self.report {
@@ -1445,6 +1500,9 @@ impl Page {
                     .take()
                     .is_some_and(|token| token.is_canceled());
                 if let Some(report) = &mut self.report {
+                    let (result, identity) = result;
+                    // Only a creation that handed over none takes the fetch's.
+                    report.identity = report.identity.or(identity);
                     match result {
                         Ok(notes) => {
                             report.notes.extend(notes);
@@ -1522,7 +1580,11 @@ impl Page {
             }
             Event::RetryArt
                 if self.stage == Stage::Finished
-                    && self.report.as_ref().is_some_and(|r| r.art_error.is_some()) =>
+                    && self.report.as_ref().is_some_and(|r| {
+                        r.art_error
+                            .as_ref()
+                            .is_some_and(|error| !error.is_changed())
+                    }) =>
             {
                 return self.start_fetch();
             }
@@ -2062,11 +2124,14 @@ impl Page {
                         );
                     }
                     if let Some(error) = &report.art_error {
-                        body = body.push(text(format!("Artwork: {error}")).color(palette.warning));
-                        body = body.push(
-                            ui::secondary_button("Retry artwork", palette)
-                                .on_press(Event::RetryArt),
-                        );
+                        body = body.push(text(error.note()).color(palette.warning));
+                        // Retrying with the same identity can only fail again.
+                        if !error.is_changed() {
+                            body = body.push(
+                                ui::secondary_button("Retry artwork", palette)
+                                    .on_press(Event::RetryArt),
+                            );
+                        }
                         body = body.push(
                             ui::secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
                         );
@@ -2720,8 +2785,9 @@ fn perform(
             draft.desktop,
             |warning| report.notes.push(warning),
         ) {
-            Ok(environment) => {
+            Ok((environment, identity)) => {
                 report.registered = true;
+                report.identity = identity;
                 report.playable = exe.is_some();
                 progress("Native environment registered".to_owned());
                 if let Err(error) = desktop::reconcile_native(paths, &global, &environment) {
@@ -2856,6 +2922,7 @@ impl<P: FnMut(String), L: FnMut(String)> create::Hooks for Hooks<'_, P, L> {
     fn created(&mut self, created: &create::Created) -> Result<(), String> {
         let report = &mut *self.report;
         report.registered = true;
+        report.identity = created.identity;
         report.playable = created.target == TargetOutcome::Added;
         if created.target == TargetOutcome::ExeNotFound {
             report

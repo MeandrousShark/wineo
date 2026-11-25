@@ -1,4 +1,6 @@
-//! Lenient display state for environments.
+//! Lenient state kept beside the environments: how the library shows each
+//! one, and the id that tells an environment from a later one of the same
+//! name.
 //!
 //! Every write sets one field under the file lock, so a window never writes
 //! back state it merely read. `Ok(false)` means the file wasn't touched.
@@ -19,6 +21,7 @@ use crate::paths::Paths;
 mod cache;
 mod check;
 mod columns;
+mod id;
 mod input;
 mod preset;
 mod record;
@@ -28,6 +31,7 @@ mod sort;
 pub use cache::Cache;
 pub(crate) use check::{FindingKind, inspect, remove_strays};
 pub use columns::{LIST_COLUMN_MAX, LIST_COLUMN_MIN, ListColumn, set_list_column};
+pub use id::Id;
 pub use input::{Bindings, Conflict, Input, PadAction, PadButton, set_input};
 pub use preset::{
     PRESET_NAME_MAX_CHARS, Preset, create_preset, normalize_preset_name, preset_name_problem,
@@ -433,6 +437,11 @@ pub struct Entry {
     pub favorite: bool,
     pub hidden: bool,
     pub added: Option<Timestamp>,
+    #[serde(
+        deserialize_with = "id::lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -802,12 +811,83 @@ pub fn stamp_added(paths: &Paths, name: &str) -> Result<bool> {
     set_added(paths, name, Timestamp::now())
 }
 
-pub fn fresh(paths: &Paths, name: &str) -> Result<bool> {
+/// Stamps a new environment's entry with the time and a new id, which it
+/// returns.
+pub fn fresh(paths: &Paths, name: &str) -> Result<Id> {
+    let id = Id::mint().context(|| format!("failed to make an id for {name}"))?;
     let entry = Entry {
         added: Some(Timestamp::now()),
+        id: Some(id),
         ..Entry::default()
     };
-    put(paths, name, Some(&entry))
+    put(paths, name, Some(&entry))?;
+    Ok(id)
+}
+
+/// The id `name`'s entry holds, read from the file itself.
+pub(crate) fn read_id(paths: &Paths, name: &str) -> Result<Option<Id>> {
+    let path = paths.library_file();
+    match read_document(&path) {
+        Ok(Some(document)) => Ok(entry_id(&document, name)),
+        Ok(None) => Ok(None),
+        Err(failure) => Err(unreadable_error(&path, failure)),
+    }
+}
+
+/// `read_id` through `cache`. Err means the library can't be read.
+pub(crate) fn cached_id(
+    paths: &Paths,
+    name: &str,
+    cache: &mut Cache,
+) -> std::result::Result<Option<Id>, ()> {
+    let library = cache.read(paths);
+    if library.problem.is_some() {
+        return Err(());
+    }
+    Ok(library.environments.get(name).and_then(|entry| entry.id))
+}
+
+/// The id `name`'s entry holds, or a new one written there, adding only
+/// `id` and making the entry if there is none. `still_valid` runs under the
+/// library lock, after the file is read and before the entry is looked at,
+/// so the caller can check again that the environment is the one it meant;
+/// when it says no, nothing is written and the result is None.
+pub(crate) fn adopt_or_mint_id(
+    paths: &Paths,
+    name: &str,
+    still_valid: impl FnOnce() -> bool,
+) -> Result<Option<Id>> {
+    let minted = Id::mint().context(|| format!("failed to make an id for {name}"))?;
+    #[cfg(any(test, feature = "test-support"))]
+    crate::art::test_hook("library.mint");
+    let mut result = None;
+    edit(paths, |document| {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::art::test_hook("library.mint.locked");
+        if !still_valid() {
+            return false;
+        }
+        if let Some(id) = entry_id(document, name) {
+            result = Some(id);
+            return false;
+        }
+        store_value(
+            environment_table_mut(document, name),
+            "id",
+            Value::from(minted.to_string()),
+        );
+        result = Some(minted);
+        true
+    })?;
+    Ok(result)
+}
+
+fn entry_id(document: &DocumentMut, name: &str) -> Option<Id> {
+    document
+        .get("environments")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get(name))
+        .and_then(|item| read_entry(item).id)
 }
 
 pub fn remove(paths: &Paths, name: &str) -> Result<bool> {
@@ -1100,6 +1180,7 @@ fn read_entry(item: &Item) -> Entry {
             .get("added")
             .and_then(Item::as_datetime)
             .and_then(|value| value.to_string().parse().ok()),
+        id: table.get("id").and_then(Item::as_str).and_then(Id::parse),
     }
 }
 
@@ -1326,9 +1407,18 @@ fn entry_matches(item: &Item, expected: &Entry) -> bool {
             None => return false,
         },
     };
+    // A malformed id never matches, so `put` replaces it.
+    let id_matches = match table.get("id") {
+        None => expected.id.is_none(),
+        Some(value) => value
+            .as_str()
+            .and_then(Id::parse)
+            .is_some_and(|id| expected.id == Some(id)),
+    };
     bool_matches(favorite, expected.favorite)
         && bool_matches(hidden, expected.hidden)
         && added_value == expected.added
+        && id_matches
 }
 
 fn entry_item(entry: &Entry) -> Item {
@@ -1345,6 +1435,9 @@ fn entry_item(entry: &Entry) -> Item {
             .parse::<toml_edit::Datetime>()
             .expect("jiff timestamps are TOML offset datetimes");
         table.insert("added", Item::Value(Value::from(datetime)));
+    }
+    if let Some(id) = entry.id {
+        table.insert("id", Item::Value(Value::from(id.to_string())));
     }
     Item::Table(table)
 }

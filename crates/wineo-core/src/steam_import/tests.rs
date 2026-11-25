@@ -214,17 +214,16 @@ fn cached_art_is_not_stored_in_an_environment_replaced_during_the_import() {
     fs::create_dir_all(&cache).unwrap();
     fs::write(cache.join("library_600x900.jpg"), png()).unwrap();
     let planned = ready(&paths, &GlobalConfig::default(), "42", None);
-    // The art lock is held until the import waits on it, then the config is
-    // renamed over, which the import's own config lock can't stop.
+    // The art lock is held until the import waits on it, then the
+    // environment is replaced.
     let held = Locks::new(&paths)
         .config(&paths.art_dir(&planned.name).join(art::ART_FILE))
         .unwrap();
     let replace = {
-        let config = paths.environment_config(&planned.name);
+        let paths = paths.clone();
+        let name = planned.name.clone();
         move || {
-            let staged = config.with_extension("replacement");
-            fs::copy(&config, &staged).unwrap();
-            fs::rename(staged, &config).unwrap();
+            crate::test_support::replace_environment(&paths, &name).unwrap();
             drop(held);
         }
     };
@@ -292,11 +291,16 @@ fn apply_uses_the_reselected_install_for_title_and_cached_art() {
             .as_deref(),
         Some("Flatpak Title")
     );
-    // Read under the config lock, for art fetched later to check against.
-    assert!(applied.identity.is_some());
+    // The id the stamp wrote, for art fetched later to check against.
+    assert!(
+        applied
+            .identity
+            .and_then(|identity| identity.id())
+            .is_some()
+    );
     assert_eq!(
         applied.identity,
-        crate::environment::EnvironmentIdentity::read(&paths, planned.name())
+        crate::environment::EnvironmentIdentity::peek(&paths, planned.name())
     );
     assert_eq!(
         fs::read(paths.art_dir(planned.name()).join("grid.png")).unwrap(),

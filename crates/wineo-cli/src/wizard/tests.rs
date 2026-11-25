@@ -484,6 +484,85 @@ fn guided_art_without_an_installer_is_fetched_with_the_lock_free() {
 }
 
 #[test]
+fn guided_art_is_held_to_the_environment_creation_returned() {
+    for (existing, replaced) in [(false, false), (false, true), (true, false), (true, true)] {
+        let world = world();
+        let program = program(&world);
+        let answers = if existing {
+            art_after(&["2", &program], &["1", "", ""])
+        } else {
+            art_after(&["3"], &["1"])
+        };
+        let fake = fake();
+        let access = Access {
+            check_key: Box::new(found),
+            // The art connects once the environment is made, and a fresh
+            // read there would take a replacement for it.
+            transport: Box::new(|| {
+                if replaced {
+                    crate::commands::art::fake::replace_environment(&world.paths, "hades");
+                }
+                Ok(Box::new(fake.clone()))
+            }),
+        };
+        let answers = borrowed(&answers);
+        let mut prompt = Prompt::new(Script::new(&answers), Vec::new());
+        let mut guided = Guided { registered: None };
+        let result = run(
+            &world.paths,
+            &world.global,
+            &Prefill::default(),
+            &mut prompt,
+            &mut guided,
+            &access,
+        );
+        let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+        assert!(result.is_ok(), "{result:?}\n{transcript}");
+        let icon = world.paths.art_dir("hades").join("icon.png").exists();
+        assert_eq!(icon, !replaced, "{existing} {replaced}\n{transcript}");
+        assert_eq!(saved_game(&world), (!replaced).then_some(7));
+    }
+}
+
+#[test]
+fn guided_native_art_is_held_to_the_environment_creation_returned() {
+    for replaced in [false, true] {
+        let world = world();
+        let exe = world._root.path().join("game.sh");
+        write_script(&exe, "#!/bin/sh\n");
+        let exe = exe.display().to_string();
+        // Native, its name and program, art searching Hades, the review,
+        // then the first match. The program's own questions come after.
+        let answers = ["2", "hades", &exe, "1", "Hades", "", "1"];
+        let fake = fake();
+        let access = Access {
+            check_key: Box::new(found),
+            transport: Box::new(|| {
+                if replaced {
+                    crate::commands::art::fake::replace_environment(&world.paths, "hades");
+                }
+                Ok(Box::new(fake.clone()))
+            }),
+        };
+        let mut prompt = Prompt::new(Script::new(&answers), Vec::new());
+        let mut guided = Guided { registered: None };
+        let _ = run(
+            &world.paths,
+            &world.global,
+            &Prefill::default(),
+            &mut prompt,
+            &mut guided,
+            &access,
+        );
+        let transcript = String::from_utf8_lossy(prompt.output()).into_owned();
+        assert!(transcript.contains("Created hades."), "{transcript}");
+        let icon = world.paths.art_dir("hades").join("icon.png").exists();
+        assert_eq!(icon, !replaced, "{replaced}\n{transcript}");
+        assert_eq!(saved_game(&world), (!replaced).then_some(7));
+    }
+}
+
+#[test]
 fn with_an_installer_the_pick_list_comes_before_creation_and_the_download_after() {
     let world = world();
     install_runner(&world);
@@ -590,7 +669,7 @@ fn installer_ended_replacing(
         key: &key,
         picked: &picked,
         kinds: world.global.art.fetch,
-        identity: EnvironmentIdentity::read(&world.paths, "hades"),
+        identity: EnvironmentIdentity::acquire(&world.paths, "hades").unwrap(),
     };
     if replace {
         crate::commands::art::fake::replace_environment(&world.paths, "hades");
@@ -727,12 +806,11 @@ fn guided_art_is_not_stored_in_an_environment_replaced_during_the_installer() {
     let world = world();
     install_runner(&world);
     let program = program(&world);
-    // The installer swaps the config for a copy, as removing the environment
-    // and creating another of the same name would.
-    let config = world.paths.environment_config("hades");
+    // The installer replaces the environment, as removing it and creating
+    // another of the same name would.
     let swap = format!(
-        "#!/bin/sh\ncase \"$*\" in\n*game.exe*) cp '{0}' '{0}.new' && mv '{0}.new' '{0}' ;;\nesac\nexit 0\n",
-        config.display()
+        "#!/bin/sh\ncase \"$*\" in\n*game.exe*) {} ;;\nesac\nexit 0\n",
+        crate::commands::art::fake::replace_environment_command(&world.paths, "hades")
     );
     for root in [
         world.paths.default_runner_root(),

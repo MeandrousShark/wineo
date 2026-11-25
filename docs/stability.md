@@ -48,10 +48,12 @@ match the docs.
 
 - **Human-readable output.** Wording, layout, colors, prompts, and key
   hints. Scripts should use `--json` and exit codes instead.
-- **The desktop app.** Its layout, behavior, and shortcuts, and the files
-  it keeps for itself: `library.toml` and the custom theme files in
-  `themes/`. They're read leniently, so a value wineo can't use falls back
-  to its default, and an older release ignores what it doesn't know.
+- **The desktop app.** Its layout, behavior, and shortcuts, and two kinds
+  of file wineo keeps for itself: `library.toml`, which holds the app's
+  view of your library and the id `wineo` and the app both use to tell
+  environments apart, and the custom theme files in `themes/`. They're
+  read leniently, so a value wineo can't use falls back to its default,
+  and an older release ignores what it doesn't know.
 - **The Rust APIs of `wineo-core` and `wineo-gog`.**
 - **The built-in `gaming` template's settings.** Its name stays, but what it
   turns on can improve. To keep a fixed set, write your own

@@ -298,6 +298,30 @@ impl Page {
                 }
                 Step::none()
             }
+            // The bar only shows while a pad is in use, so the choice is
+            // locked without the Controller switch, like the adapter's.
+            Event::GlobalHintBar(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.input.controller) => {
+                Step::none()
+            }
+            Event::GlobalHintBar(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.input.hint_bar = on;
+                }
+                Step::none()
+            }
+            // The adapter is read through the Controller switch, so the choice
+            // is locked without it, like the remap rows.
+            Event::GlobalGamecubeAdapter(_) if matches!(&self.view, View::Global(editor) if !editor.form.draft.input.controller) => {
+                Step::none()
+            }
+            Event::GlobalGamecubeAdapter(on) => {
+                self.edited();
+                if let View::Global(editor) = &mut self.view {
+                    editor.form.draft.input.gamecube_adapter = on;
+                }
+                Step::none()
+            }
             Event::GlobalArtKind(kind, on) => {
                 if let View::Global(editor) = &self.view {
                     let fetch = editor.form.draft.art_fetch.with(kind, on);
@@ -483,6 +507,8 @@ impl Page {
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
                     | Event::GlobalController(_)
+                    | Event::GlobalHintBar(_)
+                    | Event::GlobalGamecubeAdapter(_)
                     | Event::ResetButtons
                     | Event::Appearance(_)
                     | Event::EnvKey(..)
@@ -513,6 +539,8 @@ impl Page {
                     | Event::GlobalOnStart(_)
                     | Event::GlobalOnStop(_)
                     | Event::GlobalController(_)
+                    | Event::GlobalHintBar(_)
+                    | Event::GlobalGamecubeAdapter(_)
                     | Event::ResetButtons
                     | Event::CaptureButton(_)
                     | Event::Appearance(_)

@@ -2537,6 +2537,8 @@ fn library_entry() -> crate::library::Entry {
         favorite: true,
         hidden: true,
         added: Some("2026-10-17T18:00:00Z".parse().unwrap()),
+        // So a removal and restore are seen to keep the id.
+        id: crate::library::Id::parse("3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5"),
     }
 }
 
@@ -2694,4 +2696,33 @@ fn restore_without_a_saved_entry_leaves_a_broken_library_alone() {
     assert!(restore(&f.paths, &entry.id).unwrap().is_empty());
     assert!(f.paths.environment_config("game").exists());
     assert_eq!(fs::read_to_string(f.paths.library_file()).unwrap(), broken);
+}
+
+#[test]
+fn a_malformed_id_in_a_manifest_reads_as_none_and_the_rest_restores() {
+    for bad in ["\"bad\"", "5"] {
+        let f = Fixture::new();
+        f.config("game", "kind = 'native'\n");
+        let saved = library_entry();
+        crate::library::put(&f.paths, "game", Some(&saved)).unwrap();
+        let entry = remove(&f.paths, "game", false).unwrap();
+        let path = entry_dir(&f.paths, &entry.id).unwrap().join(MANIFEST);
+        let text = fs::read_to_string(&path).unwrap();
+        let good = format!("\"{}\"", saved.id.unwrap());
+        assert_eq!(text.matches(&good).count(), 1, "{text}");
+        fs::write(&path, text.replace(&good, bad)).unwrap();
+        assert_eq!(
+            read_manifest(&f.paths, &entry.id).unwrap().library,
+            Some(crate::library::Entry {
+                id: None,
+                ..saved.clone()
+            }),
+            "{bad}"
+        );
+        assert!(restore(&f.paths, &entry.id).unwrap().is_empty(), "{bad}");
+        let restored = &crate::library::load(&f.paths).environments["game"];
+        assert_eq!((restored.favorite, restored.hidden), (true, true), "{bad}");
+        assert_eq!(restored.added, saved.added, "{bad}");
+        assert_eq!(restored.id, None, "{bad}");
+    }
 }

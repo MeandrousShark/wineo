@@ -1777,6 +1777,64 @@ fn repair_keeps_input_and_its_buttons_from_the_parsed_part() {
 }
 
 #[test]
+fn repair_keeps_a_gamecube_adapter_switch_and_drops_a_wrong_typed_one() {
+    let broken = "[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n";
+    for tail in [false, true] {
+        let fixture = Fixture::new();
+        let input = "[input]\ngamecube_adapter = true\n[input.buttons]\nfavorite = \"rb\"\n";
+        fixture.write(&if tail {
+            format!("schema_version = 1\n{broken}{input}")
+        } else {
+            format!("schema_version = 1\n{input}{broken}")
+        });
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        let loaded = load(&fixture.paths).input;
+        assert!(loaded.gamecube_adapter, "{tail}: {}", fixture.read());
+        assert_eq!(loaded.buttons.len(), 1, "{tail}");
+    }
+
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[input]\ncontroller = false\ngamecube_adapter = \"true\"\n[input.buttons]\nmark = \"rs\"\n{broken}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(!report.complete(), "{report}");
+    let text = fixture.read();
+    assert!(!text.contains("gamecube_adapter"), "{text}");
+    assert!(text.contains("controller = false"), "{text}");
+    assert!(text.contains("mark = \"rs\""), "{text}");
+}
+
+#[test]
+fn repair_keeps_a_hint_bar_switch_and_drops_a_wrong_typed_one() {
+    let broken = "[environments.hades]\nfavorite = true\n[environments.hades]\nhidden = true\n";
+    for tail in [false, true] {
+        let fixture = Fixture::new();
+        let input = "[input]\nhint_bar = false\n[input.buttons]\nfavorite = \"rb\"\n";
+        fixture.write(&if tail {
+            format!("schema_version = 1\n{broken}{input}")
+        } else {
+            format!("schema_version = 1\n{input}{broken}")
+        });
+        repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+        let loaded = load(&fixture.paths).input;
+        assert!(!loaded.hint_bar, "{tail}: {}", fixture.read());
+        assert_eq!(loaded.buttons.len(), 1, "{tail}");
+    }
+
+    let fixture = Fixture::new();
+    fixture.write(&format!(
+        "schema_version = 1\n[input]\ncontroller = false\nhint_bar = \"false\"\n[input.buttons]\nmark = \"rs\"\n{broken}"
+    ));
+    let report = repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    assert!(!report.complete(), "{report}");
+    let text = fixture.read();
+    assert!(!text.contains("hint_bar"), "{text}");
+    assert!(text.contains("controller = false"), "{text}");
+    assert!(text.contains("mark = \"rs\""), "{text}");
+}
+
+#[test]
 fn repair_salvages_input_from_the_broken_tail() {
     let fixture = Fixture::new();
     fixture.write(
@@ -2124,4 +2182,23 @@ fn repair_merges_a_repeated_list_columns_table_with_the_first_value_winning() {
         fixture.read()
     );
     assert_eq!(fixture.read().matches("[view.list_columns]").count(), 1);
+}
+
+#[test]
+fn repair_keeps_a_valid_id_and_drops_a_malformed_one() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "[environments.hades]\nid = \"3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5\"\nfavorite = true\n\n[environments.celeste]\nid = \"nope\"\nhidden = true\n\n[broken header\n",
+    );
+    repair_at(&fixture.paths, STAMP, sync_dir).unwrap().unwrap();
+    let text = fixture.read();
+    assert!(!text.contains("nope"), "{text}");
+    let library = load(&fixture.paths);
+    assert_eq!(
+        library.environments["hades"].id,
+        crate::library::Id::parse("3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5")
+    );
+    assert!(library.environments["hades"].favorite);
+    assert_eq!(library.environments["celeste"].id, None);
+    assert!(library.environments["celeste"].hidden);
 }

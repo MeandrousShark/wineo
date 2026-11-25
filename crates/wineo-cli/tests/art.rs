@@ -389,3 +389,224 @@ fn new_with_art_and_no_key_notes_it_and_succeeds() {
         stderr(&plain)
     );
 }
+
+/// `library.toml`'s bytes, or None while there is none.
+fn library(f: &Fixture) -> Option<Vec<u8>> {
+    fs::read(f.paths().library_file()).ok()
+}
+
+fn assert_refused(output: &std::process::Output, error: &str) {
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    assert_eq!(stderr(output), format!("error: {error}\n"));
+}
+
+#[test]
+fn set_and_rm_keep_their_errors_and_leave_the_library_alone() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let png = image(&f, "a.png", PNG);
+    let before = library(&f);
+
+    // The first dot starts the target, so the environment's name is empty.
+    let set = f.run(&["art", "set", "../config", "grid", &png]);
+    assert_refused(
+        &set,
+        &wineo_core::Error::InvalidName(String::new()).to_string(),
+    );
+    let removed = f.run(&["art", "rm", "../config", "grid"]);
+    assert_refused(
+        &removed,
+        &wineo_core::Error::InvalidName("./config".to_owned()).to_string(),
+    );
+    for output in [
+        f.run(&["art", "set", "nope", "grid", &png]),
+        f.run(&["art", "rm", "nope", "grid"]),
+    ] {
+        assert_refused(&output, "environment `nope` does not exist");
+    }
+    assert_eq!(library(&f), before);
+}
+
+#[test]
+fn set_and_rm_keep_a_pending_trash_entrys_error() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let png = image(&f, "a.png", PNG);
+    let removed = f.run(&["rm", "hades"]);
+    assert_success(&removed);
+    let paths = f.paths();
+    let manifest = paths
+        .trash_dir()
+        .join(trash_id(&removed))
+        .join("manifest.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("phase = \"trashed\""), "{text}");
+    fs::write(
+        &manifest,
+        text.replace("phase = \"trashed\"", "phase = \"removing\""),
+    )
+    .unwrap();
+    let pending = wineo_core::environment::Environment::ensure_exists(&paths, "hades")
+        .unwrap_err()
+        .to_string();
+    assert!(!pending.contains("does not exist"), "{pending}");
+    let before = library(&f);
+
+    assert_refused(&f.run(&["art", "set", "hades", "grid", &png]), &pending);
+    assert_refused(&f.run(&["art", "rm", "hades", "grid"]), &pending);
+    assert_eq!(library(&f), before);
+}
+
+#[test]
+fn an_interrupted_restore_with_its_config_missing_does_not_exist_for_art() {
+    let f = Fixture::new();
+    f.environment("hades", "");
+    let png = image(&f, "a.png", PNG);
+    let paths = f.paths();
+    let marker = paths.restore_marker("hades");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(&marker, "{}").unwrap();
+    let interrupted = f.run(&["art", "set", "hades", "grid", &png]);
+    assert!(
+        stderr(&interrupted).contains("interrupted snapshot restore"),
+        "{}",
+        stderr(&interrupted)
+    );
+
+    fs::remove_file(paths.environment_config("hades")).unwrap();
+    assert_refused(
+        &f.run(&["art", "set", "hades", "grid", &png]),
+        "environment `hades` does not exist",
+    );
+    // A target's spot reads the environment, which says the restore first,
+    // as it always has.
+    let target = f.run(&["art", "set", "hades.server", "icon", &png]);
+    assert_eq!(target.status.code(), Some(1));
+    assert!(
+        stderr(&target).contains("interrupted snapshot restore"),
+        "{}",
+        stderr(&target)
+    );
+    assert_refused(
+        &f.run(&["art", "rm", "hades", "grid"]),
+        "environment `hades` does not exist",
+    );
+}
+
+#[test]
+fn set_and_rm_give_an_environment_from_before_ids_one() {
+    let f = Fixture::new();
+    let paths = f.paths();
+    let png = image(&f, "a.png", PNG);
+    for (name, args) in [
+        ("hades", vec!["art", "set", "hades", "grid", png.as_str()]),
+        ("zagreus", vec!["art", "rm", "zagreus", "grid"]),
+    ] {
+        f.environment(name, "");
+        if name == "zagreus" {
+            fs::create_dir_all(paths.art_dir(name)).unwrap();
+            fs::write(paths.art_dir(name).join("grid.png"), PNG).unwrap();
+        }
+        let id = || {
+            wineo_core::library::load(&paths)
+                .environments
+                .get(name)
+                .and_then(|entry| entry.id)
+        };
+        assert_eq!(id(), None);
+        assert_success(&f.run(&args));
+        assert!(id().is_some(), "{name}");
+    }
+}
+
+#[test]
+fn a_set_that_cant_write_gives_an_old_environment_no_id() {
+    use wineo_core::art::Kind;
+    let f = Fixture::new();
+    f.environment("hades", "[targets.server]\nexe = \"server.exe\"\n");
+    let png = image(&f, "a.png", PNG);
+    let text = image(&f, "notes.png", b"just notes");
+    let missing = f.root.path().join("missing.png").display().to_string();
+    let folder = f.root.path().join("folder.png");
+    fs::create_dir_all(&folder).unwrap();
+    let folder = folder.display().to_string();
+    let big = f.root.path().join("big.png");
+    fs::File::create(&big)
+        .unwrap()
+        .set_len(wineo_core::art::MAX_BYTES + 1)
+        .unwrap();
+    let big = big.display().to_string();
+    for (spot, kind, file, expected) in [
+        (
+            "hades.nope",
+            Kind::Icon,
+            png.as_str(),
+            "environment `hades` has no target `nope`".to_owned(),
+        ),
+        (
+            "hades.bad name",
+            Kind::Icon,
+            png.as_str(),
+            "environment `hades` has no target `bad name`".to_owned(),
+        ),
+        (
+            "hades",
+            Kind::Icon,
+            missing.as_str(),
+            format!("failed to read {missing}: No such file or directory (os error 2)"),
+        ),
+        (
+            "hades",
+            Kind::Icon,
+            folder.as_str(),
+            format!("failed to read {folder}: Is a directory (os error 21)"),
+        ),
+        (
+            "hades",
+            Kind::Hero,
+            big.as_str(),
+            format!("{big} is larger than 32 MiB"),
+        ),
+        (
+            "hades",
+            Kind::Icon,
+            text.as_str(),
+            format!("{text} is not a PNG, SVG, ICO, or JPEG image"),
+        ),
+    ] {
+        let set = f.run(&["art", "set", spot, kind.as_str(), file]);
+        assert_refused(&set, &expected);
+        assert_eq!(library(&f), None, "{spot} {file}");
+    }
+
+    // A target whose config doesn't parse.
+    let config = f.paths().environment_config("hades");
+    fs::write(&config, "this isn't toml [").unwrap();
+    assert_refused(
+        &f.run(&["art", "set", "hades.server", "icon", &png]),
+        &format!(
+            "invalid config {}: TOML parse error at line 1, column 6\n  |\n\
+             1 | this isn't toml [\n  |      ^\nkey with no value, expected `=`\n",
+            config.display()
+        ),
+    );
+    assert_eq!(library(&f), None);
+}
+
+#[test]
+fn an_rm_with_nothing_to_remove_gives_an_old_environment_no_id() {
+    let f = Fixture::new();
+    f.environment("hades", "[targets.server]\nexe = \"server.exe\"\n");
+    for (spot, error) in [
+        ("hades", "`hades` has no grid art"),
+        ("hades.server", "`hades.server` has no grid art"),
+        ("hades.nope", "`hades.nope` has no grid art"),
+        (
+            "hades.bad name",
+            "invalid name `bad name`: use letters, digits, `-`, and `_`",
+        ),
+    ] {
+        assert_refused(&f.run(&["art", "rm", spot, "grid"]), error);
+        assert_eq!(library(&f), None, "{spot}");
+    }
+}

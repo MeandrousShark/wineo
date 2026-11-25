@@ -1235,3 +1235,32 @@ fn a_dlc_failing_to_download_when_resuming_keeps_the_journal() {
     assert_eq!(fx.state(), before);
     assert!(fx.launch_refusal().is_some());
 }
+
+#[test]
+fn a_native_install_returns_its_new_id_or_after_a_failed_stamp_its_fingerprint() {
+    use crate::environment::Currency;
+    for broken in [false, true] {
+        let fx = offered();
+        let plan = fx.install_plan(&request()).unwrap();
+        if broken {
+            let library = fx.paths.library_file();
+            fs::create_dir_all(library.parent().unwrap()).unwrap();
+            fs::write(&library, "[broken\n").unwrap();
+        }
+        let installed = fx.install_with(&plan, &Token::new(), |_| {}).unwrap();
+        let identity = installed.identity.unwrap();
+        if broken {
+            assert_eq!(identity.id(), None);
+            assert_eq!(
+                identity.is_current(&fx.paths, "rimworld"),
+                Currency::Current
+            );
+        } else {
+            assert!(identity.id().is_some());
+            assert_eq!(
+                identity.id(),
+                crate::library::load(&fx.paths).environments["rimworld"].id
+            );
+        }
+    }
+}

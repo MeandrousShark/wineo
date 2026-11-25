@@ -730,6 +730,34 @@ fn a_clean_input_table_has_no_findings() {
 }
 
 #[test]
+fn the_gamecube_adapter_key_is_known_and_a_wrong_type_warns() {
+    let inspection = inspect_text("[input]\ncontroller = true\ngamecube_adapter = true\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\ngamecube_adapter = false\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\ngamecube_adapter = \"true\"\n");
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: input.gamecube_adapter: expected true or false, found \"true\""]
+    );
+}
+
+#[test]
+fn the_hint_bar_key_is_known_and_a_wrong_type_warns() {
+    let inspection = inspect_text("[input]\ncontroller = true\nhint_bar = true\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\nhint_bar = false\n");
+    assert_eq!(inspection.findings, []);
+    let inspection = inspect_text("[input]\nhint_bar = \"false\"\n");
+    assert_eq!(messages(&inspection, FindingKind::KeyUnknown).len(), 0);
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        ["library.toml: input.hint_bar: expected true or false, found \"false\""]
+    );
+}
+
+#[test]
 fn bad_input_values_are_field_findings_and_unknown_keys_are_reported() {
     let inspection = inspect_text(
         "[input]\ncontroller = \"yes\"\nextra = true\n[input.buttons]\nmark = \"z\"\nfavorite = 3\njump = \"a\"\nback = \"b\"\n",
@@ -824,5 +852,22 @@ fn list_columns_that_is_not_a_table_is_invalid() {
     assert_eq!(
         messages(&inspection, FindingKind::KeyUnknown),
         [] as [String; 0]
+    );
+}
+
+#[test]
+fn an_id_is_a_known_entry_key_and_a_malformed_one_is_a_field_finding() {
+    let inspection = inspect_text(
+        "schema_version = 1\n[environments.hades]\nid = \"3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5\"\n[environments.celeste]\nid = \"nope\"\n",
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::KeyUnknown),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        messages(&inspection, FindingKind::FieldInvalid),
+        [
+            "library.toml: environments.celeste.id: expected 32 lowercase hex characters, which wineo writes itself, found \"nope\""
+        ]
     );
 }

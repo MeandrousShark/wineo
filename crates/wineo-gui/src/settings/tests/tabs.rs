@@ -90,6 +90,8 @@ const SECTIONS: [(Tab, &[&str]); 5] = [
         Tab::Controller,
         &[
             view::CONTROLLER_SWITCH,
+            view::HINT_BAR_SWITCH,
+            view::GAMECUBE_ADAPTER_SWITCH,
             view::NO_CONTROLLER,
             "Open or play",
             view::RESET_BUTTONS,

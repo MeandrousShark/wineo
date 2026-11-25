@@ -570,8 +570,18 @@ fn source(root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
 fn manual_art_rechecks_identity_after_waiting_for_art_lock() {
     let (root, paths) = store();
     let prior = source(root.path(), "prior.png", PNG);
-    set_manual(&paths, "hades", None, Kind::Grid, &prior, None).unwrap();
-    let identity = EnvironmentIdentity::read(&paths, "hades").unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &prior,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    let identity = EnvironmentIdentity::acquire(&paths, "hades")
+        .unwrap()
+        .unwrap();
     let replacement = source(root.path(), "replacement.jpg", JPEG);
     let art_dir = paths.art_dir("hades");
     let saved_art = fs::read(art_dir.join("grid.png")).unwrap();
@@ -582,28 +592,18 @@ fn manual_art_rechecks_identity_after_waiting_for_art_lock() {
         let paths = paths.clone();
         move || {
             started.send(()).unwrap();
-            set_manual(
-                &paths,
-                "hades",
-                None,
-                Kind::Grid,
-                &replacement,
-                Some(identity),
-            )
+            set_manual(&paths, "hades", None, Kind::Grid, &replacement, identity)
         }
     });
     ready
         .recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
-    let config = paths.environment_config("hades");
-    let next = config.with_extension("replacement");
-    fs::write(&next, fs::read(&config).unwrap()).unwrap();
-    fs::rename(next, config).unwrap();
+    crate::test_support::replace_environment(&paths, "hades").unwrap();
     drop(held);
 
     let err = worker.join().unwrap().unwrap_err();
-    assert_ne!(EnvironmentIdentity::read(&paths, "hades"), Some(identity));
+    assert_eq!(identity.is_current(&paths, "hades"), Currency::Changed);
     assert!(matches!(
         err,
         Error::ArtEnvironmentChanged(name) if name == "hades"
@@ -624,7 +624,7 @@ fn set_as_records_the_given_name() {
         Kind::Grid,
         &file,
         "heroic-a.webp",
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap();
     let art = paths.art_dir("hades");
@@ -639,7 +639,15 @@ fn set_as_records_the_given_name() {
 fn set_keeps_the_bytes_and_records_the_original_name() {
     let (root, paths) = store();
     let file = source(root.path(), "My Poster.webp", WEBP);
-    let stored = set_manual(&paths, "hades", None, Kind::Grid, &file, None).unwrap();
+    let stored = set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     let art = paths.art_dir("hades");
     assert_eq!(stored.path, art.join("grid.webp"));
     assert_eq!(stored.format, Format::Webp);
@@ -672,7 +680,15 @@ fn set_refuses_by_content_kind_and_size() {
         (&svg, Kind::Logo),
         (&webp, Kind::Icon),
     ] {
-        let err = set_manual(&paths, "hades", None, kind, file, None).unwrap_err();
+        let err = set_manual(
+            &paths,
+            "hades",
+            None,
+            kind,
+            file,
+            crate::test_support::identity(&paths, "hades"),
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::ArtFormat { .. }), "{err}");
     }
     let err = set_manual(
@@ -681,7 +697,7 @@ fn set_refuses_by_content_kind_and_size() {
         None,
         Kind::Grid,
         &source(root.path(), "x.ico", &icon),
-        None,
+        crate::test_support::identity(&paths, "hades"),
     )
     .unwrap_err();
     assert_eq!(
@@ -695,17 +711,43 @@ fn set_refuses_by_content_kind_and_size() {
     let mut big = PNG.to_vec();
     big.resize(MAX_BYTES as usize + 1, 0);
     let big = source(root.path(), "big.png", &big);
-    let err = set_manual(&paths, "hades", None, Kind::Hero, &big, None).unwrap_err();
+    let err = set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Hero,
+        &big,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap_err();
     assert!(matches!(err, Error::ArtTooLarge(_)), "{err}");
     let mut limit = PNG.to_vec();
     limit.resize(MAX_BYTES as usize, 0);
     let limit = source(root.path(), "limit.png", &limit);
-    set_manual(&paths, "hades", None, Kind::Hero, &limit, None).unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Hero,
+        &limit,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
 
     let ok = source(root.path(), "ok.png", PNG);
-    let err = set_manual(&paths, "hades", Some("nope"), Kind::Icon, &ok, None).unwrap_err();
+    let err = set_manual(
+        &paths,
+        "hades",
+        Some("nope"),
+        Kind::Icon,
+        &ok,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap_err();
     assert!(matches!(err, Error::UnknownTarget { .. }), "{err}");
-    let err = set_manual(&paths, "nope", None, Kind::Icon, &ok, None).unwrap_err();
+    let err = EnvironmentIdentity::acquire_existing(&paths, "nope")
+        .and_then(|identity| set_manual(&paths, "nope", None, Kind::Icon, &ok, identity))
+        .unwrap_err();
     assert!(matches!(err, Error::UnknownEnvironment(_)), "{err}");
     let art = paths.art_dir("hades");
     assert!(!art.join("icon.png").exists());
@@ -718,10 +760,26 @@ fn set_replaces_a_kind_that_changes_format() {
     let art = paths.art_dir("hades");
     let unrecorded = touch(&art, "icon.svg");
     let first = source(root.path(), "a.png", PNG);
-    let stored = set_manual(&paths, "hades", None, Kind::Icon, &first, None).unwrap();
+    let stored = set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Icon,
+        &first,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!(stored.removed, vec![unrecorded.clone()]);
     let second = source(root.path(), "b.ico", &ico());
-    let stored = set_manual(&paths, "hades", None, Kind::Icon, &second, None).unwrap();
+    let stored = set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Icon,
+        &second,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!(stored.path, art.join("icon.ico"));
     assert_eq!(stored.removed, vec![art.join("icon.png")]);
     let names: Vec<_> = fs::read_dir(&art)
@@ -737,15 +795,38 @@ fn a_target_override_is_set_and_removed_on_its_own() {
     let (root, paths) = store();
     let art = paths.art_dir("hades");
     let env_icon = source(root.path(), "env.png", PNG);
-    set_manual(&paths, "hades", None, Kind::Icon, &env_icon, None).unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Icon,
+        &env_icon,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     let svg = source(root.path(), "server.svg", b"<svg/>");
-    let stored = set_manual(&paths, "hades", Some("server"), Kind::Icon, &svg, None).unwrap();
+    let stored = set_manual(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Icon,
+        &svg,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!(stored.path, art.join("server/icon.svg"));
     let listing = list(&paths, "hades").unwrap();
     assert_eq!(listing.targets.len(), 1);
     assert_eq!(listing.targets[0].1[0].1.found.path, stored.path);
 
-    let removed = remove(&paths, "hades", Some("server"), Kind::Icon, None).unwrap();
+    let removed = remove(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Icon,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!(removed.files, vec![stored.path]);
     assert!(removed.record);
     assert!(!art.join("server").exists());
@@ -754,9 +835,23 @@ fn a_target_override_is_set_and_removed_on_its_own() {
     assert!(config.targets.is_empty());
     assert!(config.record(None, Kind::Icon).is_some());
 
-    let err = remove(&paths, "hades", Some("server"), Kind::Icon, None).unwrap_err();
+    let err = remove(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Icon,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap_err();
     assert_eq!(err.to_string(), "`hades.server` has no icon art");
-    let err = remove(&paths, "hades", None, Kind::Logo, None).unwrap_err();
+    let err = remove(
+        &paths,
+        "hades",
+        None,
+        Kind::Logo,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap_err();
     assert_eq!(err.to_string(), "`hades` has no logo art");
 }
 
@@ -766,7 +861,14 @@ fn remove_takes_unrecorded_files_and_stale_records() {
     let art = paths.art_dir("hades");
     let png = touch(&art, "hero.png");
     let jpg = touch(&art, "hero.jpg");
-    let removed = remove(&paths, "hades", None, Kind::Hero, None).unwrap();
+    let removed = remove(
+        &paths,
+        "hades",
+        None,
+        Kind::Hero,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!((removed.files, removed.record), (vec![png, jpg], false));
     assert!(!art.join(ART_FILE).exists());
 
@@ -775,7 +877,14 @@ fn remove_takes_unrecorded_files_and_stale_records() {
         "schema_version = 1\n[logo]\nfile = \"logo.png\"\nsteamgriddb = 3\n",
     )
     .unwrap();
-    let removed = remove(&paths, "hades", None, Kind::Logo, None).unwrap();
+    let removed = remove(
+        &paths,
+        "hades",
+        None,
+        Kind::Logo,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert_eq!((removed.files.len(), removed.record), (0, true));
     assert_eq!(read(&art), "schema_version = 1\n");
 }
@@ -828,7 +937,15 @@ fn remove_all_takes_the_whole_dir() {
     let (root, paths) = store();
     assert!(!remove_all(&paths, "hades").unwrap());
     let file = source(root.path(), "a.png", PNG);
-    set_manual(&paths, "hades", Some("server"), Kind::Icon, &file, None).unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Icon,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     assert!(remove_all(&paths, "hades").unwrap());
     assert!(!paths.art_dir("hades").exists());
 }
@@ -837,8 +954,24 @@ fn remove_all_takes_the_whole_dir() {
 fn staged_art_is_copied_and_never_replaces_anything() {
     let (root, paths) = store();
     let file = source(root.path(), "a.png", PNG);
-    set_manual(&paths, "hades", Some("server"), Kind::Icon, &file, None).unwrap();
-    set_manual(&paths, "hades", None, Kind::Grid, &file, None).unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Icon,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     let locks = Locks::new(&paths);
     let source_dir = paths.art_dir("hades");
     let copy = paths.art_dir("copy");
@@ -870,9 +1003,33 @@ fn staged_art_is_copied_and_never_replaces_anything() {
 fn a_removed_targets_art_is_cleaned_up() {
     let (root, paths) = store();
     let file = source(root.path(), "a.png", PNG);
-    set_manual(&paths, "hades", None, Kind::Icon, &file, None).unwrap();
-    set_manual(&paths, "hades", Some("server"), Kind::Icon, &file, None).unwrap();
-    set_manual(&paths, "hades", Some("server"), Kind::Logo, &file, None).unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Icon,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Icon,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    set_manual(
+        &paths,
+        "hades",
+        Some("server"),
+        Kind::Logo,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
     let art = paths.art_dir("hades");
     touch(&target_dir(&art, "server"), "notes.txt");
 
@@ -960,13 +1117,8 @@ fn saving_writes_through_a_symlinked_art_file() {
     .check();
 }
 
-/// Swaps the config for a copy, which is a different file as far as its
-/// identity goes.
 fn replace_config(paths: &Paths, name: &str) {
-    let config = paths.environment_config(name);
-    let staged = config.with_extension("replacement");
-    fs::copy(&config, &staged).unwrap();
-    fs::rename(staged, config).unwrap();
+    crate::test_support::replace_environment(paths, name).unwrap();
 }
 
 #[test]
@@ -975,8 +1127,16 @@ fn every_manual_write_and_removal_refuses_a_replaced_environment() {
     let art = paths.art_dir("hades");
     let file = source(root.path(), "grid.png", PNG);
     let kept = source(root.path(), "kept.png", PNG);
-    set_manual(&paths, "hades", None, Kind::Logo, &kept, None).unwrap();
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Logo,
+        &kept,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
     // Written under the identity it was read with, as before.
     set_manual_as(
         &paths,
@@ -1013,8 +1173,9 @@ fn every_manual_write_and_removal_refuses_a_replaced_environment() {
     ));
     assert!(!art.join("icon.png").exists());
     assert!(art.join("logo.png").exists());
-    // Without an identity, which is what the command line passes, it goes.
-    remove(&paths, "hades", None, Kind::Logo, None).unwrap();
+    // With an identity acquired now, as the command line does, it goes.
+    let now = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
+    remove(&paths, "hades", None, Kind::Logo, now).unwrap();
     assert!(!art.join("logo.png").exists());
 }
 
@@ -1022,7 +1183,7 @@ fn every_manual_write_and_removal_refuses_a_replaced_environment() {
 fn a_removed_environment_reads_as_changed_before_anything_else() {
     let (root, paths) = store();
     let file = source(root.path(), "grid.png", PNG);
-    let identity = EnvironmentIdentity::read(&paths, "hades");
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "hades").unwrap();
     fs::remove_file(paths.environment_config("hades")).unwrap();
     let changed =
         |error: Error| matches!(error, Error::ArtEnvironmentChanged(name) if name == "hades");
@@ -1044,4 +1205,122 @@ fn a_removed_environment_reads_as_changed_before_anything_else() {
     assert!(changed(
         set_manual_bytes(&paths, "hades", None, Kind::Grid, PNG, "grid.png", identity).unwrap_err()
     ));
+}
+
+/// `store`, with a library entry from before ids, as 1.9.0 left it.
+fn old_store() -> (tempfile::TempDir, Paths, PathBuf) {
+    let (root, paths) = store();
+    let library = paths.library_file();
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::write(
+        &library,
+        "schema_version = 1\n\n[environments.hades]\nfavorite = true\n",
+    )
+    .unwrap();
+    (root, paths, library)
+}
+
+#[test]
+fn an_acquiring_set_mints_only_when_it_writes() {
+    let (root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    let text = source(root.path(), "notes.png", b"just some notes\n");
+    assert!(matches!(
+        set_manual_acquiring(&paths, "hades", None, Kind::Grid, &text).unwrap_err(),
+        Error::ArtFormat { .. }
+    ));
+    assert!(matches!(
+        set_manual_acquiring(&paths, "hades", Some("nope"), Kind::Grid, &text).unwrap_err(),
+        Error::UnknownTarget { .. }
+    ));
+    assert_eq!(fs::read(&library).unwrap(), before);
+
+    let file = source(root.path(), "grid.png", PNG);
+    let (stored, identity) =
+        set_manual_acquiring(&paths, "hades", None, Kind::Grid, &file).unwrap();
+    assert!(stored.path.is_file());
+    let id = crate::library::read_id(&paths, "hades").unwrap();
+    assert!(id.is_some());
+    assert_eq!(identity.id(), id);
+}
+
+#[test]
+fn an_acquiring_removal_mints_only_when_it_removes() {
+    let (root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    assert!(matches!(
+        remove_acquiring(&paths, "hades", None, Kind::Grid).unwrap_err(),
+        Error::NoArt { .. }
+    ));
+    assert!(matches!(
+        remove_acquiring(&paths, "hades", Some("../x"), Kind::Grid).unwrap_err(),
+        Error::InvalidName(name) if name == "../x"
+    ));
+    assert_eq!(fs::read(&library).unwrap(), before);
+
+    let file = source(root.path(), "grid.png", PNG);
+    set_manual(
+        &paths,
+        "hades",
+        None,
+        Kind::Grid,
+        &file,
+        crate::test_support::identity(&paths, "hades"),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&library).unwrap(), before);
+    let (removed, identity) = remove_acquiring(&paths, "hades", None, Kind::Grid).unwrap();
+    assert!(removed.record);
+    let id = crate::library::read_id(&paths, "hades").unwrap();
+    assert!(id.is_some());
+    assert_eq!(identity.id(), id);
+}
+
+#[test]
+fn acquiring_writes_say_a_missing_environment_does_not_exist() {
+    let (root, paths, _) = old_store();
+    let file = source(root.path(), "grid.png", PNG);
+    let unknown = |error: Error| matches!(error, Error::UnknownEnvironment(name) if name == "gone");
+    assert!(unknown(
+        set_manual_acquiring(&paths, "gone", None, Kind::Grid, &file).unwrap_err()
+    ));
+    assert!(unknown(
+        remove_acquiring(&paths, "gone", None, Kind::Grid).unwrap_err()
+    ));
+    assert_eq!(crate::library::read_id(&paths, "gone").unwrap(), None);
+}
+
+#[test]
+fn an_acquiring_removal_with_an_unreadable_art_file_mints_nothing() {
+    let (_root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    let art = paths.art_dir("hades");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join(ART_FILE), "[broken\n").unwrap();
+    let locked = {
+        let guard = Locks::new(&paths).config(&art.join(ART_FILE)).unwrap();
+        crate::error::chain(&ArtFile::open_locked(&art, &guard).err().unwrap())
+    };
+    let error = remove_acquiring(&paths, "hades", None, Kind::Grid).unwrap_err();
+    assert_eq!(crate::error::chain(&error), locked);
+    assert_eq!(fs::read(&library).unwrap(), before);
+}
+
+#[test]
+fn an_acquiring_removal_that_cant_look_mints_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_root, paths, library) = old_store();
+    let before = fs::read(&library).unwrap();
+    let spot = paths.art_dir("hades").join("server");
+    fs::create_dir_all(&spot).unwrap();
+    fs::set_permissions(&spot, fs::Permissions::from_mode(0o000)).unwrap();
+    let error = remove_acquiring(&paths, "hades", Some("server"), Kind::Grid);
+    fs::set_permissions(&spot, fs::Permissions::from_mode(0o755)).unwrap();
+    let error = error.unwrap_err();
+    assert!(!matches!(error, Error::NoArt { .. }), "{error}");
+    assert!(
+        crate::error::chain(&error).contains("Permission denied"),
+        "{error}"
+    );
+    assert_eq!(fs::read(&library).unwrap(), before);
 }

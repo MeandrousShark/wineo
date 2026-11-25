@@ -2015,3 +2015,41 @@ fn assert_moved_files(fx: &Fixture) {
     assert_eq!(galaxy_files(fx), (false, false));
     assert_eq!(fx.read("galaxy-only.dat"), "stays");
 }
+
+#[test]
+fn a_windows_install_returns_its_new_id_or_a_fingerprint_taken_after_its_target() {
+    use crate::environment::Currency;
+    for broken in [false, true] {
+        let fx = offered();
+        let plan = fx.plan_windows(&request()).unwrap();
+        if broken {
+            let library = fx.paths.library_file();
+            fs::create_dir_all(library.parent().unwrap()).unwrap();
+            fs::write(&library, "[broken\n").unwrap();
+        }
+        let installed = install::apply_with_events(
+            &fx.paths,
+            &mut fx.session(),
+            &plan,
+            &Token::new(),
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(installed.target, Some(fx.folder.join("bin/Game.exe")));
+        let identity = installed.identity.unwrap();
+        if broken {
+            assert_eq!(identity.id(), None);
+            assert_eq!(
+                identity.is_current(&fx.paths, "rimworld"),
+                Currency::Current
+            );
+        } else {
+            assert!(identity.id().is_some());
+            assert_eq!(
+                identity.id(),
+                crate::library::load(&fx.paths).environments["rimworld"].id
+            );
+        }
+    }
+}

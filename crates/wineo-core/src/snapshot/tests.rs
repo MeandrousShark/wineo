@@ -1565,3 +1565,48 @@ fn a_relative_config_target_that_climbs_out_is_invalid() {
         "{error}"
     );
 }
+
+#[test]
+fn restoring_a_snapshot_keeps_the_environments_id_current() {
+    use crate::environment::{Currency, EnvironmentIdentity};
+    let (_root, paths, prefix, config) = fixture(false);
+    if !reflinks_supported(&prefix) {
+        return;
+    }
+    let global = GlobalConfig::default();
+    let identity = EnvironmentIdentity::acquire(&paths, "game")
+        .unwrap()
+        .unwrap();
+    assert!(identity.id().is_some());
+    let review = inspect_create(&paths, &global, "game", "one").unwrap();
+    create_reviewed(&paths, &global, &review, &Token::new(), |_| {}).unwrap();
+    fs::write(
+        paths.environment_config("game"),
+        format!("# edit\n{config}"),
+    )
+    .unwrap();
+    let inode = || {
+        fs::metadata(paths.environment_config("game"))
+            .unwrap()
+            .ino()
+    };
+    let before = inode();
+    let restore = inspect_restore(&paths, &global, "game", "one").unwrap();
+    restore_reviewed(&paths, &global, &restore, &Token::new(), |_| {}).unwrap();
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("game")).unwrap(),
+        config
+    );
+    assert_ne!(inode(), before, "the saved config came back as a new file");
+    assert_eq!(identity.is_current(&paths, "game"), Currency::Current);
+    crate::art::set_manual_bytes(
+        &paths,
+        "game",
+        None,
+        crate::art::Kind::Grid,
+        b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
+        "grid.png",
+        identity,
+    )
+    .unwrap();
+}

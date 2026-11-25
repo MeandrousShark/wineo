@@ -8,9 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::test_script::write_script;
+use wineo_core::desktop;
 use wineo_core::environment::Environment;
 
 use super::*;
+use crate::flow::artwork::{EntriesError, Fetched};
 
 fn paths(root: &Path) -> Paths {
     let home = root.to_owned();
@@ -47,6 +49,8 @@ struct Call {
     /// What `busy_with` said about the environment's lock.
     lock: String,
     canceled: bool,
+    /// What the flow handed it, which a Retry must not read again.
+    identity: Option<EnvironmentIdentity>,
 }
 
 type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
@@ -54,10 +58,10 @@ type Calls = Arc<std::sync::Mutex<Vec<Call>>>;
 /// A fetcher that records each call and answers `answer`, or an error once
 /// its token is canceled. It writes a file only when it isn't canceled, as
 /// the real fetch writes art.
-fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
+fn fake_fetcher(answer: Result<Vec<String>, FetchError>) -> (Fetcher, Calls) {
     let calls = Calls::default();
     let seen = calls.clone();
-    let fetcher: Fetcher = Arc::new(move |paths, name, title, token| {
+    let fetcher: Fetcher = Arc::new(move |paths, name, title, identity, token| {
         let lock = format!(
             "{:?}",
             wineo_core::operation::Locks::new(paths).busy_with(name)
@@ -68,14 +72,24 @@ fn fake_fetcher(answer: Result<Vec<String>, String>) -> (Fetcher, Calls) {
             registered: paths.environment_config(name).exists(),
             lock,
             canceled: token.is_canceled(),
+            identity,
         });
         if token.is_canceled() {
-            return Err("canceled".to_owned());
+            return Fetched::answer(Err(FetchError::Other("canceled".to_owned())), identity);
         }
         fs::write(paths.applications_dir().join("fetched.marker"), "").ok();
-        answer.clone()
+        Fetched::answer(answer.clone(), identity)
     });
     (fetcher, calls)
+}
+
+/// A fetch's result as the page gets it, with no identity.
+fn parts(art: Result<Vec<String>, FetchError>, entries: Result<(), EntriesError>) -> FetchParts {
+    FetchParts {
+        art,
+        entries,
+        identity: None,
+    }
 }
 
 fn call_count(calls: &Calls) -> usize {
@@ -180,6 +194,9 @@ fn the_fetch_runs_after_the_import_and_never_inside_its_worker() {
     assert_eq!(call_count(&calls), 0, "the fetch is its own task");
     drive(&mut page, task, true);
 
+    // The identity the import handed back, the id its entry got.
+    let imported = EnvironmentIdentity::peek(&page.paths, "imported");
+    assert!(imported.is_some_and(|identity| identity.id().is_some()));
     assert_eq!(
         *calls.lock().unwrap(),
         [Call {
@@ -188,6 +205,7 @@ fn the_fetch_runs_after_the_import_and_never_inside_its_worker() {
             registered: true,
             lock: "Ok(None)".to_owned(),
             canceled: false,
+            identity: imported,
         }]
     );
     assert_eq!(page.step, Step::Finished);
@@ -338,6 +356,7 @@ fn the_fetch_searches_the_name_as_typed_for_the_imported_environment() {
     let outcome = ImportOutcome {
         name: "hollow-knight".to_owned(),
         entry_error: None,
+        identity: None,
     };
     let task = page.update_with_key_availability(
         Event::ImportFinished(generation, Ok(Box::new(outcome))),
@@ -411,8 +430,10 @@ fn a_fetch_result_from_an_older_fetch_is_ignored() {
     let root = tempfile::tempdir().unwrap();
     let (mut page, _calls, _task) = fetching(root.path());
     let stale = page.fetch_sequence.wrapping_sub(1);
-    let _ =
-        page.update_with_key_availability(Event::ArtFetched(stale, (Ok(Vec::new()), Ok(()))), true);
+    let _ = page.update_with_key_availability(
+        Event::ArtFetched(stale, parts(Ok(Vec::new()), Ok(()))),
+        true,
+    );
     assert_eq!(page.step, Step::Working);
     assert!(page.fetching);
 }
@@ -423,7 +444,7 @@ fn a_failed_fetch_lands_on_art_failed_and_retry_fetches_again_through_skip() {
     let (mut page, _calls) = reviewed(root.path());
     page.imported_name = Some("imported".to_owned());
     page.fetch_art = true;
-    let (fetcher, _) = fake_fetcher(Err("offline".to_owned()));
+    let (fetcher, _) = fake_fetcher(Err(FetchError::Other("offline".to_owned())));
     page.fetcher = fetcher;
     let task = page.start_fetch();
     drive(&mut page, task, true);
@@ -480,7 +501,8 @@ fn a_failed_entry_refresh_in_the_worker_lands_on_art_failed_and_retry_fetches_fi
     let generation = page.generation;
     let outcome = ImportOutcome {
         name: "imported".to_owned(),
-        entry_error: Some("no applications folder".to_owned()),
+        entry_error: Some(EntriesError::Failed("no applications folder".to_owned())),
+        identity: None,
     };
     let task = page.update_with_key_availability(
         Event::ImportFinished(generation, Ok(Box::new(outcome))),
@@ -561,7 +583,13 @@ fn a_fetch_that_got_through_keeps_its_notes_when_only_the_entry_failed() {
     let sequence = page.fetch_sequence;
     let notes = vec!["No logo artwork found".to_owned()];
     let _ = page.update_with_key_availability(
-        Event::ArtFetched(sequence, (Ok(notes.clone()), Err("no folder".to_owned()))),
+        Event::ArtFetched(
+            sequence,
+            parts(
+                Ok(notes.clone()),
+                Err(EntriesError::Failed("no folder".to_owned())),
+            ),
+        ),
         true,
     );
     assert_eq!(page.step, Step::ArtFailed);
@@ -594,7 +622,10 @@ fn a_failed_fetch_blames_the_fetch_even_when_the_entry_failed_too() {
     let _ = page.update_with_key_availability(
         Event::ArtFetched(
             sequence,
-            (Err("offline".to_owned()), Err("no folder".to_owned())),
+            parts(
+                Err(FetchError::Other("offline".to_owned())),
+                Err(EntriesError::Failed("no folder".to_owned())),
+            ),
         ),
         true,
     );
@@ -895,4 +926,256 @@ fn details_with_the_checkbox_or_its_note_fit_narrow_and_wide_dialogs() {
             );
         }
     }
+}
+
+/// What the page shows.
+fn shown(page: &Page) -> Vec<String> {
+    crate::layout_probe::texts(
+        page.view_with_key_availability(Palette::DARK, true),
+        iced::Size::new(900.0, 1200.0),
+    )
+}
+
+/// A page whose import of `hades`, with a desktop target and the id its
+/// entry got, is about to fetch over canned answers that run `hook` on
+/// requests to `at`.
+fn hades(root: &Path, at: &'static str, hook: impl Fn(&Paths) + Send + Sync + 'static) -> Page {
+    let (mut page, _) = reviewed(root);
+    native_environment(&page.paths, root, "hades");
+    page.name = "Hades".to_owned();
+    page.imported_name = Some("hades".to_owned());
+    page.identity = Some(EnvironmentIdentity::acquire_existing(&page.paths, "hades").unwrap());
+    page.fetch_art = true;
+    let paths = page.paths.clone();
+    page.fetcher = crate::flow::artwork::canned::canned_hades()
+        .on(at, move || hook(&paths))
+        .fetcher();
+    page
+}
+
+#[test]
+fn a_replacement_during_the_fetch_offers_only_skip_and_skip_leaves_its_entries_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let mut page = hades(root.path(), "/search/", |paths| {
+        wineo_core::test_support::replace_environment(paths, "hades").unwrap()
+    });
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(
+        page.error.as_deref(),
+        Some(
+            crate::flow::artwork::changed_message("hades", true, crate::flow::artwork::NOT_STORED)
+                .as_str()
+        )
+    );
+    assert!(!page.paths.art_dir("hades").join("icon.png").exists());
+    let texts = shown(&page);
+    assert!(!texts.contains(&"Retry artwork".to_owned()), "{texts:?}");
+    assert!(texts.contains(&"Skip artwork".to_owned()), "{texts:?}");
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    assert!(iced_runtime::task::into_stream(task).is_none());
+    assert_eq!(page.step, Step::ArtFailed);
+
+    // The replacement has a desktop target too, which a refresh would
+    // write an entry for.
+    assert_eq!(desktop_entries(&page.paths), 0);
+    let task = page.update_with_key_availability(Event::SkipArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::Finished);
+    assert!(page.error.is_none());
+    assert_eq!(page.notes, ["Artwork skipped"]);
+    assert_eq!(desktop_entries(&page.paths), 0);
+}
+
+#[test]
+fn a_library_that_cant_be_read_says_so_and_offers_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let mut page = hades(root.path(), "/search/", |paths| {
+        fs::write(paths.library_file(), "[broken\n").unwrap()
+    });
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("library.toml can't be read. Artwork for `hades` wasn't stored.")
+    );
+    let texts = shown(&page);
+    assert!(texts.contains(&"Retry artwork".to_owned()), "{texts:?}");
+    // No icon was stored, so the entries go unmentioned.
+    assert_eq!(desktop_entries(&page.paths), 0);
+}
+
+#[test]
+fn entries_skipped_after_an_icon_was_stored_are_said_with_the_artwork() {
+    let root = tempfile::tempdir().unwrap();
+    // The icon comes first, then the library breaks for the other kinds.
+    let mut page = hades(root.path(), "/grids/", |paths| {
+        fs::write(paths.library_file(), "[broken\n").unwrap()
+    });
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    assert!(page.paths.art_dir("hades").join("icon.png").exists());
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(
+        page.error.as_deref(),
+        Some(
+            "library.toml can't be read. Artwork for `hades` wasn't stored.\n\
+             library.toml can't be read. The desktop entries for `hades` weren't updated."
+        )
+    );
+    assert!(page.fetch_failed);
+    assert!(shown(&page).contains(&"Retry artwork".to_owned()));
+    assert_eq!(desktop_entries(&page.paths), 0);
+}
+
+#[test]
+fn retry_reuses_the_identity_the_import_handed_over() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, _) = reviewed(root.path());
+    native_environment(&page.paths, root.path(), "imported");
+    let identity = EnvironmentIdentity::acquire_existing(&page.paths, "imported").unwrap();
+    page.imported_name = Some("imported".to_owned());
+    page.identity = Some(identity);
+    page.fetch_art = true;
+    let (fetcher, calls) = fake_fetcher(Err(FetchError::Other("offline".to_owned())));
+    page.fetcher = fetcher;
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    // Replaced before the next try, so a Retry that read again would get
+    // another; with the one it holds, the failure is now "changed".
+    wineo_core::test_support::replace_environment(&page.paths, "imported").unwrap();
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    assert!(page.fetch_changed);
+    let seen: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| call.identity)
+        .collect();
+    assert_eq!(seen, [Some(identity); 3]);
+}
+
+#[test]
+fn a_change_on_the_fingerprint_fallback_offers_only_skip() {
+    let root = tempfile::tempdir().unwrap();
+    let mut page = hades(root.path(), "/search/", |paths| {
+        wineo_core::test_support::replace_environment(paths, "hades").unwrap()
+    });
+    // As an import whose stamp failed hands it over.
+    fs::remove_file(page.paths.library_file()).unwrap();
+    page.identity = EnvironmentIdentity::peek(&page.paths, "hades");
+    assert_eq!(page.identity.unwrap().id(), None);
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(
+        page.error.as_deref(),
+        Some("`hades` changed. Artwork wasn't stored.")
+    );
+    let texts = shown(&page);
+    assert!(!texts.contains(&"Retry artwork".to_owned()), "{texts:?}");
+}
+
+/// A fetcher that gets through with an icon and then breaks the library,
+/// so the desktop entries can't be told apart from a replacement's.
+fn icon_then_broken_library() -> Fetcher {
+    Arc::new(|paths, _, _, identity, _| {
+        fs::write(paths.library_file(), "[broken\n").unwrap();
+        Fetched {
+            art: Ok(Vec::new()),
+            identity,
+            icon: true,
+        }
+    })
+}
+
+#[test]
+fn entries_left_for_an_unreadable_library_retry_guarded_and_skip_leaves_them() {
+    let root = tempfile::tempdir().unwrap();
+    let mut page = hades(root.path(), "/none/", |_| {});
+    page.fetcher = icon_then_broken_library();
+    let sentence = "library.toml can't be read. The desktop entries for `hades` weren't updated.";
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(page.error.as_deref(), Some(sentence));
+    assert!(shown(&page).contains(&"Retry artwork".to_owned()));
+    assert_eq!(desktop_entries(&page.paths), 0);
+
+    // Retry refreshes through the same check, which still can't tell.
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::ArtFailed);
+    assert_eq!(page.error.as_deref(), Some(sentence));
+    assert_eq!(desktop_entries(&page.paths), 0);
+
+    // Skip finishes without touching them.
+    let task = page.update_with_key_availability(Event::SkipArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::Finished);
+    assert!(page.error.is_none());
+    assert_eq!(desktop_entries(&page.paths), 0);
+}
+
+#[test]
+fn a_retry_after_the_library_is_fixed_refreshes_the_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let mut page = hades(root.path(), "/none/", |_| {});
+    let good = fs::read(page.paths.library_file()).unwrap();
+    page.fetcher = icon_then_broken_library();
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::ArtFailed);
+    fs::write(page.paths.library_file(), good).unwrap();
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::Finished);
+    assert_eq!(desktop_entries(&page.paths), 1);
+}
+
+#[test]
+fn skip_after_another_failure_leaves_a_replacements_entries_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let mut page = hades(root.path(), "/none/", |_| {});
+    page.fetch_art = false;
+    page.error = Some("offline".to_owned());
+    page.step = Step::ArtFailed;
+    wineo_core::test_support::replace_environment(&page.paths, "hades").unwrap();
+    let task = page.update_with_key_availability(Event::SkipArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(page.step, Step::Finished);
+    assert!(page.error.is_none());
+    assert_eq!(desktop_entries(&page.paths), 0);
+}
+
+#[test]
+fn an_import_with_no_identity_keeps_its_first_fetchs_for_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut page, _) = reviewed(root.path());
+    native_environment(&page.paths, root.path(), "imported");
+    let taken = EnvironmentIdentity::acquire_existing(&page.paths, "imported").unwrap();
+    page.imported_name = Some("imported".to_owned());
+    page.identity = None;
+    page.fetch_art = true;
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    page.fetcher = Arc::new({
+        let calls = calls.clone();
+        move |_, _, _, identity, _| {
+            calls.lock().unwrap().push(identity);
+            Fetched::answer(
+                Err(FetchError::Other("offline".to_owned())),
+                identity.or(Some(taken)),
+            )
+        }
+    });
+    let task = page.start_fetch();
+    drive(&mut page, task, true);
+    let task = page.update_with_key_availability(Event::RetryArt, true);
+    drive(&mut page, task, true);
+    assert_eq!(*calls.lock().unwrap(), [None, Some(taken)]);
 }

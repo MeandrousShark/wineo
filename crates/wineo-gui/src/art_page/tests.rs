@@ -14,8 +14,19 @@ fn fixture() -> (tempfile::TempDir, Paths, Page) {
         "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = 'game.exe'\n",
     )
     .unwrap();
-    let identity = EnvironmentIdentity::read(&paths, "game").unwrap();
+    // Stamped as creating it would, so the page holds an id.
+    wineo_core::library::fresh(&paths, "game").unwrap();
+    let identity = EnvironmentIdentity::peek(&paths, "game").unwrap();
     (root, paths, Page::new("game".into(), 1, identity))
+}
+
+/// The page's identity and cache, as its writes are handed them.
+fn page_identity(page: &Page) -> (EnvironmentIdentity, &Mutex<library::Cache>) {
+    (page.identity, &page.identity_cache)
+}
+
+fn replace_environment(paths: &Paths) {
+    wineo_core::test_support::replace_environment(paths, "game").unwrap();
 }
 
 /// Gives the environment a native target with a desktop entry. Its program
@@ -342,7 +353,7 @@ fn changed_game_saves_and_uses_its_name_immediately() {
     art::save_game(&paths, "game", game.id).unwrap();
     let step = page.update(
         &paths,
-        Event::GameSaved(page.write_sequence, game, Ok(())),
+        Event::GameSaved(page.write_sequence, game, Ok(()), None),
         decodes(),
     );
     assert!(step.changed);
@@ -357,16 +368,11 @@ fn a_game_is_saved_only_in_the_environment_it_was_picked_for() {
         let (_root, paths, page) = fixture();
         let config = paths.environment_config("game");
         match case {
-            "replaced" => {
-                // A copy renamed over the config is a different file.
-                let staged = config.with_extension("replacement");
-                fs::copy(&config, &staged).unwrap();
-                fs::rename(staged, &config).unwrap();
-            }
+            "replaced" => replace_environment(&paths),
             "removed" => fs::remove_file(&config).unwrap(),
             _ => {}
         }
-        let result = save_game(&paths, "game", 77, page.identity);
+        let (result, _) = save_game(&paths, "game", 77, page.identity);
         if case == "unchanged" {
             result.unwrap();
             assert_eq!(art::saved_game(&paths, "game").unwrap(), Some(77));
@@ -409,7 +415,15 @@ fn reload_picks_up_art_changed_outside_the_page() {
     assert!(!page.has_override(Kind::Grid));
 
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     snapshot(&mut page, &paths);
 
     assert!(page.has_override(Kind::Grid));
@@ -438,7 +452,15 @@ fn late_lookup_and_preview_results_are_discarded_after_leaving() {
     assert_eq!(page.game_label(true), "123");
 
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     snapshot(&mut page, &paths);
     let sequence = page.load_sequence;
     let spot = (None, Kind::Grid);
@@ -477,21 +499,16 @@ fn changing_icon_art_reconciles_the_desktop_entry() {
 #[test]
 fn a_queued_write_refuses_a_same_name_environment_replacement() {
     let (root, paths, page) = fixture();
-    let identity = page.identity;
-    let retained = root.path().join("retained-game.toml");
-    fs::rename(paths.environment_config("game"), retained).unwrap();
-    wineo_core::environment::Environment::create_native(
-        &paths,
-        &GlobalConfig::default(),
-        "game",
-        None,
-        false,
-        |_| {},
-    )
-    .unwrap();
+    replace_environment(&paths);
     let source = png(root.path());
 
-    let outcome = write_art_for(&paths, "game", identity, &(None, Kind::Grid), Some(&source));
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
 
     assert!(!outcome.changed());
     assert!(outcome.error.is_some());
@@ -553,7 +570,7 @@ fn picker_use_publishes_exact_image_and_refreshes_the_kind() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &spot,
         &Api::new(&transport, "key"),
         &image,
@@ -582,7 +599,15 @@ fn picker_use_publishes_exact_image_and_refreshes_the_kind() {
 fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
     let (root, paths, page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     let before = fs::read(paths.art_dir("game").join("grid.png")).unwrap();
     let image = chosen_image();
     let transport = ImageApi {
@@ -593,7 +618,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Grid),
         &Api::new(&transport, "key"),
         &image,
@@ -613,7 +638,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Grid),
         &Api::new(&transport, "key"),
         &image,
@@ -632,10 +657,7 @@ fn picker_cancel_keeps_prior_art_and_refused_format_keeps_cores_message() {
 fn picker_use_icon_reconciles_desktop_entries() {
     let (root, paths, page) = fixture();
     desktop_target(&root, &paths);
-    assert_eq!(
-        EnvironmentIdentity::read(&paths, "game"),
-        Some(page.identity)
-    );
+    assert!(page.identity.is_current(&paths, "game").is_current());
     let source = png(root.path());
     let transport = ImageApi {
         bytes: fs::read(&source).unwrap(),
@@ -644,7 +666,7 @@ fn picker_use_icon_reconciles_desktop_entries() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Icon),
         &Api::new(&transport, "key"),
         &chosen_image(),
@@ -678,7 +700,7 @@ fn find_without_a_game_routes_through_change_then_opens_picker() {
     art::save_game(&paths, "game", game.id).unwrap();
     let _ = page.update_with_key_availability(
         &paths,
-        Event::GameSaved(page.write_sequence, game, Ok(())),
+        Event::GameSaved(page.write_sequence, game, Ok(()), None),
         decodes(),
         true,
     );
@@ -844,27 +866,22 @@ fn picker_use_refuses_replacement_in_the_last_progress_callback() {
     let outcome = use_image_for(
         &paths,
         "game",
-        page.identity,
+        page_identity(&page),
         &(None, Kind::Grid),
         &Api::new(&transport, "key"),
         &chosen_image(),
         |received, _| {
             if received == bytes.len() as u64 && !replaced {
-                fs::rename(
-                    paths.environment_config("game"),
-                    root.path().join("old-game.toml"),
-                )
-                .unwrap();
-                Environment::create_native(
+                replace_environment(&paths);
+                art::set_manual(
                     &paths,
-                    &GlobalConfig::default(),
                     "game",
                     None,
-                    false,
-                    |_| {},
+                    Kind::Grid,
+                    &replacement,
+                    wineo_core::test_support::identity(&paths, "game"),
                 )
                 .unwrap();
-                art::set_manual(&paths, "game", None, Kind::Grid, &replacement, None).unwrap();
                 replaced = true;
             }
         },
@@ -872,7 +889,10 @@ fn picker_use_refuses_replacement_in_the_last_progress_callback() {
     );
     assert!(replaced);
     assert!(!outcome.changed());
-    assert!(outcome.error.unwrap().contains("environment"));
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("`game` was replaced. Artwork wasn't stored.")
+    );
     assert_eq!(
         fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
         fs::read(replacement).unwrap()
@@ -981,7 +1001,15 @@ fn reopening_another_kind_abandons_queued_thumbnails() {
 fn browse_write_rechecks_identity_after_art_lock_contention() {
     let (root, paths, page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     let art_dir = paths.art_dir("game");
     let held = wineo_core::operation::Locks::new(&paths)
         .config(&art_dir.join(art::ART_FILE))
@@ -993,7 +1021,7 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
             write_art_for(
                 &paths,
                 "game",
-                page.identity,
+                page_identity(&page),
                 &(None, Kind::Grid),
                 Some(&source),
             )
@@ -1001,10 +1029,7 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
     });
     wait_for_lock_waiter(&lock);
     assert!(!worker.is_finished());
-    let config = paths.environment_config("game");
-    let replacement = config.with_extension("replacement");
-    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
-    fs::rename(replacement, config).unwrap();
+    replace_environment(&paths);
     ::image::RgbaImage::from_pixel(8, 12, ::image::Rgba([0, 0, 255, 255]))
         .save(art_dir.join("grid.png"))
         .unwrap();
@@ -1019,7 +1044,10 @@ fn browse_write_rechecks_identity_after_art_lock_contention() {
 
     let outcome = worker.join().unwrap();
     assert!(!outcome.changed());
-    assert!(outcome.error.unwrap().contains("changed"));
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("`game` was replaced. Artwork wasn't stored.")
+    );
     assert_eq!(fs::read(art_dir.join("grid.png")).unwrap(), saved_art);
     assert_eq!(fs::read(art_dir.join(art::ART_FILE)).unwrap(), saved_record);
     let mut files: Vec<_> = fs::read_dir(&art_dir)
@@ -1085,10 +1113,7 @@ fn replaced_while_waiting_for_the_art_lock<R: Send + 'static>(
     let worker = std::thread::spawn(write);
     wait_for_lock_waiter(&lock);
     assert!(!worker.is_finished());
-    let config = paths.environment_config("game");
-    let replacement = config.with_extension("replacement");
-    fs::write(&replacement, fs::read(&config).unwrap()).unwrap();
-    fs::rename(replacement, config).unwrap();
+    replace_environment(paths);
     drop(held);
     worker.join().unwrap()
 }
@@ -1097,18 +1122,33 @@ fn replaced_while_waiting_for_the_art_lock<R: Send + 'static>(
 fn remove_checks_identity_under_the_art_lock() {
     let (root, paths, page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     let grid = paths.art_dir("game").join("grid.png");
     let outcome = replaced_while_waiting_for_the_art_lock(&paths, {
         let paths = paths.clone();
-        let identity = page.identity;
-        move || write_art_for(&paths, "game", identity, &(None, Kind::Grid), None)
+        move || {
+            write_art_for(
+                &paths,
+                "game",
+                page_identity(&page),
+                &(None, Kind::Grid),
+                None,
+            )
+        }
     });
     assert!(!outcome.changed());
     // The page's own words for a changed environment.
     assert_eq!(
         outcome.error.as_deref(),
-        Some("environment changed before artwork could be removed")
+        Some("`game` was replaced. Artwork wasn't removed.")
     );
     assert!(grid.exists());
 }
@@ -1119,7 +1159,7 @@ fn saving_a_game_checks_identity_under_the_art_lock() {
     let result = replaced_while_waiting_for_the_art_lock(&paths, {
         let paths = paths.clone();
         let identity = page.identity;
-        move || save_game(&paths, "game", 77, identity)
+        move || save_game(&paths, "game", 77, identity).0
     });
     assert_eq!(
         result,
@@ -1422,7 +1462,15 @@ fn art_picker_keeps_controls_whole_at_narrow_and_wide_widths() {
 fn leaving_drops_decoded_previews() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     snapshot(&mut page, &paths);
     let spot = (None, Kind::Grid);
     let _ = page.update(
@@ -1463,7 +1511,15 @@ fn deliver_preview(page: &mut Page, paths: &Paths, spot: Spot) {
 fn reload_with_unchanged_files_keeps_previews_and_decodes_nothing() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     assert_eq!(reload_units(&mut page, &paths), 1);
     let spot = (None, Kind::Grid);
     deliver_preview(&mut page, &paths, spot.clone());
@@ -1478,7 +1534,15 @@ fn reload_with_unchanged_files_keeps_previews_and_decodes_nothing() {
 fn reload_keeps_a_failed_decode_without_retrying_it() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let spot = (None, Kind::Grid);
     let _ = page.update(
@@ -1498,8 +1562,24 @@ fn reload_keeps_a_failed_decode_without_retrying_it() {
 fn reload_redecodes_only_the_row_whose_file_changed() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
-    art::set_manual(&paths, "game", None, Kind::Hero, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Hero,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     assert_eq!(reload_units(&mut page, &paths), 2);
     let grid = (None, Kind::Grid);
     let hero = (None, Kind::Hero);
@@ -1527,7 +1607,15 @@ fn reload_redecodes_only_the_row_whose_file_changed() {
 fn reload_drops_the_preview_of_a_removed_row() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let spot = (None, Kind::Grid);
     deliver_preview(&mut page, &paths, spot.clone());
@@ -1549,7 +1637,15 @@ fn reload_drops_the_preview_of_a_removed_row() {
 fn a_decode_from_before_a_reload_cannot_land_on_the_new_row() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let stale = page.load_sequence;
     reload_units(&mut page, &paths);
@@ -1580,7 +1676,15 @@ fn a_failed_decode_does_not_read_as_loading() {
 fn leaving_clears_a_failed_decode_so_reopening_retries() {
     let (root, paths, mut page) = fixture();
     let source = png(root.path());
-    art::set_manual(&paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&paths, "game"),
+    )
+    .unwrap();
     reload_units(&mut page, &paths);
     let spot = (None, Kind::Grid);
     let _ = page.update(
@@ -1590,4 +1694,317 @@ fn leaving_clears_a_failed_decode_so_reopening_retries() {
     );
     page.leave();
     assert_eq!(reload_units(&mut page, &paths), 1);
+}
+
+/// What a write says when `library.toml` can't confirm the identity.
+fn library_unreadable(outcome: &str) -> String {
+    format!("library.toml can't be read. Artwork for `game` wasn't {outcome}.")
+}
+
+#[test]
+fn skipped_desktop_entries_say_the_library_couldnt_be_read() {
+    assert_eq!(
+        Guarded::Entries.unreadable("game"),
+        "library.toml can't be read. The desktop entries for `game` weren't updated."
+    );
+}
+
+fn break_library(paths: &Paths) {
+    fs::write(paths.library_file(), "[broken\n").unwrap();
+}
+
+#[test]
+fn a_write_says_the_library_couldnt_be_read_rather_than_that_it_changed() {
+    let (root, paths, page) = fixture();
+    assert!(page.identity.id().is_some());
+    let source = png(root.path());
+    // Something to remove, so the removal gets as far as the library.
+    art::set_manual(&paths, "game", None, Kind::Grid, &source, page.identity).unwrap();
+    break_library(&paths);
+    for path in [Some(source.as_path()), None] {
+        let outcome = write_art_for(
+            &paths,
+            "game",
+            page_identity(&page),
+            &(None, Kind::Grid),
+            path,
+        );
+        assert!(!outcome.changed());
+        let outcome_word = if path.is_some() { "stored" } else { "removed" };
+        assert_eq!(outcome.error, Some(library_unreadable(outcome_word)));
+    }
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {},
+        &Token::new(),
+    );
+    assert!(!outcome.changed());
+    assert_eq!(outcome.error, Some(library_unreadable("stored")));
+    assert!(transport.urls.borrow().is_empty(), "it downloaded anyway");
+}
+
+#[test]
+fn a_library_breaking_mid_download_says_so() {
+    let (root, paths, page) = fixture();
+    // Over one read's worth, so the download reports progress twice.
+    let mut bytes = fs::read(png(root.path())).unwrap();
+    bytes.resize(100 * 1024, 0);
+    let transport = ImageApi {
+        bytes,
+        urls: Default::default(),
+    };
+    let mut calls = 0;
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {
+            calls += 1;
+            if calls == 1 {
+                break_library(&paths);
+            }
+        },
+        &Token::new(),
+    );
+    assert!(calls >= 2, "{calls}");
+    assert!(!outcome.changed());
+    assert_eq!(outcome.error, Some(library_unreadable("stored")));
+    assert!(!paths.art_dir("game").join("grid.png").exists());
+}
+
+/// `fixture`, for an environment from before ids: its page holds the
+/// config's fingerprint.
+fn legacy_fixture() -> (tempfile::TempDir, Paths, Page) {
+    let (root, paths, _) = fixture();
+    fs::remove_file(paths.library_file()).unwrap();
+    let identity = EnvironmentIdentity::peek(&paths, "game").unwrap();
+    assert_eq!(identity.id(), None);
+    (root, paths, Page::new("game".into(), 1, identity))
+}
+
+/// Rewrites the config through a new file, as an editor saving it would.
+fn edit_config(paths: &Paths) {
+    let config = paths.environment_config("game");
+    let text = fs::read_to_string(&config).unwrap();
+    let staged = config.with_extension("saving");
+    fs::write(&staged, format!("# edited\n{text}")).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+fn library_id(paths: &Paths) -> Option<wineo_core::library::Id> {
+    wineo_core::library::load(paths)
+        .environments
+        .get("game")
+        .and_then(|entry| entry.id)
+}
+
+#[test]
+fn the_first_write_on_an_old_environment_upgrades_and_an_edit_during_its_download_lands() {
+    let (root, paths, page) = legacy_fixture();
+    let source = png(root.path());
+    let transport = ImageApi {
+        bytes: fs::read(&source).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| edit_config(&paths),
+        &Token::new(),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    assert!(outcome.error.is_none(), "{outcome:?}");
+    assert!(paths.art_dir("game").join("grid.png").exists());
+    let id = library_id(&paths);
+    assert!(id.is_some(), "the write gave the environment an id");
+    assert_eq!(outcome.identity().and_then(|identity| identity.id()), id);
+    assert!(
+        fs::read_to_string(paths.environment_config("game"))
+            .unwrap()
+            .starts_with("# edited")
+    );
+}
+
+#[test]
+fn every_kind_of_write_hands_back_the_id_it_upgraded_to() {
+    let (root, paths, page) = legacy_fixture();
+    let source = png(root.path());
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    let id = library_id(&paths);
+    assert!(id.is_some());
+    assert_eq!(outcome.identity().and_then(|identity| identity.id()), id);
+
+    let (_root, paths, page) = legacy_fixture();
+    let (saved, identity) = save_game(&paths, "game", 77, page.identity);
+    saved.unwrap();
+    assert!(library_id(&paths).is_some());
+    assert_eq!(
+        identity.and_then(|identity| identity.id()),
+        library_id(&paths)
+    );
+}
+
+#[test]
+fn an_environment_replaced_inside_the_upgrade_gets_no_write_and_no_id_to_adopt() {
+    let (root, paths, page) = legacy_fixture();
+    let source = png(root.path());
+    wineo_core::test_support::on_hook("library.mint", {
+        let paths = paths.clone();
+        move || replace_environment(&paths)
+    });
+    let replaced = library_id(&paths);
+    assert_eq!(replaced, None);
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert!(!outcome.changed());
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("`game` changed. Artwork wasn't stored.")
+    );
+    assert_eq!(outcome.identity(), None);
+    assert!(!paths.art_dir("game").join("grid.png").exists());
+    // The replacement's own id, which the page must never take.
+    assert!(library_id(&paths).is_some());
+}
+
+#[test]
+fn a_page_whose_library_cant_take_an_id_keeps_its_fingerprint_and_still_writes() {
+    let (root, paths, page) = legacy_fixture();
+    fs::write(paths.library_file(), "schema_version = 99\n").unwrap();
+    let before = fs::read(paths.library_file()).unwrap();
+    let source = png(root.path());
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert!(outcome.changed(), "{outcome:?}");
+    assert_eq!(outcome.identity(), Some(page.identity));
+    assert!(paths.art_dir("game").join("grid.png").exists());
+    assert_eq!(fs::read(paths.library_file()).unwrap(), before);
+}
+
+#[test]
+fn entries_left_for_an_unreadable_library_are_said_only_off_a_portable_root() {
+    for portable in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| home.clone().into_os_string()),
+            portable.then(|| root.path().join("portable")).as_deref(),
+        )
+        .unwrap();
+        let config = paths.environment_config("game");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        write_script(root.path().join("notepad"), "#!/bin/sh\nexit 0\n");
+        fs::write(
+            &config,
+            format!(
+                "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = '{}'\ndesktop = true\n",
+                root.path().join("notepad").display()
+            ),
+        )
+        .unwrap();
+        wineo_core::library::fresh(&paths, "game").unwrap();
+        let identity = EnvironmentIdentity::peek(&paths, "game").unwrap();
+        break_library(&paths);
+        let cache = Mutex::default();
+        let said = entries_after_icon(&paths, "game", (identity, &cache), None);
+        let expected = (!portable).then(|| {
+            "library.toml can't be read. The desktop entries for `game` weren't updated.".to_owned()
+        });
+        assert_eq!(said, expected, "portable {portable}");
+        assert!(
+            fs::read_dir(paths.applications_dir()).map_or(true, |mut dir| dir.next().is_none()),
+            "portable {portable}"
+        );
+    }
+}
+
+#[test]
+fn page_writes_that_cant_happen_give_an_old_environment_no_id() {
+    let (root, paths, page) = legacy_fixture();
+    fs::write(
+        paths.library_file(),
+        "schema_version = 1\n\n[environments.game]\nfavorite = true\n",
+    )
+    .unwrap();
+    let before = fs::read(paths.library_file()).unwrap();
+    let notes = root.path().join("notes.png");
+    fs::write(&notes, b"just some notes\n").unwrap();
+    // A file that won't decode, and a removal with nothing to remove.
+    for path in [Some(notes.as_path()), None] {
+        let outcome = write_art_for(
+            &paths,
+            "game",
+            page_identity(&page),
+            &(None, Kind::Grid),
+            path,
+        );
+        assert!(!outcome.changed());
+        assert_eq!(outcome.identity(), None);
+    }
+    // A use canceled before it starts.
+    let token = Token::new();
+    token.cancel();
+    let transport = ImageApi {
+        bytes: fs::read(png(root.path())).unwrap(),
+        urls: Default::default(),
+    };
+    let outcome = use_image_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        &Api::new(&transport, "key"),
+        &chosen_image(),
+        |_, _| {},
+        &token,
+    );
+    assert!(!outcome.changed());
+    assert!(transport.urls.borrow().is_empty());
+    // An art.toml that can't be read, for a removal.
+    let art = paths.art_dir("game");
+    fs::create_dir_all(&art).unwrap();
+    fs::write(art.join(art::ART_FILE), "[broken\n").unwrap();
+    let outcome = write_art_for(
+        &paths,
+        "game",
+        page_identity(&page),
+        &(None, Kind::Grid),
+        None,
+    );
+    assert!(!outcome.changed());
+    assert_eq!(fs::read(paths.library_file()).unwrap(), before);
 }

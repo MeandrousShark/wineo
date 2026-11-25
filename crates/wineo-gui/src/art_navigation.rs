@@ -27,17 +27,21 @@ impl App {
             .find(|card| card.name == name)
             .map(|card| card.display_title.clone())
             .unwrap_or_default();
-        let Some(identity) = art_page::EnvironmentIdentity::read(&self.paths, &name) else {
+        // Never writes, so opening the page leaves an old environment
+        // without an id until its first art write.
+        let Some(identity) = art_page::EnvironmentIdentity::peek(&self.paths, &name) else {
             self.close_missing_art(&name);
             return Task::none();
         };
         self.tool_page = None;
         self.portable_page = None;
-        if self
-            .art_pages
-            .get(&name)
-            .is_some_and(|page| page.identity != identity)
-        {
+        // Checked against what the cached page holds, not the new peek, so a
+        // page holding a fingerprint survives another process giving the
+        // environment an id. A library that can't be read keeps the page,
+        // and so does a write in flight that may bring the page an id.
+        if self.art_pages.get(&name).is_some_and(|page| {
+            !page.upgrading() && page.identity.is_current(&self.paths, &name).is_changed()
+        }) {
             self.close_missing_art(&name);
         }
         self.leave_art();
@@ -104,9 +108,7 @@ impl App {
             self.close_missing_art(&name);
             return Task::none();
         };
-        if !cards.iter().any(|card| card.name == name)
-            || art_page::EnvironmentIdentity::read(&self.paths, &name) != Some(page.identity)
-        {
+        if !cards.iter().any(|card| card.name == name) || page.replaced(&self.paths) {
             self.close_missing_art(&name);
             return Task::none();
         }
@@ -194,7 +196,27 @@ impl App {
                 completion,
             );
         }
-        if art_page::EnvironmentIdentity::read(&self.paths, &name) != Some(page.identity) {
+        // The result of the page's own write: the identity it brings is
+        // adopted before the replacement check, so an edit made during the
+        // write that gave the page its id doesn't close it. Pending keys are
+        // found by name, generation, and sequence, so the old identity in
+        // them doesn't matter.
+        let own_result =
+            completion.is_some_and(|completion| page.write_sequence == completion.sequence);
+        if own_result
+            && let Some(adopted) = completion.and_then(|completion| completion.identity)
+            && page.identity != adopted
+        {
+            self.art_pages.get_mut(&name).unwrap().adopt(adopted);
+            self.shown.adopt_art(&name, adopted);
+        }
+        let page = &self.art_pages[&name];
+        let replaced = if own_result {
+            page.replaced_now(&self.paths)
+        } else {
+            page.replaced(&self.paths)
+        };
+        if replaced {
             self.close_missing_art(&name);
             return self.drop_stale_art_event(
                 &name,
@@ -219,13 +241,14 @@ impl App {
                 {
                     self.pending_art_writes.remove(pending);
                 }
-                if let Some((sequence, _, _)) = completion {
-                    self.pending_art_writes.remove(&(
-                        name.clone(),
-                        generation,
-                        sequence,
-                        page.identity,
-                    ));
+                if let Some(completion) = completion {
+                    self.pending_art_writes.retain(
+                        |(pending_name, pending_generation, sequence, _)| {
+                            !(*pending_name == name
+                                && *pending_generation == generation
+                                && *sequence == completion.sequence)
+                        },
+                    );
                 }
                 let decodes = self.decodes.clone();
                 let key_available = self.steamgriddb_available;
@@ -281,9 +304,15 @@ impl App {
         &mut self,
         name: &str,
         generation: u64,
-        completion: Option<(u64, bool, bool)>,
+        completion: Option<Completion>,
     ) -> Task<Message> {
-        let Some((sequence, changed, is_art_write)) = completion else {
+        let Some(Completion {
+            sequence,
+            changed,
+            is_art_write,
+            identity,
+        }) = completion
+        else {
             return Task::none();
         };
         let Some(pending) = self
@@ -299,10 +328,14 @@ impl App {
             return Task::none();
         };
         self.pending_art_writes.remove(&pending);
-        let page = self
+        let mut page = self
             .art_pages
             .get_mut(name)
             .filter(|page| page.identity == pending.3 && page.write_sequence == sequence);
+        // A page left during its write still holds the id it got.
+        if let (Some(page), Some(identity)) = (&mut page, identity) {
+            page.adopt(identity);
+        }
         let active_reload = if self.art_page.as_deref() == Some(name) {
             let page_name = name.to_owned();
             page.map(|page| {
@@ -366,13 +399,31 @@ impl App {
     }
 }
 
-fn write_completion(event: &art_page::Event) -> Option<(u64, bool, bool)> {
+/// A write's result, as the app tracks it.
+#[derive(Debug, Clone, Copy)]
+struct Completion {
+    sequence: u64,
+    changed: bool,
+    is_art_write: bool,
+    /// The identity the write upgraded to, for the page to adopt.
+    identity: Option<art_page::EnvironmentIdentity>,
+}
+
+fn write_completion(event: &art_page::Event) -> Option<Completion> {
     match event {
         art_page::Event::Wrote(sequence, _, result)
-        | art_page::Event::Used(sequence, _, _, result) => {
-            Some((*sequence, result.changed(), true))
-        }
-        art_page::Event::GameSaved(sequence, _, result) => Some((*sequence, result.is_ok(), false)),
+        | art_page::Event::Used(sequence, _, _, result) => Some(Completion {
+            sequence: *sequence,
+            changed: result.changed(),
+            is_art_write: true,
+            identity: result.identity(),
+        }),
+        art_page::Event::GameSaved(sequence, _, result, identity) => Some(Completion {
+            sequence: *sequence,
+            changed: result.is_ok(),
+            is_art_write: false,
+            identity: *identity,
+        }),
         _ => None,
     }
 }

@@ -223,8 +223,8 @@ impl PlanOutcome {
 #[derive(Debug)]
 pub struct Applied {
     pub environment: Environment,
-    /// The config as written, read while the config lock was held. Art
-    /// fetched afterwards is stored only while it is still the same one.
+    /// The new environment's identity, taken while the config lock was
+    /// held. Art fetched afterwards is stored only while it is still current.
     pub identity: Option<EnvironmentIdentity>,
     pub art: Vec<Kind>,
     pub warnings: Vec<String>,
@@ -484,12 +484,14 @@ pub fn apply(
     crate::import::check_cancelled(cancel)?;
     write_new(&path, &document.to_string())?;
     let environment = Environment::load(paths, &plan.name)?;
-    let identity = EnvironmentIdentity::read(paths, &plan.name);
     let mut art = Vec::new();
     let mut warnings = Vec::new();
-    if let Some(warning) = crate::library_lifecycle::fresh_warning(paths, &plan.name) {
-        warnings.push(warning);
-    }
+    // Stamped before the cached art is stored, so the art is checked
+    // against the new id rather than a fingerprint.
+    let stamped = crate::library_lifecycle::fresh_warning(paths, &plan.name)
+        .map_err(|warning| warnings.push(warning))
+        .ok();
+    let identity = EnvironmentIdentity::created(paths, &plan.name, stamped);
     if let Err(error) = crate::library::finish_import(paths, &plan.app_id) {
         warnings.push(format!(
             "Can't update library.toml: {}. {} may be offered as a new game if it's removed.",
@@ -501,7 +503,12 @@ pub fn apply(
         if cancel.is_canceled() {
             break;
         }
-        match store_cached_art(paths, &plan.name, kind, &source, identity) {
+        // None only when the config was gone right after it was written.
+        let stored = match identity {
+            Some(identity) => store_cached_art(paths, &plan.name, kind, &source, identity),
+            None => Err(crate::Error::UnknownEnvironment(plan.name.clone()).into()),
+        };
+        match stored {
             Ok(()) => art.push(kind),
             Err(error) => warnings.push(format!("Could not import {} art: {error:#}.", kind)),
         }
@@ -715,7 +722,7 @@ fn store_cached_art(
     name: &str,
     kind: Kind,
     source: &Path,
-    identity: Option<EnvironmentIdentity>,
+    identity: EnvironmentIdentity,
 ) -> anyhow::Result<()> {
     let mut bytes = Vec::new();
     fs::File::open(source)

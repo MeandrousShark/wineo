@@ -592,14 +592,17 @@ impl Page {
                 }
                 if self.registered.is_some() && self.error.is_some() && self.token.is_none() {
                     actions = Some(
-                        row![
-                            secondary_button("Retry artwork", palette).on_press(Event::RetryArt),
-                            secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
-                        ]
-                        .spacing(12)
-                        .wrap()
-                        .vertical_spacing(8)
-                        .into(),
+                        row![]
+                            .push((!self.art_changed).then(|| {
+                                secondary_button("Retry artwork", palette).on_press(Event::RetryArt)
+                            }))
+                            .push(
+                                secondary_button("Skip artwork", palette).on_press(Event::SkipArt),
+                            )
+                            .spacing(12)
+                            .wrap()
+                            .vertical_spacing(8)
+                            .into(),
                     );
                 } else if let Some(token) = &self.token {
                     let (label, event) = if token.is_canceled() {

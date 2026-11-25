@@ -64,6 +64,9 @@ pub mod supervisor;
 pub mod target_path;
 pub mod targets;
 pub mod templates;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 pub mod themes;
 // Shared with the other crates and the integration tests, which include the
 // same file.

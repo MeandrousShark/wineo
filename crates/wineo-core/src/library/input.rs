@@ -147,6 +147,14 @@ impl PadButton {
 pub struct Input {
     /// Whether pad input drives the library.
     pub controller: bool,
+    /// Whether the desktop app reads a GameCube adapter over USB. Off by
+    /// default, unlike `controller`, so a user with no adapter never has
+    /// it watched for.
+    pub gamecube_adapter: bool,
+    /// Whether the Library shows the bar of button hints while a pad is in
+    /// use. On by default, so a file with no key behaves as it did before
+    /// the setting existed.
+    pub hint_bar: bool,
     /// The remaps the file holds, as written: an unknown action or button
     /// isn't here, and a remap onto the action's own default is.
     /// `bindings` is what they come to.
@@ -157,6 +165,8 @@ impl Default for Input {
     fn default() -> Self {
         Self {
             controller: true,
+            gamecube_adapter: false,
+            hint_bar: true,
             buttons: BTreeMap::new(),
         }
     }
@@ -248,6 +258,14 @@ pub(super) fn read_input(document: &DocumentMut) -> Input {
             .get("controller")
             .and_then(Item::as_bool)
             .unwrap_or(default.controller),
+        gamecube_adapter: table
+            .get("gamecube_adapter")
+            .and_then(Item::as_bool)
+            .unwrap_or(default.gamecube_adapter),
+        hint_bar: table
+            .get("hint_bar")
+            .and_then(Item::as_bool)
+            .unwrap_or(default.hint_bar),
         buttons: read_buttons(table.get("buttons")),
     }
 }
@@ -280,6 +298,22 @@ pub fn set_input(paths: &Paths, input: &Input) -> Result<bool> {
                 input_table_mut(document),
                 "controller",
                 Value::from(input.controller),
+            );
+            changed = true;
+        }
+        if read_input(document).gamecube_adapter != input.gamecube_adapter {
+            store_value(
+                input_table_mut(document),
+                "gamecube_adapter",
+                Value::from(input.gamecube_adapter),
+            );
+            changed = true;
+        }
+        if read_input(document).hint_bar != input.hint_bar {
+            store_value(
+                input_table_mut(document),
+                "hint_bar",
+                Value::from(input.hint_bar),
             );
             changed = true;
         }

@@ -19,16 +19,28 @@ fn test_entry(favorite: bool, hidden: bool, seconds: Option<i64>) -> Entry {
         favorite,
         hidden,
         added: seconds.map(|seconds| Timestamp::from_second(seconds).unwrap()),
+        id: None,
     }
+}
+
+fn id(text: &str) -> Option<library::Id> {
+    Some(library::Id::parse(text).unwrap())
 }
 
 #[test]
 fn portable_copies_transfer_library_entry_and_keep_destination_view_and_entries() {
     for native in [false, true] {
         let f = Fixture::new(native);
-        let copied = test_entry(true, true, Some(1_792_254_000));
+        // The copy keeps the source's id, over a stale one at the destination.
+        let copied = Entry {
+            id: id("3f9c2a6d0b7e4c1895a2d4e6f8a1b3c5"),
+            ..test_entry(true, true, Some(1_792_254_000))
+        };
         let other = test_entry(false, true, Some(1_792_200_000));
-        let old_game = test_entry(false, false, None);
+        let old_game = Entry {
+            id: id("00000000000000000000000000000001"),
+            ..test_entry(false, false, None)
+        };
         library::put(&f.from, "game", Some(&copied)).unwrap();
         library::set_sort(&f.to, SortKey::Added).unwrap();
         library::set_descending(&f.to, true).unwrap();

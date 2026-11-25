@@ -181,7 +181,15 @@ fn browse_completion_refreshes_the_card_and_evicts_old_art_cache() {
     let (root, mut app) = fixture();
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(2, 3).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     app.merge(crate::library::load_library(&app.paths).unwrap());
     let old = app
         .cards
@@ -265,6 +273,29 @@ fn refresh_closes_and_drops_art_after_external_removal() {
 }
 
 #[test]
+fn an_unreadable_library_keeps_the_art_page_open() {
+    let (_root, mut app) = fixture();
+    let _ = app.update(Message::ContextArt("game".into()));
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let generation = app.art_pages["game"].generation;
+    fs::write(app.paths.library_file(), "[broken\n").unwrap();
+
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    let _ = app.update(Message::ArtPage(
+        "game".into(),
+        generation,
+        art_page::Event::Back,
+    ));
+    assert!(app.art_pages.contains_key("game"));
+
+    // Reopening looks at the library itself, not the page's cache.
+    let _ = app.update(Message::ContextArt("game".into()));
+    assert_eq!(app.art_page.as_deref(), Some("game"));
+    assert!(app.art_pages.contains_key("game"));
+}
+
+#[test]
 fn refresh_closes_art_after_external_rename() {
     let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
@@ -285,21 +316,11 @@ fn refresh_closes_art_after_external_rename() {
 
 #[test]
 fn same_name_recreation_gets_a_fresh_art_page() {
-    let (root, mut app) = fixture();
+    let (_root, mut app) = fixture();
     let _ = app.update(Message::ContextArt("game".into()));
     let old_generation = app.art_pages["game"].generation;
     let old_identity = app.art_pages["game"].identity;
-    let retained = root.path().join("retained-game.toml");
-    fs::rename(app.paths.environment_config("game"), retained).unwrap();
-    Environment::create_native(
-        &app.paths,
-        &GlobalConfig::default(),
-        "game",
-        None,
-        false,
-        |_| {},
-    )
-    .unwrap();
+    wineo_core::test_support::replace_environment(&app.paths, "game").unwrap();
 
     let cards = crate::library::load_library(&app.paths).unwrap();
     let _ = app.update(Message::Loaded(Ok(cards)));
@@ -321,7 +342,15 @@ fn refresh_reloads_open_art_after_an_external_art_change() {
     let generation = app.art_pages["game"].generation;
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(10, 15).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     fs::write(
         app.paths.environment_config("game"),
         "schema_version = 1\nkind = 'native'\n[targets.fresh]\nexe = 'notepad'\n",
@@ -379,7 +408,15 @@ fn late_lookup_and_preview_results_after_close_are_dropped() {
     let (root, mut app) = fixture();
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(10, 15).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     art::save_game(&app.paths, "game", 77).unwrap();
 
     let _ = app.update(Message::ContextArt("game".into()));
@@ -497,19 +534,23 @@ fn a_failed_game_lookup_retries_with_backoff_until_it_succeeds_or_closes() {
 }
 
 fn start_picker_use(app: &mut App) -> (u64, u64, wineo_core::cancel::Token) {
+    start_picker_use_for(app, "game")
+}
+
+fn start_picker_use_for(app: &mut App, name: &str) -> (u64, u64, wineo_core::cancel::Token) {
     let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
-    let _ = app.open_art("game".into());
-    let generation = app.art_pages["game"].generation;
-    art::save_game(&app.paths, "game", 9).unwrap();
-    let snapshot = art_page::load_snapshot(&app.paths, "game").unwrap();
-    let sequence = app.art_pages["game"].load_sequence;
+    let _ = app.open_art(name.into());
+    let generation = app.art_pages[name].generation;
+    art::save_game(&app.paths, name, 9).unwrap();
+    let snapshot = art_page::load_snapshot(&app.paths, name).unwrap();
+    let sequence = app.art_pages[name].load_sequence;
     let _ = app.art_update(
-        "game".into(),
+        name.into(),
         generation,
         art_page::Event::Loaded(sequence, Ok(snapshot)),
     );
-    let _ = app.art_update("game".into(), generation, art_page::Event::Find(Kind::Grid));
-    let event = app.art_pages["game"]
+    let _ = app.art_update(name.into(), generation, art_page::Event::Find(Kind::Grid));
+    let event = app.art_pages[name]
         .picker_event(art_picker::Event::Listed(
             1,
             Ok(vec![wineo_core::steamgriddb::Image {
@@ -525,11 +566,11 @@ fn start_picker_use(app: &mut App) -> (u64, u64, wineo_core::cancel::Token) {
         art_page::Event::Picker(visit, _) => *visit,
         _ => unreachable!(),
     };
-    let _ = app.art_update("game".into(), generation, event);
-    let event = app.art_pages["game"]
+    let _ = app.art_update(name.into(), generation, event);
+    let event = app.art_pages[name]
         .picker_event(art_picker::Event::Select(0))
         .unwrap();
-    let _ = app.art_update("game".into(), generation, event);
+    let _ = app.art_update(name.into(), generation, event);
     let _ = app.art_key(&Key::Named(Named::Enter), Modifiers::empty(), false);
     assert!(app.art_busy());
     let token = app.pending_art_cancels.values().next().unwrap().clone();
@@ -586,7 +627,15 @@ fn closing_during_picker_use_cancels_and_waits_even_after_leaving() {
     let (root, mut app) = fixture();
     let source = root.path().join("grid.png");
     ::image::RgbImage::new(2, 3).save(&source).unwrap();
-    art::set_manual(&app.paths, "game", None, Kind::Grid, &source, None).unwrap();
+    art::set_manual(
+        &app.paths,
+        "game",
+        None,
+        Kind::Grid,
+        &source,
+        wineo_core::test_support::identity(&app.paths, "game"),
+    )
+    .unwrap();
     let before = fs::read(app.paths.art_dir("game").join("grid.png")).unwrap();
     let (generation, visit, token) = start_picker_use(&mut app);
     let _ = app.update(Message::Section(sidebar::Section::Trash));
@@ -756,4 +805,346 @@ fn the_art_page_searches_for_what_the_card_shows() {
     app.merge(titled(&app, "game", "  "));
     let _ = app.update(Message::OpenArt);
     assert_eq!(change_search(&mut app, "game").as_deref(), Some("game"));
+}
+
+#[test]
+fn a_cached_page_holding_a_fingerprint_is_reopened_after_another_process_mints() {
+    let (_root, mut app) = fixture();
+    let config = app.paths.environment_config("legacy");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    let page = &app.art_pages["legacy"];
+    let (generation, identity) = (page.generation, page.identity);
+    assert_eq!(identity.id(), None);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Back,
+    ));
+    assert!(app.art_page.is_none());
+    // Leaving moves the cached page to a new generation, which a page made
+    // anew wouldn't have.
+    let generation = app.art_pages["legacy"].generation;
+
+    let minted = art_page::EnvironmentIdentity::acquire(&app.paths, "legacy")
+        .unwrap()
+        .unwrap();
+    assert!(minted.id().is_some());
+    let _ = app.update(Message::ContextArt("legacy".into()));
+
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    let page = &app.art_pages["legacy"];
+    assert_eq!(page.generation, generation);
+    assert_eq!(page.identity, identity);
+}
+
+/// Rewrites `name`'s config through a new file, as an editor saving it
+/// would.
+fn edit_config(paths: &Paths, name: &str) {
+    let config = paths.environment_config(name);
+    let text = fs::read_to_string(&config).unwrap();
+    let staged = config.with_extension("saving");
+    fs::write(&staged, format!("# edited\n{text}")).unwrap();
+    fs::rename(staged, config).unwrap();
+}
+
+/// Opens the Art page of `legacy`, an environment from before ids, and
+/// starts a grid write from `source` on it.
+fn legacy_write(app: &mut App, source: &std::path::Path) -> u64 {
+    let config = app.paths.environment_config("legacy");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    let generation = app.art_pages["legacy"].generation;
+    assert_eq!(app.art_pages["legacy"].identity.id(), None);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Browse(Kind::Grid),
+    ));
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Picked(1, (None, Kind::Grid), Ok(Some(source.to_owned()))),
+    ));
+    assert!(app.art_busy());
+    generation
+}
+
+#[test]
+fn an_old_environments_page_adopts_the_id_from_its_first_write_and_then_survives_edits() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    assert!(id.id().is_some());
+    // Edited before the result lands, which the fingerprint wouldn't survive.
+    edit_config(&app.paths, "legacy");
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].identity, id);
+    assert!(app.pending_art_writes.is_empty());
+    assert!(!app.art_busy());
+    assert!(app.paths.art_dir("legacy").join("grid.png").exists());
+
+    // Another edit keeps it open; a real replacement closes it.
+    edit_config(&app.paths, "legacy");
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    wineo_core::test_support::replace_environment(&app.paths, "legacy").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+    assert!(app.art_page.is_none());
+    assert!(!app.art_pages.contains_key("legacy"));
+}
+
+#[test]
+fn a_page_left_during_its_first_write_still_adopts_the_id() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let _ = app.update(Message::Section(sidebar::Section::Trash));
+    assert!(app.art_page.is_none());
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert!(!app.art_busy());
+    assert_eq!(app.art_pages["legacy"].identity, id);
+    // So reopening after an edit keeps the cached page.
+    let cached = app.art_pages["legacy"].generation;
+    edit_config(&app.paths, "legacy");
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].generation, cached);
+}
+
+/// Adds `legacy`, an environment from before ids, to the library.
+fn add_legacy(app: &mut App) {
+    let config = app.paths.environment_config("legacy");
+    fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+}
+
+fn rescan(app: &mut App) {
+    let cards = crate::library::load_library(&app.paths).unwrap();
+    let _ = app.update(Message::Loaded(Ok(cards)));
+}
+
+#[test]
+fn an_edit_during_an_old_environments_first_write_closes_nothing_before_its_result() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    // The worker has upgraded and written when the edit comes.
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    edit_config(&app.paths, "legacy");
+    rescan(&mut app);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Showing(art_page::Showing(None)),
+    ));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert!(app.art_pages["legacy"].busy());
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].identity, id);
+}
+
+#[test]
+fn reopening_mid_first_write_after_an_edit_keeps_the_writing_page() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    let _ = app.update(Message::Section(sidebar::Section::Trash));
+    edit_config(&app.paths, "legacy");
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    let page = &app.art_pages["legacy"];
+    assert!(page.busy(), "the cached page keeps its write");
+    let reopened = page.generation;
+    // A second write can't start beside the first.
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        reopened,
+        art_page::Event::Remove(Kind::Grid),
+    ));
+    assert_eq!(app.pending_art_writes.len(), 1);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert!(!app.art_busy());
+    assert_eq!(app.art_pages["legacy"].identity, id);
+}
+
+#[test]
+fn a_replacement_during_the_first_write_closes_the_page_when_its_result_comes() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let held = app.art_pages["legacy"].identity;
+    wineo_core::test_support::replace_environment(&app.paths, "legacy").unwrap();
+    rescan(&mut app);
+    assert_eq!(app.art_page.as_deref(), Some("legacy"), "the write decides");
+    let outcome = art_page::write_art_with(
+        &app.paths,
+        "legacy",
+        held,
+        &(None, Kind::Grid),
+        Some(&source),
+    );
+    assert_eq!(outcome.identity(), None);
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert!(app.art_page.is_none());
+    assert!(!app.art_pages.contains_key("legacy"));
+    assert!(!app.art_busy());
+}
+
+#[test]
+fn a_page_holding_an_id_still_closes_at_once_on_a_replacement() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let _ = browse(&mut app, source);
+    assert!(app.art_pages["game"].identity.id().is_some());
+    wineo_core::test_support::replace_environment(&app.paths, "game").unwrap();
+    rescan(&mut app);
+    assert!(app.art_page.is_none());
+}
+
+#[test]
+fn a_replacement_just_before_a_stored_result_still_reloads_the_library() {
+    let (root, mut app) = fixture();
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let generation = legacy_write(&mut app, &source);
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    assert!(outcome.changed());
+    wineo_core::test_support::replace_environment(&app.paths, "legacy").unwrap();
+    let previous = app.library_generation;
+    let _ = app.update(Message::ArtPage(
+        "legacy".into(),
+        generation,
+        art_page::Event::Wrote(1, (None, Kind::Grid), outcome),
+    ));
+    assert!(app.art_page.is_none());
+    assert!(!app.art_busy());
+    assert_ne!(app.library_generation, previous, "the stored art shows");
+}
+
+#[test]
+fn a_use_left_mid_download_clears_its_keys_and_adopts_the_id() {
+    let (root, mut app) = fixture();
+    add_legacy(&mut app);
+    let (generation, visit, _) = start_picker_use_for(&mut app, "legacy");
+    assert_eq!(app.art_pages["legacy"].identity.id(), None);
+    let _ = app.update(Message::Section(sidebar::Section::Trash));
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    edit_config(&app.paths, "legacy");
+    let _ = app.art_update(
+        "legacy".into(),
+        generation,
+        art_page::Event::Used(1, visit, (None, Kind::Grid), outcome),
+    );
+    assert!(
+        app.pending_art_writes.is_empty(),
+        "{:?}",
+        app.pending_art_writes
+    );
+    assert!(app.pending_art_cancels.is_empty());
+    assert_eq!(app.art_pages["legacy"].identity, id);
+}
+
+#[test]
+fn a_use_on_the_page_adopts_the_id_before_an_edit_can_close_it() {
+    let (root, mut app) = fixture();
+    add_legacy(&mut app);
+    let (generation, visit, _) = start_picker_use_for(&mut app, "legacy");
+    let source = root.path().join("grid.png");
+    ::image::RgbImage::new(2, 3).save(&source).unwrap();
+    let outcome = art_page::write_art(&app.paths, "legacy", &(None, Kind::Grid), Some(&source));
+    let id = outcome.identity().unwrap();
+    edit_config(&app.paths, "legacy");
+    let _ = app.art_update(
+        "legacy".into(),
+        generation,
+        art_page::Event::Used(1, visit, (None, Kind::Grid), outcome),
+    );
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].identity, id);
+    assert!(app.pending_art_writes.is_empty());
+}
+
+#[test]
+fn a_saved_game_adopts_the_id_it_upgraded_to() {
+    let (_root, mut app) = fixture();
+    add_legacy(&mut app);
+    let _ = app.update(Message::SteamGridDbKeyPresenceLoaded(1, true));
+    let _ = app.update(Message::ContextArt("legacy".into()));
+    let generation = app.art_pages["legacy"].generation;
+    let game = wineo_core::steamgriddb::Game {
+        id: 77,
+        name: "Legacy".into(),
+        year: None,
+    };
+    let _ = app.art_update("legacy".into(), generation, art_page::Event::Change);
+    let _ = app.art_update(
+        "legacy".into(),
+        generation,
+        art_page::Event::PickGame(crate::flow::artwork::Match(game.clone())),
+    );
+    let _ = app.art_update("legacy".into(), generation, art_page::Event::SaveGame);
+    assert!(app.art_busy());
+    let sequence = app.art_pages["legacy"].write_sequence;
+    // What the save's task does: upgrade, then save under the id.
+    let id = app.art_pages["legacy"]
+        .identity
+        .upgrade(&app.paths, "legacy")
+        .unwrap();
+    assert!(id.id().is_some());
+    art::save_game_for(&app.paths, "legacy", 77, id, None).unwrap();
+    edit_config(&app.paths, "legacy");
+    let _ = app.art_update(
+        "legacy".into(),
+        generation,
+        art_page::Event::GameSaved(sequence, game, Ok(()), Some(id)),
+    );
+    assert_eq!(app.art_page.as_deref(), Some("legacy"));
+    assert_eq!(app.art_pages["legacy"].identity, id);
+    assert!(!app.art_busy());
 }

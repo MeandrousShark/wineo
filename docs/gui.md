@@ -795,6 +795,22 @@ appears:
 Changes apply right away. The card, panel, and desktop entry update to
 match.
 
+The page belongs to the environment it was opened for. Editing that
+environment elsewhere, in its settings, with `wineo set`, or by restoring a
+snapshot, leaves the page open and a download under way still lands. If the
+environment is removed and another is made under its name, the page closes,
+and a change that was under way isn't stored: `` `hades` was replaced.
+Artwork wasn't stored. `` An environment from before 1.10 is recognized this
+way from its first art change on; until then an edit closes its page, as
+before. `wineo art` follows the same rules; see
+[Fetching during new and import](art.md#fetching-during-new-and-import).
+
+If `library.toml` can't be read, the page stays open and a change says
+`` library.toml can't be read. Artwork for `hades` wasn't stored. `` When an
+icon was stored but the environment couldn't be confirmed afterward, it says
+the desktop entries weren't updated; a portable folder has no desktop
+entries, so it never says that there.
+
 The header shows the SteamGridDB game the art comes from, looked up by its
 saved ID, and **Change** searches for a different one, like `wineo art fetch
 --search`. Its search starts from the title the card shows, or the
@@ -1088,7 +1104,15 @@ written. A search that's already under way finishes first, which takes at
 most 10 seconds. The desktop entry is refreshed afterward so its icon uses
 the new art. Closing the window during the fetch doesn't ask, and stops it.
 A failed fetch shows on the finished page with **Retry artwork** and **Skip
-artwork**. The finished page's **Choose artwork...** opens the new card's
+artwork**. Retry keeps the environment the flow created: editing it during
+the fetch, in its settings or with `wineo set`, doesn't stop the art from
+landing, and a Retry never moves to an environment made since. If the
+environment was removed and made again under the same name meanwhile, the
+page says `` `hades` was replaced. Artwork wasn't stored. `` and offers only
+**Skip artwork**, which leaves the new environment's desktop entries alone.
+The target step does the same before it writes: `` `hades` was replaced.
+The target wasn't added. `` When `library.toml` can't be read, the page says
+so and Retry stays. The finished page's **Choose artwork...** opens the new card's
 Art page, without launching it.
 
 Import prefix works the same way: the same checkbox and notes on Details,
@@ -1096,6 +1120,10 @@ and the fetch runs once the import is registered, searching for the Name as
 typed, with **Skip**. The import refreshes the desktop entry either way. If
 the fetch or the entry fails, the page says which, with **Retry artwork**
 and **Skip artwork**; Retry fetches again only if the fetch itself failed.
+A replaced environment offers only Skip, as in New, and neither button
+touches its desktop entries. If the art went in but `library.toml` couldn't
+be read for the entries, the page says the desktop entries weren't updated:
+Retry tries them again, and Skip leaves them as they are.
 The finished page lists what the fetch couldn't find and offers **Choose
 artwork...** beside **Set up targets**; local art files go through the Art
 page's **Browse...**.
@@ -1108,7 +1136,10 @@ the global **Art to fetch** switches: after you search and choose a match,
 each enabled kind downloads right away and appears in its tile, and the
 import stores those images without downloading them again. Local files can
 be mixed with fetched art, and the local choice wins for that kind. If
-artwork fails after registration, retry or skip it.
+artwork fails after registration, retry or skip it; an environment replaced
+meanwhile offers only Skip, and its desktop entries are left alone. A bulk
+import skips the desktop entries of a game replaced during its art and says
+so in that game's notes.
 
 Windows creation keeps runner, architecture, and prefix overrides under
 **Additional wine options**. The architecture list starts with **Use
@@ -1246,7 +1277,14 @@ wrap onto more lines.
 
 **Controller** holds **Use a controller in the Library**, on by default,
 and the names of the connected controllers, or "No controller found."
-Below them, each controller action has a row showing its button. Click a
+Under it, **Show button hints**, on by default, shows the bar of button
+hints at the bottom of the Library while a controller is in use; off, the
+bar never shows. Then **Use a GameCube adapter**, off by default, reads Nintendo's
+GameCube adapter; the list then shows its controllers as "GameCube
+controller (port 1)", or a line about the adapter when wineo isn't reading
+it or it has no controller plugged in (see
+[GameCube adapter](#gamecube-adapter)). Both switches are locked while
+the first one is off. Below them, each controller action has a row showing its button. Click a
 row, or press Enter or Space on it, and it says "Press a button..." for 5
 seconds; the next controller button takes the action. A button another
 action had swaps with it, so every button stays used once. Any key, click,
@@ -1510,9 +1548,17 @@ On a Nintendo controller, the button printed A confirms and the one printed
 B goes back, wherever they sit. Every button above can be changed in
 [Global settings](#global-settings); movement can't.
 
-After you press a button, a bar at the bottom of the Library shows what the
-main buttons do, in your controller's own symbols. Moving or clicking the
-mouse hides it.
+After you press a button or move the stick, a bar at the bottom of the
+Library shows what the buttons do: open or play, back, favorite, mark,
+pick at random, a screenful back or forward ("Page"), next layout, and
+full screen. Each button is drawn as it looks on your controller, in its
+own shape and colors: a GameCube controller's green A, red B, and grey X
+and Y, an Xbox controller's colored letters, a PlayStation controller's
+colored shapes. A hint whose button your controller doesn't have is left
+out. With a game's panel open the bar sits beside the panel and leaves out
+Layout and Full screen, and in a narrow window it drops hints from the
+right until it fits. Moving or clicking the mouse hides it, and **Show
+button hints** in [Global settings](#global-settings) turns it off.
 
 The controller only works while wineo's window has focus and you've used
 it, so presses meant for a game don't reach the Library. Starting a game,
@@ -1520,6 +1566,62 @@ running a tool, or hiding the window stops it until the window has focus
 again or you press a key or click. With Steam running, Steam's desktop
 layout can turn controller presses into keys, which moves twice for each
 press; turn that off in Steam's controller settings.
+
+### GameCube adapter
+
+Linux has no driver for Nintendo's GameCube controller adapter (the Wii U
+and Switch one), so a GameCube controller on it isn't a game controller to
+the system. Turn on **Use a GameCube adapter** in
+[Global settings](#global-settings) and wineo reads the adapter itself.
+It's off by default, and while it's off wineo never looks for the adapter.
+Third-party adapters in their Wii U mode look the same to wineo and should
+work; they aren't tested.
+
+| Button | Does |
+|---|---|
+| D-pad, control stick | Move |
+| A, B, X, Y | The same as on any controller, by the letter printed on them |
+| L, R | A screenful back or forward |
+| C-stick left, right | First or last game |
+| Z | Next layout |
+| Start | Full screen |
+
+L and R press halfway down, or at the click on a controller whose triggers
+have little travel. The C-stick does nothing up or down. No button picks at
+random until you give it one: the remap rows work as for any controller,
+and show the buttons as L, R, Z, C left, and C right. A button, trigger, or
+C-stick direction that is already down when wineo starts reading does
+nothing until you let go and press again.
+
+Only one program can read the adapter at a time. wineo holds it only while
+its window has focus and you're using a controller there, and lets go
+before a game starts, so Dolphin can take it. A game start waits up to a
+quarter second for that; tools and Steam games don't wait. While another
+program has it, the list in Settings says "GameCube adapter: in use by
+another program." and wineo tries again each second while its window has
+focus. The line shows what wineo last saw, so it can be out of date while
+the window is in the background. With no controller plugged into the
+adapter, the list says "GameCube adapter".
+
+If the adapter stops answering while it's still plugged in, as it can
+after the computer wakes from sleep, wineo takes it again about a second
+later.
+
+"GameCube adapter: no access. See the docs." means your user can't open
+the device. The rule that allows it comes with Dolphin's package on most
+distributions, with Valve's `steam-devices`, and with `game-devices-udev`.
+Without one of those, put this line in
+`/etc/udev/rules.d/51-gamecube-adapter.rules`, then unplug the adapter and
+plug it back in:
+
+```
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="0337", TAG+="uaccess"
+```
+
+With a kernel module for the adapter installed, its controllers are
+ordinary game controllers already; wineo leaves the adapter alone and the
+switch does nothing. One adapter is read. Rumble, and using the triggers
+or C-stick as more than buttons, aren't supported.
 
 ## Look
 

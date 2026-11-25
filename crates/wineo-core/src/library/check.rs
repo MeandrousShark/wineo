@@ -53,6 +53,7 @@ pub(crate) struct Inspection {
 const BOOL: &str = "expected true or false";
 const DATETIME: &str = "expected a date and time with an offset, like 2026-10-17T18:00:00Z";
 const TABLE: &str = "expected a table";
+const ID: &str = "expected 32 lowercase hex characters, which wineo writes itself";
 
 pub(crate) fn inspect(paths: &Paths) -> Inspection {
     let path = paths.library_file();
@@ -444,6 +445,10 @@ fn inspect_input(item: &Item, inspection: &mut Inspection) {
         match key {
             "controller" if value.as_bool().is_some() => {}
             "controller" => inspection.findings.push(invalid(None, &path, BOOL, value)),
+            "gamecube_adapter" if value.as_bool().is_some() => {}
+            "gamecube_adapter" => inspection.findings.push(invalid(None, &path, BOOL, value)),
+            "hint_bar" if value.as_bool().is_some() => {}
+            "hint_bar" => inspection.findings.push(invalid(None, &path, BOOL, value)),
             "buttons" => inspect_buttons(value, inspection),
             _ => inspection.findings.push(unknown(None, &path)),
         }
@@ -603,6 +608,8 @@ fn inspect_entry(name: &str, item: &Item, inspection: &mut Inspection) {
             "favorite" | "hidden" => BOOL,
             "added" if is_offset_datetime(value) => continue,
             "added" => DATETIME,
+            "id" if is_id(value) => continue,
+            "id" => ID,
             _ => {
                 inspection
                     .findings
@@ -614,6 +621,10 @@ fn inspect_entry(name: &str, item: &Item, inspection: &mut Inspection) {
             .findings
             .push(invalid(environment.clone(), &path, expected, value));
     }
+}
+
+pub(super) fn is_id(item: &Item) -> bool {
+    item.as_str().and_then(super::Id::parse).is_some()
 }
 
 pub(super) fn is_offset_datetime(item: &Item) -> bool {

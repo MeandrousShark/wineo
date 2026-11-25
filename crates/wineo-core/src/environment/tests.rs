@@ -793,7 +793,7 @@ fn failed_creation_removes_the_new_dir() {
 
 #[test]
 fn identities_with_a_reused_inode_differ_by_birth_time() {
-    let same = |birth| EnvironmentIdentity {
+    let same = |birth| Fingerprint {
         device: 7,
         inode: 42,
         birth,
@@ -805,7 +805,7 @@ fn identities_with_a_reused_inode_differ_by_birth_time() {
     assert_eq!(same(None), same(None));
     assert_ne!(
         same(None),
-        EnvironmentIdentity {
+        Fingerprint {
             inode: 43,
             ..same(None)
         }
@@ -846,7 +846,7 @@ fn a_symlinked_config_is_identified_by_its_target() {
     fs::write(&target, "prefix = \"/games/one\"\n").unwrap();
     std::os::unix::fs::symlink(&target, &path).unwrap();
 
-    let identity = EnvironmentIdentity::read(&paths, "game").unwrap();
+    let identity = Fingerprint::read(&paths, "game").unwrap();
     let stamp = files::stamp_following(&target).unwrap().unwrap();
     assert_eq!(
         (identity.device, identity.inode, identity.birth),
@@ -859,7 +859,7 @@ fn a_symlinked_config_is_identified_by_its_target() {
     );
 
     fs::remove_file(&path).unwrap();
-    assert_eq!(EnvironmentIdentity::read(&paths, "game"), None);
+    assert_eq!(Fingerprint::read(&paths, "game"), None);
 }
 
 #[test]
@@ -944,7 +944,8 @@ fn native_creation_writes_the_environment_title_only_when_given() {
         false,
         |_| {},
     )
-    .unwrap();
+    .unwrap()
+    .0;
     assert_eq!(titled.config.title.as_deref(), Some("Hollow Knight"));
     let text = fs::read_to_string(paths.environment_config("hollow-knight")).unwrap();
     assert!(text.contains("title = \"Hollow Knight\"\n"), "{text}");

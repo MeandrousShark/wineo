@@ -8,9 +8,11 @@ use iced::window;
 use wineo_core::runtime::State;
 
 use super::*;
-use crate::pad::{Axis, PadEvent, PadInfo, Raw};
+use crate::pad::{Axis, PadEvent, PadId, PadInfo, Raw};
 use crate::test_tasks::each_ready;
 use crate::tests::card;
+
+mod hints;
 
 fn xbox() -> PadInfo {
     PadInfo {
@@ -51,7 +53,7 @@ fn closed_app() -> (tempfile::TempDir, App) {
     let _ = app.update(Message::Loaded(Ok(cards)));
     app.viewport_width = 1000.0;
     app.snap_grid();
-    let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(0), xbox())));
     (home, app)
 }
 
@@ -117,6 +119,7 @@ fn settle(app: &mut App, task: Task<Message>) {
 }
 
 fn tap_on(app: &mut App, pad: usize, raw: Raw) {
+    let pad = PadId::Gilrs(pad);
     let task = app.update(Message::Pad(PadEvent::Pressed(pad, raw)));
     settle(app, task);
     let task = app.update(Message::Pad(PadEvent::Released(pad, raw)));
@@ -423,10 +426,10 @@ fn library_presses_become_their_keyboard_twins() {
 #[test]
 fn the_stick_moves_like_the_dpad() {
     let (_home, mut app) = ready();
-    let task = app.update(Message::Pad(PadEvent::Stick(0, Axis::X, 0.9)));
+    let task = app.update(Message::Pad(PadEvent::Stick(PadId::Gilrs(0), Axis::X, 0.9)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
-    let task = app.update(Message::Pad(PadEvent::Stick(0, Axis::X, 0.0)));
+    let task = app.update(Message::Pad(PadEvent::Stick(PadId::Gilrs(0), Axis::X, 0.0)));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
 }
@@ -435,7 +438,10 @@ fn the_stick_moves_like_the_dpad() {
 fn a_held_direction_repeats_through_its_wakeup() {
     let (_home, mut app) = ready();
     app.pad_clock = Some(std::time::Instant::now());
-    let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
+    let task = app.update(Message::Pad(PadEvent::Pressed(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     settle(&mut app, task);
     assert_eq!(app.selected.as_deref(), Some("beta"));
     let due = app.pads.repeat_due().expect("a repeat is due");
@@ -453,7 +459,10 @@ fn a_held_direction_repeats_through_its_wakeup() {
     let generation = app.pad_wake.generation();
     settle_update(&mut app, Message::PadRepeat(generation));
     assert_eq!(app.selected.as_deref(), Some("gamma"));
-    let _ = app.update(Message::Pad(PadEvent::Released(0, Raw::DPadRight)));
+    let _ = app.update(Message::Pad(PadEvent::Released(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     assert_eq!(app.pad_wake.due(), None);
 }
 
@@ -462,7 +471,10 @@ fn a_held_repeat_waits_for_the_last_presss_field_check() {
     let (_home, mut app) = ready();
     let start = std::time::Instant::now();
     app.pad_clock = Some(start);
-    let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::DPadRight)));
+    let press = app.update(Message::Pad(PadEvent::Pressed(
+        PadId::Gilrs(0),
+        Raw::DPadRight,
+    )));
     assert!(app.pad_checking);
     // The repeat comes due before the check answers: nothing new is asked.
     app.pad_clock = Some(start + crate::pad::REPEAT_AFTER);
@@ -486,7 +498,7 @@ fn a_held_repeat_waits_for_the_last_presss_field_check() {
 #[test]
 fn a_field_check_answer_meets_the_gate_and_overlays_again() {
     let (_home, mut app) = ready();
-    let press = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let press = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::South)));
     let answers = outputs(&app, press);
     assert!(matches!(answers.as_slice(), [Message::PadKey(_, _, false)]));
     // Focus left while the check ran.
@@ -516,7 +528,7 @@ fn back_and_start_skip_the_field_check() {
     assert!(app.panel_open);
     // B goes straight to Esc, as mouse Back does even with a field
     // focused: no pad check is asked, only the page's own Esc path.
-    let back = app.update(Message::Pad(PadEvent::Pressed(0, Raw::East)));
+    let back = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::East)));
     assert!(!app.pad_checking);
     let answers = outputs(&app, back);
     assert!(
@@ -529,7 +541,7 @@ fn back_and_start_skip_the_field_check() {
         settle(&mut app, task);
     }
     assert!(!app.panel_open);
-    let start = app.update(Message::Pad(PadEvent::Pressed(0, Raw::Start)));
+    let start = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::Start)));
     assert!(!app.pad_checking);
     assert!(
         !outputs(&app, start)
@@ -546,7 +558,10 @@ fn settle_update(app: &mut App, message: Message) {
 #[test]
 fn a_nintendo_pad_confirms_with_its_printed_a() {
     let (_home, mut app) = ready();
-    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(1),
+        switch_pro(),
+    )));
     // The bottom button is B there, which backs out instead.
     tap_on(&mut app, 1, Raw::South);
     assert!(!app.panel_open);
@@ -752,12 +767,12 @@ fn a_is_dropped_on_pages_and_flows_that_take_enter() {
     // takes Enter too; A must reach neither.
     let (_home, mut app) = ready();
     app.tool_page = Some(("alpha".into(), crate::tools_page::Kind::Exec));
-    let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let task = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::South)));
     assert!(outputs(&app, task).is_empty());
 
     let (_home, mut app) = ready();
     let _ = app.update(Message::Add);
-    let task = app.update(Message::Pad(PadEvent::Pressed(0, Raw::South)));
+    let task = app.update(Message::Pad(PadEvent::Pressed(PadId::Gilrs(0), Raw::South)));
     assert!(outputs(&app, task).is_empty());
 }
 
@@ -838,7 +853,10 @@ fn turning_the_controller_off_ignores_presses() {
     assert!(!app.panel_open);
     assert!(app.pad_hint.is_none());
     // The pad list stays current for the settings page.
-    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(1),
+        switch_pro(),
+    )));
     assert_eq!(app.pads.names().len(), 2);
 }
 
@@ -887,22 +905,128 @@ fn the_hint_bar_follows_the_last_pad_and_hides_on_mouse_or_keys() {
     assert!(app.pad_hint_view().is_some());
 }
 
+/// Each hint's word, in the bar's order.
+fn words(hints: &[crate::pad::glyph::Hint]) -> Vec<&'static str> {
+    hints.iter().map(|hint| hint.word).collect()
+}
+
+/// What the app asks iced to listen to, which is all a test can know of
+/// the pointer listener.
+fn listeners(app: &App) -> usize {
+    iced::advanced::subscription::into_recipes(app.subscription()).len()
+}
+
+#[test]
+fn with_the_hint_bar_off_a_press_shows_no_bar_but_still_drives_the_library() {
+    let (_home, mut app) = ready();
+    app.input.hint_bar = false;
+    tap(&mut app, Raw::DPadRight);
+    assert!(app.pad_hint.is_none());
+    assert!(app.pad_hint_view().is_none());
+    assert_eq!(app.bar_room(), 0.0);
+    // The pad still moves the cursor and opens the card.
+    assert_eq!(app.selected.as_deref(), Some("beta"));
+    tap(&mut app, Raw::South);
+    assert!(app.panel_open);
+    assert!(app.pad_hint.is_none());
+
+    // On again: the next press brings the bar back.
+    app.input.hint_bar = true;
+    tap(&mut app, Raw::DPadDown);
+    assert_eq!(app.pad_hint, Some(crate::pad::Style::Xbox));
+    assert!(app.pad_hint_view().is_some());
+}
+
+#[test]
+fn with_the_hint_bar_off_no_room_is_kept_in_grid_list_or_coverflow() {
+    use crate::grid_motion::ViewLayout;
+    for layout in [ViewLayout::Grid, ViewLayout::List, ViewLayout::Coverflow] {
+        let (_home, mut app) = ready();
+        let _ = app.switch_layout(layout);
+        // The bar is up from a press, as far as the app can tell.
+        app.pad_hint = Some(crate::pad::Style::Xbox);
+        assert!(app.bar_room() > 0.0, "{layout:?} keeps room while on");
+        app.input.hint_bar = false;
+        assert!(!app.pad_hint_shown(), "{layout:?}");
+        assert!(app.pad_hint_view().is_none(), "{layout:?}");
+        assert_eq!(app.bar_room(), 0.0, "{layout:?}");
+    }
+}
+
+#[test]
+fn with_the_hint_bar_off_nothing_listens_for_the_pointer_to_hide_it() {
+    let (_home, mut app) = ready();
+    let idle = listeners(&app);
+    app.pad_hint = Some(crate::pad::Style::Xbox);
+    assert_eq!(listeners(&app), idle + 1, "the pointer listener while on");
+    app.input.hint_bar = false;
+    assert_eq!(listeners(&app), idle, "none while off");
+}
+
+#[test]
+fn a_press_read_with_the_hint_bar_off_never_sets_the_hint() {
+    // `update` clears a stale hint after every message, so the press is fed
+    // to the reader directly to see what it sets itself.
+    let (_home, mut app) = ready();
+    app.input.hint_bar = false;
+    let _ = app.pad_input(crate::pad::Input::Button(
+        wineo_core::library::PadButton::A,
+        crate::pad::Style::Xbox,
+    ));
+    assert!(app.pad_hint.is_none());
+    app.input.hint_bar = true;
+    let _ = app.pad_input(crate::pad::Input::Button(
+        wineo_core::library::PadButton::A,
+        crate::pad::Style::Xbox,
+    ));
+    assert_eq!(app.pad_hint, Some(crate::pad::Style::Xbox));
+}
+
+#[test]
+fn turning_the_hint_bar_off_clears_a_bar_that_is_showing() {
+    let (_home, mut app) = ready();
+    tap(&mut app, Raw::DPadDown);
+    assert!(app.pad_hint_view().is_some());
+    let on = listeners(&app);
+    app.input.hint_bar = false;
+    app.sync_input();
+    assert!(app.pad_hint.is_none());
+    assert!(app.pad_hint_view().is_none());
+    assert_eq!(app.bar_room(), 0.0);
+    assert_eq!(listeners(&app), on - 1);
+    // Back on, it stays gone until a pad is used again.
+    app.input.hint_bar = true;
+    app.sync_input();
+    assert!(app.pad_hint.is_none());
+}
+
 #[test]
 fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
+    use crate::pad::glyph::hints;
     let input = wineo_core::library::Input::default();
-    let hints = crate::pad::glyph::hints(&input.bindings(), false, false);
-    let words: Vec<_> = hints.iter().map(|(_, word)| *word).collect();
-    assert_eq!(words, ["Open", "Back", "Favorite", "Mark", "Random"]);
     assert_eq!(
-        crate::pad::glyph::hints(&input.bindings(), true, false)[0].1,
-        "Play"
+        words(&hints(&input.bindings(), false, false)),
+        [
+            "Open",
+            "Back",
+            "Favorite",
+            "Mark",
+            "Random",
+            "Page",
+            "Layout",
+            "Full screen"
+        ]
+    );
+    // With a game's panel open, Layout and Full screen leave; Page stays.
+    assert_eq!(
+        words(&hints(&input.bindings(), true, false)),
+        ["Play", "Back", "Favorite", "Mark", "Random", "Page"]
     );
     // A section's header or collapsed card has nothing to favorite or mark.
-    let words: Vec<_> = crate::pad::glyph::hints(&input.bindings(), false, true)
-        .iter()
-        .map(|(_, word)| *word)
-        .collect();
-    assert_eq!(words, ["Open", "Back", "Random"]);
+    assert_eq!(
+        words(&hints(&input.bindings(), false, true)),
+        ["Open", "Back", "Random", "Page", "Layout", "Full screen"]
+    );
     use crate::pad::Style;
     use crate::pad::glyph::{Glyph, glyph};
     use wineo_core::library::PadButton;
@@ -911,12 +1035,16 @@ fn the_hints_name_the_bound_buttons_in_the_pads_labels() {
         glyph(Style::Xbox, PadButton::A),
         glyph(Style::PlayStation, PadButton::A)
     );
-    assert_eq!(
+    assert_ne!(
         glyph(Style::Xbox, PadButton::A),
         glyph(Style::Nintendo, PadButton::A)
     );
-    assert_eq!(glyph(Style::Nintendo, PadButton::Lt), Glyph::Label("ZL"));
-    assert_eq!(glyph(Style::PlayStation, PadButton::Rb), Glyph::Label("R1"));
+    let text = |style, button| match glyph(style, button) {
+        Glyph::Label { text, .. } => text,
+        Glyph::Face { .. } => "face",
+    };
+    assert_eq!(text(Style::Nintendo, PadButton::Lt), "ZL");
+    assert_eq!(text(Style::PlayStation, PadButton::Rb), "R1");
 }
 
 #[test]
@@ -932,15 +1060,22 @@ fn a_remap_changes_what_a_press_does_and_what_the_hints_say() {
     tap(&mut app, Raw::West);
     assert!(app.panel_open);
     let hints = crate::pad::glyph::hints(&app.input.bindings(), true, false);
-    assert_eq!(hints[0], (PadButton::X, "Play"));
-    assert!(hints.contains(&(PadButton::A, "Mark")));
+    let hint = |button, word| crate::pad::glyph::Hint {
+        buttons: vec![button],
+        word,
+    };
+    assert_eq!(hints[0], hint(PadButton::X, "Play"));
+    assert!(hints.contains(&hint(PadButton::A, "Mark")));
 }
 
 #[test]
 fn a_remap_names_the_printed_button_on_a_nintendo_pad_too() {
     use wineo_core::library::{PadAction, PadButton};
     let (_home, mut app) = ready();
-    let _ = app.update(Message::Pad(PadEvent::Connected(1, switch_pro())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(
+        PadId::Gilrs(1),
+        switch_pro(),
+    )));
     // Confirm on `b` and Back on `a`: the button printed B, which sits at
     // the bottom of a Nintendo pad, now confirms.
     app.input.buttons.insert(PadAction::Confirm, PadButton::B);
@@ -978,7 +1113,7 @@ fn coverflow_ready() -> (tempfile::TempDir, App) {
     let _ = app.update(Message::ToggleSection(crate::slot::SectionKey::Tag(
         "b".into(),
     )));
-    let _ = app.update(Message::Pad(PadEvent::Connected(0, xbox())));
+    let _ = app.update(Message::Pad(PadEvent::Connected(PadId::Gilrs(0), xbox())));
     focus(&mut app);
     move_to(&mut app, "a-0");
     (home, app)
@@ -1011,9 +1146,7 @@ fn on_a_coverflow_card_the_hints_drop_favorite_and_mark_and_a_opens() {
     tap(&mut app, Raw::DPadRight);
     tap(&mut app, Raw::South);
     assert!(app.panel_open);
-    let words = |app: &App| -> Vec<&'static str> {
-        app.pad_hints().into_iter().map(|(_, word)| word).collect()
-    };
+    let words = |app: &App| words(&app.pad_hints());
     assert!(words(&app).contains(&"Play"));
     assert!(words(&app).contains(&"Favorite"));
     tap(&mut app, Raw::DPadRight);
@@ -1076,4 +1209,244 @@ fn a_remapped_page_button_moves_the_strip_a_screenful() {
     tap(&mut app, Raw::RightBumper);
     assert!(app.panel_open);
     assert_eq!(app.strip.target(), screenful);
+}
+
+// The GameCube adapter's hold, asked of plain functions, since an iced
+// subscription can't be looked into.
+
+use crate::pad::adapter::{self, Report};
+
+/// `ready` with both switches saved on.
+fn adapter_ready() -> (tempfile::TempDir, App) {
+    let (home, mut app) = ready();
+    app.input.gamecube_adapter = true;
+    let _ = app.update(Message::PointerMoved);
+    (home, app)
+}
+
+/// What a new reader would start from.
+fn told(app: &App) -> bool {
+    *app.adapter.link().wanted.borrow()
+}
+
+fn adapter_pad(app: &mut App, event: PadEvent) -> Task<Message> {
+    app.update(Message::Adapter(Report::Pad(event)))
+}
+
+const PORT1: PadId = PadId::Adapter(0);
+
+#[test]
+fn the_adapter_is_wanted_with_both_switches_on_and_the_gate_open() {
+    let (_home, app) = ready();
+    assert!(app.pad_gate_open());
+    // Off by default: no reader, so nothing watches USB.
+    assert!(!app.adapter_subscribed());
+    assert!(!app.adapter_wanted() && !told(&app));
+
+    let (_home, mut app) = adapter_ready();
+    assert!(app.adapter_subscribed());
+    assert!(app.adapter_wanted() && told(&app));
+
+    app.input.controller = false;
+    let _ = app.update(Message::PointerMoved);
+    assert!(!app.adapter_subscribed());
+    assert!(!told(&app));
+    app.input.controller = true;
+    let _ = app.update(Message::PointerMoved);
+    assert!(told(&app));
+}
+
+#[test]
+fn closing_exiting_a_closed_window_focus_and_starts_let_go() {
+    for case in ["closing", "exiting", "window", "unfocused", "play", "tool"] {
+        let (home, mut app) = adapter_ready();
+        assert!(told(&app), "{case}");
+        match case {
+            // Either alone ends the reader, before any update reacts.
+            "closing" => {
+                app.closing = true;
+                assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+            }
+            "exiting" => {
+                app.exiting = true;
+                assert!(!app.adapter_subscribed() && !app.adapter_wanted());
+            }
+            "window" => app.main_window = None,
+            "unfocused" => {
+                let id = app.main_window.unwrap();
+                let _ = app.update(Message::Window(id, window::Event::Unfocused));
+            }
+            "play" => {
+                let _ = app.update(Message::Play);
+                assert!(app.operation.is_some());
+            }
+            _ => {
+                use crate::tools_page::{Event, Kind};
+                for card in &mut app.cards {
+                    card.prefix = Some(home.path().join("prefix"));
+                }
+                let _ = app.update(Message::OpenTool("alpha".into(), Kind::Winetricks));
+                let _ = app.update(Message::Tool(
+                    "alpha".into(),
+                    Kind::Winetricks,
+                    Event::OpenWinetricks,
+                ));
+            }
+        }
+        let _ = app.update(Message::PointerMoved);
+        assert!(!app.adapter_wanted(), "{case}");
+        assert!(!told(&app), "{case}");
+        // Closing or exiting drops the reader too; the rest keep it.
+        let subscribed = !matches!(case, "closing" | "exiting");
+        assert_eq!(app.adapter_subscribed(), subscribed, "{case}");
+    }
+}
+
+#[test]
+fn a_start_while_the_adapter_is_held_waits_on_its_state() {
+    let (_home, mut app) = adapter_ready();
+    // Not held: the start has nothing to wait on.
+    let task = app.update(Message::Play);
+    assert!(app.operation.is_some());
+    assert_eq!(app.adapter.state.receiver_count(), 0);
+    drop(task);
+
+    let (_home, mut app) = adapter_ready();
+    let _ = app.update(Message::Adapter(Report::State(adapter::State::Held)));
+    app.adapter.state.send_replace(adapter::State::Held);
+    assert_eq!(app.adapter.state.receiver_count(), 0);
+    // The start's task holds the state, never run here, so nothing launches.
+    let task = app.update(Message::Play);
+    assert!(app.operation.is_some());
+    assert_eq!(app.adapter.state.receiver_count(), 1);
+    drop(task);
+    assert_eq!(app.adapter.state.receiver_count(), 0);
+}
+
+#[test]
+fn the_first_focus_before_the_reader_exists_still_takes() {
+    let (_home, mut app) = closed_app();
+    app.input.gamecube_adapter = true;
+    let _ = app.update(Message::PointerMoved);
+    assert!(app.adapter_subscribed() && !told(&app));
+    focus(&mut app);
+    // A reader made after the focus starts wanted.
+    assert!(told(&app));
+}
+
+#[test]
+fn the_reader_is_told_only_when_the_answer_changes() {
+    let (_home, mut app) = adapter_ready();
+    let mut reader = app.adapter.wanted.subscribe();
+    assert!(*reader.borrow_and_update());
+    for _ in 0..3 {
+        let _ = app.update(Message::PointerMoved);
+        tap(&mut app, Raw::DPadDown);
+    }
+    assert!(!reader.has_changed().unwrap());
+    let id = app.main_window.unwrap();
+    let _ = app.update(Message::Window(id, window::Event::Unfocused));
+    assert!(reader.has_changed().unwrap());
+    assert!(!*reader.borrow_and_update());
+    let _ = app.update(Message::PointerMoved);
+    assert!(!reader.has_changed().unwrap());
+}
+
+#[test]
+fn the_adapters_pads_go_with_its_reader_and_late_reports_are_dropped() {
+    let (_home, mut app) = adapter_ready();
+    let _ = app.update(Message::Adapter(Report::State(adapter::State::Held)));
+    let _ = adapter_pad(&mut app, PadEvent::Connected(PORT1, adapter::port_info(0)));
+    assert_eq!(
+        app.pads.names(),
+        ["Xbox Wireless Controller", "GameCube controller (port 1)"]
+    );
+    assert_eq!(app.adapter.shown, adapter::State::Held);
+    app.adapter.state.send_replace(adapter::State::Held);
+
+    // The switch off ends the subscription, which can't say so itself.
+    app.input.gamecube_adapter = false;
+    let _ = app.update(Message::PointerMoved);
+    assert_eq!(app.pads.names(), ["Xbox Wireless Controller"]);
+    assert_eq!(app.adapter.shown, adapter::State::Absent);
+    assert_eq!(*app.adapter.state.borrow(), adapter::State::Absent);
+    assert!(app.adapter.held().is_none());
+    // What the dropped reader sent before it went is stale.
+    let _ = adapter_pad(&mut app, PadEvent::Connected(PORT1, adapter::port_info(0)));
+    let _ = app.update(Message::Adapter(Report::State(adapter::State::Busy)));
+    assert_eq!(app.pads.names(), ["Xbox Wireless Controller"]);
+    assert_eq!(app.adapter.shown, adapter::State::Absent);
+    // Even a press, which would act before anything else could drop it.
+    let task = adapter_pad(&mut app, PadEvent::Pressed(PORT1, Raw::South));
+    settle(&mut app, task);
+    assert!(!app.panel_open);
+}
+
+#[test]
+fn a_gamecube_a_confirms_and_l_r_z_and_the_c_stick_follow_the_map() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = adapter_ready();
+    let _ = adapter_pad(&mut app, PadEvent::Connected(PORT1, adapter::port_info(0)));
+    let task = adapter_pad(&mut app, PadEvent::Pressed(PORT1, Raw::South));
+    settle(&mut app, task);
+    assert!(app.panel_open);
+    assert_eq!(app.pad_hint, Some(crate::pad::Style::GameCube));
+
+    let action = |app: &App, raw| {
+        let button = crate::pad::label(crate::pad::Style::GameCube, raw).unwrap();
+        app.input.bindings().action(button)
+    };
+    assert_eq!(action(&app, Raw::LeftBumper), Some(PadAction::PageLeft));
+    assert_eq!(action(&app, Raw::RightBumper), Some(PadAction::PageRight));
+    assert_eq!(action(&app, Raw::Select), Some(PadAction::Layout));
+    assert_eq!(action(&app, Raw::LeftTrigger), Some(PadAction::First));
+    assert_eq!(action(&app, Raw::RightTrigger), Some(PadAction::Last));
+    assert_eq!(action(&app, Raw::Start), Some(PadAction::Fullscreen));
+    // A remap moves them like any button.
+    app.input.buttons.insert(PadAction::First, PadButton::Ls);
+    app.input.buttons.insert(PadAction::Random, PadButton::Lt);
+    assert_eq!(action(&app, Raw::LeftTrigger), Some(PadAction::Random));
+    app.input
+        .buttons
+        .insert(PadAction::Favorite, PadButton::View);
+    let _ = app.update(Message::ClosePanel);
+    let task = adapter_pad(&mut app, PadEvent::Pressed(PORT1, Raw::Select));
+    settle(&mut app, task);
+    assert!(favorite(&app, "alpha"));
+}
+
+#[test]
+fn the_hint_bar_leaves_out_what_a_gamecube_pad_lacks() {
+    use wineo_core::library::{PadAction, PadButton};
+    let (_home, mut app) = adapter_ready();
+    let words = |app: &App| words(&app.pad_hints());
+    app.pad_hint = Some(crate::pad::Style::Xbox);
+    assert!(words(&app).contains(&"Random"));
+    app.pad_hint = Some(crate::pad::Style::GameCube);
+    assert_eq!(
+        words(&app),
+        [
+            "Open",
+            "Back",
+            "Favorite",
+            "Mark",
+            "Page",
+            "Layout",
+            "Full screen"
+        ]
+    );
+    // Back once it's on a button the pad has, the C-stick included.
+    app.input.buttons.insert(PadAction::Layout, PadButton::Ls);
+    app.input.buttons.insert(PadAction::Random, PadButton::View);
+    assert!(words(&app).contains(&"Random"));
+    app.input.buttons.clear();
+    app.input.buttons.insert(PadAction::Last, PadButton::Ls);
+    app.input.buttons.insert(PadAction::Random, PadButton::Rt);
+    assert!(words(&app).contains(&"Random"));
+    app.input.buttons.clear();
+    app.input.buttons.insert(PadAction::First, PadButton::Ls);
+    app.input.buttons.insert(PadAction::Random, PadButton::Lt);
+    assert!(words(&app).contains(&"Random"));
+    app.input.buttons.insert(PadAction::Confirm, PadButton::Rs);
+    assert!(!words(&app).contains(&"Open"));
 }

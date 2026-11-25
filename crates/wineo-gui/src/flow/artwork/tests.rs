@@ -227,7 +227,7 @@ fn local_art_works_without_fetching_and_preserves_source_bytes() {
     assert!(draft.kinds.is_empty());
     assert!(draft.validate().is_ok());
     assert!(preview(&source, Kind::Icon).is_ok());
-    assert!(draft.apply(&paths, "game").unwrap().is_empty());
+    assert!(draft.apply(&paths, "game", None).art.unwrap().is_empty());
     draft.fetch = true;
     draft.kinds = vec![Kind::Icon];
     draft.selected = Some(Match(Game {
@@ -235,7 +235,7 @@ fn local_art_works_without_fetching_and_preserves_source_bytes() {
         name: "game".into(),
         year: None,
     }));
-    assert!(draft.apply(&paths, "game").unwrap().is_empty());
+    assert!(draft.apply(&paths, "game", None).art.unwrap().is_empty());
     assert_eq!(std::fs::read(&source).unwrap(), bytes);
     assert_eq!(
         std::fs::read(paths.art_dir("game").join("icon.svg")).unwrap(),
@@ -337,7 +337,7 @@ fn failed_art_does_not_remove_registration() {
             ..Local::default()
         },
     );
-    assert!(draft.apply(&paths, "game").is_err());
+    assert!(draft.apply(&paths, "game", None).art.is_err());
     assert!(Environment::load(&paths, "game").is_ok());
 }
 
@@ -445,7 +445,7 @@ fn none_found_preview_skips_fetch_and_reports_note() {
     assert!(draft.remote[&Kind::Grid].none_found);
     assert!(!draft.remote[&Kind::Grid].loading);
     assert_eq!(
-        draft.apply(&paths, "game").unwrap(),
+        draft.apply(&paths, "game", None).art.unwrap(),
         vec!["No grid artwork found for game"]
     );
 }
@@ -633,20 +633,21 @@ fn apply_stores_nothing_in_an_environment_replaced_since_it_started() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::read(&paths, "game");
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
         if replaced {
-            // A copy renamed over the config is a different file.
-            let config = paths.environment_config("game");
-            let staged = config.with_extension("replacement");
-            std::fs::copy(&config, &staged).unwrap();
-            std::fs::rename(staged, config).unwrap();
+            wineo_core::test_support::replace_environment(&paths, "game").unwrap();
         }
-        let result = draft_with_held_grid().apply_for(&paths, "game", identity);
+        let result = draft_with_held_grid()
+            .apply(&paths, "game", Some(identity))
+            .art;
         let grid = paths.art_dir("game").join("grid.png");
         if replaced {
             assert_eq!(
                 result.unwrap_err(),
-                "Art fetching failed: environment `game` changed before artwork could be written"
+                FetchError::Changed {
+                    env: "game".into(),
+                    id: true
+                }
             );
             assert!(!grid.exists());
             assert_eq!(art::saved_game(&paths, "game").unwrap(), None);
@@ -673,7 +674,7 @@ fn local_tiles_are_stored_only_in_the_environment_they_started_with() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::read(&paths, "game");
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
         let picked = root.path().join("mine.png");
         let poster = root.path().join("poster.png");
         std::fs::write(&picked, PNG).unwrap();
@@ -699,18 +700,17 @@ fn local_tiles_are_stored_only_in_the_environment_they_started_with() {
             },
         );
         if replaced {
-            let config = paths.environment_config("game");
-            let staged = config.with_extension("replacement");
-            std::fs::copy(&config, &staged).unwrap();
-            std::fs::rename(staged, config).unwrap();
+            wineo_core::test_support::replace_environment(&paths, "game").unwrap();
         }
-        let result = draft.apply_for(&paths, "game", identity);
+        let result = draft.apply(&paths, "game", Some(identity)).art;
         let art = paths.art_dir("game");
         if replaced {
-            let changed = "environment `game` changed before artwork could be written";
             assert_eq!(
                 result.unwrap_err(),
-                format!("Could not store grid: {changed}\nCould not store hero: {changed}")
+                FetchError::Changed {
+                    env: "game".into(),
+                    id: true
+                }
             );
             assert!(!art.join("hero.png").exists() && !art.join("grid.png").exists());
         } else {
@@ -734,15 +734,12 @@ fn held_art_is_published_only_into_the_environment_it_was_read_from() {
             |_| {},
         )
         .unwrap();
-        let identity = EnvironmentIdentity::read(&paths, "game");
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
         // Past the game record, which `apply` saves first under the same
         // check, so this is the publish's own.
         art::save_game(&paths, "game", 7).unwrap();
         if replaced {
-            let config = paths.environment_config("game");
-            let staged = config.with_extension("replacement");
-            std::fs::copy(&config, &staged).unwrap();
-            std::fs::rename(staged, config).unwrap();
+            wineo_core::test_support::replace_environment(&paths, "game").unwrap();
         }
         let draft = draft_with_held_grid();
         let game = Game {
@@ -750,23 +747,24 @@ fn held_art_is_published_only_into_the_environment_it_was_read_from() {
             name: "game".into(),
             year: None,
         };
-        let (mut notes, mut failures) = (Vec::new(), Vec::new());
+        let (mut notes, mut failures, mut icon) = (Vec::new(), Vec::new(), false);
         let missing = draft.publish_held(
             &paths,
             "game",
             &game,
             &[Kind::Grid],
             identity,
-            (&mut notes, &mut failures),
+            (&mut notes, &mut failures, &mut icon),
         );
-        assert!(missing.is_empty() && notes.is_empty());
+        assert!(missing.is_empty() && notes.is_empty() && !icon);
         let grid = paths.art_dir("game").join("grid.png");
         if replaced {
             assert_eq!(
                 failures,
-                [
-                    "Could not fetch grid: environment `game` changed before artwork could be written"
-                ]
+                [FetchError::Changed {
+                    env: "game".into(),
+                    id: true
+                }]
             );
             assert!(!grid.exists());
         } else {
@@ -809,7 +807,7 @@ fn apply_stores_held_art_without_a_request() {
             ..Remote::default()
         },
     );
-    assert!(draft.apply(&paths, "game").unwrap().is_empty());
+    assert!(draft.apply(&paths, "game", None).art.unwrap().is_empty());
     assert_eq!(
         std::fs::read(paths.art_dir("game").join("grid.png")).unwrap(),
         PNG
@@ -868,7 +866,7 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
         draft.notes(Kind::Grid),
         [Note::Info("From Heroic".to_owned())]
     );
-    draft.apply(&paths, "kept").unwrap();
+    draft.apply(&paths, "kept", None).art.unwrap();
     assert_eq!(grid("kept"), art::Source::Manual("heroic-a.png".into()));
     assert!(!paths.art_dir("kept").join("grid.jpg").exists());
 
@@ -876,14 +874,14 @@ fn a_prefilled_pick_is_stored_under_its_name_until_removed_or_replaced() {
     prefill(&mut draft);
     let _ = draft.update(Event::Clear(Kind::Grid));
     assert!(!draft.is_selected(Kind::Grid));
-    draft.apply(&paths, "removed").unwrap();
+    draft.apply(&paths, "removed", None).art.unwrap();
     assert_eq!(grid("removed"), art::Source::SteamGridDb(42));
 
     let mut draft = fetched();
     prefill(&mut draft);
     let _ = draft.update(Event::Path(Kind::Grid, mine.to_string_lossy().into_owned()));
     assert_eq!(draft.prefilled(Kind::Grid), None);
-    draft.apply(&paths, "replaced").unwrap();
+    draft.apply(&paths, "replaced", None).art.unwrap();
     assert_eq!(grid("replaced"), art::Source::Manual("mine.png".into()));
 }
 
@@ -893,23 +891,44 @@ fn the_fetch_and_the_entry_are_told_apart() {
     let paths = paths(root.path());
     let notes = vec!["No logo artwork found".to_owned()];
     let answer = notes.clone();
-    let fetcher: Fetcher = Arc::new(move |_, _, _, _| Ok(answer.clone()));
+    let fetcher: Fetcher =
+        Arc::new(move |_, _, _, identity, _| Fetched::answer(Ok(answer.clone()), identity));
+    let parts = |parts: FetchParts| (parts.art, parts.entries);
     // Nothing to refresh for an environment that isn't there.
     assert_eq!(
-        fetch_art_parts(&paths, "game", "Game", &Token::new(), &fetcher),
+        parts(fetch_art_parts(
+            &paths,
+            "game",
+            "Game",
+            None,
+            &Token::new(),
+            &fetcher
+        )),
         (Ok(notes), Ok(()))
     );
-    let failing: Fetcher = Arc::new(|_, _, _, _| Err("offline".to_owned()));
+    let failing: Fetcher = Arc::new(|_, _, _, identity, _| {
+        Fetched::answer(Err(FetchError::Other("offline".to_owned())), identity)
+    });
+    let offline = Err(FetchError::Other("offline".to_owned()));
     assert_eq!(
-        fetch_art_parts(&paths, "game", "Game", &Token::new(), &failing),
-        (Err("offline".to_owned()), Ok(()))
+        parts(fetch_art_parts(
+            &paths,
+            "game",
+            "Game",
+            None,
+            &Token::new(),
+            &failing
+        )),
+        (offline.clone(), Ok(()))
     );
     // A skipped fetch leaves the entry alone and reports it as fine.
     let token = Token::new();
     token.cancel();
     assert_eq!(
-        fetch_art_parts(&paths, "game", "Game", &token, &failing),
-        (Err("offline".to_owned()), Ok(()))
+        parts(fetch_art_parts(
+            &paths, "game", "Game", None, &token, &failing
+        )),
+        (offline, Ok(()))
     );
 }
 
@@ -941,21 +960,432 @@ desktop = true
         )
         .unwrap();
         // The environment is replaced while the fetch runs.
-        let fetcher: Fetcher = Arc::new(move |paths, name, _, _| {
+        let fetcher: Fetcher = Arc::new(move |paths, name, _, identity, _| {
             if replaced {
-                let config = paths.environment_config(name);
-                let staged = config.with_extension("replacement");
-                std::fs::copy(&config, &staged).unwrap();
-                std::fs::rename(staged, config).unwrap();
+                wineo_core::test_support::replace_environment(paths, name).unwrap();
             }
-            Ok(Vec::new())
+            Fetched::answer(Ok(Vec::new()), identity)
         });
-        let (fetched, entry) = fetch_art_parts(&paths, "game", "Game", &Token::new(), &fetcher);
-        assert_eq!((fetched, entry), (Ok(Vec::new()), Ok(())));
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
+        let parts = fetch_art_parts(
+            &paths,
+            "game",
+            "Game",
+            Some(identity),
+            &Token::new(),
+            &fetcher,
+        );
+        assert_eq!((parts.art, parts.entries), (Ok(Vec::new()), Ok(())));
         let written = paths
             .applications_dir()
             .join("wineo-game-alt.desktop")
             .exists();
         assert_eq!(written, !replaced);
     }
+}
+
+#[test]
+fn several_kinds_failing_with_one_changed_among_them_is_changed() {
+    let other = |line: &str| FetchError::Other(line.to_owned());
+    let unreadable = FetchError::LibraryUnreadable("library.toml can't be read.".to_owned());
+    for changed in [
+        FetchError::Changed {
+            env: "game".into(),
+            id: true,
+        },
+        FetchError::Changed {
+            env: "game".into(),
+            id: false,
+        },
+    ] {
+        assert_eq!(
+            FetchError::combine(vec![other("a"), changed.clone(), unreadable.clone()]),
+            Some(changed)
+        );
+    }
+    // The library's sentence once, ahead of the other kinds' lines.
+    assert_eq!(
+        FetchError::combine(vec![other("a"), unreadable.clone(), other("b"), unreadable]),
+        Some(FetchError::LibraryUnreadable(
+            "library.toml can't be read.\na\nb".to_owned()
+        ))
+    );
+    assert_eq!(
+        FetchError::combine(vec![other("a"), other("b")]),
+        Some(other("a\nb"))
+    );
+    assert_eq!(FetchError::combine(Vec::new()), None);
+}
+
+#[test]
+fn a_changed_failure_says_replaced_for_an_id_and_changed_for_a_fingerprint() {
+    let changed = |id| FetchError::Changed {
+        env: "hades".into(),
+        id,
+    };
+    assert_eq!(
+        changed(true).to_string(),
+        "`hades` was replaced. Artwork wasn't stored."
+    );
+    assert_eq!(
+        changed(false).to_string(),
+        "`hades` changed. Artwork wasn't stored."
+    );
+    assert_eq!(
+        changed_message("hades", true, NOT_REMOVED),
+        "`hades` was replaced. Artwork wasn't removed."
+    );
+    // Already a sentence about the environment, so no "Artwork: " in front.
+    assert_eq!(changed(true).note(), changed(true).to_string());
+    assert_eq!(
+        FetchError::Other("offline".into()).note(),
+        "Artwork: offline"
+    );
+}
+
+/// A native environment from before ids: a config and no library entry.
+fn old_environment(paths: &Paths) {
+    let config = paths.environment_config("game");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "schema_version = 1\nkind = 'native'\n").unwrap();
+}
+
+#[test]
+fn a_draft_with_nothing_to_write_gives_no_id() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    old_environment(&paths);
+    // Empty, as a Heroic import with no poster and fetching off leaves it,
+    // and with fetching on but no match chosen.
+    let mut draft = Draft::new();
+    let applied = draft.apply(&paths, "game", None);
+    assert_eq!(applied.art, Ok(Vec::new()));
+    assert_eq!(applied.identity, None);
+    draft.fetch = true;
+    draft.kinds = vec![Kind::Grid];
+    assert_eq!(draft.apply(&paths, "game", None).art, Ok(Vec::new()));
+    assert!(!paths.library_file().exists());
+
+    // Something to write takes one.
+    let applied = draft_with_held_grid().apply(&paths, "game", None);
+    assert_eq!(applied.art, Ok(Vec::new()));
+    let id = wineo_core::library::load(&paths).environments["game"].id;
+    assert!(id.is_some());
+    assert_eq!(applied.identity.and_then(|identity| identity.id()), id);
+}
+
+/// A native environment with a desktop target, so `desktop::apply` writes
+/// an entry for it, under `paths`.
+fn desktop_environment(root: &Path, paths: &Paths) -> PathBuf {
+    let exe = root.join("notepad");
+    crate::test_script::write_script(&exe, "#!/bin/sh\nexit 0\n");
+    let config = paths.environment_config("game");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "schema_version = 1\nkind = 'native'\n[targets.alt]\nexe = '{}'\ndesktop = true\n",
+            exe.display()
+        ),
+    )
+    .unwrap();
+    paths.applications_dir().join("wineo-game-alt.desktop")
+}
+
+#[test]
+fn a_changed_fetch_leaves_the_desktop_entries_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let entry = desktop_environment(root.path(), &paths);
+    let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
+    // Changed, though the environment is still there: the fetch's word is
+    // what counts, since the check that decided ran under the art lock.
+    let fetcher: Fetcher = Arc::new(|_, _, _, identity, _| {
+        Fetched::answer(
+            Err(FetchError::Changed {
+                env: "game".into(),
+                id: true,
+            }),
+            identity,
+        )
+    });
+    let parts = fetch_art_parts(
+        &paths,
+        "game",
+        "Game",
+        Some(identity),
+        &Token::new(),
+        &fetcher,
+    );
+    assert_eq!(
+        parts.art,
+        Err(FetchError::Changed {
+            env: "game".into(),
+            id: true
+        })
+    );
+    assert_eq!(parts.entries, Ok(()));
+    assert!(!entry.exists());
+
+    // Any other failure still brings the entries in line.
+    let fetcher: Fetcher = Arc::new(|_, _, _, identity, _| {
+        Fetched::answer(Err(FetchError::Other("offline".to_owned())), identity)
+    });
+    fetch_art_parts(
+        &paths,
+        "game",
+        "Game",
+        Some(identity),
+        &Token::new(),
+        &fetcher,
+    );
+    assert!(entry.exists());
+}
+
+#[test]
+fn entries_skipped_for_an_unreadable_library_are_said_only_off_a_portable_root() {
+    for (portable, icon, said) in [
+        (false, true, true),
+        (false, false, false),
+        (true, true, false),
+    ] {
+        let case = format!("portable {portable}, icon {icon}");
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let paths = Paths::select(
+            move |key| (key == "HOME").then(|| home.clone().into_os_string()),
+            portable.then(|| root.path().join("portable")).as_deref(),
+        )
+        .unwrap();
+        let entry = desktop_environment(root.path(), &paths);
+        let identity = EnvironmentIdentity::acquire_existing(&paths, "game").unwrap();
+        assert!(identity.id().is_some(), "{case}");
+        // The library breaks after the icon was stored.
+        let fetcher: Fetcher = Arc::new(move |paths, _, _, identity, _| {
+            std::fs::write(paths.library_file(), "[broken\n").unwrap();
+            Fetched {
+                art: Ok(Vec::new()),
+                identity,
+                icon,
+            }
+        });
+        let parts = fetch_art_parts(
+            &paths,
+            "game",
+            "Game",
+            Some(identity),
+            &Token::new(),
+            &fetcher,
+        );
+        assert_eq!(parts.art, Ok(Vec::new()), "{case}");
+        let expected = said.then(|| {
+            EntriesError::LibraryUnreadable(
+                "library.toml can't be read. The desktop entries for `game` weren't updated."
+                    .to_owned(),
+            )
+        });
+        assert_eq!(parts.entries.err(), expected, "{case}");
+        assert!(!entry.exists(), "{case}: the entries were left alone");
+    }
+}
+
+#[test]
+fn an_unreadable_library_after_the_fetch_is_one_message_with_the_entries() {
+    let error = FetchError::LibraryUnreadable("art sentence".to_owned());
+    let entries = EntriesError::LibraryUnreadable("entries sentence".to_owned());
+    assert_eq!(
+        error.with_entries(&entries),
+        FetchError::LibraryUnreadable("art sentence\nentries sentence".to_owned())
+    );
+    assert_eq!(
+        FetchError::Other("offline".to_owned())
+            .with_entries(&EntriesError::Failed("no folder".to_owned())),
+        FetchError::Other("offline; desktop entry: no folder".to_owned())
+    );
+}
+
+#[test]
+fn any_failure_in_an_environment_replaced_since_is_changed_and_leaves_its_entries() {
+    for id in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let entry = desktop_environment(root.path(), &paths);
+        let identity = if id {
+            EnvironmentIdentity::acquire_existing(&paths, "game").unwrap()
+        } else {
+            EnvironmentIdentity::peek(&paths, "game").unwrap()
+        };
+        assert_eq!(identity.id().is_some(), id);
+        // Offline, and replaced meanwhile.
+        let fetcher: Fetcher = Arc::new(|paths, name, _, identity, _| {
+            wineo_core::test_support::replace_environment(paths, name).unwrap();
+            Fetched::answer(Err(FetchError::Other("offline".to_owned())), identity)
+        });
+        let parts = fetch_art_parts(
+            &paths,
+            "game",
+            "Game",
+            Some(identity),
+            &Token::new(),
+            &fetcher,
+        );
+        assert_eq!(
+            parts.art,
+            Err(FetchError::Changed {
+                env: "game".into(),
+                id
+            }),
+            "id {id}"
+        );
+        assert_eq!(parts.entries, Ok(()));
+        assert!(
+            !entry.exists(),
+            "id {id}: the replacement's entry was written"
+        );
+    }
+}
+
+/// A legacy `library.toml` with `game` in it and no id, whose bytes a
+/// write that writes nothing must leave alone.
+fn legacy_library(paths: &Paths) -> Vec<u8> {
+    let bytes = b"schema_version = 1\n\n[environments.game]\nfavorite = true\n".to_vec();
+    std::fs::write(paths.library_file(), &bytes).unwrap();
+    bytes
+}
+
+#[test]
+fn a_default_fetch_that_writes_nothing_gives_an_old_environment_no_id() {
+    use crate::flow::artwork::canned::canned_hades;
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    old_environment(&paths);
+    let before = legacy_library(&paths);
+    let fetch = |title: &str, connected: bool, token: &Token| {
+        let answers = canned_hades();
+        fetch_default_over(&paths, "game", title, None, token, &move || {
+            if connected {
+                Ok((Box::new(answers.clone()), "key".to_owned()))
+            } else {
+                Err("no SteamGridDB key".to_owned())
+            }
+        })
+    };
+    // No key, a search that fails, no match, and a cancel.
+    for (title, connected) in [("Hades", false), ("Nothing at all", true)] {
+        let fetched = fetch(title, connected, &Token::new());
+        assert!(fetched.art.is_err(), "{title}: {:?}", fetched.art);
+        assert_eq!(fetched.identity, None, "{title}");
+    }
+    let mut no_match = canned_hades();
+    std::sync::Arc::make_mut(&mut no_match.0).insert(
+        format!("{}/search/autocomplete/Hades", wineo_core::steamgriddb::API),
+        (200, br#"{"success":true,"data":[]}"#.to_vec()),
+    );
+    let fetched = fetch_default_over(&paths, "game", "Hades", None, &Token::new(), &move || {
+        Ok((Box::new(no_match.clone()), "key".to_owned()))
+    });
+    assert_eq!(
+        fetched.art,
+        Ok(vec!["No artwork match for Hades".to_owned()])
+    );
+    let token = Token::new();
+    let canceling = canned_hades().on("/search/", {
+        let token = token.clone();
+        move || token.cancel()
+    });
+    let fetched = fetch_default_over(&paths, "game", "Hades", None, &token, &move || {
+        Ok((Box::new(canceling.clone()), "key".to_owned()))
+    });
+    assert!(fetched.art.is_err());
+    assert_eq!(std::fs::read(paths.library_file()).unwrap(), before);
+
+    // A match it can write to takes the id.
+    let fetched = fetch("Hades", true, &Token::new());
+    assert!(fetched.art.is_ok(), "{:?}", fetched.art);
+    let id = wineo_core::library::load(&paths).environments["game"].id;
+    assert!(id.is_some());
+    assert_eq!(fetched.identity.and_then(|identity| identity.id()), id);
+}
+
+#[test]
+fn an_old_environment_edited_during_the_search_is_refused_as_changed() {
+    use crate::flow::artwork::canned::canned_hades;
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    old_environment(&paths);
+    let before = legacy_library(&paths);
+    let editing = canned_hades().on("/search/", {
+        let paths = paths.clone();
+        move || {
+            let config = paths.environment_config("game");
+            let text = std::fs::read_to_string(&config).unwrap();
+            let staged = config.with_extension("saving");
+            std::fs::write(&staged, format!("# edited\n{text}")).unwrap();
+            std::fs::rename(staged, config).unwrap();
+        }
+    });
+    let fetched = fetch_default_over(&paths, "game", "Hades", None, &Token::new(), &move || {
+        Ok((Box::new(editing.clone()), "key".to_owned()))
+    });
+    assert_eq!(
+        fetched.art,
+        Err(FetchError::Changed {
+            env: "game".into(),
+            id: false
+        })
+    );
+    assert_eq!(std::fs::read(paths.library_file()).unwrap(), before);
+}
+
+#[test]
+fn a_draft_whose_files_cant_be_stored_gives_no_id() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    old_environment(&paths);
+    let before = legacy_library(&paths);
+    let notes = root.path().join("notes.png");
+    std::fs::write(&notes, b"just some notes\n").unwrap();
+    let mut draft = Draft::new();
+    for (kind, path) in [
+        (Kind::Grid, notes.clone()),
+        (Kind::Hero, root.path().join("missing.png")),
+    ] {
+        draft.local.insert(
+            kind,
+            Local {
+                path: path.display().to_string(),
+                ..Local::default()
+            },
+        );
+    }
+    let applied = draft.apply(&paths, "game", None);
+    assert!(applied.art.is_err());
+    assert_eq!(applied.identity, None);
+    assert_eq!(std::fs::read(paths.library_file()).unwrap(), before);
+}
+
+#[test]
+fn a_fingerprint_the_flow_holds_is_written_with_and_never_upgraded() {
+    use crate::flow::artwork::canned::canned_hades;
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    old_environment(&paths);
+    let before = legacy_library(&paths);
+    // As creation hands it over when its stamp failed.
+    let held = EnvironmentIdentity::peek(&paths, "game").unwrap();
+    assert_eq!(held.id(), None);
+    let answers = canned_hades();
+    let fetched = fetch_default_over(
+        &paths,
+        "game",
+        "Hades",
+        Some(held),
+        &Token::new(),
+        &move || Ok((Box::new(answers.clone()), "key".to_owned())),
+    );
+    assert!(fetched.art.is_ok(), "{:?}", fetched.art);
+    assert_eq!(fetched.identity, Some(held));
+    assert!(paths.art_dir("game").join("icon.png").exists());
+    assert_eq!(std::fs::read(paths.library_file()).unwrap(), before);
 }

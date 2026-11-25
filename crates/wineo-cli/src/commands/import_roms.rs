@@ -1339,6 +1339,7 @@ fn apply(
                         paths,
                         key,
                         &request,
+                        applied.identity,
                         Pick::<NoInput, Vec<u8>>::Top(&mut out),
                         &mut err,
                     );

@@ -12,7 +12,7 @@ use toml_edit::{Array, Item, Table, Value, value};
 use crate::cancel::Token;
 use crate::config::{self, EnvironmentConfig, GlobalConfig};
 use crate::emulator::{self, Core, Emulator, ExtSystem, Install, TargetCommand};
-use crate::environment::{self, Environment};
+use crate::environment::{self, Environment, EnvironmentIdentity};
 use crate::launch::{self, WINDOWS_EXTENSIONS};
 use crate::name;
 use crate::operation::{Locks, Operation};
@@ -721,6 +721,8 @@ fn free_name(paths: &Paths, batch: &HashSet<String>, title: &str, system: Option
 #[derive(Debug)]
 pub struct Applied {
     pub environment: Environment,
+    /// The new environment's identity, for its art step to carry.
+    pub identity: Option<EnvironmentIdentity>,
     pub warnings: Vec<String>,
 }
 
@@ -823,11 +825,14 @@ fn apply_with(
     let _operation = locks.acquire(Operation::Create, &name, &[])?;
     crate::import::check_cancelled(cancel)?;
     let environment = crate::import::write_native_config(paths, &name, &text)?;
-    let warnings = crate::library_lifecycle::fresh_warning(paths, &name)
-        .into_iter()
-        .collect();
+    let mut warnings = Vec::new();
+    let stamped = crate::library_lifecycle::fresh_warning(paths, &name)
+        .map_err(|warning| warnings.push(warning))
+        .ok();
+    let identity = EnvironmentIdentity::created(paths, &name, stamped);
     Ok(ApplyOutcome::Imported(Applied {
         environment,
+        identity,
         warnings,
     }))
 }

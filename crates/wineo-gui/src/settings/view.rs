@@ -918,11 +918,34 @@ fn controller_rows<'a>(
         palette,
     )]
     .spacing(12);
-    if page.pads.is_empty() {
+    // Both wait for the Controller switch like the remap rows below.
+    rows = rows.push(switch_row(
+        HINT_BAR_SWITCH,
+        input.hint_bar,
+        None,
+        |on| send(Event::GlobalHintBar(on)),
+        None,
+        locked || !input.controller,
+        palette,
+    ));
+    rows = rows.push(switch_row(
+        GAMECUBE_ADAPTER_SWITCH,
+        input.gamecube_adapter,
+        None,
+        |on| send(Event::GlobalGamecubeAdapter(on)),
+        None,
+        locked || !input.controller,
+        palette,
+    ));
+    let adapter = adapter_line(page.adapter, page.pads.is_empty());
+    if page.pads.is_empty() && adapter.is_none() {
         rows = rows.push(text(NO_CONTROLLER).size(13).color(palette.muted));
     }
     for name in &page.pads {
         rows = rows.push(text(name.clone()).size(14).color(palette.foreground));
+    }
+    if let Some(line) = adapter {
+        rows = rows.push(text(line).size(13).color(palette.muted));
     }
     let bindings = input.bindings();
     // The rows wait for a pad, so they need the switch on.
@@ -932,7 +955,18 @@ fn controller_rows<'a>(
             text(CAPTURE_PROMPT).size(13).color(palette.muted).into()
         } else {
             match bindings.button(action) {
-                Some(button) => crate::pad::glyph::glyph_view(page.pad_style, button, palette),
+                // Dimmed while locked, so a full-color button doesn't look
+                // live.
+                Some(button) => crate::pad::glyph::glyph_view(
+                    page.pad_style,
+                    button,
+                    palette,
+                    if rows_locked {
+                        crate::panel::DIMMED_OPACITY
+                    } else {
+                        1.0
+                    },
+                ),
                 None => text(UNBOUND).size(13).color(palette.warning).into(),
             }
         };
@@ -955,6 +989,25 @@ fn controller_rows<'a>(
         (!rows_locked && !input.buttons.is_empty()).then(|| send(Event::ResetButtons)),
     ));
     rows.into()
+}
+
+/// The adapter's line in the pad list while wineo isn't holding it, so the
+/// list doesn't fall back to "No controller found." when the window loses
+/// focus. Held, its pads show instead; held with every port empty there are
+/// none to show, and the plain line keeps the list from flipping with focus.
+/// Used by the kernel, gilrs lists them.
+pub(super) fn adapter_line(
+    state: crate::pad::adapter::State,
+    no_pads: bool,
+) -> Option<&'static str> {
+    use crate::pad::adapter::State;
+    match state {
+        State::Free => Some(ADAPTER_FREE),
+        State::Held if no_pads => Some(ADAPTER_FREE),
+        State::Busy => Some(ADAPTER_BUSY),
+        State::NoAccess => Some(ADAPTER_NO_ACCESS),
+        State::Absent | State::Held | State::Kernel => None,
+    }
 }
 
 /// The focus id of `action`'s remap row.
@@ -983,7 +1036,12 @@ pub(super) const CAPTURE_PROMPT: &str = "Press a button...";
 pub(super) const UNBOUND: &str = "Unbound";
 pub(super) const RESET_BUTTONS: &str = "Reset to defaults";
 pub(super) const CONTROLLER_SWITCH: &str = "Use a controller in the Library";
+pub(super) const HINT_BAR_SWITCH: &str = "Show button hints";
+pub(super) const GAMECUBE_ADAPTER_SWITCH: &str = "Use a GameCube adapter";
 pub(super) const NO_CONTROLLER: &str = "No controller found.";
+pub(super) const ADAPTER_FREE: &str = "GameCube adapter";
+pub(super) const ADAPTER_BUSY: &str = "GameCube adapter: in use by another program.";
+pub(super) const ADAPTER_NO_ACCESS: &str = "GameCube adapter: no access. See the docs.";
 
 pub(super) fn version_line() -> String {
     format!("wineo {}", wineo_core::version::VERSION)

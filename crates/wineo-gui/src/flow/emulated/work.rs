@@ -315,12 +315,15 @@ pub(super) fn run_import(
             Applying::Imported(plan, applied) => {
                 if let Some(fetch) = fetch {
                     let name = &applied.environment.name;
-                    let fetched = match fetch(paths, name, &plan.title, token) {
-                        Ok(fetched) => fetched,
-                        Err(_) if token.is_canceled() => vec!["Artwork canceled".to_owned()],
-                        Err(error) => vec![format!("Artwork: {error}")],
-                    };
-                    notes.extend(fetched.into_iter().map(|note| format!("{name}: {note}")));
+                    let named = |note: String| format!("{name}: {note}");
+                    match fetch(paths, name, &plan.title, applied.identity, token).art {
+                        Ok(fetched) => notes.extend(fetched.into_iter().map(named)),
+                        Err(_) if token.is_canceled() => {
+                            notes.push(named("Artwork canceled".to_owned()))
+                        }
+                        Err(error) if error.names_environment() => notes.push(error.note()),
+                        Err(error) => notes.push(named(error.note())),
+                    }
                 }
             }
             Applying::AlreadyImported(..) => {}
