@@ -890,3 +890,37 @@ fn no_family_named_means_every_installed_one() {
     );
     assert_eq!(asked.borrow().len(), 2);
 }
+
+#[test]
+fn a_family_whose_root_cant_be_read_fails_and_the_rest_still_report() {
+    let home = Home::new();
+    let root = home.root(Provider::GeProton);
+    fs::create_dir_all(root.parent().unwrap()).unwrap();
+    fs::write(&root, "not a folder").unwrap();
+    home.component(Provider::Dxvk, "dxvk-2.6");
+    let mut fake = Fake::default();
+    fake.newest(Provider::Dxvk, "v2.7", "dxvk-2.7.tar.gz");
+    let report = home.check(fake);
+    // Both runner families share that root, so both fail.
+    assert_eq!(report.families.len(), 3, "{report:?}");
+    for (family, provider) in report
+        .families
+        .iter()
+        .zip([Provider::GeProton, Provider::ProtonCachyos])
+    {
+        assert_eq!(family.provider, provider);
+        assert!(family.installed.is_none(), "{family:?}");
+        assert!(matches!(family.status, Status::Failed(_)), "{family:?}");
+    }
+    assert_eq!(summary(&report)[2], "dxvk dxvk-2.6 -> dxvk-2.7");
+}
+
+#[test]
+fn a_leading_zero_reads_as_the_same_version() {
+    let home = Home::new();
+    // `latest` reads names the same way, by the value of each digit run.
+    home.component(Provider::Dxvk, "dxvk-2.07");
+    let mut fake = Fake::default();
+    fake.newest(Provider::Dxvk, "v2.7", "dxvk-2.7.tar.gz");
+    assert_eq!(summary(&home.check(fake)), ["dxvk dxvk-2.07 up to date"]);
+}
