@@ -27,7 +27,10 @@ signal-hook.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 md-5.workspace = true
+sha2.workspace = true
+tar.workspace = true
 wineo-core = { workspace = true, features = ["test-support"] }
 wineo-gog = { workspace = true, features = ["test-server"] }
 rustix = { workspace = true, features = ["pty"] }

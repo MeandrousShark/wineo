@@ -26,6 +26,7 @@ pub use test_script::KillOnDrop;
 pub mod gog_api;
 pub mod gog_world;
 pub mod pty;
+pub mod releases_api;
 #[allow(unused_imports)]
 pub mod snapshot;
 pub mod steam;
@@ -119,6 +120,9 @@ impl Fixture {
             .env_remove("WINEO_STEAM_KEY")
             .env_remove("WINEO_TEST_STEAM_API")
             .env_remove("WINEO_TEST_GOG_API")
+            // A closed port, so no test reaches GitHub by accident. A test
+            // that wants a catalog asks for `releases_command`.
+            .env("WINEO_TEST_RELEASES_API", releases_api::DEAD)
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",
@@ -158,6 +162,13 @@ impl Fixture {
         let mut dirs: Vec<PathBuf> = std::env::split_paths(&self.path_var).collect();
         dirs.insert(1, spare);
         std::env::join_paths(dirs).unwrap()
+    }
+
+    /// `wineo_at_home` talking to a fake release catalog instead of GitHub.
+    pub fn releases_command(&self, api: &releases_api::ReleasesApi) -> Command {
+        let mut command = self.wineo_at_home();
+        command.env("WINEO_TEST_RELEASES_API", &api.base);
+        command
     }
 
     /// `wineo_at_home` talking to a fake GOG instead of the real one.
