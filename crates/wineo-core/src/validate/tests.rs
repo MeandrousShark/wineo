@@ -545,7 +545,7 @@ fn a_runner_that_does_not_resolve_is_an_error_with_a_hint() {
     assert_eq!(problem.level, Level::Error);
     assert_eq!(problem.area, Area::Wine);
     assert_eq!(problem.fix, None);
-    assert!(problem.message.contains("wineo download"));
+    assert!(problem.message.contains("wineo runners download"));
     // The prefix is still there to check `C:\` paths against.
     assert_eq!(f.codes(), [Code::RunnerMissing]);
 }

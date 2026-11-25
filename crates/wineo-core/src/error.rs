@@ -256,7 +256,7 @@ pub enum Error {
     },
 
     #[error(
-        "{component} build `{name}` is not installed{}\nGet one with: wineo download {component}",
+        "{component} build `{name}` is not installed{}\nGet one with: wineo {component} download",
         if .installed.is_empty() {
             format!(", and nothing is installed in {}", .root.display())
         } else {
@@ -278,7 +278,7 @@ pub enum Error {
     },
 
     #[error(
-        "no {component} builds are installed, so `latest` has nothing to pick. Extract one into {}\nGet one with: wineo download {component}",
+        "no {component} builds are installed, so `latest` has nothing to pick. Extract one into {}\nGet one with: wineo {component} download",
         .root.display()
     )]
     NoBuilds {

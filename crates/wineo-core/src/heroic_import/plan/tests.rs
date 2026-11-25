@@ -789,7 +789,7 @@ fn a_missing_build_is_told_apart_from_other_failures() {
     assert!(
         missing
             .message()
-            .contains("Get one with: wineo download dxvk"),
+            .contains("Get one with: wineo dxvk download"),
         "{}",
         missing.message()
     );

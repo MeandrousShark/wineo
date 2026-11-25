@@ -286,7 +286,7 @@ fn import_fails_when_reviewed_component_disappears(component: Component) {
     assert_eq!(
         error,
         format!(
-            "prefix {} is ready, but registration failed: {} build `{component_name}` is not installed, and nothing is installed in {}\nGet one with: wineo download {}\nThen retry this import with --adopt.",
+            "prefix {} is ready, but registration failed: {} build `{component_name}` is not installed, and nothing is installed in {}\nGet one with: wineo {} download\nThen retry this import with --adopt.",
             prefix_root.join("copied").display(),
             component.as_str(),
             build_root.display(),

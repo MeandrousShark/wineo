@@ -391,7 +391,7 @@ impl Runners {
         }
         self.newest_in_family(alias)?
             .map(|(_, runner)| runner.with_selection(alias))
-            .ok_or_else(|| failure(format!("no compatible stable release is installed; use `wineo download {}` or select an installed version", if alias == "GE-Proton-Latest" { "ge-proton" } else { "proton-cachyos" })))
+            .ok_or_else(|| failure(format!("no compatible stable release is installed; use `wineo runners download {}` or select an installed version", if alias == "GE-Proton-Latest" { "ge-proton" } else { "proton-cachyos" })))
     }
 
     /// The newest build of an alias's family in this root, with its version,
@@ -403,7 +403,7 @@ impl Runners {
     }
 
     /// Every build of an alias's family in this root, oldest first. The
-    /// aliases mean what `wineo download` fetched, so only wineo's own
+    /// aliases mean what `wineo runners download` fetched, so only wineo's own
     /// builds count.
     pub(crate) fn family(&self, alias: &str) -> Result<Vec<(Vec<u64>, Runner)>> {
         let mut builds: Vec<_> = self
