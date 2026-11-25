@@ -1,8 +1,8 @@
 # JSON output
 
 `status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
-`import roms --list`, `import roms --emulators`, and `update --check`
-accept `--json` for scripting:
+`import roms --list`, `import roms --emulators`, `update --check`, and
+`runners update --check` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -15,6 +15,7 @@ wineo import gog --list --json
 wineo import roms ~/Games/roms/gamecube --emulator dolphin --list --json
 wineo import roms --emulators --json
 wineo update --check --json
+wineo runners update --check --json
 ```
 
 Each command writes one compact JSON document and a newline to stdout. Fields
@@ -308,6 +309,46 @@ newest first. `version` is GOG's name for the build, or `null`;
 update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
+
+## Runner and component updates
+
+`wineo runners update --check --json` says, for each family with a build
+installed, whether a newer release is out. It asks GitHub and downloads
+nothing. `--json` needs `--check`.
+
+```json
+{
+  "families": [
+    {
+      "provider": "ge-proton",
+      "installed": "GE-Proton10-20",
+      "available": "GE-Proton10-27",
+      "update": "available",
+      "download_size": 522190848
+    },
+    {
+      "provider": "dxvk",
+      "installed": "dxvk-2.7.1",
+      "available": null,
+      "update": "none",
+      "download_size": null
+    }
+  ],
+  "errors": []
+}
+```
+
+`provider` is `ge-proton`, `proton-cachyos`, `dxvk`, or `vkd3d`, and
+`families` is always in that order. `installed` is the newest build
+installed and `available` the build an update would install, both as
+folder names, the ones `remove` takes. `update` is `available` or `none`;
+`available` and `download_size`, the archive's size in bytes, are `null`
+when it is `none`. With nothing installed it prints
+`{"families":[],"errors":[]}`.
+
+A family that couldn't be checked, or one you named that isn't installed,
+is left out of `families` and added to `errors` with its `provider` and a
+`message`. The rest still print, and the command exits 1.
 
 ## Emulated games
 
