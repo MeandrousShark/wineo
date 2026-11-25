@@ -20,18 +20,12 @@ accessibility settings with Tray icon and hide on launch in 1.5.0 (plan
 in parallel (plan 0065), and Coverflow with controller navigation, library
 views part 5 (plan 0066), shipped in 1.6.0, Resizable list columns
 (plan 0067) with Emulated games (plan 0068) in 1.7.0, Not so fuzzy
-search (plan 0069) in 1.8.0, and Settings in tabs (plan 0070) in 1.9.0. The
-rest get a plan when they come up, and the rows below have the details.
+search (plan 0069) in 1.8.0, Settings in tabs (plan 0070) in 1.9.0, and
+Stable environment identity (plan 0071) with the GameCube adapter as a
+controller (plan 0072) in 1.10.0. The rest get a plan when they come up, and
+the rows below have the details.
 
-1. Stable environment identity: tell "the same environment" apart from "the
-   same config file", so an edit doesn't read as a replacement, and artwork
-   retries and long fetches can keep the environment they started with
-   (plan 0071).
-2. GameCube adapter as a controller: navigate the Library with a GameCube
-   controller on Nintendo's USB adapter, and hand the adapter over before
-   a game starts (plan 0072). Ships with plan 0071 in 1.10.0.
-
-Store imports come after.
+Store imports come next.
 
 ## Backlog
 
