@@ -113,7 +113,8 @@ pub(crate) fn find_with(
     // Python that can't run wineo's copy leaves `PATH` to try, and is the
     // error only when that has nothing either.
     let mut python_failed = None;
-    if own.is_file() {
+    // Only a real file: a symlink there could name anything, unchecked.
+    if fs::symlink_metadata(&own).is_ok_and(|meta| meta.file_type().is_file()) {
         match python_with(&env, token) {
             Ok(python) => {
                 let version =

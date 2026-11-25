@@ -375,3 +375,55 @@ fn an_exit_code_that_isnt_0_is_a_failure_with_its_last_line() {
     assert!(fixture("logged-out-list.stderr").exists());
     assert!(setup.sweep().is_empty());
 }
+
+#[test]
+fn a_symlink_where_the_own_copy_goes_isnt_the_own_copy() {
+    let setup = Setup::new();
+    setup.python("3.12.1");
+    let real = setup.root.path().join("elsewhere/legendary");
+    setup.legendary_at(&real, &Fake::default());
+    let own = own_copy::file(&setup.paths, own_copy::PINNED.version);
+    fs::create_dir_all(own.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, &own).unwrap();
+    let Found::Missing(missing) = found(&setup, None, setup.env()).unwrap() else {
+        panic!("took a symlink for wineo's own copy");
+    };
+    assert_eq!(missing.older_on_path, None);
+    assert!(
+        setup.python_calls().is_empty(),
+        "{:?}",
+        setup.python_calls()
+    );
+    assert!(setup.sweep().is_empty());
+}
+
+#[test]
+fn a_secret_cut_by_the_stderr_limit_leaves_no_fragment() {
+    let setup = Setup::new();
+    let secret = "SecretCode0123456789";
+    let fragment = &secret[10..];
+    // The kept tail starts exactly at the fragment.
+    let filler = "y".repeat(run::STDERR_LIMIT - fragment.len() - 2);
+    let text = format!("{}\nbefore {secret}\n{filler}\n", "x".repeat(4096));
+    assert!(text.ends_with(&format!("{fragment}\n{filler}\n")));
+    assert_eq!(text.len() - text.find(fragment).unwrap(), run::STDERR_LIMIT);
+    let stderr = setup.root.path().join("stderr");
+    fs::write(&stderr, &text).unwrap();
+    crate::test_script::write_script(
+        setup.bin.join("legendary"),
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'legendary version \"0.21.1\", codename \"x\"'; exit 0; fi\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >&2; done <'{}'\nexit 0\n",
+            stderr.display()
+        ),
+    );
+    let legendary = setup.find(setup.env());
+    let output = legendary
+        .run(&["auth", "--code"], Some(secret), &Token::new())
+        .unwrap();
+    assert!(
+        !output.stderr.contains(fragment),
+        "a piece of the code survived"
+    );
+    assert_eq!(output.stderr, format!("{filler}\n"));
+    assert!(setup.sweep().is_empty());
+}

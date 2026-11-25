@@ -152,8 +152,23 @@ pub fn download(
     })?;
     let prefix = part_prefix(pin.version);
     remove_parts(&dir, &prefix)?;
-    if destination.is_file() {
-        return Ok(Fetched::AlreadyThere(destination));
+    // Never followed: only the file this code renamed into place counts.
+    match fs::symlink_metadata(&destination) {
+        Ok(meta) if meta.file_type().is_file() => return Ok(Fetched::AlreadyThere(destination)),
+        Ok(_) => {
+            return Err(fail(format!(
+                "{} is in the way and isn't a regular file",
+                destination.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(crate::Error::Io {
+                context: format!("failed to read {}", destination.display()),
+                source: error,
+            }
+            .into());
+        }
     }
     if token.is_canceled() {
         return Err(canceled());

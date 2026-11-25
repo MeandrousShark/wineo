@@ -338,3 +338,31 @@ fn the_pin_is_the_release_file_the_probe_ran() {
         "dbed33bbe96031e65858233e4badf0a1d401bb6cb0cc995d1237cf3a0c826a45"
     );
 }
+
+#[test]
+fn a_symlink_at_the_destination_is_an_error_and_left_alone() {
+    let setup = Setup::new();
+    let real = setup.root.path().join("elsewhere");
+    fs::write(&real, BODY).unwrap();
+    let path = file(&setup.paths, "9.9.9");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, &path).unwrap();
+    let serve = Serve::file(BODY);
+    let hash = sha(BODY);
+    let error = download(&setup.paths, &serve, &pin(&hash), &Token::new(), |_, _| {}).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Couldn't get Legendary 9.9.9: {} is in the way and isn't a regular file",
+            path.display()
+        )
+    );
+    assert!(
+        fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&real).unwrap(), BODY);
+    assert_eq!(serve.hits.load(Ordering::SeqCst), 0);
+}
