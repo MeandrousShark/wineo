@@ -25,7 +25,14 @@ Stable environment identity (plan 0071) with the GameCube adapter as a
 controller (plan 0072) in 1.10.0. The rest get a plan when they come up, and
 the rows below have the details.
 
-Store imports come next.
+1. Store library import: Epic: log in to Epic, list the games the account
+   owns, install one into a normal environment, start it the way Epic's
+   launcher would, and keep it updated (plan 0073).
+2. Update installed runners: `wineo runners update` and an Update all
+   button get the newest build of everything already downloaded in one
+   step (plan 0074). Ships with plan 0073 in 1.11.0.
+
+itch.io and Amazon Games come after, one store per plan.
 
 ## Backlog
 
