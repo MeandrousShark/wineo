@@ -23,6 +23,53 @@ completed download is a no-op. Cancellation removes incomplete staging data.
 Local runner and component listings remain offline. Launching never downloads a
 runner automatically.
 
+## Update what's installed
+
+```sh
+wineo runners update
+wineo runners update ge-proton dxvk
+wineo runners update --check
+```
+
+Gets the newest release of every family you already have a build of:
+GE-Proton, Proton-CachyOS, DXVK, and vkd3d-proton. Name one or more
+families to update only those. It doesn't ask first, and a run can
+download about 1 GiB.
+
+```
+$ wineo runners update
+GE-Proton       GE-Proton10-20 -> GE-Proton10-27 (498 MiB)
+Proton-CachyOS  up to date (proton-cachyos-10.0-20261101-slr-x86_64)
+DXVK            dxvk-2.6 -> dxvk-2.7.1 (9 MiB)
+Downloading GE-Proton10-27
+...
+Installed GE-Proton10-27 and dxvk-2.7.1.
+Nothing uses GE-Proton10-20 or dxvk-2.6 now. Remove them with `wineo runners remove NAME` and `wineo dxvk remove NAME`.
+```
+
+`--check` prints the table and downloads nothing. It asks GitHub, so it
+needs the network; `--check --json` is in [JSON output](json-output.md).
+
+A family counts as installed when wineo's own root holds a build of it,
+by the rule the `*-Latest` aliases use: a build you extracted there by
+hand counts, a build from a prerelease doesn't, and builds from Steam,
+Heroic, and Lutris never do. DXVK and vkd3d-proton count only under the
+names downloads give them, `dxvk-2.6` and `vkd3d-proton-2.14`. A family
+you name that isn't installed is an error, with the command that
+downloads it.
+
+Older builds stay. An environment set to a concrete build keeps it, and
+one on `GE-Proton-Latest` or `dxvk = "latest"` moves to the new build the
+next time it starts; a game that's running is untouched. The line after
+the installs names the older builds nothing uses any more. It's left out
+when a config couldn't be read, since then wineo can't tell what's in use.
+
+One family failing doesn't stop the others: the rest still update, a
+summary says which didn't, and the command exits 1. Once GitHub says its
+hourly limit for requests without a login is used up, the families left
+are reported with that error and not asked about. Ctrl+C exits 130 and
+keeps any build that had finished. See [Exit codes](exit-codes.md).
+
 ## Follow the newest installed runner
 
 ```sh
@@ -37,7 +84,8 @@ An active game or installer keeps its original runner, including cleanup.
 Status shows the concrete runner used for that operation.
 
 Selecting a concrete runner name keeps it pinned. Aliases do not check for
-updates or fall back to another runner family. The two alias names are reserved;
+updates or fall back to another runner family; `wineo runners update` gets
+the newer build they then follow. The two alias names are reserved;
 do not create directories or symlinks with those names in the runner root.
 
 ## Use builds from Steam, Heroic, and Lutris
@@ -84,7 +132,11 @@ Lutris, even if that copy is broken. If a hidden copy is a different build,
 its row says so: `(Heroic has a different build)`. `wine` and the
 `*-Latest` aliases keep their meaning; the aliases still follow only
 builds wineo downloaded. `runner = "proton"`, which the gaming template uses,
-picks the newest Proton from every source.
+picks the newest Proton from every source. It compares names, not release
+dates, so between families the name decides: every `proton-cachyos` build
+sorts above every `GE-Proton` build, and so does Steam's `Proton-9.0` when
+other launchers' builds are on. Set a `*-Latest` alias or a concrete build
+when you want one family.
 
 wineo never changes or deletes another launcher's builds. `wineo runners
 remove` refuses with `GE-Proton11-3 belongs to Steam.`, and so does a
@@ -97,8 +149,8 @@ used while a portable folder is active.
 
 ```sh
 wineo runners remove GE-Proton9-20
-wineo dxvk remove 2.5.3
-wineo vkd3d remove 2.14 --yes
+wineo dxvk remove dxvk-2.5.3
+wineo vkd3d remove vkd3d-proton-2.14 --yes
 ```
 
 Deletes an installed build from its root. `rm` works in place of `remove`. On a terminal it asks first with

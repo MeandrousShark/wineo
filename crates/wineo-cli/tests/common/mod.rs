@@ -26,6 +26,7 @@ pub use test_script::KillOnDrop;
 pub mod gog_api;
 pub mod gog_world;
 pub mod pty;
+pub mod releases_api;
 #[allow(unused_imports)]
 pub mod snapshot;
 pub mod steam;
@@ -119,6 +120,7 @@ impl Fixture {
             .env_remove("WINEO_STEAM_KEY")
             .env_remove("WINEO_TEST_STEAM_API")
             .env_remove("WINEO_TEST_GOG_API")
+            .env_remove("WINEO_TEST_RELEASES_API")
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",
@@ -134,7 +136,13 @@ impl Fixture {
     /// ones `external_dir` names.
     pub fn wineo_at_home(&self) -> Command {
         let mut command = self.wineo();
-        command.env("HOME", self.root.path());
+        // A closed port, so nothing that reaches for GitHub gets there by
+        // accident; `releases_command` points it at a fake instead. Not on
+        // `wineo` itself, since a program wineo launches inherits the
+        // variable and `native.rs` pins what WINE-prefixed variables it sees.
+        command
+            .env("HOME", self.root.path())
+            .env("WINEO_TEST_RELEASES_API", releases_api::DEAD);
         command
     }
 
@@ -158,6 +166,13 @@ impl Fixture {
         let mut dirs: Vec<PathBuf> = std::env::split_paths(&self.path_var).collect();
         dirs.insert(1, spare);
         std::env::join_paths(dirs).unwrap()
+    }
+
+    /// `wineo_at_home` talking to a fake release catalog instead of GitHub.
+    pub fn releases_command(&self, api: &releases_api::ReleasesApi) -> Command {
+        let mut command = self.wineo_at_home();
+        command.env("WINEO_TEST_RELEASES_API", &api.base);
+        command
     }
 
     /// `wineo_at_home` talking to a fake GOG instead of the real one.

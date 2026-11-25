@@ -337,7 +337,7 @@ fn shared_build_locks_and_install_locks_refuse_without_waiting() {
     drop(shared);
     let installing = InstallLock::acquire(&dir).unwrap();
     let error = crate::runners::remove(&f.paths, "unused").unwrap_err();
-    assert!(error.to_string().contains("another install"));
+    assert!(error.to_string().contains("Another download of"));
     assert!(dir.is_dir());
     drop(installing);
     crate::runners::remove(&f.paths, "unused").unwrap();
@@ -534,7 +534,7 @@ fn component_build_and_install_locks_refuse_removal() {
             crate::components::remove(&f.paths, component, "1.0")
                 .unwrap_err()
                 .to_string()
-                .contains("another install")
+                .contains("Another download of")
         );
         assert!(dir.is_dir());
         drop(install);

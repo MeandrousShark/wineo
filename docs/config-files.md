@@ -184,6 +184,17 @@ wineo set --global defaults.games_root=~/Spiele
 wineo set --global gog.language=de-DE
 ```
 
+Three more global keys say where downloaded builds live:
+`defaults.runner_root`, `defaults.dxvk_root`, and `defaults.vkd3d_root`.
+They default to `runners`, `dxvk`, and `vkd3d` in wineo's data directory.
+Downloads, `runners update`, the `*-Latest` aliases, and `remove` all work
+in whichever folders these name.
+
+```sh
+wineo set --global defaults.runner_root=/mnt/fast/wineo/runners
+wineo set --global --unset defaults.runner_root
+```
+
 ## Launch options
 
 `mangohud`, `wayland`, and `[gamescope]` needed no schema bump either, for

@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
+use crate::build_removal;
 use crate::cancel::Token;
 use crate::components::{self, Builds, Component};
 use crate::config::GlobalConfig;
 use crate::download::{self, Client, Progress, Provider, RECEIPT, RateLimited, Release, Transport};
 use crate::error::Error;
+use crate::external_runners;
 use crate::paths::Paths;
 use crate::runners::Runners;
 
@@ -190,6 +192,12 @@ pub fn apply<T: Transport>(
             match installed {
                 Ok(path) if already => Outcome::AlreadyThere(path),
                 Ok(path) => Outcome::Installed(path),
+                // A request that was in flight when the batch was stopped can
+                // fail on its own before the next cancel check. That is part
+                // of the stop, not a failure to report.
+                Err(_) if token.is_canceled() => {
+                    Outcome::Failed(Error::Canceled("download").into())
+                }
                 Err(error) => {
                     limited = limited.or_else(|| download::rate_limited(&error));
                     Outcome::Failed(error)
@@ -230,17 +238,28 @@ fn newest_installed(
     global: &GlobalConfig,
     provider: Provider,
 ) -> Result<Option<Installed>> {
+    Ok(family_builds(paths, global, provider)?.pop())
+}
+
+/// Every build of `provider`'s family in wineo's own root, oldest first.
+fn family_builds(
+    paths: &Paths,
+    global: &GlobalConfig,
+    provider: Provider,
+) -> Result<Vec<Installed>> {
     let root = provider.root(paths, global)?;
     if let Some(alias) = alias(provider) {
         return Ok(Runners::at(root)
-            .newest_in_family(alias)?
+            .family(alias)?
+            .into_iter()
             .map(|(version, runner)| Installed {
                 name: runner.name().to_owned(),
                 version,
-            }));
+            })
+            .collect());
     }
     let component = component(provider).expect("every provider is a runner or a component");
-    Ok(Builds::at(component, root.clone())
+    let mut builds: Vec<_> = Builds::at(component, root.clone())
         .list()?
         .builds
         .into_iter()
@@ -250,7 +269,31 @@ fn newest_installed(
             version: components::build_version(build.name()),
             name: build.name().to_owned(),
         })
-        .max_by(|a, b| a.version.cmp(&b.version).then_with(|| a.name.cmp(&b.name))))
+        .collect();
+    builds.sort_by(|a, b| a.version.cmp(&b.version).then_with(|| a.name.cmp(&b.name)));
+    Ok(builds)
+}
+
+/// The family's builds that are older than its newest, oldest first, leaving
+/// out any that `wineo ... remove` would refuse whatever uses them: ones in a
+/// root inside another launcher's folder, and ones that aren't plain folders.
+/// What uses them is the removal scan's to say.
+pub fn older_builds(
+    paths: &Paths,
+    global: &GlobalConfig,
+    provider: Provider,
+) -> Result<Vec<String>> {
+    let root = provider.root(paths, global)?;
+    if alias(provider).is_some() && external_runners::root_owner(paths, &root).is_some() {
+        return Ok(Vec::new());
+    }
+    let mut builds = family_builds(paths, global, provider)?;
+    builds.pop();
+    Ok(builds
+        .into_iter()
+        .filter(|build| build_removal::managed(&root.join(&build.name), &build.name).is_ok())
+        .map(|build| build.name)
+        .collect())
 }
 
 /// Whether a component folder is named as a download names it, `dxvk-VER`

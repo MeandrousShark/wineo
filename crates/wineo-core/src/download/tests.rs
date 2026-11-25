@@ -452,7 +452,7 @@ fn abandoned_stage_cleanup_is_locked_and_scoped_to_destination() {
                         .install(&paths, &global, &release, &Token::new(), |_| {})
                         .unwrap_err()
                         .to_string()
-                        .contains("another install")
+                        .contains("Another download of")
                 );
                 assert!(active.exists());
             }
@@ -515,7 +515,10 @@ fn destination_lock_and_publication_refuse_replacement() {
     let temp = tempfile::tempdir().unwrap();
     let dest = temp.path().join("build");
     let guard = InstallLock::acquire(&dest).unwrap();
-    assert!(InstallLock::acquire(&dest).is_err());
+    assert_eq!(
+        InstallLock::acquire(&dest).err().unwrap().to_string(),
+        "Another download of build is running."
+    );
     drop(guard);
     let _guard = InstallLock::acquire(&dest).unwrap();
     fs::create_dir(&dest).unwrap();

@@ -923,8 +923,14 @@ pub struct InstallLock {
 impl InstallLock {
     pub fn acquire(destination: &Path) -> Result<Self> {
         let file = Self::open(destination)?;
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-            .context("another install is using this destination")?;
+        match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::WOULDBLOCK) => {
+                let name = destination.file_name().unwrap_or_default();
+                bail!("Another download of {} is running.", name.to_string_lossy());
+            }
+            Err(error) => return Err(error).context("couldn't lock the destination"),
+        }
         Ok(Self { file })
     }
 

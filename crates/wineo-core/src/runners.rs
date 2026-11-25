@@ -399,9 +399,14 @@ impl Runners {
     /// check both go by this, so a build can never count for one and not
     /// the other.
     pub(crate) fn newest_in_family(&self, alias: &str) -> Result<Option<(Vec<u64>, Runner)>> {
-        // The aliases mean what `wineo download` fetched, so only wineo's own
-        // builds count.
-        Ok(self
+        Ok(self.family(alias)?.pop())
+    }
+
+    /// Every build of an alias's family in this root, oldest first. The
+    /// aliases mean what `wineo download` fetched, so only wineo's own
+    /// builds count.
+    pub(crate) fn family(&self, alias: &str) -> Result<Vec<(Vec<u64>, Runner)>> {
+        let mut builds: Vec<_> = self
             .list_root()?
             .runners
             .into_iter()
@@ -411,7 +416,9 @@ impl Runners {
                 crate::runner_alias::version(&self.root, runner.name(), alias)
                     .map(|version| (version, runner))
             })
-            .max_by(|(a, ar), (b, br)| a.cmp(b).then_with(|| ar.name().cmp(br.name()))))
+            .collect();
+        builds.sort_by(|(a, ar), (b, br)| a.cmp(b).then_with(|| ar.name().cmp(br.name())));
+        Ok(builds)
     }
 
     /// The newest Proton build installed, going by the version numbers in

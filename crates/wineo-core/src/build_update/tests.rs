@@ -775,6 +775,26 @@ fn a_cancel_between_two_downloads_keeps_the_first_and_skips_the_rest() {
 }
 
 #[test]
+fn a_download_that_fails_after_a_cancel_counts_as_canceled() {
+    let home = Home::new();
+    let token = Token::new();
+    let mut fake = Fake::default();
+    two_updates(&home, &mut fake);
+    // The request for the first archive is what the cancel lands on, and it
+    // then fails for its own reason before anything looks at the token.
+    fake.cancel_on = Some((asset_url("dxvk-2.7.tar.gz"), token.clone()));
+    fake.reply(asset_url("dxvk-2.7.tar.gz"), Reply::RateLimited);
+    let (_, applied, _) = check_and_apply(&home, fake, &token);
+    assert_eq!(
+        outcomes(&applied),
+        [
+            "dxvk failed: download canceled",
+            "vkd3d failed: download canceled"
+        ]
+    );
+}
+
+#[test]
 fn apply_reports_each_step_in_batch_order() {
     let home = Home::new();
     let mut fake = Fake::default();
@@ -923,4 +943,54 @@ fn a_leading_zero_reads_as_the_same_version() {
     let mut fake = Fake::default();
     fake.newest(Provider::Dxvk, "v2.7", "dxvk-2.7.tar.gz");
     assert_eq!(summary(&home.check(fake)), ["dxvk dxvk-2.07 up to date"]);
+}
+
+#[test]
+fn older_builds_are_the_family_below_its_newest() {
+    let home = Home::new();
+    for name in ["GE-Proton10-27", "GE-Proton10-18", "GE-Proton10-20"] {
+        home.runner(Provider::GeProton, name);
+    }
+    // Another family, and a name that isn't GE-Proton's, aren't its builds.
+    home.runner(Provider::ProtonCachyos, "proton-cachyos-10.0-20261001-slr");
+    home.runner(Provider::GeProton, "GE-Proton10-custom");
+    for name in ["dxvk-2.6", "dxvk-2.5", "dxvk-gplasync-2.4"] {
+        home.component(Provider::Dxvk, name);
+    }
+    home.component(Provider::Vkd3d, "vkd3d-proton-2.13");
+    let older = |provider| older_builds(&home.paths, &home.global, provider).unwrap();
+    assert_eq!(
+        older(Provider::GeProton),
+        ["GE-Proton10-18", "GE-Proton10-20"]
+    );
+    assert!(older(Provider::ProtonCachyos).is_empty());
+    assert_eq!(older(Provider::Dxvk), ["dxvk-2.5"]);
+    assert!(older(Provider::Vkd3d).is_empty());
+}
+
+#[test]
+fn older_builds_leave_out_what_remove_would_refuse() {
+    let mut home = Home::new();
+    let lutris = home.paths.home().join(".local/share/lutris/runners/wine");
+    fs::create_dir_all(&lutris).unwrap();
+    home.global.defaults.runner_root = Some(lutris.display().to_string());
+    for name in ["GE-Proton10-20", "GE-Proton10-27"] {
+        home.runner(Provider::GeProton, name);
+    }
+    // The root is another launcher's, so those builds aren't wineo's to remove.
+    assert!(
+        older_builds(&home.paths, &home.global, Provider::GeProton)
+            .unwrap()
+            .is_empty()
+    );
+
+    // A build that is a link rather than a folder is refused too.
+    let target = home.component(Provider::Dxvk, "dxvk-2.5");
+    home.component(Provider::Dxvk, "dxvk-2.7");
+    let link = home.root(Provider::Dxvk).join("dxvk-2.6");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(
+        older_builds(&home.paths, &home.global, Provider::Dxvk).unwrap(),
+        ["dxvk-2.5"]
+    );
 }
