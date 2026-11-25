@@ -50,6 +50,18 @@ pub(crate) fn version(root: &Path, name: &str, alias: &str) -> Option<Vec<u64>> 
     parse_version(version, provider)
 }
 
+/// The version of a release tag in an alias's family, by the same rule the
+/// alias reads an installed build with, so the two compare like for like.
+/// None when the tag doesn't follow the family's naming.
+pub fn release_version(alias: &str, tag: &str) -> Option<Vec<u64>> {
+    let provider = match alias {
+        "GE-Proton-Latest" => "ge-proton",
+        "Proton-CachyOS-Latest" => "proton-cachyos",
+        _ => return None,
+    };
+    parse_version(tag, provider)
+}
+
 pub(crate) fn complete_proton(root: &Path) -> bool {
     ["files/bin", "dist/bin"].iter().any(|bin| {
         ["wine", "wineserver"].iter().all(|exe| {
