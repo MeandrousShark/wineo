@@ -15,8 +15,8 @@ use crate::error::Error;
 use crate::paths::Paths;
 use crate::runners::Runners;
 
-/// What a check found, one entry per installed family in the providers'
-/// fixed order. A family with nothing installed has no entry.
+/// What a check found, one entry per family checked in the providers' fixed
+/// order. A family with nothing installed has no entry unless it was named.
 #[derive(Debug)]
 pub struct Report {
     pub families: Vec<Family>,
@@ -56,7 +56,15 @@ impl Report {
     }
 }
 
-/// Asks upstream for each installed family's newest release. One family's
+/// A family that was asked for by name has nothing installed. The CLI adds
+/// how to get one, since it knows the spelling of the command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{} isn't installed", .0.label())]
+pub struct NotInstalled(pub Provider);
+
+/// Asks upstream for the newest release of each family in `wanted`, or of
+/// every installed family when it is empty, in the providers' fixed order
+/// and each once. A named family with nothing installed is its error. One family's
 /// failure never stops the others, except that once GitHub says the rate
 /// limit is used up, the rest get that answer without asking again.
 /// `Client::select` takes no token, so a cancel is honored between two
@@ -65,13 +73,26 @@ pub fn check<T: Transport>(
     client: &Client<T>,
     paths: &Paths,
     global: &GlobalConfig,
+    wanted: &[Provider],
     token: &Token,
 ) -> Report {
     let mut families = Vec::new();
     let mut limited: Option<RateLimited> = None;
+    let named = !wanted.is_empty();
     for provider in Provider::ALL {
+        if named && !wanted.contains(&provider) {
+            continue;
+        }
         let installed = match newest_installed(paths, global, provider) {
             Ok(Some(installed)) => installed,
+            Ok(None) if named => {
+                families.push(Family {
+                    provider,
+                    installed: None,
+                    status: Status::Failed(NotInstalled(provider).into()),
+                });
+                continue;
+            }
             Ok(None) => continue,
             Err(error) => {
                 families.push(Family {

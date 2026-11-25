@@ -138,6 +138,7 @@ impl Home {
             &Client::with_transport(fake),
             &self.paths,
             &self.global,
+            &[],
             &Token::new(),
         )
     }
@@ -538,6 +539,7 @@ fn a_cancel_between_two_checks_skips_the_rest() {
         &Client::with_transport(fake),
         &home.paths,
         &home.global,
+        &[],
         &token,
     );
     // The answer already asked for is kept; the next family is never asked.
@@ -617,7 +619,7 @@ fn outcomes(applied: &Applied) -> Vec<String> {
 /// Checks, then applies the report with the same client and token.
 fn check_and_apply(home: &Home, fake: Fake, token: &Token) -> (Report, Applied, Vec<String>) {
     let client = Client::with_transport(fake);
-    let report = check(&client, &home.paths, &home.global, &Token::new());
+    let report = check(&client, &home.paths, &home.global, &[], &Token::new());
     let mut steps = Vec::new();
     let applied = apply(&client, &home.paths, &home.global, &report, token, |step| {
         if !matches!(step.progress, Progress::Downloading { .. }) {
@@ -639,7 +641,7 @@ fn apply_installs_each_update_then_finds_them_already_there() {
     let mut fake = Fake::default();
     two_updates(&home, &mut fake);
     let client = Client::with_transport(fake);
-    let report = check(&client, &home.paths, &home.global, &Token::new());
+    let report = check(&client, &home.paths, &home.global, &[], &Token::new());
     let mut steps = Vec::new();
     let applied = apply(
         &client,
@@ -675,7 +677,7 @@ fn apply_installs_each_update_then_finds_them_already_there() {
         ["dxvk already dxvk-2.7", "vkd3d already vkd3d-proton-2.14"]
     );
     // And a fresh check now reads both as up to date.
-    let checked = check(&client, &home.paths, &home.global, &Token::new());
+    let checked = check(&client, &home.paths, &home.global, &[], &Token::new());
     assert_eq!(
         summary(&checked),
         [
@@ -747,7 +749,7 @@ fn a_cancel_between_two_downloads_keeps_the_first_and_skips_the_rest() {
     two_updates(&home, &mut fake);
     let asked = fake.asked.clone();
     let client = Client::with_transport(fake);
-    let report = check(&client, &home.paths, &home.global, &Token::new());
+    let report = check(&client, &home.paths, &home.global, &[], &Token::new());
     let applied = apply(
         &client,
         &home.paths,
@@ -789,4 +791,102 @@ fn apply_reports_each_step_in_batch_order() {
         first.is_some() && second.is_some() && first < second,
         "{steps:?}"
     );
+}
+
+fn check_named(home: &Home, fake: Fake, wanted: &[Provider]) -> Report {
+    check(
+        &Client::with_transport(fake),
+        &home.paths,
+        &home.global,
+        wanted,
+        &Token::new(),
+    )
+}
+
+/// GE-Proton and DXVK installed, each with a newer release upstream.
+fn two_installed(home: &Home) -> Fake {
+    home.runner(Provider::GeProton, "GE-Proton10-20");
+    home.component(Provider::Dxvk, "dxvk-2.6");
+    let mut fake = Fake::default();
+    fake.newest(
+        Provider::GeProton,
+        "GE-Proton10-27",
+        "GE-Proton10-27.tar.gz",
+    );
+    fake.newest(Provider::Dxvk, "v2.7", "dxvk-2.7.tar.gz");
+    fake
+}
+
+#[test]
+fn a_named_family_is_the_only_one_asked_about() {
+    let home = Home::new();
+    let fake = two_installed(&home);
+    let asked = fake.asked.clone();
+    let report = check_named(&home, fake, &[Provider::Dxvk]);
+    assert_eq!(summary(&report), ["dxvk dxvk-2.6 -> dxvk-2.7"]);
+    assert_eq!(*asked.borrow(), [catalog_url(Provider::Dxvk)]);
+}
+
+#[test]
+fn a_family_named_twice_counts_once() {
+    let home = Home::new();
+    let fake = two_installed(&home);
+    let asked = fake.asked.clone();
+    let report = check_named(
+        &home,
+        fake,
+        &[Provider::Dxvk, Provider::GeProton, Provider::Dxvk],
+    );
+    // In the providers' order, not the order named.
+    assert_eq!(
+        summary(&report),
+        [
+            "ge-proton GE-Proton10-20 -> GE-Proton10-27",
+            "dxvk dxvk-2.6 -> dxvk-2.7"
+        ]
+    );
+    assert_eq!(
+        *asked.borrow(),
+        [catalog_url(Provider::GeProton), catalog_url(Provider::Dxvk)]
+    );
+}
+
+#[test]
+fn a_named_family_that_isnt_installed_is_its_error() {
+    let home = Home::new();
+    let fake = two_installed(&home);
+    let asked = fake.asked.clone();
+    let report = check_named(&home, fake, &[Provider::ProtonCachyos, Provider::Dxvk]);
+    assert_eq!(
+        summary(&report),
+        [
+            "proton-cachyos ? failed: Proton-CachyOS isn't installed",
+            "dxvk dxvk-2.6 -> dxvk-2.7"
+        ]
+    );
+    let Status::Failed(error) = &report.families[0].status else {
+        unreachable!()
+    };
+    assert_eq!(
+        error.downcast_ref::<NotInstalled>(),
+        Some(&NotInstalled(Provider::ProtonCachyos))
+    );
+    assert_eq!(*asked.borrow(), [catalog_url(Provider::Dxvk)]);
+}
+
+#[test]
+fn no_family_named_means_every_installed_one() {
+    let home = Home::new();
+    let fake = two_installed(&home);
+    let asked = fake.asked.clone();
+    let report = check_named(&home, fake, &[]);
+    // Proton-CachyOS and vkd3d-proton aren't installed, so they're left out.
+    assert_eq!(
+        summary(&report),
+        [
+            "ge-proton GE-Proton10-20 -> GE-Proton10-27",
+            "dxvk dxvk-2.6 -> dxvk-2.7"
+        ]
+    );
+    assert_eq!(asked.borrow().len(), 2);
 }
