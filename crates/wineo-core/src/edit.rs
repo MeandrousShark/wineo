@@ -241,6 +241,12 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
             store_value(root, key, Value::from(parse_bool(key, raw)?));
             Ok(())
         }
+        "epic.legendary" => {
+            let value = parse_string_value(key, raw)?;
+            let table = ensure_table(root, "epic", "epic", false)?;
+            store_value(table, "legendary", value);
+            Ok(())
+        }
         "retroarch.quit_with_game" => {
             let value = Value::from(parse_bool(key, raw)?);
             let table = ensure_table(root, "retroarch", "retroarch", false)?;
@@ -604,6 +610,7 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.games_root" => unset_field(root, "defaults", "defaults", "games_root"),
         "gog.language" => unset_field(root, "gog", "gog", "language"),
         "art.fetch" => unset_field(root, "art", "art", "fetch"),
+        "epic.legendary" => unset_field(root, "epic", "epic", "legendary"),
         "retroarch.quit_with_game" => unset_field(root, "retroarch", "retroarch", "quit_with_game"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
