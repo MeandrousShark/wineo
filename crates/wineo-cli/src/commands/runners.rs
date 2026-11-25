@@ -24,7 +24,19 @@ enum Action {
     /// Remove an installed runner
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
+    /// Download newer builds of what wineo downloaded
+    #[command(long_about = UPDATE_ABOUT)]
+    Update(super::build_update::Args),
 }
+
+const UPDATE_ABOUT: &str = "Download the newest release of each family wineo has a build of: \
+GE-Proton, Proton-CachyOS, DXVK, and vkd3d-proton. This one command covers the graphics \
+components too, so there is nothing to run per kind.
+
+Name families to update only those. Older builds stay; the summary names the ones nothing \
+uses and how to remove them. With --check, ask GitHub what is newer and download nothing; \
+--json prints that as JSON. Exits 1 when a family couldn't be checked or downloaded, after \
+the rest ran.";
 
 #[derive(clap::Args)]
 struct RemoveArgs {
@@ -48,16 +60,20 @@ struct Row {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
-    if let Some(Action::Remove(args)) = args.action {
-        return super::remove_build::run(
-            paths,
-            &args.name,
-            "runner",
-            wineo_core::build_lock::Kind::Runner,
-            args.yes,
-            |paths, name| Ok(wineo_core::runners::size(paths, name)?),
-            |paths, name| Ok(wineo_core::runners::remove(paths, name)?),
-        );
+    match args.action {
+        Some(Action::Remove(args)) => {
+            return super::remove_build::run(
+                paths,
+                &args.name,
+                "runner",
+                wineo_core::build_lock::Kind::Runner,
+                args.yes,
+                |paths, name| Ok(wineo_core::runners::size(paths, name)?),
+                |paths, name| Ok(wineo_core::runners::remove(paths, name)?),
+            );
+        }
+        Some(Action::Update(args)) => return super::build_update::run(paths, args),
+        None => {}
     }
 
     let global = GlobalConfig::load(paths)?;

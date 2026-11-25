@@ -838,3 +838,19 @@ fn snapshot_labels_skip_flags_and_read_names_after_the_separator() {
         ["boat"]
     );
 }
+
+#[test]
+fn runners_update_completes_family_names() {
+    let root = tempfile::tempdir().unwrap();
+    let mut offered = complete(root.path(), "fish", &["wineo", "runners", "update", ""]);
+    offered.retain(|name| !name.starts_with('-'));
+    offered.sort();
+    assert_eq!(offered, ["dxvk", "ge-proton", "proton-cachyos", "vkd3d"]);
+    assert_eq!(
+        complete(root.path(), "fish", &["wineo", "runners", "update", "pro"]),
+        ["proton-cachyos"]
+    );
+    // The command itself is offered after `runners`.
+    let actions = complete(root.path(), "fish", &["wineo", "runners", ""]);
+    assert!(actions.iter().any(|name| name == "update"), "{actions:?}");
+}

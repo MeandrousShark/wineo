@@ -1,5 +1,6 @@
 pub mod art;
 mod build;
+mod build_update;
 pub mod builds;
 pub mod clone;
 pub mod completions;
