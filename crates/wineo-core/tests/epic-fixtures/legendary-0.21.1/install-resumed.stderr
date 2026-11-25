@@ -1,0 +1,45 @@
+[Core] WARNING: Getting locale failed: ValueError('not enough values to unpack (expected 2, got 1)'), falling back to using en-US.
+[Core] INFO: Trying to re-use existing login session...
+[cli] INFO: Preparing download for "Prereq Game®" (AppPrereq)...
+[Core] INFO: Parsing game manifest...
+[Core] INFO: Install path: /home/user/.local/share/wineo/epic/games/prereqgame
+[Core] INFO: Selected CDN: egdownload.fastly-edge.com (https)
+[DLM] INFO: Found previously interrupted download. Download will be resumed if possible.
+[DLM] INFO: Skipping 709 files based on resume data.
+[cli] INFO: Install size: 42216.62 MiB
+[cli] INFO: Download size: 34151.04 MiB (Compression savings: 2.0%)
+[cli] INFO: Reusable size: 0.00 MiB (chunks) / 4879.95 MiB (unchanged / skipped)
+[cli] INFO: Downloads are resumable, you can interrupt the download with CTRL-C and resume it using the same command later on.
+[DLManager] INFO: Download Manager running with process-id: 2201046
+[DLManager] INFO: Starting download workers...
+[DLManager] INFO: Starting file writing worker...
+[DLManager] INFO: = Progress: 0.00% (0/64904), Running for 00:00:00, ETA: 00:00:00
+[DLManager] INFO:  - Downloaded: 0.00 MiB, Written: 0.00 MiB
+[DLManager] INFO:  - Cache usage: 1.00 MiB, active tasks: 0
+[DLManager] INFO:  + Download	- 0.00 MiB/s (raw) / 0.00 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 0.00 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 0.00% (0/64904), Running for 00:00:00, ETA: 00:00:00
+[DLManager] INFO:  - Downloaded: 0.00 MiB, Written: 0.00 MiB
+[DLManager] INFO:  - Cache usage: 32.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 0.00 MiB/s (raw) / 0.00 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 0.00 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 0.16% (105/64904), Running for 00:00:02, ETA: 00:20:53
+[DLManager] INFO:  - Downloaded: 107.94 MiB, Written: 92.72 MiB
+[DLManager] INFO:  - Cache usage: 47.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 107.90 MiB/s (raw) / 107.96 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 92.68 MiB/s (write) / 0.00 MiB/s (read)
+...
+[DLManager] INFO: = Progress: 99.55% (64611/64904), Running for 00:03:52, ETA: 00:00:01
+[DLManager] INFO:  - Downloaded: 34081.92 MiB, Written: 37186.51 MiB
+[DLManager] INFO:  - Cache usage: 89.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 170.57 MiB/s (raw) / 175.95 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 175.48 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 100.00% (64904/64904), Running for 00:03:53, ETA: 00:00:00
+[DLManager] INFO:  - Downloaded: 34151.04 MiB, Written: 37336.67 MiB
+[DLManager] INFO:  - Cache usage: 0.00 MiB, active tasks: 0
+[DLManager] INFO:  + Download	- 69.10 MiB/s (raw) / 77.98 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 150.12 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: Waiting for installation to finish...
+[DLManager] INFO: All done! Download manager quitting...
+[cli] INFO: Automatic installation not available on Linux.
+[cli] INFO: Finished installation process in 235.24 seconds.

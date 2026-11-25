@@ -97,6 +97,16 @@ fn gog_language_defaults_to_us_english() {
 }
 
 #[test]
+fn the_legendary_setting_is_read_as_written() {
+    assert_eq!(global("").unwrap().epic.legendary, None);
+    assert_eq!(global("[epic]\n").unwrap().epic.legendary, None);
+    let set = global("[epic]\nlegendary = \"~/bin/legendary\"\n").unwrap();
+    assert_eq!(set.epic.legendary.as_deref(), Some("~/bin/legendary"));
+    assert!(global("[epic]\nlegendry = \"x\"\n").is_err());
+    assert!(global("[epic]\nlegendary = 1\n").is_err());
+}
+
+#[test]
 fn a_bad_gog_language_fails_the_global_config() {
     let err = global("[gog]\nlanguage = \"english\"\n").unwrap_err();
     assert_eq!(

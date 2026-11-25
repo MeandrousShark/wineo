@@ -1,0 +1,422 @@
+[
+ {
+  "achievements": [],
+  "app_name": "AppToken",
+  "app_title": "Token Game 2020",
+  "asset_infos": {
+   "Windows": {
+    "app_name": "AppToken",
+    "asset_id": "AppToken",
+    "build_version": "1260-win",
+    "catalog_item_id": "00000000000000000000000000000001",
+    "label_name": "Live-Windows",
+    "metadata": {},
+    "namespace": "00000000000000000000000000000002",
+    "sidecar_rev": 0
+   }
+  },
+  "base_urls": [],
+  "dlcs": [],
+  "metadata": {
+   "categories": [
+    {
+     "path": "public"
+    },
+    {
+     "path": "games"
+    },
+    {
+     "path": "applications"
+    }
+   ],
+   "customAttributes": {
+    "CanRunOffline": {
+     "type": "STRING",
+     "value": "true"
+    },
+    "FolderName": {
+     "type": "STRING",
+     "value": "TokenGame2020"
+    },
+    "MonitorPresence": {
+     "type": "STRING",
+     "value": "true"
+    },
+    "OwnershipToken": {
+     "type": "STRING",
+     "value": "true"
+    }
+   },
+   "dlcItemList": [
+    {
+     "id": "00000000000000000000000000000003",
+     "namespace": "00000000000000000000000000000002",
+     "releaseInfo": [
+      {
+       "appId": "ExampleEditor",
+       "compatibleApps": [],
+       "dateAdded": "2020-09-18T00:00:00.000Z",
+       "id": "00000000000000000000000000000004",
+       "platform": [
+        "Windows"
+       ],
+       "releaseNote": "",
+       "versionTitle": ""
+      }
+     ],
+     "title": "Dlc Item 1"
+    }
+   ],
+   "id": "00000000000000000000000000000001",
+   "namespace": "00000000000000000000000000000002",
+   "title": "Token Game 2020"
+  },
+  "sidecar": null
+ },
+ {
+  "achievements": [],
+  "app_name": "Dlc Game",
+  "app_title": "Dlc Game",
+  "asset_infos": {
+   "Windows": {
+    "app_name": "Dlc Game",
+    "asset_id": "Dlc Game",
+    "build_version": "++Dlc Game+Release-43.11-CL-60803671-Windows",
+    "catalog_item_id": "00000000000000000000000000000005",
+    "label_name": "Live-Windows",
+    "metadata": {
+     "hasDependencyConfig": true,
+     "installationPoolId": "Dlc GameInstallationPool"
+    },
+    "namespace": "fn",
+    "sidecar_rev": 0
+   }
+  },
+  "base_urls": [],
+  "dlcs": [
+   {
+    "achievements": [],
+    "app_name": "0000000000000000000000000000000c",
+    "app_title": "Dlc Game Extra One Content",
+    "asset_infos": {
+     "Windows": {
+      "app_name": "0000000000000000000000000000000c",
+      "asset_id": "0000000000000000000000000000000c",
+      "build_version": "++Dlc Game+Release-43.11-CL-60803671-Windows",
+      "catalog_item_id": "0000000000000000000000000000000d",
+      "label_name": "Live-Windows",
+      "metadata": {},
+      "namespace": "fn",
+      "sidecar_rev": 0
+     }
+    },
+    "base_urls": [],
+    "dlcs": [],
+    "metadata": {
+     "categories": [
+      {
+       "path": "hidden"
+      }
+     ],
+     "customAttributes": {},
+     "id": "0000000000000000000000000000000d",
+     "mainGameItem": {
+      "id": "00000000000000000000000000000005",
+      "namespace": "fn"
+     },
+     "namespace": "fn",
+     "title": "Dlc Game Extra One Content"
+    },
+    "sidecar": null
+   },
+   {
+    "achievements": [],
+    "app_name": "0000000000000000000000000000000e",
+    "app_title": "Extra Two Dlc Game Content",
+    "asset_infos": {
+     "Windows": {
+      "app_name": "0000000000000000000000000000000e",
+      "asset_id": "0000000000000000000000000000000e",
+      "build_version": "++Dlc Game+Release-43.11-CL-60803671-Windows",
+      "catalog_item_id": "0000000000000000000000000000000f",
+      "label_name": "Live-Windows",
+      "metadata": {},
+      "namespace": "fn",
+      "sidecar_rev": 0
+     }
+    },
+    "base_urls": [],
+    "dlcs": [],
+    "metadata": {
+     "categories": [
+      {
+       "path": "hidden"
+      }
+     ],
+     "customAttributes": {},
+     "id": "0000000000000000000000000000000f",
+     "mainGameItem": {
+      "id": "00000000000000000000000000000005",
+      "namespace": "fn"
+     },
+     "namespace": "fn",
+     "title": "Extra Two Dlc Game Content"
+    },
+    "sidecar": null
+   }
+  ],
+  "metadata": {
+   "categories": [
+    {
+     "path": "games"
+    },
+    {
+     "path": "applications"
+    }
+   ],
+   "customAttributes": {
+    "FolderName": {
+     "type": "STRING",
+     "value": "Dlc Game"
+    }
+   },
+   "dlcItemList": [
+    {
+     "id": "00000000000000000000000000000006",
+     "namespace": "fn",
+     "releaseInfo": [
+      {
+       "appId": "00000000000000000000000000000008",
+       "compatibleApps": [],
+       "dateAdded": "2023-03-14T17:27:41.306Z",
+       "id": "00000000000000000000000000000007",
+       "platform": [
+        "Windows"
+       ]
+      }
+     ],
+     "title": "Dlc Item 1"
+    },
+    {
+     "id": "00000000000000000000000000000009",
+     "namespace": "fn",
+     "releaseInfo": [
+      {
+       "appId": "0000000000000000000000000000000b",
+       "compatibleApps": [],
+       "dateAdded": "2023-12-06T23:16:00.000Z",
+       "id": "0000000000000000000000000000000a",
+       "platform": [
+        "Windows",
+        "iOS",
+        "Android"
+       ]
+      }
+     ],
+     "title": "Dlc Item 2"
+    }
+   ],
+   "id": "00000000000000000000000000000005",
+   "namespace": "fn",
+   "title": "Dlc Game"
+  },
+  "sidecar": null
+ },
+ {
+  "achievements": [],
+  "app_name": "AppPrereq",
+  "app_title": "Prereq Game®",
+  "asset_infos": {
+   "Windows": {
+    "app_name": "AppPrereq",
+    "asset_id": "AppPrereq",
+    "build_version": "++Example+Update1.0-CL-100000",
+    "catalog_item_id": "00000000000000000000000000000010",
+    "label_name": "Live-Windows",
+    "metadata": {},
+    "namespace": "00000000000000000000000000000011",
+    "sidecar_rev": 0
+   }
+  },
+  "base_urls": [],
+  "dlcs": [],
+  "metadata": {
+   "categories": [
+    {
+     "path": "public"
+    },
+    {
+     "path": "games"
+    },
+    {
+     "path": "applications"
+    }
+   ],
+   "customAttributes": {
+    "CanRunOffline": {
+     "type": "STRING",
+     "value": "true"
+    },
+    "FolderName": {
+     "type": "STRING",
+     "value": "prereqgame"
+    },
+    "MonitorPresence": {
+     "type": "STRING",
+     "value": "true"
+    }
+   },
+   "dlcItemList": [
+    {
+     "id": "00000000000000000000000000000012",
+     "namespace": "00000000000000000000000000000011",
+     "releaseInfo": [],
+     "title": "Dlc Item 1"
+    },
+    {
+     "id": "00000000000000000000000000000013",
+     "namespace": "00000000000000000000000000000011",
+     "releaseInfo": [],
+     "title": "Dlc Item 2"
+    }
+   ],
+   "id": "00000000000000000000000000000010",
+   "namespace": "00000000000000000000000000000011",
+   "title": "Prereq Game®"
+  },
+  "sidecar": null
+ },
+ {
+  "achievements": [],
+  "app_name": "AppOffline",
+  "app_title": "Offline Game",
+  "asset_infos": {
+   "Windows": {
+    "app_name": "AppOffline",
+    "asset_id": "AppOffline",
+    "build_version": "0.24",
+    "catalog_item_id": "00000000000000000000000000000014",
+    "label_name": "Live-Windows",
+    "metadata": {},
+    "namespace": "00000000000000000000000000000015",
+    "sidecar_rev": 0
+   }
+  },
+  "base_urls": [],
+  "dlcs": [],
+  "metadata": {
+   "categories": [
+    {
+     "path": "public"
+    },
+    {
+     "path": "games"
+    },
+    {
+     "path": "applications"
+    }
+   ],
+   "customAttributes": {
+    "CanRunOffline": {
+     "type": "STRING",
+     "value": "true"
+    },
+    "FolderName": {
+     "type": "STRING",
+     "value": "OfflineGame"
+    },
+    "MonitorPresence": {
+     "type": "STRING",
+     "value": "true"
+    }
+   },
+   "dlcItemList": [
+    {
+     "id": "00000000000000000000000000000016",
+     "namespace": "00000000000000000000000000000015",
+     "title": "Dlc Item 1"
+    },
+    {
+     "id": "00000000000000000000000000000017",
+     "namespace": "00000000000000000000000000000015",
+     "title": "Dlc Item 2"
+    }
+   ],
+   "id": "00000000000000000000000000000014",
+   "namespace": "00000000000000000000000000000015",
+   "title": "Offline Game"
+  },
+  "sidecar": null
+ },
+ {
+  "achievements": [],
+  "app_name": "AppThirdParty",
+  "app_title": "Third Party Game",
+  "asset_infos": {
+   "Windows": {
+    "app_name": "AppThirdParty",
+    "asset_id": "AppThirdParty",
+    "build_version": "1.0",
+    "catalog_item_id": "00000000000000000000000000000018",
+    "label_name": "Live-Windows",
+    "metadata": {},
+    "namespace": "appthirdparty",
+    "sidecar_rev": 0
+   }
+  },
+  "base_urls": [],
+  "dlcs": [],
+  "metadata": {
+   "categories": [
+    {
+     "path": "games"
+    },
+    {
+     "path": "applications"
+    }
+   ],
+   "customAttributes": {
+    "CanRunOffline": {
+     "type": "STRING",
+     "value": "true"
+    },
+    "FolderName": {
+     "type": "STRING",
+     "value": "ThirdPartyGame"
+    },
+    "MonitorPresence": {
+     "type": "STRING",
+     "value": "true"
+    },
+    "partnerLinkType": {
+     "type": "STRING",
+     "value": "ubisoft"
+    }
+   },
+   "dlcItemList": [
+    {
+     "id": "00000000000000000000000000000019",
+     "namespace": "appthirdparty",
+     "releaseInfo": [
+      {
+       "appId": "AppThirdPartySPDummy",
+       "compatibleApps": [],
+       "dateAdded": "2019-09-27T00:00:00.000Z",
+       "id": "0000000000000000000000000000001a",
+       "platform": [
+        "Windows"
+       ],
+       "releaseNote": "",
+       "versionTitle": ""
+      }
+     ],
+     "title": "Dlc Item 1"
+    }
+   ],
+   "id": "00000000000000000000000000000018",
+   "namespace": "appthirdparty",
+   "title": "Third Party Game"
+  },
+  "sidecar": null
+ }
+]

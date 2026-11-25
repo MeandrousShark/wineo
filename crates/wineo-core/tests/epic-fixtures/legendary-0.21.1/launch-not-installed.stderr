@@ -1,0 +1,2 @@
+[Core] WARNING: Getting locale failed: ValueError('not enough values to unpack (expected 2, got 1)'), falling back to using en-US.
+[cli] ERROR: Game AppPrereq is not currently installed!

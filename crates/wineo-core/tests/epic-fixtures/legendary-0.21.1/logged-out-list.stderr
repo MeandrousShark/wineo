@@ -1,0 +1,20 @@
+[Core] WARNING: Getting locale failed: ValueError('not enough values to unpack (expected 2, got 1)'), falling back to using en-US.
+[cli] INFO: Logging in...
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/__main__.py", line 42, in <module>
+    legendary.cli.main()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/cli.py", line 3171, in main
+    cli.list_games(args)
+    ~~~~~~~~~~~~~~^^^^^^
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/cli.py", line 212, in list_games
+    if not self.core.login():
+           ~~~~~~~~~~~~~~~^^
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/core.py", line 282, in login
+    return self._login(lock, force_refresh=force_refresh)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/core.py", line 218, in _login
+    raise ValueError('No saved credentials')
+ValueError: No saved credentials

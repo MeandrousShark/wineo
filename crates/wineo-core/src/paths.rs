@@ -339,6 +339,25 @@ impl Paths {
         self.host_state.join(".locks").join("gog-adoption.lock")
     }
 
+    /// wineo's Epic folder: Legendary's state, wineo's own copy of
+    /// Legendary, and what Legendary unpacks. Always in the host data dir,
+    /// since Epic games live in the host library only.
+    pub fn epic_dir(&self) -> PathBuf {
+        self.data.join("epic")
+    }
+
+    /// The host-wide lock that Epic login, logout, and every Legendary call
+    /// that logs in share, since Legendary's saved login is host-wide too.
+    pub fn epic_lock(&self) -> PathBuf {
+        self.host_state.join(".locks").join("epic.lock")
+    }
+
+    /// The cached list of Epic games the logged-in account owns, on the
+    /// host like Steam's and GOG's.
+    pub fn epic_owned_cache(&self) -> PathBuf {
+        self.cache.join("epic-owned.json")
+    }
+
     /// Held while an emulated game import checks that its ROM isn't imported
     /// yet and writes the environment. Host-wide, like the GOG folder locks.
     pub fn emulated_rom_lock(&self) -> PathBuf {

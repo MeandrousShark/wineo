@@ -1,0 +1,55 @@
+[Core] WARNING: Getting locale failed: ValueError('not enough values to unpack (expected 2, got 1)'), falling back to using en-US.
+[Core] INFO: Trying to re-use existing login session...
+[cli] INFO: Clearing install tags from config and disabling SDL for title.
+[cli] INFO: Preparing download for "Offline Game" (AppOffline)...
+[Core] INFO: Parsing game manifest...
+[Core] INFO: Install path: /home/user/.local/share/wineo/epic/games/Offline Game
+[Core] INFO: Selected CDN: egs-cloudfront-chunks.epicgamescdn.com (https)
+[DLM] INFO: Found 0 missing files.
+[cli] INFO: Install size: 2375.87 MiB
+[cli] INFO: Download size: 1443.56 MiB (Compression savings: 39.2%)
+[cli] INFO: Reusable size: 0.00 MiB (chunks) / 0.00 MiB (unchanged / skipped)
+[cli] INFO: Downloads are resumable, you can interrupt the download with CTRL-C and resume it using the same command later on.
+[DLManager] INFO: Download Manager running with process-id: 2182270
+[DLManager] INFO: Starting download workers...
+[DLManager] INFO: Starting file writing worker...
+[DLManager] INFO: = Progress: 0.00% (0/3967), Running for 00:00:00, ETA: 00:00:00
+[DLManager] INFO:  - Downloaded: 0.00 MiB, Written: 0.00 MiB
+[DLManager] INFO:  - Cache usage: 32.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 0.00 MiB/s (raw) / 0.00 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 0.00 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 0.38% (15/3967), Running for 00:00:01, ETA: 00:04:26
+[DLManager] INFO:  - Downloaded: 12.60 MiB, Written: 15.00 MiB
+[DLManager] INFO:  - Cache usage: 50.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 12.59 MiB/s (raw) / 32.99 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 15.00 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 9.25% (367/3967), Running for 00:00:02, ETA: 00:00:19
+[DLManager] INFO:  - Downloaded: 87.78 MiB, Written: 282.00 MiB
+[DLManager] INFO:  - Cache usage: 32.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 75.17 MiB/s (raw) / 248.93 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 266.93 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 22.03% (874/3967), Running for 00:00:03, ETA: 00:00:10
+[DLManager] INFO:  - Downloaded: 100.80 MiB, Written: 681.85 MiB
+[DLManager] INFO:  - Cache usage: 33.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 13.01 MiB/s (raw) / 397.88 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 399.73 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 31.08% (1233/3967), Running for 00:00:04, ETA: 00:00:08
+[DLManager] INFO:  - Downloaded: 181.27 MiB, Written: 930.34 MiB
+[DLManager] INFO:  - Cache usage: 33.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 80.46 MiB/s (raw) / 248.94 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 248.42 MiB/s (write) / 0.00 MiB/s (read)
+...
+[DLManager] INFO: = Progress: 98.06% (3890/3967), Running for 00:00:17, ETA: 00:00:00
+[DLManager] INFO:  - Downloaded: 1418.70 MiB, Written: 2316.51 MiB
+[DLManager] INFO:  - Cache usage: 55.00 MiB, active tasks: 32
+[DLManager] INFO:  + Download	- 118.38 MiB/s (raw) / 182.94 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 161.06 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: = Progress: 100.00% (3967/3967), Running for 00:00:18, ETA: 00:00:00
+[DLManager] INFO:  - Downloaded: 1443.56 MiB, Written: 2375.87 MiB
+[DLManager] INFO:  - Cache usage: 0.00 MiB, active tasks: 0
+[DLManager] INFO:  + Download	- 24.86 MiB/s (raw) / 36.99 MiB/s (decompressed)
+[DLManager] INFO:  + Disk	- 59.33 MiB/s (write) / 0.00 MiB/s (read)
+[DLManager] INFO: Waiting for installation to finish...
+[DLManager] INFO: All done! Download manager quitting...
+[cli] INFO: This game supports cloud saves, syncing is handled by the "sync-saves" command. To download saves for this game run "legendary sync-saves AppOffline"
+[cli] INFO: Finished installation process in 19.53 seconds.

@@ -1,0 +1,20 @@
+[Core] WARNING: Getting locale failed: ValueError('not enough values to unpack (expected 2, got 1)'), falling back to using en-US.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/__main__.py", line 42, in <module>
+    legendary.cli.main()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/cli.py", line 3175, in main
+    cli.launch_game(args, extra)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/cli.py", line 651, in launch_game
+    params = self.core.get_launch_parameters(app_name=app_name, offline=args.offline,
+                                             extra_args=extra, user=args.user_name_override,
+    ...<5 lines>...
+                                             crossover_bottle=args.crossover_bottle,
+                                             addon_app_name=addon_app_name)
+  File "/home/user/.local/share/wineo/epic/bin/legendary-0.21.1/legendary/core.py", line 896, in get_launch_parameters
+    account_id = self.lgd.userdata['account_id']
+                 ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+TypeError: 'NoneType' object is not subscriptable

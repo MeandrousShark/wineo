@@ -1,0 +1,5 @@
+[Core] WARNING: Getting locale failed: ValueError('not enough values to unpack (expected 2, got 1)'), falling back to using en-US.
+[cli] INFO: Testing existing login data if present...
+[EPCAPI] ERROR: Login to EGS API failed with errorCode: errors.com.epicgames.account.oauth.authorization_code_not_found
+[Core] ERROR: Logging in failed with InvalidCredentialsError('errors.com.epicgames.account.oauth.authorization_code_not_found'), please try again.
+[cli] ERROR: Login attempt failed, please see log for details.
