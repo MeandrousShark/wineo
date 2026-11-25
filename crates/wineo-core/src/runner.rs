@@ -773,7 +773,7 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
     find_in_path(&std::env::var_os("PATH").unwrap_or_default(), program)
 }
 
-fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
+pub(crate) fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(program))
