@@ -141,6 +141,17 @@ pub(crate) fn load_at(
     }
 }
 
+/// The last whole list, whatever its age, read without Legendary, for a
+/// listing that can't run it and a dry run. Its account is the one that
+/// fetched it; a logout removes it.
+pub fn cached(paths: &Paths) -> Option<Owned> {
+    read_cache(&paths.epic_owned_cache()).map(|cache| Owned {
+        account: cache.account,
+        games: cache.games,
+        warning: None,
+    })
+}
+
 /// Deletes the cached list. Returns whether there was one.
 pub fn remove_cache(paths: &Paths) -> crate::Result<bool> {
     let path = paths.epic_owned_cache();

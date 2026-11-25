@@ -278,3 +278,20 @@ fn a_hanging_list_is_stopped_and_falls_back() {
     );
     assert!(setup.sweep().is_empty());
 }
+
+#[test]
+fn the_cached_list_reads_without_legendary_whatever_its_age() {
+    let setup = Setup::new();
+    assert_eq!(cached(&setup.paths), None);
+    let legendary = setup.legendary(&Fake::default());
+    setup.log_in();
+    load_at(&legendary, false, T, &Token::new()).unwrap();
+    std::fs::remove_file(setup.bin.join("legendary")).unwrap();
+    let owned = cached(&setup.paths).unwrap();
+    assert_eq!(owned.account, "REDACTED");
+    assert_eq!(owned.games.len(), 5);
+    assert_eq!(owned.warning, None);
+    remove_cache(&setup.paths).unwrap();
+    assert_eq!(cached(&setup.paths), None);
+    assert!(setup.sweep().is_empty());
+}

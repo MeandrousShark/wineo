@@ -7,6 +7,8 @@ use std::fmt;
 use super::legendary::Legendary;
 use super::{EpicLock, Error};
 use crate::cancel::Token;
+use crate::error::IoContext;
+use crate::paths::Paths;
 
 /// What `status` names as the account when nobody is logged in.
 const LOGGED_OUT: &str = "<not logged in>";
@@ -101,6 +103,20 @@ pub fn logout(legendary: &Legendary, token: &Token) -> Result<bool, Error> {
     let _lock = EpicLock::acquire(legendary.paths())?;
     let was = log_out_locked(legendary, token)?;
     super::owned::remove_cache(legendary.paths())?;
+    Ok(was)
+}
+
+/// Logs out when no Legendary can be run: removes Legendary's saved login
+/// from its state folder, which is all its own logout does, and the cached
+/// owned list. Returns whether a login was saved. A symlink there is
+/// removed, never followed.
+pub fn logout_without_legendary(paths: &Paths) -> Result<bool, Error> {
+    let _lock = EpicLock::acquire(paths)?;
+    let user = super::state_dir(paths).join("user.json");
+    // `remove_file` takes a symlink away itself and refuses a folder.
+    let was = crate::files::remove_if_present(&user)
+        .context(|| format!("failed to remove {}", user.display()))?;
+    super::owned::remove_cache(paths)?;
     Ok(was)
 }
 
