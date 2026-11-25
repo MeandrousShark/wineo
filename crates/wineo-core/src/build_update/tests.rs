@@ -924,3 +924,53 @@ fn a_leading_zero_reads_as_the_same_version() {
     fake.newest(Provider::Dxvk, "v2.7", "dxvk-2.7.tar.gz");
     assert_eq!(summary(&home.check(fake)), ["dxvk dxvk-2.07 up to date"]);
 }
+
+#[test]
+fn older_builds_are_the_family_below_its_newest() {
+    let home = Home::new();
+    for name in ["GE-Proton10-27", "GE-Proton10-18", "GE-Proton10-20"] {
+        home.runner(Provider::GeProton, name);
+    }
+    // Another family, and a name that isn't GE-Proton's, aren't its builds.
+    home.runner(Provider::ProtonCachyos, "proton-cachyos-10.0-20261001-slr");
+    home.runner(Provider::GeProton, "GE-Proton10-custom");
+    for name in ["dxvk-2.6", "dxvk-2.5", "dxvk-gplasync-2.4"] {
+        home.component(Provider::Dxvk, name);
+    }
+    home.component(Provider::Vkd3d, "vkd3d-proton-2.13");
+    let older = |provider| older_builds(&home.paths, &home.global, provider).unwrap();
+    assert_eq!(
+        older(Provider::GeProton),
+        ["GE-Proton10-18", "GE-Proton10-20"]
+    );
+    assert!(older(Provider::ProtonCachyos).is_empty());
+    assert_eq!(older(Provider::Dxvk), ["dxvk-2.5"]);
+    assert!(older(Provider::Vkd3d).is_empty());
+}
+
+#[test]
+fn older_builds_leave_out_what_remove_would_refuse() {
+    let mut home = Home::new();
+    let lutris = home.paths.home().join(".local/share/lutris/runners/wine");
+    fs::create_dir_all(&lutris).unwrap();
+    home.global.defaults.runner_root = Some(lutris.display().to_string());
+    for name in ["GE-Proton10-20", "GE-Proton10-27"] {
+        home.runner(Provider::GeProton, name);
+    }
+    // The root is another launcher's, so those builds aren't wineo's to remove.
+    assert!(
+        older_builds(&home.paths, &home.global, Provider::GeProton)
+            .unwrap()
+            .is_empty()
+    );
+
+    // A build that is a link rather than a folder is refused too.
+    let target = home.component(Provider::Dxvk, "dxvk-2.5");
+    home.component(Provider::Dxvk, "dxvk-2.7");
+    let link = home.root(Provider::Dxvk).join("dxvk-2.6");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(
+        older_builds(&home.paths, &home.global, Provider::Dxvk).unwrap(),
+        ["dxvk-2.5"]
+    );
+}

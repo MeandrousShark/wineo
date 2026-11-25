@@ -937,8 +937,14 @@ impl InstallLock {
             .mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(parent.join(format!(".wineo-lock-{key}")))?;
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-            .context("another install is using this destination")?;
+        match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::WOULDBLOCK) => {
+                let name = destination.file_name().unwrap_or_default();
+                bail!("Another download of {} is running.", name.to_string_lossy());
+            }
+            Err(error) => return Err(error).context("couldn't lock the destination"),
+        }
         Ok(Self { file })
     }
 }
