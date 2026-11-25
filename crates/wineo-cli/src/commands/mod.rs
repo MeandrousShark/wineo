@@ -13,6 +13,7 @@ pub mod external_runners;
 mod galaxy;
 mod gog_support;
 pub mod import;
+pub mod import_epic;
 pub mod import_gog;
 pub mod import_heroic;
 pub mod import_roms;
