@@ -60,9 +60,9 @@ downloads it.
 
 Older builds stay. An environment set to a concrete build keeps it, and
 one on `GE-Proton-Latest` or `dxvk = "latest"` moves to the new build the
-next time it starts; a game that's running is untouched. The last line
-names the older builds nothing uses any more. It's left out when a
-config couldn't be read, since then wineo can't tell what's in use.
+next time it starts; a game that's running is untouched. The line after
+the installs names the older builds nothing uses any more. It's left out
+when a config couldn't be read, since then wineo can't tell what's in use.
 
 One family failing doesn't stop the others: the rest still update, a
 summary says which didn't, and the command exits 1. Once GitHub says its
