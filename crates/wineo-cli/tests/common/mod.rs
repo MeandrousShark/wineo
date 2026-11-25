@@ -120,9 +120,7 @@ impl Fixture {
             .env_remove("WINEO_STEAM_KEY")
             .env_remove("WINEO_TEST_STEAM_API")
             .env_remove("WINEO_TEST_GOG_API")
-            // A closed port, so no test reaches GitHub by accident. A test
-            // that wants a catalog asks for `releases_command`.
-            .env("WINEO_TEST_RELEASES_API", releases_api::DEAD)
+            .env_remove("WINEO_TEST_RELEASES_API")
             // No session bus, so nothing a test runs can reach the real keyring.
             .env(
                 "DBUS_SESSION_BUS_ADDRESS",
@@ -138,7 +136,13 @@ impl Fixture {
     /// ones `external_dir` names.
     pub fn wineo_at_home(&self) -> Command {
         let mut command = self.wineo();
-        command.env("HOME", self.root.path());
+        // A closed port, so nothing that reaches for GitHub gets there by
+        // accident; `releases_command` points it at a fake instead. Not on
+        // `wineo` itself, since a program wineo launches inherits the
+        // variable and `native.rs` pins what WINE-prefixed variables it sees.
+        command
+            .env("HOME", self.root.path())
+            .env("WINEO_TEST_RELEASES_API", releases_api::DEAD);
         command
     }
 

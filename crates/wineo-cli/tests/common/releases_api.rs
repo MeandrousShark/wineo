@@ -56,10 +56,9 @@ pub struct ReleasesApi {
 impl ReleasesApi {
     pub fn start() -> Self {
         // A release build ignores the variable and would ask GitHub itself.
-        assert!(
-            cfg!(debug_assertions),
-            "the fake release catalog needs a debug build"
-        );
+        if !cfg!(debug_assertions) {
+            panic!("the fake release catalog needs a debug build");
+        }
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
