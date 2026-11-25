@@ -25,7 +25,7 @@ const POLL: Duration = Duration::from_millis(50);
 const STDOUT_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Only the end of stderr is ever shown, and tracebacks are long.
-const STDERR_LIMIT: usize = 1024 * 1024;
+pub(crate) const STDERR_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct Output {
@@ -114,7 +114,17 @@ pub(crate) fn run(
         .wait()
         .map_err(|error| failed(format!("couldn't wait for it: {error}")))?;
     let (stdout, stdout_whole) = stdout.wait().unwrap_or_default();
-    let (stderr, _) = stderr.wait().unwrap_or_default();
+    let (mut stderr, stderr_whole) = stderr.wait().unwrap_or_default();
+    if !stderr_whole {
+        // The cut can fall inside a line, even inside the secret, so the
+        // part line before the first newline goes before anything is
+        // scrubbed or shown.
+        let start = stderr
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(stderr.len(), |at| at + 1);
+        stderr.drain(..start);
+    }
     let hide = |bytes: Vec<u8>| {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         match secret.filter(|secret| !secret.is_empty()) {
