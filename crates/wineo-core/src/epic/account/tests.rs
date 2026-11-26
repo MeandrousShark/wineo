@@ -274,3 +274,41 @@ fn a_failing_auth_never_quotes_the_code() {
     assert!(!format!("{error:?}").contains(secret));
     assert!(setup.sweep().is_empty());
 }
+
+#[test]
+fn logging_out_without_legendary_removes_its_saved_login_and_the_list() {
+    let setup = Setup::new();
+    setup.log_in();
+    let cache = setup.paths.epic_owned_cache();
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, "{}").unwrap();
+    assert!(logout_without_legendary(&setup.paths).unwrap());
+    assert!(!setup.logged_in());
+    assert!(!cache.exists());
+    // Legendary's other state stays: only the login goes, as its own
+    // `auth --delete` does.
+    assert!(crate::epic::state_dir(&setup.paths).is_dir());
+}
+
+#[test]
+fn logging_out_without_legendary_or_a_login_says_none_was_saved() {
+    let setup = Setup::new();
+    let cache = setup.paths.epic_owned_cache();
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, "{}").unwrap();
+    assert!(!logout_without_legendary(&setup.paths).unwrap());
+    assert!(!cache.exists());
+}
+
+#[test]
+fn logging_out_without_legendary_removes_a_symlink_and_not_what_it_names() {
+    let setup = Setup::new();
+    let state = crate::epic::state_dir(&setup.paths);
+    std::fs::create_dir_all(&state).unwrap();
+    let elsewhere = setup.root.path().join("elsewhere.json");
+    std::fs::write(&elsewhere, "{}").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, state.join("user.json")).unwrap();
+    assert!(logout_without_legendary(&setup.paths).unwrap());
+    assert!(state.join("user.json").symlink_metadata().is_err());
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "{}");
+}

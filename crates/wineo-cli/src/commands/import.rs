@@ -10,7 +10,8 @@ use wineo_core::runners::Runners;
 
 use super::transfer::{self, Cancellation};
 use super::{
-    download, external_runners, import_gog, import_heroic, import_roms, import_steam, setup,
+    download, external_runners, import_epic, import_gog, import_heroic, import_roms, import_steam,
+    setup,
 };
 use crate::cancel;
 use crate::picker;
@@ -32,6 +33,8 @@ enum Source {
     Steam(import_steam::Args),
     /// Log in to GOG, list your games, install them, or migrate the ones Heroic installed
     Gog(import_gog::Args),
+    /// Log in to Epic and list your games
+    Epic(import_epic::Args),
     /// Import emulated games from a folder of ROMs, or one game's file
     Roms(import_roms::Args),
 }
@@ -43,6 +46,7 @@ enum Menu {
     Heroic,
     Steam,
     Gog,
+    Epic,
     Roms,
 }
 
@@ -90,6 +94,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
         Some(Source::Heroic(args)) => import_heroic::run(paths, args, verbose, true),
         Some(Source::Steam(args)) => import_steam::run(paths, args, true),
         Some(Source::Gog(args)) => import_gog::run(paths, args, verbose, true),
+        Some(Source::Epic(args)) => import_epic::run(paths, args),
         Some(Source::Prefix(args)) => prefix(paths, args, verbose, true),
         Some(Source::Roms(args)) => import_roms::run(paths, args, true),
         None => {
@@ -109,6 +114,7 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                             ("A manually added Heroic game".to_owned(), Menu::Heroic),
                             ("A Steam game".to_owned(), Menu::Steam),
                             ("A GOG game".to_owned(), Menu::Gog),
+                            ("An Epic game".to_owned(), Menu::Epic),
                             ("Emulated games".to_owned(), Menu::Roms),
                         ]),
                         Some("1"),
@@ -144,6 +150,9 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
                             Err(error) if error.is::<ReturnToSourceMenu>() => continue,
                             result => return result,
                         }
+                    }
+                    Ok(Reply::Value(Menu::Epic)) => {
+                        return import_epic::run(paths, import_epic::Args::default());
                     }
                     Ok(Reply::Value(Menu::Roms)) => {
                         match import_roms::run(paths, import_roms::Args::default(), false) {

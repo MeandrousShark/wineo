@@ -662,6 +662,16 @@ fn update_with_target(
             // GOG games live in the host library, so this is never
             // relative to a portable folder.
             (Scope::Global, "defaults.games_root") => paths.contract(&paths.absolute(value)?)?,
+            (Scope::Global, "epic.legendary") if value.is_empty() => {
+                return Err(crate::edit::EditError::InvalidValue {
+                    key: "epic.legendary".to_owned(),
+                    reason: "give the path to legendary, or remove the setting with --unset"
+                        .to_owned(),
+                }
+                .into());
+            }
+            // Resolved now, so it names the same file wherever wineo runs.
+            (Scope::Global, "epic.legendary") => paths.contract(&paths.absolute(value)?)?,
             (Scope::Environment, key)
                 if key.starts_with("targets.")
                     && (key.ends_with(".exe") || key.ends_with(".cwd")) =>

@@ -278,3 +278,91 @@ fn a_hanging_list_is_stopped_and_falls_back() {
     );
     assert!(setup.sweep().is_empty());
 }
+
+#[test]
+fn the_cached_list_reads_without_legendary_whatever_its_age() {
+    let setup = Setup::new();
+    assert_eq!(cached(&setup.paths), None);
+    let legendary = setup.legendary(&Fake::default());
+    setup.log_in();
+    load_at(&legendary, false, T, &Token::new()).unwrap();
+    std::fs::remove_file(setup.bin.join("legendary")).unwrap();
+    let owned = cached(&setup.paths).unwrap();
+    assert_eq!(owned.account, "REDACTED");
+    assert_eq!(owned.games.len(), 5);
+    assert_eq!(owned.warning, None);
+    remove_cache(&setup.paths).unwrap();
+    assert_eq!(cached(&setup.paths), None);
+    assert!(setup.sweep().is_empty());
+}
+
+#[test]
+fn a_saved_list_missing_fields_still_reads_and_without_a_time_is_stale() {
+    let setup = Setup::new();
+    let path = setup.paths.epic_owned_cache();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // No `fetched_at`, and games with only their id and title, as an older
+    // or newer wineo might leave it.
+    fs::write(
+        &path,
+        r#"{"account": "REDACTED", "games": [
+            {"app_name": "AppOld", "title": "Old Game"},
+            {"app_name": "AppDlc", "title": "Dlc Game", "dlc": [{"app_name": "AppExtra", "title": "Extra"}]}
+        ]}"#,
+    )
+    .unwrap();
+    let owned = cached(&setup.paths).unwrap();
+    assert_eq!(
+        owned.games,
+        [
+            Game {
+                app_name: "AppOld".to_owned(),
+                title: "Old Game".to_owned(),
+                version: None,
+                dlc: Vec::new(),
+                can_run_offline: false,
+                third_party: None,
+                partner_link: None,
+            },
+            Game {
+                app_name: "AppDlc".to_owned(),
+                title: "Dlc Game".to_owned(),
+                version: None,
+                dlc: vec![Dlc {
+                    app_name: "AppExtra".to_owned(),
+                    title: "Extra".to_owned(),
+                    version: None,
+                }],
+                can_run_offline: false,
+                third_party: None,
+                partner_link: None,
+            },
+        ]
+    );
+    assert!(!cache_is_fresh(&setup.paths));
+
+    // A real listing fetches it again instead of trusting it.
+    setup.log_in();
+    let legendary = setup.legendary(&Fake::default());
+    let owned = load_at(&legendary, false, T, &Token::new()).unwrap();
+    assert_eq!(owned.games.len(), 5);
+    assert!(setup.calls().contains(&"list --json -T".to_owned()));
+    assert!(setup.sweep().is_empty());
+}
+
+#[test]
+fn a_saved_list_is_fresh_for_an_hour() {
+    let setup = Setup::new();
+    let path = setup.paths.epic_owned_cache();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    assert!(!cache_is_fresh(&setup.paths));
+    let now = jiff::Timestamp::now().as_second();
+    for (fetched_at, fresh) in [(now, true), (now - 3500, true), (now - 3700, false)] {
+        fs::write(
+            &path,
+            format!(r#"{{"fetched_at": {fetched_at}, "account": "REDACTED", "games": []}}"#),
+        )
+        .unwrap();
+        assert_eq!(cache_is_fresh(&setup.paths), fresh, "{fetched_at}");
+    }
+}

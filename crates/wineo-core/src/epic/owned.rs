@@ -30,8 +30,11 @@ pub struct Game {
     pub title: String,
     /// The current Windows build, if the game has one.
     pub version: Option<String>,
+    // Defaults let a saved list from an older or newer wineo still read.
+    #[serde(default)]
     pub dlc: Vec<Dlc>,
     /// The publisher's `CanRunOffline` attribute.
+    #[serde(default)]
     pub can_run_offline: bool,
     /// The raw `ThirdPartyManagedApp` attribute, naming the launcher that
     /// manages the game.
@@ -59,6 +62,8 @@ pub struct Owned {
 
 #[derive(Serialize, Deserialize)]
 struct Cache {
+    /// Missing reads as 0, long stale, so the list is fetched again.
+    #[serde(default)]
     fetched_at: i64,
     account: String,
     games: Vec<Game>,
@@ -93,9 +98,7 @@ pub(crate) fn load_at(
     let cached = read_cache(&path).filter(|cache| cache.account == account);
     if !refresh
         && let Some(cache) = &cached
-        && now
-            .checked_sub(cache.fetched_at)
-            .is_some_and(|age| (0..FRESH_SECONDS).contains(&age))
+        && fresh(cache.fetched_at, now)
     {
         return Ok(Owned {
             account,
@@ -139,6 +142,29 @@ pub(crate) fn load_at(
             }
         }
     }
+}
+
+/// The last whole list, whatever its age, read without Legendary, for a
+/// listing that can't run it and a dry run. Its account is the one that
+/// fetched it; a logout removes it.
+pub fn cached(paths: &Paths) -> Option<Owned> {
+    read_cache(&paths.epic_owned_cache()).map(|cache| Owned {
+        account: cache.account,
+        games: cache.games,
+        warning: None,
+    })
+}
+
+/// Whether the saved list is under an hour old, so listing would use it
+/// without asking Epic. For a dry run, which never asks.
+pub fn cache_is_fresh(paths: &Paths) -> bool {
+    read_cache(&paths.epic_owned_cache())
+        .is_some_and(|cache| fresh(cache.fetched_at, jiff::Timestamp::now().as_second()))
+}
+
+fn fresh(fetched_at: i64, now: i64) -> bool {
+    now.checked_sub(fetched_at)
+        .is_some_and(|age| (0..FRESH_SECONDS).contains(&age))
 }
 
 /// Deletes the cached list. Returns whether there was one.
