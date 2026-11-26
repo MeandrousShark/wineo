@@ -166,6 +166,13 @@ environment.
 | GOG game | The game folder is mid-update | error | hint: `wineo update` |
 | GOG game | Game folder missing or can't be checked | warning | forget it, only when surely deleted |
 | GOG game | A folder's owner no longer exists | warning | clear the owner |
+| Epic game | wineo's record of a game can't be read | error | |
+| Epic game | `epic_id` set, but no record | error | hint: `wineo update NAME --repair` |
+| Epic game | The record and Legendary's installed games disagree: not there, another folder, or another version | error | hint: `wineo update NAME --repair`, or `wineo import epic --forget APP` when no environment owns it |
+| Epic game | Game folder missing or can't be checked | warning | |
+| Epic game | An install, update, or repair didn't finish | error | hint: the command that finishes it |
+| Epic game | Two environments have one `epic_id` | error | hint: `wineo rm` the copy |
+| Epic game | No usable Legendary, once an Epic game exists | warning | wineo offers the download when needed, or set `[epic] legendary` |
 | Art | `art.toml` fails to parse | error | |
 | Art | Recorded file missing, or a target that no longer exists | warning | drop the record |
 | Art | Duplicate files for one kind | warning | |
