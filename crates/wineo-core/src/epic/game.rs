@@ -243,6 +243,18 @@ pub enum GameError {
         holders: Vec<String>,
         work: Work,
     },
+    /// `wineo rm` of an environment whose game's install didn't finish.
+    #[error(
+        "{name}'s Epic install didn't finish. Finish it with wineo import epic --game {app}, or remove it anyway with --force."
+    )]
+    RemoveMidInstall { name: String, app: String },
+    /// `wineo rm` of an environment whose game is mid-update or mid-repair.
+    #[error(
+        "{name} is mid-{}. Finish it with wineo update {name}{}, or remove it anyway with --force.",
+        if *.work == Work::Repair { "repair" } else { "update" },
+        if *.work == Work::Repair { " --repair" } else { "" }
+    )]
+    RemoveMidWork { name: String, work: Work },
     #[error("{name}'s Epic game {app} belongs to {other} now.")]
     Taken {
         name: String,
@@ -827,6 +839,39 @@ pub fn protect(
         found.check(paths, record, now)?;
     }
     Ok(guards)
+}
+
+/// What removing `name` holds: its Epic game's record lock, so no work on
+/// the game can mark it meanwhile. None when it names no game with a record.
+/// Refuses a game with a mark unless `force`, which leaves the mark for
+/// installing again to finish.
+pub fn lock_for_remove(
+    paths: &Paths,
+    name: &str,
+    force: bool,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Option<RecordLock>> {
+    let Some(app) = epic_id_of(paths, name) else {
+        return Ok(None);
+    };
+    let lock = RecordLock::exclusive(paths, &app, cancel)?;
+    let Some(record) = lock.read(paths)? else {
+        return Ok(None);
+    };
+    if !force && let Some(mark) = &record.in_flight {
+        return Err(match mark.work {
+            Work::Install => GameError::RemoveMidInstall {
+                name: name.to_owned(),
+                app,
+            },
+            work => GameError::RemoveMidWork {
+                name: name.to_owned(),
+                work,
+            },
+        }
+        .into());
+    }
+    Ok(Some(lock))
 }
 
 /// Refuses bringing `name` back with `epic_id` while another environment

@@ -303,10 +303,32 @@ impl Legendary {
         timeout: Duration,
         token: &Token,
     ) -> Result<Output, Error> {
+        let (mut command, _in_use) = self.command()?;
+        command.args(args).args(secret.map(OsStr::new));
+        run::run(command, &args.join(" "), timeout, token, secret)
+    }
+
+    /// Runs Legendary with `args` for as long as it takes, handing each line
+    /// it prints on stderr to `line` as it comes. See `run::stream`.
+    pub(crate) fn stream(
+        &self,
+        args: &[&str],
+        token: &Token,
+        line: impl FnMut(&str),
+        tick: impl FnMut(),
+    ) -> Result<run::Streamed, Error> {
+        let (mut command, _in_use) = self.command()?;
+        command.args(args);
+        run::stream(command, &args.join(" "), token, line, tick)
+    }
+
+    /// Legendary's command without its arguments: its state folder ready,
+    /// its environment, and wineo's own copy held while it runs.
+    fn command(&self) -> Result<(Command, Option<InUse>), Error> {
         let state = super::state_dir(&self.paths);
         prepare_state(&state)?;
         super::private_dir(&super::cache_dir(&self.paths))?;
-        let (mut command, _in_use) = match &self.program {
+        let (mut command, in_use) = match &self.program {
             Program::Direct(path) => (Command::new(path), None),
             Program::Zipapp { python, file } => {
                 let in_use = InUse::hold(file)?;
@@ -316,12 +338,10 @@ impl Legendary {
             }
         };
         command
-            .args(args)
-            .args(secret.map(OsStr::new))
             .env_clear()
             .envs(self.env.for_legendary(&self.paths))
             .current_dir(&state);
-        run::run(command, &args.join(" "), timeout, token, secret)
+        Ok((command, in_use))
     }
 }
 

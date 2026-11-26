@@ -15,6 +15,9 @@ use crate::cancel::Token;
 use crate::paths::Paths;
 use crate::test_script::write_script;
 
+#[path = "../../tests/common/epic_install.rs"]
+mod epic_install;
+
 pub(crate) const CODE: &str = "0123456789abcdef0123456789abcdef";
 
 pub(crate) fn fixture(name: &str) -> PathBuf {
@@ -290,8 +293,11 @@ impl Setup {
              {readlink} /proc/$$/fd/0 > \"$root/stdin-$1\"\n\
              {cat} /proc/$$/stat > \"$root/stat-$1\"\n\
              user=\"$LEGENDARY_CONFIG_PATH/user.json\"\n\
+             if [ \"$1\" = -y ]; then shift; fi\n\
+             {functions}\
              {noise}{flood}{hang}\
              case \"$1\" in\n\
+             {install_arms}\
              --version) printf '%s' '{version}' ;;\n\
              status) if [ -f \"$user\" ]; then {cat} '{status_in}'; else {cat} '{status_out}'; fi ;;\n\
              auth)\n\
@@ -322,6 +328,8 @@ impl Setup {
             failed = fixture("login-failed.stderr").display(),
             logged_out_list = fixture("logged-out-list.stderr").display(),
             list = fake.list.display(),
+            functions = epic_install::functions(&tool),
+            install_arms = epic_install::arms(&fixture(""), &tool),
         )
     }
 }

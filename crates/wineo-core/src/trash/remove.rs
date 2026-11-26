@@ -122,6 +122,13 @@ pub fn remove_with_force(
         }
         .into());
     }
+    // Held until the config is gone, so no Epic install, update, or repair
+    // can mark the game meanwhile.
+    let _epic = if paths.portable_root().is_none() {
+        crate::epic::game::lock_for_remove(paths, name, force, &|| token.is_canceled())?
+    } else {
+        None
+    };
     if include_prefix && let Some(env) = &current {
         match &env.config.kind {
             config::Kind::Wine(_) => {}
