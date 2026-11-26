@@ -72,6 +72,59 @@ fn adopting_a_prefix_writes_config_with_its_arch() {
 }
 
 #[test]
+fn an_epic_game_gets_its_id_and_on_proton_its_store() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let create = |name: &str, runner: &Runner, prefix: &Path| {
+        Environment::create(
+            &paths,
+            &GlobalConfig::default(),
+            runner,
+            &NewEnvironment {
+                epic_id: Some("Dlc Game".to_owned()),
+                ..new(name, prefix)
+            },
+            &Token::new(),
+            Output::Log(&paths.runtime_dir(name).join("create.log")),
+            |_| {},
+        )
+    };
+    let wine = root.path().join("home/Games/wine");
+    fake_prefix(&wine, "win64");
+    create("wined", &Runner::fake("wine"), &wine).unwrap();
+    assert_eq!(
+        fs::read_to_string(paths.environment_config("wined")).unwrap(),
+        "schema_version = 1\nprefix = \"~/Games/wine\"\nrunner = \"wine\"\narch = \"win64\"\nepic_id = \"Dlc Game\"\n"
+    );
+
+    // Creating a Proton prefix needs umu, so its first config is checked
+    // on its own.
+    let epic = NewEnvironment {
+        epic_id: Some("Dlc Game".to_owned()),
+        ..new("protoned", &wine)
+    };
+    let proton = first_document(
+        "~/Games/proton",
+        &Runner::fake_proton("GE-Proton-Test"),
+        Arch::Win64,
+        &epic,
+        None,
+    );
+    assert_eq!(
+        proton.to_string(),
+        "schema_version = 1\nprefix = \"~/Games/proton\"\nrunner = \"GE-Proton-Test\"\narch = \"win64\"\nepic_id = \"Dlc Game\"\nstore = \"egs\"\n"
+    );
+    let plain = first_document(
+        "~/Games/proton",
+        &Runner::fake_proton("GE-Proton-Test"),
+        Arch::Win64,
+        &new("protoned", &wine),
+        None,
+    );
+    assert!(!plain.to_string().contains("store"), "only an Epic game's");
+}
+
+#[test]
 fn adopting_with_a_conflicting_arch_fails() {
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());
