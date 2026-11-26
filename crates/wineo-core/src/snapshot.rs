@@ -622,8 +622,9 @@ fn saved_gog_id(paths: &Paths, name: &str, saved: &EnvironmentConfig) -> Result<
 /// The Epic game is the environment's, not the snapshot's, as for GOG: a
 /// saved config without the id the environment has now gets it back, and one
 /// naming another game is refused before anything changes. An environment
-/// with no game now takes the saved config as it is, as `saved_gog_id` does
-/// for an environment that owns no folder.
+/// with no game now takes the saved id back, as `saved_gog_id` does for one
+/// that owns no folder, unless another environment has that game now, since
+/// one environment owns a game.
 fn saved_epic_id(
     paths: &Paths,
     name: &str,
@@ -638,6 +639,20 @@ fn saved_epic_id(
         (Some(current), None) => Ok(Some(current.to_owned())),
         (Some(current), Some(saved)) if saved != current => {
             bail!("The snapshot's epic_id {saved} doesn't match {name}'s Epic game {current}.")
+        }
+        (None, Some(saved)) => {
+            if let Some(other) = crate::epic::game::owners(paths, saved)?
+                .into_iter()
+                .find(|owner| owner != name)
+            {
+                return Err(crate::epic::game::GameError::Taken {
+                    name: name.to_owned(),
+                    app: saved.to_owned(),
+                    other,
+                }
+                .into());
+            }
+            Ok(None)
         }
         _ => Ok(None),
     }
