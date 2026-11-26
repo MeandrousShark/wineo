@@ -37,8 +37,9 @@ exit 1 if any game couldn't be.
 
 `runners update` updates every family it can and exits 1 if any family
 couldn't be checked or downloaded, after a summary; `dxvk update` and
-`vkd3d update` exit the same way for their one family. `--check` exits 0 whether or not updates are waiting, and 1 only when a
-family couldn't be checked.
+`vkd3d update` exit the same way for their one family. `--check` exits 0
+whether or not updates are waiting, and 1 only when a family couldn't be
+checked.
 
 ## Canceling
 
