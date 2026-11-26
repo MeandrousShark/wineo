@@ -7,14 +7,17 @@ use wineo_core::build_removal::{self, Removed};
 use wineo_core::cancel::Token;
 use wineo_core::components::{self, Builds, Component};
 use wineo_core::config::GlobalConfig;
-use wineo_core::download::{Client, Provider, Release, Transport};
+use wineo_core::download::{Client, Progress, Provider, Release, Transport};
 use wineo_core::paths::Paths;
 use wineo_core::report::OverviewError;
 use wineo_core::runners::{self, Runners};
 
+use crate::download_progress::{Throttle, download_line};
 use crate::downloads_page::{Build, Event, ReleasePage, Snapshot};
 use crate::task;
-use crate::{Message, download_progress, runner_label};
+use crate::{Message, runner_label};
+
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 pub(crate) fn warnings(paths: &Paths, errors: &[OverviewError]) -> Vec<String> {
     errors
@@ -182,29 +185,40 @@ pub(crate) fn install<T: Transport>(
     paths: &Paths,
     release: &Release,
     token: &Token,
-    progress: impl FnMut(String),
+    mut progress: impl FnMut(String),
 ) -> Result<Option<String>, String> {
     let global = GlobalConfig::load(paths).map_err(|error| format!("{error:#}"))?;
-    download_progress::install(
-        client,
-        paths,
-        &global,
-        release,
-        token,
-        Duration::from_millis(100),
-        progress,
+    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    let mut already = false;
+    client
+        .install(paths, &global, release, token, |step| {
+            already |= matches!(step, Progress::AlreadyInstalled(_));
+            if throttle.pass(&step) {
+                progress(download_line(release.provider, step));
+            }
+        })
+        .map(|path| {
+            let verb = if already {
+                "Already installed in"
+            } else {
+                "Installed in"
+            };
+            Some(paths.contract_text(&format!("{verb} {}", path.display())))
+        })
+        .or_else(|error| {
+            if canceled(&error) {
+                Ok(None)
+            } else {
+                Err(paths.contract_text(&format!("{error:#}")))
+            }
+        })
+}
+
+fn canceled(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<wineo_core::Error>(),
+        Some(wineo_core::Error::Canceled(_))
     )
-    .map(|path| Some(paths.contract_text(&format!("Installed in {}", path.display()))))
-    .or_else(|error| {
-        if matches!(
-            error.downcast_ref::<wineo_core::Error>(),
-            Some(wineo_core::Error::Canceled("download"))
-        ) {
-            Ok(None)
-        } else {
-            Err(paths.contract_text(&format!("{error:#}")))
-        }
-    })
 }
 
 pub(crate) fn download(

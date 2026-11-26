@@ -769,6 +769,26 @@ fn fake_install_keeps_published_build_when_canceled_and_refreshes() {
     );
 }
 
+#[test]
+fn a_download_already_there_says_already_installed() {
+    let (_root, mut app) = fixture();
+    let (client, release) = install_fixture();
+    let (_, token) = begin_install(&mut app, &release);
+    let paths = app.paths.clone();
+    let first = downloads_work::install(&client, &paths, &release, &token, |_| {});
+    assert!(first.unwrap().unwrap().starts_with("Installed in "));
+    let again = downloads_work::install(&client, &paths, &release, &token, |_| {});
+    assert!(
+        again
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .starts_with("Already installed in "),
+        "{again:?}"
+    );
+}
+
 fn nodes(tree: &iced::advanced::widget::Tree) -> usize {
     1 + tree.children.iter().map(nodes).sum::<usize>()
 }
