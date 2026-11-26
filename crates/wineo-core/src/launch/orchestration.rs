@@ -508,8 +508,8 @@ pub fn precheck(
     Ok(())
 }
 
-/// Checks the GOG game folders a launch runs from and takes their in-use
-/// locks, which the caller holds until the program exits. Called holding
+/// Checks the GOG and Epic game folders a launch runs from and takes their
+/// in-use locks, which the caller holds until the program exits. Called holding
 /// the environment's operation lock, which comes first in lock order.
 pub fn protect(
     paths: &Paths,

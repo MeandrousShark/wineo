@@ -217,6 +217,27 @@ fn set_refuses_epic_id_and_leaves_the_file_alone() {
 }
 
 #[test]
+fn set_refuses_epic_id_before_waiting_on_a_running_game() {
+    let f = Fixture::new();
+    fowl(&f, None);
+    let config = config_path(&f, "fowl");
+    let before = stamp(&config);
+    assert_success(&f.run(&["start", "fowl"]));
+    // A runner change needs the environment idle, so it would be refused
+    // for running if epic_id weren't refused first.
+    for args in [
+        &["set", "fowl", "runner=other", "--unset", "epic_id"][..],
+        &["set", "fowl", "runner=other", "epic_id=Other"],
+    ] {
+        assert_refused(&f.run(args), "epic_id is set by wineo import epic.");
+        assert_eq!(stamp(&config), before, "{args:?}");
+    }
+    assert_success(&f.run(&["stop", "fowl"]));
+    f.wait_for_run_end("fowl", "stopped");
+    assert_eq!(sweep(&f), Vec::<i32>::new());
+}
+
+#[test]
 fn clones_and_portable_copies_drop_epic_id() {
     let f = Fixture::new();
     let folder = fowl(&f, None);
