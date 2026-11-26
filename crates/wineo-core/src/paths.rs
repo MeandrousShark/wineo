@@ -352,6 +352,36 @@ impl Paths {
         self.host_state.join(".locks").join("epic.lock")
     }
 
+    /// wineo's own record of each Epic game, one file per game, keyed by
+    /// the SHA-256 of its app name. On the host, like the games.
+    pub fn epic_games_dir(&self) -> PathBuf {
+        self.epic_dir().join("games")
+    }
+
+    /// The lock on one Epic game's record, keyed like the record. Held
+    /// briefly, around every write and every check of who owns the game.
+    pub fn epic_game_lock(&self, key: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("epic-game-{key}.lock"))
+    }
+
+    /// An Epic game folder's in-use lock, keyed by the SHA-256 of the
+    /// folder. Launches hold it shared for their whole run; install,
+    /// update, and repair hold it exclusively.
+    pub fn epic_folder_in_use_lock(&self, key: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("epic-folder-{key}.in-use.lock"))
+    }
+
+    /// The records naming what holds an Epic game folder's in-use lock.
+    pub fn epic_folder_holders(&self, key: &str) -> PathBuf {
+        self.host_state
+            .join(".locks")
+            .join(format!("epic-folder-{key}.holders"))
+    }
+
     /// The cached list of Epic games the logged-in account owns, on the
     /// host like Steam's and GOG's.
     pub fn epic_owned_cache(&self) -> PathBuf {
