@@ -428,6 +428,37 @@ fn an_unusable_setting_is_an_error_for_every_command_and_never_falls_through() {
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
 
+#[test]
+fn a_dry_run_refresh_with_a_saved_list_still_reports_an_unusable_setting() {
+    let epic = Epic::new();
+    saved_list(&epic);
+    let older = epic.file("old/legendary");
+    epic.legendary_at(&older, &Fake::version("0.20.34"));
+    fs::create_dir_all(epic.config().parent().unwrap()).unwrap();
+    fs::write(
+        epic.config(),
+        format!(
+            "[epic]\nlegendary = {}\n",
+            toml_string(&older.display().to_string())
+        ),
+    )
+    .unwrap();
+    let output = epic.run(&[
+        "import",
+        "epic",
+        "--list",
+        "--refresh",
+        "--dry-run",
+        "--json",
+    ]);
+    assert_fails_with(
+        &output,
+        "[epic] legendary is set to ~/old/legendary, which is Legendary 0.20.34. wineo needs 0.21.1 or newer.",
+    );
+    assert_eq!(stdout(&output), "");
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
+
 fn toml_string(text: &str) -> String {
     format!("'{text}'")
 }

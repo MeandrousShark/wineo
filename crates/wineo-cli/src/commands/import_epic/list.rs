@@ -77,6 +77,9 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let mut warnings = Vec::new();
     let owned = if args.refresh && args.dry_run {
+        // Looked up first, so an unusable setting is an error here as on
+        // every other path.
+        let found = setup::find(paths, &global)?;
         // A refresh rewrites the cache, which a dry run doesn't.
         match owned::cached(paths) {
             Some(owned) => {
@@ -84,7 +87,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
                 owned
             }
             None => {
-                match setup::find(paths, &global)? {
+                match found {
                     Found::Unusable {
                         missing: Some(missing),
                     } => setup::say_dry_run(&missing),
