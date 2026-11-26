@@ -608,7 +608,13 @@ mod launch {
         let exe = root.path().join("Games/Deep/d1/d2/d3/game.exe");
         appear_between(&paths, root.path(), 3);
         assert_eq!(
-            refusal(protect(&paths, "copy", None, &[exe.clone()], NEVER)),
+            refusal(protect(
+                &paths,
+                "copy",
+                None,
+                std::slice::from_ref(&exe),
+                NEVER
+            )),
             "copy's Epic game folders changed while locking; retry"
         );
         // Nothing is held after giving up.
