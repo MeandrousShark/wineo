@@ -92,14 +92,22 @@ fn say_older(missing: &Missing) {
     }
 }
 
-/// Asks, then downloads. False after a dry run. Answering no is a cancel.
-/// Nothing is offered that couldn't run: on another machine, or without a
-/// new enough Python, that is the error instead.
-fn download(paths: &Paths, missing: &Missing, args: &Args) -> anyhow::Result<bool> {
+/// Fails as offering the download would: on another machine, or without a
+/// new enough Python. A dry run checks this too, to fail where the real
+/// run would.
+pub(super) fn check_can_download() -> anyhow::Result<()> {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err(epic::Error::Unsupported.into());
     }
     legendary::python(&Token::new())?;
+    Ok(())
+}
+
+/// Asks, then downloads. False after a dry run. Answering no is a cancel.
+/// Nothing is offered that couldn't run: on another machine, or without a
+/// new enough Python, that is the error instead.
+fn download(paths: &Paths, missing: &Missing, args: &Args) -> anyhow::Result<bool> {
+    check_can_download()?;
     if args.dry_run {
         say_dry_run(missing);
         return Ok(false);

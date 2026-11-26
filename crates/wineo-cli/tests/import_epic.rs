@@ -1070,3 +1070,25 @@ fn a_dry_run_ignores_a_list_saved_for_another_account() {
     assert_eq!(epic.list_calls(), 1);
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn a_dry_run_refresh_without_python_fails_like_the_real_one() {
+    // wineo's own copy with no Python to run it, and no Legendary or Python
+    // at all, each with a saved list.
+    for own_copy in [true, false] {
+        let epic = Epic::new();
+        saved_list(&epic);
+        if own_copy {
+            epic.own_copy_from(&Fake::default());
+        }
+        for args in [
+            ["import", "epic", "--list", "--refresh", "--yes"].as_slice(),
+            &["import", "epic", "--list", "--refresh", "--dry-run"],
+        ] {
+            let output = with_stand_in(&epic, args).output().unwrap();
+            assert_fails_with(&output, NO_PYTHON);
+            assert_eq!(stdout(&output), "", "{own_copy} {args:?}");
+        }
+        assert_eq!(epic.sweep(), Vec::<i32>::new());
+    }
+}

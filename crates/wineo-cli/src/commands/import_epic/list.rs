@@ -143,6 +143,15 @@ fn dry_run(
         }
         Found::Unusable { .. } => None,
     };
+    // A real refresh without a usable Legendary goes to get one, and fails
+    // there without Python or on another machine.
+    if args.refresh {
+        match &found {
+            Found::Unusable { missing: None } => return Err(Error::Python.into()),
+            Found::Unusable { missing: Some(_) } => setup::check_can_download()?,
+            Found::Usable(_) => {}
+        }
+    }
     // A list saved for another account is none, as for a real run.
     let saved = owned::cached(paths).filter(|owned| {
         account
