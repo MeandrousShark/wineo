@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use clap::Subcommand;
 use wineo_core::components::{Builds, Component};
 use wineo_core::config::GlobalConfig;
+use wineo_core::download::Provider;
 use wineo_core::paths::Paths;
 
 use crate::text;
@@ -22,6 +23,10 @@ enum Action {
     /// Remove an installed build
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
+    /// Download a build
+    Download(super::download::ComponentArgs),
+    /// Download the newest release when it is newer than what is installed
+    Update(super::build_update::FamilyArgs),
 }
 
 #[derive(clap::Args)]
@@ -34,18 +39,36 @@ struct RemoveArgs {
     yes: bool,
 }
 
-pub fn run(paths: &Paths, component: Component, args: Args) -> anyhow::Result<ExitCode> {
-    if let Some(Action::Remove(args)) = args.action {
-        let kind = format!("{} build", component.label());
-        return super::remove_build::run(
-            paths,
-            &args.name,
-            &kind,
-            component.into(),
-            args.yes,
-            |paths, name| Ok(wineo_core::components::size(paths, component, name)?),
-            |paths, name| Ok(wineo_core::components::remove(paths, component, name)?),
-        );
+pub fn run(
+    paths: &Paths,
+    component: Component,
+    args: Args,
+    verbose: bool,
+) -> anyhow::Result<ExitCode> {
+    let provider = match component {
+        Component::Dxvk => Provider::Dxvk,
+        Component::Vkd3d => Provider::Vkd3d,
+    };
+    match args.action {
+        Some(Action::Remove(args)) => {
+            let kind = format!("{} build", component.label());
+            return super::remove_build::run(
+                paths,
+                &args.name,
+                &kind,
+                component.into(),
+                args.yes,
+                |paths, name| Ok(wineo_core::components::size(paths, component, name)?),
+                |paths, name| Ok(wineo_core::components::remove(paths, component, name)?),
+            );
+        }
+        Some(Action::Download(args)) => {
+            return super::download::run_component(paths, provider, args, verbose);
+        }
+        Some(Action::Update(args)) => {
+            return super::build_update::run_family(paths, provider, args);
+        }
+        None => {}
     }
 
     let global = GlobalConfig::load(paths)?;

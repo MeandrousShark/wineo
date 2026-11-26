@@ -21,6 +21,20 @@ pub struct Args {
     /// ge-proton, proton-cachyos, dxvk, or vkd3d; omit for every one that has a build
     #[arg(value_name = "FAMILY", value_parser = family_parser())]
     families: Vec<Provider>,
+    #[command(flatten)]
+    mode: Mode,
+}
+
+/// `wineo dxvk update` and `wineo vkd3d update`, for the one family their
+/// command is about.
+#[derive(clap::Args)]
+pub struct FamilyArgs {
+    #[command(flatten)]
+    mode: Mode,
+}
+
+#[derive(clap::Args, Clone, Copy)]
+struct Mode {
     /// Print what is newer and download nothing
     #[arg(long)]
     check: bool,
@@ -35,14 +49,22 @@ fn family_parser() -> impl TypedValueParser<Value = Provider> {
 }
 
 pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
+    update(paths, &args.families, args.mode)
+}
+
+pub fn run_family(paths: &Paths, provider: Provider, args: FamilyArgs) -> anyhow::Result<ExitCode> {
+    update(paths, &[provider], args.mode)
+}
+
+fn update(paths: &Paths, families: &[Provider], mode: Mode) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let cancellation = Cancellation::new()?;
     let client = Client::new()?;
-    let report = build_update::check(&client, paths, &global, &args.families, &cancellation.token);
+    let report = build_update::check(&client, paths, &global, families, &cancellation.token);
     if cancellation.token.is_canceled() {
         return Ok(canceled());
     }
-    if args.check && args.json {
+    if mode.check && mode.json {
         super::json::print(&listing(&report))?;
         return Ok(exit_code(report.failed()));
     }
@@ -50,7 +72,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     // A check is a query, so its table is the output. A run is progress, so
     // everything it says goes to stderr and stdout stays empty.
     let say = |line: &str| {
-        if args.check {
+        if mode.check {
             println!("{line}");
         } else {
             eprintln!("{line}");
@@ -67,7 +89,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     for (_, message) in &failures {
         eprintln!("{}", style::error_stderr(format!("error: {message}")));
     }
-    if args.check {
+    if mode.check {
         if !failures.is_empty() {
             eprintln!("{}", summary("check", &failures, &report));
         }
@@ -117,7 +139,7 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
     Ok(exit_code(!failures.is_empty()))
 }
 
-/// Downloads what the check found, printing progress as `wineo download`
+/// Downloads what the check found, printing progress as `wineo runners download`
 /// does, with the name of each build as its download starts.
 fn download(
     client: &Client,
@@ -213,8 +235,8 @@ fn failure_message(provider: Provider, error: &anyhow::Error) -> String {
     if error.is::<NotInstalled>() {
         // The core knows a family isn't installed; the command knows how to get one.
         format!(
-            "{error}. Download it with wineo download {}.",
-            provider.id()
+            "{error}. Download it with wineo {}.",
+            super::download::invocation(provider)
         )
     } else {
         format!("Couldn't check {}: {error:#}", provider.label())

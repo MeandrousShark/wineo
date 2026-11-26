@@ -232,8 +232,8 @@ wineo manpages ~/.local/share/man/man1
   installer or existing executable, and SteamGridDB art, then offers the
   programs it finds as launch targets.
 - **Wine and Proton.** Use system Wine, downloaded Wine builds, or Proton
-  through `umu-launcher`. `wineo download` fetches runners, DXVK, and
-  vkd3d-proton with checksum verification, or use
+  through `umu-launcher`. `wineo runners download`, `wineo dxvk download`,
+  and `wineo vkd3d download` fetch builds with checksum verification, or use
   [Wine and Proton builds already installed by Steam, Heroic, or Lutris](docs/downloads-and-imports.md#use-builds-from-steam-heroic-and-lutris).
 - **Native Linux games.** [Native games](docs/native.md) get the same
   library, launch targets, launch options, art, and playtime as everything
@@ -340,7 +340,7 @@ Every command has `--help`. The common ones:
 | Change settings | `wineo set hades key=value`, `wineo config hades` |
 | Run a command before a launch or after it ends | `wineo set hades 'hooks.before=mount /mnt/games'` |
 | Use gamescope, MangoHud, or Wine Wayland | `wineo set hades mangohud=true wayland=true gamescope.window=fullscreen` |
-| Manage runners and components | `wineo runners`, `wineo download`, `wineo dxvk`, `wineo vkd3d` |
+| Manage runners and components | `wineo runners`, `wineo dxvk`, `wineo vkd3d` |
 | Import a prefix or Heroic games | `wineo import` |
 | Import emulated games | `wineo import roms ~/Games/roms/snes --emulator retroarch --all` |
 | Import installed Steam games | `wineo import steam --all` |

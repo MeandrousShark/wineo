@@ -2,6 +2,8 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
+
 use wineo_core::config::GlobalConfig;
 use wineo_core::download::{Client, Progress, Provider, Release, Transport};
 use wineo_core::paths::Paths;
@@ -22,6 +24,7 @@ pub const RUNNERS: [Provider; 2] = [Provider::GeProton, Provider::ProtonCachyos]
 /// How many releases to list before letting go to `more`.
 const SHORT_LIST: usize = 3;
 
+// The old `wineo download`, which stays as a hidden command until 2.0.
 #[derive(clap::Args)]
 pub struct Args {
     /// ge-proton, proton-cachyos, dxvk, or vkd3d; omit for guided selection
@@ -37,8 +40,155 @@ pub struct Args {
     version: Option<String>,
 }
 
-pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
-    match run_inner(paths, args, verbose) {
+/// `wineo runners download`.
+#[derive(clap::Args)]
+pub struct RunnerArgs {
+    /// ge-proton or proton-cachyos; omit for guided selection
+    #[arg(value_parser = runner_provider_parser())]
+    provider: Option<Provider>,
+    /// List available stable releases without downloading
+    #[arg(long, requires = "provider", conflicts_with = "version")]
+    list: bool,
+    /// Release listing page
+    #[arg(long, default_value_t = 1, requires = "list", value_parser = clap::value_parser!(u32).range(1..))]
+    page: u32,
+    /// Exact upstream release tag
+    #[arg(long, requires = "provider")]
+    version: Option<String>,
+}
+
+/// `wineo dxvk download` and `wineo vkd3d download`.
+#[derive(clap::Args)]
+pub struct ComponentArgs {
+    /// List available stable releases without downloading
+    #[arg(long, conflicts_with = "version")]
+    list: bool,
+    /// Release listing page
+    #[arg(long, default_value_t = 1, requires = "list", value_parser = clap::value_parser!(u32).range(1..))]
+    page: u32,
+    /// Exact upstream release tag; the newest stable release by default
+    #[arg(long)]
+    version: Option<String>,
+}
+
+/// Accepts all four providers, so a graphics component can be refused with
+/// the command that downloads it, but offers only the runners to completion.
+fn runner_provider_parser() -> impl TypedValueParser<Value = Provider> {
+    PossibleValuesParser::new(
+        PROVIDERS
+            .map(|provider| PossibleValue::new(provider.id()).hide(!RUNNERS.contains(&provider))),
+    )
+    .map(|id| id.parse().expect("only a possible value gets here"))
+}
+
+/// What one download command was asked for.
+struct Request<'a> {
+    provider: Option<Provider>,
+    list: bool,
+    page: u32,
+    version: Option<&'a str>,
+    /// What the guided picker offers when no provider is named.
+    offered: &'a [Provider],
+    /// How to name a provider's download when the picker has no terminal.
+    unguided: &'a str,
+}
+
+/// The command that downloads `provider`, as typed after `wineo`.
+pub(crate) fn command(provider: Provider) -> &'static str {
+    match provider {
+        Provider::GeProton | Provider::ProtonCachyos => "runners download",
+        Provider::Dxvk => "dxvk download",
+        Provider::Vkd3d => "vkd3d download",
+    }
+}
+
+/// `command` with the provider a runner download needs named.
+pub(crate) fn invocation(provider: Provider) -> String {
+    match provider {
+        Provider::GeProton | Provider::ProtonCachyos => format!("{} {provider}", command(provider)),
+        _ => command(provider).to_owned(),
+    }
+}
+
+/// `wineo download`: warns once, then does what the new commands do.
+pub fn run_deprecated(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+    let replacement = match args.provider {
+        Some(provider) => command(provider).to_owned(),
+        None => {
+            let mut all: Vec<&str> = Vec::new();
+            for provider in PROVIDERS {
+                if !all.contains(&command(provider)) {
+                    all.push(command(provider));
+                }
+            }
+            let (last, rest) = all.split_last().expect("there are providers");
+            format!("{}, or {last}", rest.join(", "))
+        }
+    };
+    eprintln!(
+        "{}",
+        style::warning_stderr(format!(
+            "warning: download is deprecated; use {replacement}"
+        ))
+    );
+    run(
+        paths,
+        Request {
+            provider: args.provider,
+            list: args.list,
+            page: args.page,
+            version: args.version.as_deref(),
+            offered: &PROVIDERS,
+            unguided: "`wineo runners download <provider>`, `wineo dxvk download`, or `wineo vkd3d download`",
+        },
+        verbose,
+    )
+}
+
+pub fn run_runners(paths: &Paths, args: RunnerArgs, verbose: bool) -> anyhow::Result<ExitCode> {
+    if let Some(provider @ (Provider::Dxvk | Provider::Vkd3d)) = args.provider {
+        anyhow::bail!(
+            "{} downloads with wineo {}.",
+            provider.label(),
+            command(provider)
+        );
+    }
+    run(
+        paths,
+        Request {
+            provider: args.provider,
+            list: args.list,
+            page: args.page,
+            version: args.version.as_deref(),
+            offered: &RUNNERS,
+            unguided: "`wineo runners download <provider> [--version <tag>]`",
+        },
+        verbose,
+    )
+}
+
+pub fn run_component(
+    paths: &Paths,
+    provider: Provider,
+    args: ComponentArgs,
+    verbose: bool,
+) -> anyhow::Result<ExitCode> {
+    run(
+        paths,
+        Request {
+            provider: Some(provider),
+            list: args.list,
+            page: args.page,
+            version: args.version.as_deref(),
+            offered: &[],
+            unguided: "",
+        },
+        verbose,
+    )
+}
+
+fn run(paths: &Paths, request: Request<'_>, verbose: bool) -> anyhow::Result<ExitCode> {
+    match run_inner(paths, request, verbose) {
         Err(error) if cancel::prompted(&error) => {
             eprintln!("{}", style::warning_stderr("Download canceled"));
             Ok(cancel::exit_code())
@@ -47,17 +197,17 @@ pub fn run(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode>
     }
 }
 
-fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCode> {
+fn run_inner(paths: &Paths, request: Request<'_>, verbose: bool) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
-    let result = match args.provider {
+    let result = match request.provider {
         Some(provider) => {
             let cancellation = Cancellation::new()?;
             let client = Client::new()?;
-            if args.list {
+            if request.list {
                 list_to(
                     &client,
                     provider,
-                    args.page,
+                    request.page,
                     verbose,
                     &cancellation,
                     &mut crate::output::stdout(),
@@ -65,7 +215,7 @@ fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCod
                 )?;
                 return Ok(ExitCode::SUCCESS);
             }
-            let release = cancellation.result(client.select(provider, args.version.as_deref()))?;
+            let release = cancellation.result(client.select(provider, request.version))?;
             eprintln!(
                 "{}",
                 describe(paths, &global, &release, style::stderr_enabled())?
@@ -75,11 +225,12 @@ fn run_inner(paths: &Paths, args: Args, verbose: bool) -> anyhow::Result<ExitCod
         None => {
             anyhow::ensure!(
                 prompt::interactive(),
-                "guided download needs a terminal; use `wineo download <provider> [--version <tag>]`"
+                "guided download needs a terminal; use {}",
+                request.unguided
             );
             let mut prompt = Prompt::new(Terminal::open()?, crate::output::stdout())
                 .with_color(style::stdout_enabled());
-            choose_and_install(paths, &global, &mut prompt, &PROVIDERS, verbose).map(|_| ())
+            choose_and_install(paths, &global, &mut prompt, request.offered, verbose).map(|_| ())
         }
     };
     match result {
@@ -109,12 +260,17 @@ fn list_to<T: Transport, W: Write, E: Write>(
             notices,
             "{}",
             style::dim_stderr(format!(
-                "More releases: wineo download {provider} --list --page {}",
-                page + 1
+                "More releases: {}",
+                list_command(provider, page + 1)
             ))
         )?;
     }
     Ok(())
+}
+
+/// The command that lists a provider's releases from `page`.
+fn list_command(provider: Provider, page: u32) -> String {
+    format!("wineo {} --list --page {page}", invocation(provider))
 }
 
 pub fn choose_and_install<I: Input, W: Write>(

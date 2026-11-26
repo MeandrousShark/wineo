@@ -691,7 +691,7 @@ fn pending_builds_are_grouped_rechecked_and_settled() {
     let SkipReason::Unavailable(reason) = &skipped.reason else {
         panic!("expected an unavailable build");
     };
-    assert!(reason.contains("wineo download dxvk"), "{reason}");
+    assert!(reason.contains("wineo dxvk download"), "{reason}");
 
     // With the build, the same games are ready, after the ones that never waited.
     install_dxvk(&paths, &global);

@@ -129,7 +129,7 @@ environment.
 | Templates | Same parse checks | error | |
 | Templates | Runner or DXVK/vkd3d build that doesn't resolve | warning | |
 | Environment config | Same parse checks | error | |
-| Wine environment | Runner doesn't resolve | error | hint: `wineo download` |
+| Wine environment | Runner doesn't resolve | error | hint: `wineo runners download` |
 | Wine environment | DXVK or vkd3d build doesn't resolve | error | download it |
 | Wine environment | `winetricks` verbs missing from the prefix's `winetricks.log` | warning | install them, like `start` does |
 | Wine environment | `winetricks` verbs listed, but a Wine runner can't find `winetricks` on `PATH` | error | |

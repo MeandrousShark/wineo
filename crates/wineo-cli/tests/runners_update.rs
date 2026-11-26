@@ -136,7 +136,7 @@ fn check_json_puts_a_family_that_fails_in_errors_and_exits_1() {
     assert!(
         text.ends_with(
             ",{\"provider\":\"vkd3d\",\"message\":\"vkd3d-proton isn't installed. \
-             Download it with wineo download vkd3d.\"}]}\n"
+             Download it with wineo vkd3d download.\"}]}\n"
         ),
         "{text}"
     );
@@ -200,7 +200,7 @@ fn a_named_family_that_isnt_installed_is_an_error_with_a_hint() {
     assert_eq!(stdout(&output), "");
     assert!(
         stderr(&output).contains(
-            "error: GE-Proton isn't installed. Download it with wineo download ge-proton."
+            "error: GE-Proton isn't installed. Download it with wineo runners download ge-proton."
         ),
         "{}",
         stderr(&output)
@@ -550,5 +550,184 @@ fn help_says_it_covers_the_graphics_components_too() {
     let text = stdout(&output);
     for needed in ["DXVK", "vkd3d-proton", "--check", "--json", "FAMILY"] {
         assert!(text.contains(needed), "{needed}\n{text}");
+    }
+}
+
+/// What `dxvk update` and `vkd3d update` work on: the command, the family
+/// name `runners update` takes for it, and a build with a newer release.
+struct Family {
+    command: &'static str,
+    name: &'static str,
+    repo: Repo,
+    installed: &'static str,
+    dirs: &'static [&'static str],
+    tag: &'static str,
+    newer: &'static str,
+    is_dxvk: bool,
+}
+
+const FAMILIES: [Family; 2] = [
+    Family {
+        command: "dxvk",
+        name: "dxvk",
+        repo: Repo::Dxvk,
+        installed: "dxvk-2.6",
+        dirs: &["x64", "x32"],
+        tag: "v2.7.1",
+        newer: "dxvk-2.7.1",
+        is_dxvk: true,
+    },
+    Family {
+        command: "vkd3d",
+        name: "vkd3d",
+        repo: Repo::Vkd3d,
+        installed: "vkd3d-proton-2.13",
+        dirs: &["x64", "x86"],
+        tag: "v2.14",
+        newer: "vkd3d-proton-2.14",
+        is_dxvk: false,
+    },
+];
+
+impl Family {
+    /// A library with this family installed and GE-Proton too, so a command
+    /// that strays into the other family shows. Both have newer releases.
+    fn world(&self) -> (Fixture, ReleasesApi) {
+        let f = Fixture::new();
+        let api = ReleasesApi::start();
+        f.install_proton("GE-Proton10-20");
+        f.install_build(self.command, self.installed, self.dirs);
+        api.publish(
+            Repo::GeProton,
+            "GE-Proton10-27",
+            "GE-Proton10-27.tar.gz",
+            proton_archive("GE-Proton10-27"),
+        );
+        api.publish(
+            self.repo,
+            self.tag,
+            &format!("{}.tar.gz", self.newer),
+            component_archive(self.newer, self.is_dxvk),
+        );
+        (f, api)
+    }
+
+    fn run(&self, f: &Fixture, api: &ReleasesApi, args: &[&str]) -> Output {
+        f.releases_command(api)
+            .arg(self.command)
+            .arg("update")
+            .args(args)
+            .output()
+            .expect("wineo should start")
+    }
+}
+
+#[test]
+fn a_family_update_checks_only_its_family_like_runners_update_does() {
+    for family in &FAMILIES {
+        for flags in [&["--check"][..], &["--check", "--json"]] {
+            let (f, api) = family.world();
+            let own = family.run(&f, &api, flags);
+            assert_eq!(own.status.code(), Some(0), "{}", stderr(&own));
+            assert_eq!(api.catalog_requests().len(), 1, "{:?}", api.requests());
+
+            let (twin, twin_api) = family.world();
+            let runners = update(&twin, &twin_api, &[flags, &[family.name]].concat());
+            assert_eq!(
+                stdout(&own),
+                stdout(&runners),
+                "{} {flags:?}",
+                family.command
+            );
+            assert_eq!(stderr(&own), stderr(&runners));
+            assert!(stdout(&own).contains(family.newer), "{}", stdout(&own));
+            assert!(api.downloads().is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_family_update_downloads_its_family_alone_and_says_what_runners_update_says() {
+    for family in &FAMILIES {
+        let (f, api) = family.world();
+        let own = family.run(&f, &api, &[]);
+        assert_eq!(own.status.code(), Some(0), "{}", stderr(&own));
+        assert_eq!(stdout(&own), "");
+        assert!(
+            stderr(&own).contains(&format!("Installed {}.\n", family.newer)),
+            "{}",
+            stderr(&own)
+        );
+        assert!(
+            f.root
+                .path()
+                .join("data/wineo")
+                .join(family.command)
+                .join(family.newer)
+                .is_dir()
+        );
+        // GE-Proton had a newer release too, and wasn't asked about.
+        assert_eq!(api.downloads().len(), 1, "{:?}", api.requests());
+        assert_eq!(api.catalog_requests().len(), 1, "{:?}", api.requests());
+        assert!(!runner_root(&f).join("GE-Proton10-27").exists());
+
+        let (twin, twin_api) = family.world();
+        let runners = update(&twin, &twin_api, &[family.name]);
+        assert_eq!(stderr(&own), stderr(&runners), "{}", family.command);
+    }
+}
+
+#[test]
+fn a_family_update_with_none_installed_says_how_to_get_one() {
+    for (family, label) in [(&FAMILIES[0], "DXVK"), (&FAMILIES[1], "vkd3d-proton")] {
+        let f = Fixture::new();
+        let api = ReleasesApi::start();
+        f.install_proton("GE-Proton10-20");
+        let message = format!(
+            "error: {label} isn't installed. Download it with wineo {} download.\n",
+            family.command
+        );
+        let out = family.run(&f, &api, &[]);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        assert_eq!(stdout(&out), "");
+        assert_eq!(
+            stderr(&out),
+            format!("{message}Couldn't update 1 of 1 family: {label}.\n")
+        );
+        // The same as naming the family to `runners update`.
+        let runners = update(&f, &api, &[family.name]);
+        assert_eq!(stderr(&runners), stderr(&out));
+
+        let out = family.run(&f, &api, &["--check"]);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            format!("{message}Couldn't check 1 of 1 family: {label}.\n")
+        );
+
+        let out = family.run(&f, &api, &["--check", "--json"]);
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            format!(
+                "{{\"families\":[],\"errors\":[{{\"provider\":\"{}\",\"message\":\"{}\"}}]}}\n",
+                family.name,
+                message.trim_start_matches("error: ").trim_end()
+            )
+        );
+        assert!(api.requests().is_empty(), "{:?}", api.requests());
+    }
+}
+
+#[test]
+fn a_family_update_takes_no_family_and_json_needs_check() {
+    for family in &FAMILIES {
+        let (f, api) = family.world();
+        let out = family.run(&f, &api, &["--json"]);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(stderr(&out).contains("--check"), "{}", stderr(&out));
+        let out = family.run(&f, &api, &["ge-proton"]);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(api.requests().is_empty(), "{:?}", api.requests());
     }
 }

@@ -569,7 +569,7 @@ fn ensure_components_available_declining_leaves_the_usual_hinted_error() {
         "{message}"
     );
     assert!(
-        message.contains("Get one with: wineo download dxvk"),
+        message.contains("Get one with: wineo dxvk download"),
         "{message}"
     );
     let printed = String::from_utf8_lossy(prompt.output()).into_owned();
@@ -1241,7 +1241,7 @@ fn resolve_pending_with_yes_skips_without_asking() {
     let mut library = waiting(vec![pending_game(
         root.path(),
         Component::Dxvk,
-        "no DXVK build, run wineo download dxvk",
+        "no DXVK build, run wineo dxvk download",
     )]);
     resolve_pending::<Script, Vec<u8>>(
         &paths(root.path()),
@@ -1257,7 +1257,7 @@ fn resolve_pending_with_yes_skips_without_asking() {
     let RowStatus::Skipped(reason) = &rows[0].status else {
         panic!("expected a skip row");
     };
-    assert!(reason.contains("wineo download dxvk"), "{reason}");
+    assert!(reason.contains("wineo dxvk download"), "{reason}");
 }
 
 #[test]
