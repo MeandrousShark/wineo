@@ -509,6 +509,11 @@ fn logout_takes_no_yes_or_dry_run_and_list_flags_need_list() {
         &["import", "epic", "--json"],
         &["import", "epic", "--login", "--list"],
         &["import", "epic", "--logout", "--list"],
+        // Taken alone by clap's `requires`, so they need a conflict too.
+        &["import", "epic", "--login", "--refresh"],
+        &["import", "epic", "--login", "--json"],
+        &["import", "epic", "--logout", "--refresh"],
+        &["import", "epic", "--logout", "--json"],
     ] {
         let output = epic.run(args);
         assert_eq!(

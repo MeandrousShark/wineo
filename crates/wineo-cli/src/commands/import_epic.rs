@@ -26,10 +26,10 @@ pub struct Args {
     #[arg(long)]
     pub list: bool,
     /// With --list, fetch the owned games again instead of using the saved list
-    #[arg(long, requires = "list")]
+    #[arg(long, requires = "list", conflicts_with_all = ["login", "logout"])]
     pub refresh: bool,
     /// With --list, print JSON
-    #[arg(long, requires = "list")]
+    #[arg(long, requires = "list", conflicts_with_all = ["login", "logout"])]
     pub json: bool,
     /// Agree to downloading Legendary, and allow it without a terminal
     #[arg(short, long, conflicts_with = "logout")]
