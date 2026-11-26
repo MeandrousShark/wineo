@@ -39,6 +39,10 @@ pub fn print_event(paths: &Paths, name: &str, event: LaunchEvent) {
             eprintln!("Not a Wayland session, starting {name} on X11.");
         }
         LaunchEvent::Warning(warning) => eprintln!("warning: {warning}"),
-        LaunchEvent::Starting | LaunchEvent::Started | LaunchEvent::AfterHook(_) => {}
+        LaunchEvent::Notice(notice) => eprintln!("{notice}"),
+        LaunchEvent::AskingEpic
+        | LaunchEvent::Starting
+        | LaunchEvent::Started
+        | LaunchEvent::AfterHook(_) => {}
     }
 }
