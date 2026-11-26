@@ -220,7 +220,11 @@ const KINDS: [Kind; 4] = [
 
 impl Kind {
     fn archive(&self) -> Vec<u8> {
-        let root = self.asset.trim_end_matches(".tar.gz");
+        self.archive_of(self.asset)
+    }
+
+    fn archive_of(&self, asset: &str) -> Vec<u8> {
+        let root = asset.trim_end_matches(".tar.gz");
         match self.id {
             "dxvk" => component_archive(root, true),
             "vkd3d" => component_archive(root, false),
@@ -579,4 +583,29 @@ fn the_old_download_is_hidden_from_help_and_man_pages_but_the_new_commands_show(
     assert!(!dir.join("wineo-download.1").exists());
     let page = fs::read_to_string(dir.join("wineo.1")).unwrap();
     assert!(!page.contains(r"wineo\-download"), "{page}");
+}
+
+#[test]
+fn every_spelling_installs_the_release_a_version_names_and_not_the_newest() {
+    for kind in &KINDS {
+        let (tag, asset) = kind.release(2);
+        let folder = format!(
+            "data/wineo/{}/{}",
+            kind.folder.split('/').next().unwrap(),
+            asset.trim_end_matches(".tar.gz")
+        );
+        let mut new = kind.new.to_vec();
+        new.extend(["--version", &tag]);
+        for args in [new, vec!["download", kind.id, "--version", &tag]] {
+            let f = Fixture::new();
+            let api = ReleasesApi::start();
+            // The newest is listed, and the older one only by its tag.
+            kind.serve(&api);
+            api.publish_tag(kind.repo, &tag, &asset, kind.archive_of(&asset));
+            let out = fetch(&f, &api, &args);
+            assert_success(&out);
+            assert!(f.root.path().join(&folder).is_dir(), "{args:?}");
+            assert!(!kind.installed(&f), "{args:?} fetched the newest");
+        }
+    }
 }
