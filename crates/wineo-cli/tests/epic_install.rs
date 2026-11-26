@@ -606,3 +606,60 @@ fn rm_refuses_an_unfinished_install_unless_forced_and_forget_leaves_the_files() 
     );
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn a_proton_install_writes_the_store_beside_epic_id() {
+    let epic = epic();
+    epic.f.install_proton("GE-Proton-Test");
+    let output = epic.install(&[
+        "import",
+        "epic",
+        "--game",
+        APP,
+        "--yes",
+        "--runner",
+        "GE-Proton-Test",
+    ]);
+    assert_ok(&output);
+    let config =
+        fs::read_to_string(epic.f.config_dir().join("environments/offline-game.toml")).unwrap();
+    assert!(config.contains("runner = \"GE-Proton-Test\""), "{config}");
+    assert!(
+        config.contains("epic_id = \"AppOffline\"\nstore = \"egs\"\n"),
+        "{config}"
+    );
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn a_game_only_epic_says_needs_another_launcher_is_refused_before_downloading() {
+    let epic = Epic::new();
+    let list = epic.edited_list(|list| {
+        for game in list.as_array_mut().unwrap() {
+            if game["app_name"] == "AppThirdParty" {
+                game["metadata"]["customAttributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("partnerLinkType");
+            }
+        }
+    });
+    epic.on_path(&common::epic::Fake {
+        list,
+        ..common::epic::Fake::default()
+    });
+    epic.log_in();
+    let output = epic.install(&["import", "epic", "--game", "AppThirdParty", "--yes"]);
+    assert_code(&output, 1);
+    assert_eq!(
+        stderr(&output),
+        "error: Third Party Game can't be installed: it needs an account at another launcher.\n"
+    );
+    assert!(
+        epic.calls()
+            .contains(&"info AppThirdParty --json".to_owned())
+    );
+    assert!(epic.install_calls().is_empty());
+    assert!(record(&epic, "AppThirdParty").is_none());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}

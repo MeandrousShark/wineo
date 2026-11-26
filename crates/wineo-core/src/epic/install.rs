@@ -34,6 +34,7 @@ use crate::cancel::Token;
 use crate::config::{Arch, GlobalConfig};
 use crate::create::{self, CreateEvent, CreateRequest};
 use crate::environment::{Environment, EnvironmentIdentity};
+use crate::operation::{Locks, Operation};
 use crate::paths::Paths;
 use crate::runner::Runner;
 use crate::targets::{self, Batch, Spec, Written};
@@ -281,6 +282,10 @@ impl Plan {
     }
 }
 
+/// Why a game that needs another launcher's account can't be installed:
+/// wineo doesn't set that account up.
+const NEEDS_LINKING: &str = "it needs an account at another launcher";
+
 /// Why the owned list says a game can't be installed, if it does.
 pub fn unavailable(game: &owned::Game) -> Option<&'static str> {
     if game.third_party.is_some() {
@@ -288,8 +293,7 @@ pub fn unavailable(game: &owned::Game) -> Option<&'static str> {
     } else if game.version.is_none() {
         Some("Epic has no Windows build of it")
     } else if game.partner_link.is_some() {
-        // wineo doesn't set up the other launcher's account.
-        Some("it needs an account at another launcher")
+        Some(NEEDS_LINKING)
     } else {
         None
     }
@@ -397,13 +401,6 @@ fn warnings(game: &owned::Game, info: &Info) -> Vec<String> {
             "{title} checks an Epic ownership token, which usually means Denuvo."
         ));
     }
-    // A partner link in the owned list is refused before this; Epic can still
-    // name an activation the list didn't.
-    if let Some(partner) = info.external.as_deref() {
-        warnings.push(format!(
-            "{title} needs an account at {partner}. Link it on Epic's site; wineo doesn't."
-        ));
-    }
     if let Some(prerequisite) = &info.prerequisite {
         let what = prerequisite
             .path
@@ -489,6 +486,14 @@ pub fn plan(
         Some(creation(paths, request, &environment)?)
     };
     let info = info(legendary, &game.app_name, token)?;
+    // The same case as a partner link, which only `info` may name.
+    if info.external.is_some() {
+        return Err(InstallError::Unavailable {
+            title: game.title.clone(),
+            why: NEEDS_LINKING,
+        }
+        .into());
+    }
     Ok(Plan {
         app_name: game.app_name.clone(),
         title: game.title.clone(),
@@ -681,6 +686,11 @@ pub fn apply(
             }
         };
         check_owners(paths, plan)?;
+        // Everything creating the environment checks, so a name that can't
+        // be used fails now rather than after the download.
+        if let Some(creation) = &plan.creation {
+            check_creation(paths, plan, creation)?;
+        }
         gog_folder_create(folder)?;
         if fs::canonicalize(folder).ok().as_deref() != Some(folder) {
             return Err(InstallError::Changed {
@@ -774,25 +784,21 @@ pub fn apply(
     let mut created = false;
     let mut identity = None;
     if let Some(creation) = &plan.creation {
-        let made = create::run(
-            paths,
-            CreateRequest {
-                name: plan.environment.clone(),
-                resolved_runner: Some(creation.runner.clone()),
-                arch: creation.arch,
-                expected_adopted: Some(creation.adopted),
-                epic_id: Some(app.to_owned()),
-                ..CreateRequest::default()
-            },
-            token,
-            |event| events(Event::Create(event)),
-        )?;
+        let made = create::run(paths, creation_request(plan, creation), token, |event| {
+            events(Event::Create(event))
+        })?;
         identity = made.identity;
         created = true;
     }
     let entry = entries.get(app);
-    if let Some(start) = entry.and_then(|entry| entry.offline_start()) {
-        add_target(paths, plan, folder, &start)?;
+    match entry.and_then(|entry| entry.offline_start()) {
+        Some(start) => add_target(paths, plan, folder, &start)?,
+        None => warnings.push(format!(
+            "Legendary names no program inside {} to start, so {} has none yet. Pick one with: wineo setup {}",
+            folder.display(),
+            plan.environment,
+            plan.environment
+        )),
     }
     record.installed_version = installed.get(app).and_then(|entry| entry.version.clone());
     record.can_run_offline = entry.is_some_and(|entry| entry.can_run_offline);
@@ -837,6 +843,32 @@ pub fn apply(
 /// its canonical form is fixed before the mark names it.
 fn gog_folder_create(folder: &Path) -> Result<()> {
     crate::gog::folder::create_dir_durable(folder)
+}
+
+/// Plans the environment's creation again and takes its operation lock for
+/// a moment, which is where interrupted removals and snapshot restores of
+/// the name are refused.
+fn check_creation(paths: &Paths, plan: &Plan, creation: &Creation) -> Result<()> {
+    let planned = create::plan(paths, creation_request(plan, creation))?;
+    if planned.adopted() != creation.adopted {
+        return Err(InstallError::Changed {
+            what: format!("{}'s prefix", plan.environment),
+        }
+        .into());
+    }
+    drop(Locks::new(paths).acquire(Operation::Create, &plan.environment, &[planned.prefix()])?);
+    Ok(())
+}
+
+fn creation_request(plan: &Plan, creation: &Creation) -> CreateRequest {
+    CreateRequest {
+        name: plan.environment.clone(),
+        resolved_runner: Some(creation.runner.clone()),
+        arch: creation.arch,
+        expected_adopted: Some(creation.adopted),
+        epic_id: Some(plan.app_name.clone()),
+        ..CreateRequest::default()
+    }
 }
 
 /// Refuses an install another environment has taken the game from: only
@@ -1034,16 +1066,9 @@ impl Entry {
     /// What starting the game without Legendary runs, as Legendary would:
     /// the program relative to the folder, its own parameters, and the
     /// program's folder as the working folder.
+    /// None when it names no program, or one outside the folder.
     fn offline_start(&self) -> Option<OfflineStart> {
-        let executable = self
-            .executable
-            .as_deref()?
-            .replace('\\', "/")
-            .trim_start_matches('/')
-            .to_owned();
-        if executable.is_empty() {
-            return None;
-        }
+        let executable = inside(self.executable.as_deref()?)?;
         let arguments = self
             .launch_parameters
             .as_deref()
@@ -1063,6 +1088,23 @@ impl Entry {
             working_directory,
         })
     }
+}
+
+/// A path Legendary gives relative to the game folder, in normal form with
+/// `/` between its parts. Legendary drops leading slashes and takes `\\`
+/// for `/`, as this does. None for one with nothing in it or that leads out
+/// of the folder.
+fn inside(raw: &str) -> Option<String> {
+    let normal = raw.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in Path::new(normal.trim_start_matches('/')).components() {
+        match part {
+            std::path::Component::Normal(part) => parts.push(part.to_str()?),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 fn installed_entries(paths: &Paths) -> Result<BTreeMap<String, Entry>> {
@@ -1179,6 +1221,9 @@ pub fn forget(
         let legendary = legendary.ok_or_else(|| InstallError::NeedsLegendary {
             app: app.to_owned(),
         })?;
+        // Legendary rewrites its records in place, so no other call of it
+        // runs meanwhile.
+        let _epic = EpicLock::acquire(paths)?;
         for name in &drop {
             legendary.run(&["-y", "uninstall", name, "--keep-files"], None, token)?;
         }

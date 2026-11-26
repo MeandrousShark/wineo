@@ -16,6 +16,7 @@
 //! - `exit1`: logs an error and exits 1.
 //! - `quiet`: starts downloading, prints nothing for 3 seconds, then
 //!   finishes.
+//! - `outside`: records a program outside the game folder.
 //!
 //! Every install writes `<root>/installing-<app>` once it has started, and
 //! `<root>/got-int` gets a line for each interrupt it heeded.
@@ -86,7 +87,8 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            if [ \"$mode\" = failed-write ]; then echo '[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device' >&2; fi\n\
            path=\"$base/$folder\"; if [ \"$mode\" = elsewhere ]; then path=/elsewhere; fi\n\
            {mkdir} -p \"$LEGENDARY_CONFIG_PATH/fake-installed\"\n\
-           printf '\"%s\": {{\"app_name\": \"%s\", \"install_path\": \"%s\", \"version\": \"1.0\", \"executable\": \"Binaries/Win64/Game.exe\", \"launch_parameters\": \"-skipintro -lang=en\", \"can_run_offline\": true}}' \"$app\" \"$app\" \"$path\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
+           exe=Binaries/Win64/Game.exe; if [ \"$mode\" = outside ]; then exe=Binaries/../../outside.exe; fi\n\
+           printf '\"%s\": {{\"app_name\": \"%s\", \"install_path\": \"%s\", \"version\": \"1.0\", \"executable\": \"%s\", \"launch_parameters\": \"-skipintro -lang=en\", \"can_run_offline\": true}}' \"$app\" \"$app\" \"$path\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
            rebuild\n\
            {rm} -f \"$LEGENDARY_CONFIG_PATH/tmp/$app.resume\"\n\
            echo '[cli] INFO: Finished installation process in 0.01 seconds.' >&2 ;;\n\

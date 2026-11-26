@@ -621,21 +621,6 @@ fn the_review_warns_about_what_wineo_doesnt_handle() {
         token.warnings(),
         ["Token Game 2020 checks an Epic ownership token, which usually means Denuvo."]
     );
-    // Activation Epic names only in `info`, with no partner link listed.
-    let mut unlinked = owned("AppThirdParty");
-    unlinked.partner_link = None;
-    let linked = plan(
-        &legendary,
-        &request("AppThirdParty"),
-        &unlinked,
-        &Existing::None,
-        &Token::new(),
-    )
-    .unwrap();
-    assert_eq!(
-        linked.warnings()[0],
-        "Third Party Game needs an account at UbisoftConnect. Link it on Epic's site; wineo doesn't."
-    );
     let dlc = plan_for(&legendary, "Dlc Game");
     assert_eq!(
         dlc.warnings(),
@@ -877,5 +862,129 @@ fn another_install_of_the_same_game_started_meanwhile_is_refused_by_the_record()
         "Epic game AppOffline's record changed since the install was planned; plan it again."
     );
     assert!(installs(&setup).is_empty());
+    assert_eq!(setup.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn an_activation_only_info_names_is_refused_before_any_download() {
+    let (setup, legendary) = host();
+    // The owned list doesn't mark it; Epic's own answer about the game does.
+    let mut unlinked = owned("AppThirdParty");
+    unlinked.partner_link = None;
+    let error = plan(
+        &legendary,
+        &request("AppThirdParty"),
+        &unlinked,
+        &Existing::None,
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Third Party Game can't be installed: it needs an account at another launcher."
+    );
+    assert!(
+        setup
+            .calls()
+            .contains(&"info AppThirdParty --json".to_owned())
+    );
+    assert!(installs(&setup).is_empty());
+    assert!(record(&setup, "AppThirdParty").is_none());
+    assert_eq!(setup.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn forgetting_waits_for_the_epic_lock_before_legendary_runs() {
+    let (setup, legendary) = host();
+    let app = "AppOffline";
+    let plan = plan_for(&legendary, app);
+    install(&legendary, &plan, &Token::new()).0.unwrap();
+    fs::remove_file(setup.paths.environment_config(plan.environment())).unwrap();
+    let held = EpicLock::acquire(&setup.paths).unwrap();
+    let uninstalls = || {
+        setup
+            .calls()
+            .iter()
+            .filter(|call| call.contains("uninstall"))
+            .count()
+    };
+    thread::scope(|scope| {
+        let forgetting = scope.spawn(|| forget(&setup.paths, Some(&legendary), app, &Token::new()));
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(uninstalls(), 0, "Legendary ran while the lock was held");
+        assert!(!forgetting.is_finished());
+        drop(held);
+        forgetting.join().unwrap().unwrap();
+    });
+    assert_eq!(uninstalls(), 1);
+    assert_eq!(setup.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn a_name_that_cant_be_created_fails_before_the_download() {
+    let (setup, legendary) = host();
+    let app = "AppOffline";
+    let plan = plan_for(&legendary, app);
+    // A snapshot restore of the name was interrupted after the review.
+    let marker = setup.paths.restore_marker(plan.environment());
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::write(&marker, "{}").unwrap();
+    let (installed, _) = install(&legendary, &plan, &Token::new());
+    let error = format!("{:#}", installed.unwrap_err());
+    assert!(
+        error.contains("an interrupted snapshot restore needs recovery"),
+        "{error}"
+    );
+    assert!(installs(&setup).is_empty(), "refused before downloading");
+    assert!(record(&setup, app).is_none(), "and before the mark");
+    assert_eq!(setup.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn programs_outside_the_game_folder_are_refused() {
+    for (raw, want) in [
+        ("Binaries/Win64/Game.exe", Some("Binaries/Win64/Game.exe")),
+        ("\\Binaries\\Game.exe", Some("Binaries/Game.exe")),
+        ("./Game.exe", Some("Game.exe")),
+        ("/Game.exe", Some("Game.exe")),
+        ("../Game.exe", None),
+        ("Binaries/../../Game.exe", None),
+        ("Binaries\\..\\..\\Game.exe", None),
+        ("Binaries/../Game.exe", None),
+        ("", None),
+        (".", None),
+    ] {
+        let entry = Entry {
+            executable: Some(raw.to_owned()),
+            ..Entry::default()
+        };
+        assert_eq!(
+            entry.offline_start().map(|start| start.executable),
+            want.map(str::to_owned),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn an_install_whose_program_is_outside_its_folder_gets_no_target() {
+    let (setup, legendary) = host();
+    let app = "AppOffline";
+    set_mode(&setup, app, "outside");
+    let plan = plan_for(&legendary, app);
+    let (installed, _) = install(&legendary, &plan, &Token::new());
+    let installed = installed.unwrap();
+    assert_eq!(
+        installed.warnings,
+        [format!(
+            "Legendary names no program inside {} to start, so offline-game has none yet. Pick one with: wineo setup offline-game",
+            plan.folder().display()
+        )]
+    );
+    let environment = Environment::load(&setup.paths, "offline-game").unwrap();
+    assert!(environment.config.targets.is_empty());
+    let record = record(&setup, app).unwrap();
+    assert_eq!(record.offline, None);
+    assert_eq!(record.in_flight, None);
     assert_eq!(setup.sweep(), Vec::<i32>::new());
 }
