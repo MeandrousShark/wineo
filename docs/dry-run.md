@@ -75,6 +75,11 @@ another; it changes nothing else. `import gog --all --dry-run` reports a
 game that would fail as `TITLE: would fail: REASON` and exits 1, like
 `import heroic --all`.
 
+`import epic --dry-run` downloads nothing and changes nothing. Where wineo
+would offer to download Legendary, it prints the question and `Dry run, so
+wineo didn't ask or download anything.` With `--list --refresh` it shows
+the saved list and doesn't ask Epic again.
+
 `update NAME --dry-run` and `update --all --dry-run` print the review the
 real update would show and download nothing. They don't cache GOG's
 details or record a build another tool installed, and `--refresh` still

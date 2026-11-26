@@ -255,6 +255,8 @@ wineo manpages ~/.local/share/man/man1
 - **GOG games.** Log in and install the [GOG games](docs/gog.md) you own,
   native or Windows, or move the ones Heroic installed into wineo, then keep
   them and their DLC up to date. No GOG Galaxy client needed.
+- **Epic games.** Log in to Epic and list the [Epic games](docs/epic.md)
+  you own, through Legendary.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.
@@ -363,6 +365,7 @@ you pass `--portable DIR` or set it up for a portable folder.
 - [Native Linux games](docs/native.md)
 - [Steam games](docs/steam.md)
 - [GOG games](docs/gog.md)
+- [Epic games](docs/epic.md)
 - [Emulated games](docs/emulators.md)
 - [Launch options](docs/launch-options.md)
 - [Hooks](docs/hooks.md)

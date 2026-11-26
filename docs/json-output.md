@@ -1,7 +1,7 @@
 # JSON output
 
 `status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
-`import roms --list`, `import roms --emulators`, `update --check`, and
+`import epic --list`, `import roms --list`, `import roms --emulators`, `update --check`, and
 `runners update --check` accept `--json` for scripting:
 
 ```sh
@@ -12,6 +12,7 @@ wineo validate --json
 wineo stats --json
 wineo tag add co-op hades celeste --json
 wineo import gog --list --json
+wineo import epic --list --json
 wineo import roms ~/Games/roms/gamecube --emulator dolphin --list --json
 wineo import roms --emulators --json
 wineo update --check --json
@@ -309,6 +310,47 @@ newest first. `version` is GOG's name for the build, or `null`;
 update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
+
+## Epic
+
+`wineo import epic --list --json` lists the games your Epic account owns:
+
+```json
+{
+  "games": [
+    {
+      "id": "Fowl",
+      "title": "The Escapists 2",
+      "state": "not_installed",
+      "reason": null,
+      "environment": null,
+      "version": null,
+      "update": null,
+      "dlc": []
+    },
+    {
+      "id": "AppThirdParty",
+      "title": "Third Party Game",
+      "state": "unavailable",
+      "reason": "needs_linking",
+      "environment": null,
+      "version": null,
+      "update": null,
+      "dlc": []
+    }
+  ],
+  "errors": [],
+  "warnings": []
+}
+```
+
+`state` is `not_installed` or `unavailable`. `reason` is `null`, or for an
+unavailable game `third_party` (another launcher manages it),
+`needs_linking` (it needs an account at another launcher), or
+`no_windows_build`. `environment`, `version`, and `update` are `null` and
+`dlc` is `[]` for a game that isn't installed. `warnings` holds the same
+lines as stderr, like a list that couldn't be refreshed. A command that
+fails prints no JSON. Epic ids are strings.
 
 ## Runner and component updates
 
