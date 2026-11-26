@@ -11,15 +11,14 @@ wineo dxvk download
 wineo vkd3d download
 ```
 
-Runners download under `wineo runners`, and DXVK and vkd3d-proton under their
-own commands. The guided `wineo runners download` offers providers and
+Runners download under `wineo runners`, and DXVK and vkd3d-proton under
+their own commands. The guided `wineo runners download` offers providers and
 releases. A download without a version selects the latest supported stable
-upstream release. Use `--version <tag>` for
-an exact release and `--list --page 2` for older releases.
+upstream release. Use `--version <tag>` for an exact release and
+`--list --page 2` for older releases.
 
-`wineo download PROVIDER`, the old spelling, keeps working until 2.0 and
-warns with the new one, like `warning: download is deprecated; use runners
-download`.
+`wineo download`, the old spelling, keeps working until 2.0 and warns with
+the replacement for the provider you named.
 
 Downloads support Linux x86_64. CachyOS selection uses its baseline SLR build.
 wineo verifies published checksums before extraction and installs each build in

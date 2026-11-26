@@ -36,8 +36,8 @@ and fixing; warnings alone exit 0. See [Validate](validate.md).
 exit 1 if any game couldn't be.
 
 `runners update` updates every family it can and exits 1 if any family
-couldn't be checked or downloaded, after a summary. `runners update
---check` exits 0 whether or not updates are waiting, and 1 only when a
+couldn't be checked or downloaded, after a summary; `dxvk update` and
+`vkd3d update` exit the same way for their one family. `--check` exits 0 whether or not updates are waiting, and 1 only when a
 family couldn't be checked.
 
 ## Canceling
@@ -54,8 +54,8 @@ A few things to know:
   The exit code is then the game's own, not 130.
 - `import heroic --all` stops the whole batch on Ctrl+C. Games already
   imported stay imported.
-- `runners update` stops the whole batch on Ctrl+C. Builds already
-  downloaded stay.
+- `runners update`, `dxvk update`, and `vkd3d update` stop the whole
+  batch on Ctrl+C. Builds already downloaded stay.
 - Answering no at a final confirmation, like `prune`'s or `snapshot
   restore`'s, exits 130, since nothing was done. With `--yes` there is no
   question.
