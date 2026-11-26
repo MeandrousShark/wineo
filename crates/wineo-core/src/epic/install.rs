@@ -287,6 +287,9 @@ pub fn unavailable(game: &owned::Game) -> Option<&'static str> {
         Some("another launcher manages it")
     } else if game.version.is_none() {
         Some("Epic has no Windows build of it")
+    } else if game.partner_link.is_some() {
+        // wineo doesn't set up the other launcher's account.
+        Some("it needs an account at another launcher")
     } else {
         None
     }
@@ -394,7 +397,9 @@ fn warnings(game: &owned::Game, info: &Info) -> Vec<String> {
             "{title} checks an Epic ownership token, which usually means Denuvo."
         ));
     }
-    if let Some(partner) = game.partner_link.as_deref().or(info.external.as_deref()) {
+    // A partner link in the owned list is refused before this; Epic can still
+    // name an activation the list didn't.
+    if let Some(partner) = info.external.as_deref() {
         warnings.push(format!(
             "{title} needs an account at {partner}. Link it on Epic's site; wineo doesn't."
         ));
@@ -446,7 +451,11 @@ pub fn plan(
                 &game.title,
                 request.dir.as_deref(),
             )?;
-            (false, None, check_new_folder(paths, &folder, None)?)
+            (
+                false,
+                None,
+                check_new_folder(paths, &folder, &game.app_name)?,
+            )
         }
         Existing::Unfinished { record, owner } => {
             if let Some(dir) = &request.dir
@@ -529,13 +538,15 @@ fn creation(paths: &Paths, request: &Request, name: &str) -> Result<Creation> {
 
 /// Checks a new install's folder and returns it in canonical form: it may
 /// not overlap another game's folder, Epic's or GOG's, and has to be new or
-/// empty. `own` is a record's folder that may overlap, being this game's.
-fn check_new_folder(paths: &Paths, folder: &Path, own: Option<&Path>) -> Result<PathBuf> {
+/// empty. `app`'s own record is passed over: one written since planning
+/// began is another install of the same game, which the record lock refuses
+/// with a clearer message.
+fn check_new_folder(paths: &Paths, folder: &Path, app: &str) -> Result<PathBuf> {
     let folder = crate::gog::folder::canonical_new(folder)?;
     crate::gog::folder::check_overlap(paths, &folder)?;
     for (_, record) in game::list(paths)? {
         let Ok(record) = record else { continue };
-        if Some(record.folder.as_path()) == own {
+        if record.app_name == app {
             continue;
         }
         if record.folder.starts_with(&folder) || folder.starts_with(&record.folder) {
@@ -649,7 +660,7 @@ pub fn apply(
         })?;
         let mut record = match lock.read(paths)? {
             None if !plan.resume => {
-                check_new_folder(paths, folder, None)?;
+                check_new_folder(paths, folder, app)?;
                 Record::new(app, folder.to_owned())
             }
             Some(record)

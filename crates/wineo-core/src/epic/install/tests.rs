@@ -561,6 +561,20 @@ fn unavailable_and_downloaded_games_are_refused_before_legendary_is_asked() {
         "Offline Game can't be installed: Epic has no Windows build of it."
     );
 
+    // A game needing another launcher's account, as the owned list says.
+    let error = plan(
+        &legendary,
+        &request("AppThirdParty"),
+        &owned("AppThirdParty"),
+        &Existing::None,
+        &Token::new(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Third Party Game can't be installed: it needs an account at another launcher."
+    );
+
     let folder = games(&setup).join("Offline Game");
     let lock = RecordLock::exclusive(&setup.paths, "AppOffline", NEVER).unwrap();
     lock.write(&setup.paths, &Record::new("AppOffline", folder.clone()))
@@ -607,10 +621,20 @@ fn the_review_warns_about_what_wineo_doesnt_handle() {
         token.warnings(),
         ["Token Game 2020 checks an Epic ownership token, which usually means Denuvo."]
     );
-    let linked = plan_for(&legendary, "AppThirdParty");
+    // Activation Epic names only in `info`, with no partner link listed.
+    let mut unlinked = owned("AppThirdParty");
+    unlinked.partner_link = None;
+    let linked = plan(
+        &legendary,
+        &request("AppThirdParty"),
+        &unlinked,
+        &Existing::None,
+        &Token::new(),
+    )
+    .unwrap();
     assert_eq!(
         linked.warnings()[0],
-        "Third Party Game needs an account at ubisoft. Link it on Epic's site; wineo doesn't."
+        "Third Party Game needs an account at UbisoftConnect. Link it on Epic's site; wineo doesn't."
     );
     let dlc = plan_for(&legendary, "Dlc Game");
     assert_eq!(
@@ -824,5 +848,34 @@ fn removing_an_environment_mid_work_is_refused_unless_forced() {
         crate::trash::epic_owner(&setup.paths, app).unwrap(),
         Some(name)
     );
+    assert_eq!(setup.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn another_install_of_the_same_game_started_meanwhile_is_refused_by_the_record() {
+    let (setup, legendary) = host();
+    let app = "AppOffline";
+    // Another wineo wrote its record after this one looked for one.
+    let folder = games(&setup).join("Offline Game");
+    let lock = RecordLock::exclusive(&setup.paths, app, NEVER).unwrap();
+    let mut theirs = Record::new(app, folder.clone());
+    lock.mark(&setup.paths, &mut theirs, Work::Install, app)
+        .unwrap();
+    drop(lock);
+    let plan = plan(
+        &legendary,
+        &request(app),
+        &owned(app),
+        &Existing::None,
+        &Token::new(),
+    )
+    .unwrap();
+    assert_eq!(plan.folder(), folder, "not an overlap with itself");
+    let (installed, _) = install(&legendary, &plan, &Token::new());
+    assert_eq!(
+        installed.unwrap_err().to_string(),
+        "Epic game AppOffline's record changed since the install was planned; plan it again."
+    );
+    assert!(installs(&setup).is_empty());
     assert_eq!(setup.sweep(), Vec::<i32>::new());
 }

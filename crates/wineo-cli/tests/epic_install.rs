@@ -238,6 +238,7 @@ fn without_a_terminal_it_needs_yes() {
         "error: Installing without a terminal needs --yes.\n"
     );
     assert!(epic.calls().is_empty());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
 
 #[test]
@@ -261,6 +262,7 @@ fn flags_that_dont_fit_are_usage_errors() {
     assert_code(&output, 2);
     assert_eq!(stderr(&output), "error: \" x\" isn't an Epic game id.\n");
     assert!(epic.calls().is_empty());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
 
 #[test]
@@ -287,6 +289,7 @@ fn a_portable_root_refuses_installing_and_forgetting() {
         );
     }
     assert!(epic.calls().is_empty());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
 
 #[test]
@@ -318,7 +321,21 @@ fn not_owned_and_unavailable_games_are_refused() {
         stderr(&output),
         "error: Offline Game can't be installed: another launcher manages it.\n"
     );
+    // The probe's list marks AppThirdParty as needing a Ubisoft account.
+    let list = epic.edited_list(|_| {});
+    epic.on_path(&common::epic::Fake {
+        list,
+        ..common::epic::Fake::default()
+    });
+    assert_ok(&epic.run(&["import", "epic", "--list", "--refresh"]));
+    let output = epic.install(&["import", "epic", "--game", "AppThirdParty", "--yes"]);
+    assert_code(&output, 1);
+    assert_eq!(
+        stderr(&output),
+        "error: Third Party Game can't be installed: it needs an account at another launcher.\n"
+    );
     assert!(epic.install_calls().is_empty());
+    assert!(!epic.calls().iter().any(|call| call.starts_with("info")));
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
 
@@ -491,6 +508,7 @@ fn a_game_another_environment_owns_isnt_installed_again() {
         "Already installed. other owns ~/Games/Offline Game.\n"
     );
     assert!(epic.calls().is_empty(), "{:?}", epic.calls());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
 
 #[test]
