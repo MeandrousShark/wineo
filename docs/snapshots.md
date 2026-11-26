@@ -48,8 +48,8 @@ it, so restoring one doesn't undo a game update. If the saved config is from
 before the game was migrated and has no `gog_id`, restore puts the current
 one back and says so. A saved config with a different `gog_id` is refused
 before anything changes. Epic games work the same way with `epic_id`, and a
-saved `epic_id` restored onto an environment with none comes back unless
-another environment has that game now.
+saved `epic_id` restored onto an environment with none comes back; if
+another environment has that game now, the restore is refused, naming it.
 
 Restore refuses a prefix with something mounted inside it, or one that is
 itself a mount point, since cleaning up the old prefix would delete the

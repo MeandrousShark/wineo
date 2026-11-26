@@ -42,9 +42,9 @@ rebased to the clone. Windows paths and paths outside the prefix stay unchanged.
 The Heroic import ID, `gog_id`, and `epic_id` are removed (a clone shares the
 game's folder but doesn't own it). An Epic clone starts the game without
 Epic's login, so only a game that runs offline works from it, and the review
-says so. Launching a clone holds the game folder like the game does, so an
-update waits for it, and it's refused while the game is mid-work. Target
-desktop entries are disabled to avoid duplicates. Literal source-prefix paths
+says so. A running clone holds the game folder like the game does, so an
+update is refused until it exits, and the clone can't start while the game
+is mid-work. Target desktop entries are disabled to avoid duplicates. Literal source-prefix paths
 in arguments or environment variables are reported for review. Registry contents and arbitrary strings are
 not rewritten.
 

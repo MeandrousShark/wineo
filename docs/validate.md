@@ -168,7 +168,7 @@ environment.
 | GOG game | A folder's owner no longer exists | warning | clear the owner |
 | Epic game | wineo's record of a game can't be read | error | |
 | Epic game | `epic_id` set, but no record | error | hint: `wineo update NAME --repair` |
-| Epic game | The record and Legendary's installed games disagree: not there, another folder, or another version | error | hint: `wineo update NAME --repair`, or `wineo import epic --forget APP` when no environment owns it |
+| Epic game | The record and Legendary's installed games disagree (not there, another folder, or another version), or Legendary's record can't be read | error | hint: `wineo update NAME --repair`, or `wineo import epic --forget APP` when no environment owns it |
 | Epic game | Game folder missing or can't be checked | warning | |
 | Epic game | An install, update, or repair didn't finish | error | hint: the command that finishes it |
 | Epic game | Two environments have one `epic_id` | error | hint: `wineo rm` the copy |
