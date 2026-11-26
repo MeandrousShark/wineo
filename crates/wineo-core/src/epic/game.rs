@@ -225,9 +225,9 @@ pub enum GameError {
     RecordMissing { name: String, app: String },
     #[error("{name}'s Epic record can't be checked: {detail}.")]
     Unreadable { name: String, detail: String },
-    /// A record that can't be read and may cover a launched path: its own
-    /// folder holds one, or it doesn't say where its folder is. The detail
-    /// is validate's `epic_record_invalid` message.
+    /// A record that can't be read whose folder, read leniently, holds a
+    /// launched path. The detail is validate's `epic_record_invalid`
+    /// message.
     #[error("{detail}")]
     Invalid { detail: String },
     /// A launch found the folder's in-use lock held by an install, update,
@@ -639,10 +639,11 @@ impl<'a> Touched<'a> {
                         records.entry(folder_key(&record.folder)).or_insert(record);
                     }
                     Ok(_) => {}
-                    // Fails closed, as GOG does for a state it can't read:
-                    // a record that names a folder refuses launches from it,
-                    // and one that doesn't could be any folder's.
-                    Err(error) if claimed_folder(&path).is_none_or(|folder| covers(&folder)) => {
+                    // Fails closed, as GOG does for a state it can't read,
+                    // when the broken record still names a folder the launch
+                    // runs from. One that names none can't block every
+                    // launch; validate reports it.
+                    Err(error) if claimed_folder(&path).is_some_and(|folder| covers(&folder)) => {
                         return Err(GameError::Invalid {
                             detail: format!("{error:#}"),
                         }

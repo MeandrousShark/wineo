@@ -549,16 +549,17 @@ mod launch {
             .is_empty()
         );
 
-        // It names nothing readable, so it could be any folder's.
+        // It names no readable folder, so it blocks nothing; validate
+        // reports it.
         fs::write(&broken, "not toml").unwrap();
-        let error = protect(&paths, "notepad", None, &[elsewhere], NEVER).unwrap_err();
-        assert!(
-            error.to_string().starts_with(&format!(
-                "{} isn't a valid Epic game record (",
-                broken.display()
-            )),
-            "{error}"
-        );
+        for path in [&elsewhere, &exe] {
+            assert!(
+                protect(&paths, "copy", None, std::slice::from_ref(path), NEVER)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(precheck(&paths, "copy", None, std::slice::from_ref(path)).is_ok());
+        }
         // A launch naming no host path touches no folder.
         assert!(
             protect(&paths, "notepad", None, &[], NEVER)
