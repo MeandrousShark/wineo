@@ -758,6 +758,19 @@ fn games_root_is_stored_absolute_like_prefix_root() {
 }
 
 #[test]
+fn an_empty_epic_legendary_is_refused_naming_unset() {
+    let (_root, paths) = setup();
+    let original = "schema_version = 1\n[epic]\nlegendary = \"/opt/legendary\"\n";
+    write_global(&paths, original);
+    let err = update(&paths, ConfigFile::Global, &[("epic.legendary", "")], &[]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid value for `epic.legendary`: give the path to legendary, or remove the setting with --unset"
+    );
+    assert_eq!(fs::read_to_string(paths.global_config()).unwrap(), original);
+}
+
+#[test]
 fn a_bad_gog_language_is_refused_without_writing() {
     let (_root, paths) = setup();
     let original = "schema_version = 1\n[defaults]\nrunner = \"wine\"\n";
