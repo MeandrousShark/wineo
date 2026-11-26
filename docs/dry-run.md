@@ -77,10 +77,11 @@ game that would fail as `TITLE: would fail: REASON` and exits 1, like
 
 `import epic --dry-run` downloads nothing and changes nothing. Where wineo
 would offer to download Legendary, it prints the question and `Dry run, so
-wineo didn't ask or download anything.` A dry run never asks Epic for the
-list or rewrites the saved one: it shows the saved list, with `Dry run, so
-the list wasn't refreshed.` where a real run would have refreshed it, or
-`Dry run, so the owned Epic games weren't fetched.` when there's none.
+wineo didn't ask or download anything.` A dry run checks Legendary and
+the login like a real run, and fails where it would, but never asks Epic
+for the list or rewrites the saved one: it shows the saved list, with
+`Dry run, so the list wasn't refreshed.` where a real run would have
+refreshed it.
 
 `update NAME --dry-run` and `update --all --dry-run` print the review the
 real update would show and download nothing. They don't cache GOG's
