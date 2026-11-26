@@ -61,7 +61,9 @@ match the docs.
 - **Shell completion output.** It follows the CLI, which is stable.
 - **Files wineo manages for itself.** Run records, locks, and logs in the
   state directory, GOG folder states, Galaxy records, support files,
-  the redistributable store, and `gog-branches.key` in the data directory, caches like
+  the redistributable store, `gog-branches.key`, Epic game records,
+  Legendary's folder, and wineo's copy of Legendary and its version in the
+  data directory, caches like
   `steam-owned-<steamid>.json` and the GOG lists, details, and downloads,
   temporary
   files, the desktop entries wineo writes, and the on-disk layout of

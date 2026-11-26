@@ -470,27 +470,46 @@ pub fn precheck(
     environment: &Environment,
     overrides: &Overrides,
 ) -> anyhow::Result<()> {
-    if matches!(environment.config.kind, Kind::Proxied(_))
-        || (environment.config.gog_id.is_none() && !paths.gog_folders_dir().exists())
-    {
+    if matches!(environment.config.kind, Kind::Proxied(_)) {
+        return Ok(());
+    }
+    let gog = environment.config.gog_id.is_some() || paths.gog_folders_dir().exists();
+    let epic = environment.config.epic_id.is_some() || paths.epic_games_dir().exists();
+    if !gog && !epic {
         return Ok(());
     }
     let gog_id = environment.config.gog_id.as_deref();
+    let epic_id = environment.config.epic_id.as_deref();
     let Ok(launch) = Launch::target(paths, global, environment, overrides) else {
         // Without paths an ownerless folder to claim can't be found, so a
         // missing state is left to preparation too.
-        return match crate::gog::folder::precheck(paths, &environment.name, gog_id, &[]) {
-            Err(err) if matches!(err.downcast_ref(), Some(FolderError::StateMissing { .. })) => {
-                Ok(())
+        if gog {
+            match crate::gog::folder::precheck(paths, &environment.name, gog_id, &[]) {
+                Err(err)
+                    if matches!(err.downcast_ref(), Some(FolderError::StateMissing { .. })) => {}
+                result => result?,
             }
-            result => result,
-        };
+        }
+        // An Epic game's own folder is found from its record, not its
+        // paths, so an unfinished install is refused even when it is what
+        // broke the target.
+        if epic {
+            crate::epic::game::precheck(paths, &environment.name, epic_id, &[])?;
+        }
+        return Ok(());
     };
-    crate::gog::folder::precheck(paths, &environment.name, gog_id, &launch.named_paths())
+    let touched = launch.named_paths();
+    if gog {
+        crate::gog::folder::precheck(paths, &environment.name, gog_id, &touched)?;
+    }
+    if epic {
+        crate::epic::game::precheck(paths, &environment.name, epic_id, &touched)?;
+    }
+    Ok(())
 }
 
-/// Checks the GOG game folders a launch runs from and takes their in-use
-/// locks, which the caller holds until the program exits. Called holding
+/// Checks the GOG and Epic game folders a launch runs from and takes their
+/// in-use locks, which the caller holds until the program exits. Called holding
 /// the environment's operation lock, which comes first in lock order.
 pub fn protect(
     paths: &Paths,
@@ -513,17 +532,34 @@ pub(super) fn protect_as(
     if matches!(launch.host, Host::Proxied { .. }) {
         return Ok(Vec::new());
     }
-    crate::gog::folder::protect(
+    let touched = launch.named_paths();
+    let mut guards = crate::gog::folder::protect(
         paths,
         &environment.name,
         environment.config.gog_id.as_deref(),
-        &launch.named_paths(),
+        &touched,
         &|| token.is_canceled(),
     )
     .map_err(|err| match err.downcast_ref() {
         Some(FolderError::Canceled) => Error::Canceled(what).into(),
         _ => err,
-    })
+    })?;
+    if environment.config.epic_id.is_some() || paths.epic_games_dir().exists() {
+        guards.extend(
+            crate::epic::game::protect(
+                paths,
+                &environment.name,
+                environment.config.epic_id.as_deref(),
+                &touched,
+                &|| token.is_canceled(),
+            )
+            .map_err(|err| match err.downcast_ref() {
+                Some(crate::epic::game::GameError::Canceled) => Error::Canceled(what).into(),
+                _ => err,
+            })?,
+        );
+    }
+    Ok(guards)
 }
 
 fn check_not_running(

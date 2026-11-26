@@ -538,11 +538,13 @@ pub enum InUseAction {
     Update,
     Migrate,
     Forget,
+    Install,
+    Repair,
 }
 
 /// The refusal for an update or migration of `name`'s game folder while
 /// something runs from it.
-fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String {
+pub(crate) fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String {
     let (who, verb, stop) = match holders {
         [] => return format!("Something is running from {name}'s game folder. Stop it first."),
         [one] => (one.clone(), "is", "it"),
@@ -553,6 +555,8 @@ fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String
         InUseAction::Update => "updating",
         InUseAction::Migrate => "migrating",
         InUseAction::Forget => "forgetting",
+        InUseAction::Install => "installing",
+        InUseAction::Repair => "repairing",
     };
     format!("{who} {verb} running from this game folder. Stop {stop} before {doing} {name}.")
 }

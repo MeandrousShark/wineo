@@ -95,6 +95,7 @@ impl Platform {
 pub enum Integration {
     SteamLibrary,
     GogInstall,
+    EpicInstall,
     HeroicImport,
     Plain,
 }
@@ -116,6 +117,7 @@ pub struct Facts<'a> {
     pub steam: bool,
     pub native: bool,
     pub gog_id: Option<&'a str>,
+    pub epic_id: Option<&'a str>,
     pub heroic_id: Option<&'a str>,
     /// The Wine config's `store`, which only Heroic imports usually set.
     pub store_hint: Option<&'a str>,
@@ -136,8 +138,8 @@ impl Source {
             .or_else(|| self.platform.map(Platform::label))
     }
 
-    /// The first matching rule wins: Steam, then a GOG id, then a Heroic
-    /// import, then plain.
+    /// The first matching rule wins: Steam, then a GOG id, then an Epic id,
+    /// then a Heroic import, then plain.
     pub fn new(facts: Facts<'_>) -> Self {
         let (store, integration) = if facts.steam {
             (Some(Store::Steam), Integration::SteamLibrary)
@@ -148,6 +150,8 @@ impl Source {
                 Integration::GogInstall
             };
             (Some(Store::Gog), integration)
+        } else if facts.epic_id.is_some() {
+            (Some(Store::Epic), Integration::EpicInstall)
         } else if facts.heroic_id.is_some() {
             let store = match facts.store_hint {
                 Some("egs") => Some(Store::Epic),
@@ -181,6 +185,7 @@ impl Source {
             steam: matches!(config.kind, Kind::Proxied(_)),
             native: matches!(config.kind, Kind::Native),
             gog_id: config.gog_id.as_deref(),
+            epic_id: config.epic_id.as_deref(),
             heroic_id: config.heroic_id.as_deref(),
             store_hint: match &config.kind {
                 Kind::Wine(wine) => wine.store.as_deref(),
@@ -567,6 +572,33 @@ mod tests {
         assert_eq!(
             (source.store, source.integration, source.native),
             (Some(Store::Epic), Integration::HeroicImport, false)
+        );
+    }
+
+    #[test]
+    fn an_epic_id_is_an_epic_install() {
+        let facts = Facts {
+            epic_id: Some("AppOffline"),
+            ..Facts::default()
+        };
+        assert_eq!(
+            source(facts),
+            (
+                Some(Store::Epic),
+                Integration::EpicInstall,
+                Some(Platform::Windows)
+            )
+        );
+        let proton = EnvironmentConfig::parse(
+            std::path::Path::new("game.toml"),
+            "schema_version = 1\nprefix = 'p'\nrunner = 'proton'\narch = 'win64'\n\
+             store = 'egs'\nepic_id = 'AppOffline'\n",
+        )
+        .unwrap();
+        let source = Source::of(&proton, None);
+        assert_eq!(
+            (source.store, source.integration, source.label()),
+            (Some(Store::Epic), Integration::EpicInstall, Some("Epic"))
         );
     }
 }

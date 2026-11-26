@@ -1848,7 +1848,7 @@ fn check_environment_reports_only_pairs_that_include_it() {
 
 // The JSON output depends on these values, so changing one is a contract change.
 #[rustfmt::skip]
-    const RECORDED_CODES: [(Code, &str, &str, &str); 53] = [
+    const RECORDED_CODES: [(Code, &str, &str, &str); 60] = [
         (Code::GlobalConfigInvalid, "global_config_invalid", "error", "global_config"),
         (Code::TemplateInvalid, "template_invalid", "error", "template"),
         (Code::TemplateUnresolved, "template_unresolved", "warning", "template"),
@@ -1896,6 +1896,13 @@ fn check_environment_reports_only_pairs_that_include_it() {
         (Code::GogFolderTaken, "gog_folder_taken", "error", "gog"),
         (Code::GogMidUpdate, "gog_mid_update", "error", "gog"),
         (Code::GogOwnerMissing, "gog_owner_missing", "warning", "gog"),
+        (Code::EpicRecordInvalid, "epic_record_invalid", "error", "epic"),
+        (Code::EpicRecordMissing, "epic_record_missing", "error", "epic"),
+        (Code::EpicRecordMismatch, "epic_record_mismatch", "error", "epic"),
+        (Code::EpicFolderMissing, "epic_folder_missing", "warning", "epic"),
+        (Code::EpicUnfinished, "epic_unfinished", "error", "epic"),
+        (Code::EpicIdTaken, "epic_id_taken", "error", "epic"),
+        (Code::EpicLegendaryMissing, "epic_legendary_missing", "warning", "epic"),
         (Code::DeprecatedKey, "deprecated_key", "warning", "config"),
         (Code::LibraryInvalid, "library_invalid", "error", "library"),
         (Code::LibraryFieldInvalid, "library_field_invalid", "warning", "library"),
@@ -2939,4 +2946,448 @@ fn a_theme_file_that_does_not_parse_warns_without_a_fix() {
     // A themes folder is global, so one environment's report leaves it out.
     let report = check_environment(&f.paths, "hades").unwrap();
     assert!(!codes(&report).contains(&Code::ThemeInvalid));
+}
+
+mod epic_games {
+    use super::*;
+    use crate::epic::game::{Record, RecordLock, Work};
+    use crate::epic::legendary::{Found, Missing};
+
+    const NEVER: &dyn Fn() -> bool = &|| false;
+    const APP: &str = "AppOffline";
+
+    fn no_legendary() -> std::result::Result<Found, crate::epic::Error> {
+        Ok(Found::Missing(Missing {
+            older_on_path: None,
+        }))
+    }
+
+    fn not_asked() -> std::result::Result<Found, crate::epic::Error> {
+        panic!("Legendary was looked for without an Epic game")
+    }
+
+    /// The game's folder, made, with a record of it installed at 1.0.
+    fn game(f: &Fixture, app: &str, mark: Option<Work>) -> PathBuf {
+        let folder = f.root.join("Games").join(app);
+        fs::create_dir_all(&folder).unwrap();
+        let mut record = Record {
+            installed_version: Some("1.0".to_owned()),
+            ..Record::new(app, folder.clone())
+        };
+        let lock = RecordLock::exclusive(&f.paths, app, NEVER).unwrap();
+        lock.write(&f.paths, &record).unwrap();
+        if let Some(work) = mark {
+            lock.mark(&f.paths, &mut record, work, app).unwrap();
+        }
+        folder
+    }
+
+    /// Legendary's `installed.json`, as `(app, folder, version)`.
+    fn legendary_has(f: &Fixture, games: &[Installed]) {
+        let state = crate::epic::state_dir(&f.paths);
+        fs::create_dir_all(&state).unwrap();
+        let games: serde_json::Map<String, serde_json::Value> = games
+            .iter()
+            .map(|(app, folder, version)| {
+                (
+                    (*app).to_owned(),
+                    serde_json::json!({
+                        "app_name": app,
+                        "install_path": folder,
+                        "version": version,
+                        "can_run_offline": true,
+                    }),
+                )
+            })
+            .collect();
+        fs::write(
+            state.join("installed.json"),
+            serde_json::to_string(&games).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// An entry of Legendary's `installed.json`: app, folder, and version.
+    type Installed<'a> = (&'a str, &'a Path, &'a str);
+
+    fn epic(f: &Fixture, name: &str, app: &str) {
+        f.wine(name, &format!("epic_id = '{app}'\n{HEALTHY}"));
+    }
+
+    fn report_with(
+        f: &Fixture,
+        selected: Option<&str>,
+        legendary: &dyn Fn() -> std::result::Result<Found, crate::epic::Error>,
+    ) -> Report {
+        let names = environment::names(&f.paths).unwrap();
+        let mut report = Report::default();
+        check_epic(
+            &f.paths,
+            selected,
+            &names,
+            &BTreeSet::new(),
+            legendary,
+            &mut report,
+        );
+        report
+    }
+
+    /// Only the record checks: Legendary counts as found.
+    fn records(f: &Fixture, selected: Option<&str>) -> Report {
+        let mut report = report_with(f, selected, &no_legendary);
+        report
+            .problems
+            .retain(|problem| problem.code != Code::EpicLegendaryMissing);
+        report
+    }
+
+    fn messages(report: &Report) -> Vec<(Code, Option<&str>, &str)> {
+        report
+            .problems
+            .iter()
+            .map(|problem| {
+                (
+                    problem.code,
+                    problem.environment.as_deref(),
+                    problem.message.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_game_that_agrees_with_legendary_is_fine() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let folder = game(&f, APP, None);
+        legendary_has(&f, &[(APP, &folder, "1.0")]);
+        assert!(records(&f, None).problems.is_empty());
+        assert!(records(&f, Some("fowl")).problems.is_empty());
+    }
+
+    #[test]
+    fn an_epic_id_without_a_record_is_an_error() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let problem = f.only(Code::EpicRecordMissing);
+        assert_eq!(problem.environment.as_deref(), Some("fowl"));
+        assert_eq!(
+            problem.message,
+            "fowl's Epic record is missing. Repair it with wineo update fowl --repair."
+        );
+        assert_eq!((problem.level, problem.area), (Level::Error, Area::Epic));
+        let one = check_environment(&f.paths, "fowl").unwrap();
+        assert!(codes(&one).contains(&Code::EpicRecordMissing));
+    }
+
+    #[test]
+    fn a_record_that_disagrees_with_legendary_says_how() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let folder = game(&f, APP, None);
+        let elsewhere = f.root.join("Elsewhere");
+        let cases: [(&[Installed], String); 3] = [
+            (
+                &[],
+                "fowl's Epic game isn't in Legendary's record of installed games. Repair it with wineo update fowl --repair.".to_owned(),
+            ),
+            (
+                &[(APP, &elsewhere, "1.0")],
+                format!(
+                    "fowl's Epic game is in {}, but Legendary has it in {}. Repair it with wineo update fowl --repair.",
+                    folder.display(),
+                    elsewhere.display()
+                ),
+            ),
+            (
+                &[(APP, &folder, "1.1")],
+                "fowl's Epic game is version 1.0, but Legendary has 1.1. Repair it with wineo update fowl --repair.".to_owned(),
+            ),
+        ];
+        for (installed, message) in cases {
+            legendary_has(&f, installed);
+            assert_eq!(
+                messages(&records(&f, None)),
+                [(Code::EpicRecordMismatch, Some("fowl"), message.as_str())]
+            );
+        }
+        // No installed.json at all is nothing installed.
+        fs::remove_file(crate::epic::state_dir(&f.paths).join("installed.json")).unwrap();
+        assert_eq!(codes(&records(&f, None)), [Code::EpicRecordMismatch]);
+    }
+
+    #[test]
+    fn a_game_no_environment_owns_points_at_forget() {
+        let f = Fixture::new();
+        game(&f, APP, None);
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(
+                Code::EpicRecordMismatch,
+                None,
+                "Epic game AppOffline isn't in Legendary's record of installed games. Forget it with wineo import epic --forget AppOffline."
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_installed_json_is_reported_once() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        game(&f, APP, None);
+        game(&f, "Other", None);
+        let state = crate::epic::state_dir(&f.paths);
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("installed.json"), "{").unwrap();
+        let report = records(&f, None);
+        assert_eq!(codes(&report), [Code::EpicRecordMismatch]);
+        assert!(
+            report.problems[0]
+                .message
+                .starts_with("Legendary's record of installed games can't be read: "),
+            "{}",
+            report.problems[0].message
+        );
+    }
+
+    #[test]
+    fn a_mark_is_reported_with_the_command_that_finishes_it() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let folder = game(&f, APP, Some(Work::Update));
+        // Work in between is never compared with Legendary or the folder.
+        fs::remove_dir(&folder).unwrap();
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(
+                Code::EpicUnfinished,
+                Some("fowl"),
+                "fowl's game folder is mid-update. Finish it with wineo update fowl."
+            )]
+        );
+        let other = game(&f, "Other", Some(Work::Install));
+        let report = records(&f, None);
+        assert_eq!(
+            report.problems[1].message,
+            format!(
+                "Epic game Other's install in {} didn't finish. Finish it with wineo import epic --game Other.",
+                other.display()
+            )
+        );
+        // One environment's report leaves other games out.
+        assert_eq!(codes(&records(&f, Some("fowl"))), [Code::EpicUnfinished]);
+    }
+
+    #[test]
+    fn a_missing_folder_is_a_warning() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let folder = game(&f, APP, None);
+        fs::remove_dir(&folder).unwrap();
+        let report = records(&f, None);
+        assert_eq!(
+            messages(&report),
+            [(
+                Code::EpicFolderMissing,
+                Some("fowl"),
+                format!("Epic game folder {} is missing.", folder.display()).as_str()
+            )]
+        );
+        assert_eq!(report.problems[0].level, Level::Warning);
+        assert_eq!(report.problems[0].fix, None);
+    }
+
+    #[test]
+    fn two_environments_with_one_game_are_an_error() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        epic(&f, "fowl-copy", APP);
+        let folder = game(&f, APP, None);
+        legendary_has(&f, &[(APP, &folder, "1.0")]);
+        let taken = "fowl-copy and fowl both have epic_id AppOffline, and one environment owns a game. Remove the copy with wineo rm.";
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(Code::EpicIdTaken, Some("fowl-copy"), taken)]
+        );
+        assert_eq!(codes(&records(&f, Some("fowl"))), []);
+        assert_eq!(codes(&records(&f, Some("fowl-copy"))), [Code::EpicIdTaken]);
+        // An environment in the trash owns nothing.
+        let names = environment::names(&f.paths).unwrap();
+        let mut report = Report::default();
+        let pending = BTreeSet::from(["fowl-copy".to_owned()]);
+        check_epic(&f.paths, None, &names, &pending, &no_legendary, &mut report);
+        assert_eq!(codes(&report), [Code::EpicLegendaryMissing]);
+    }
+
+    #[test]
+    fn an_unreadable_record_is_shown_where_it_could_matter() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        f.wine("notepad", HEALTHY);
+        let path = crate::epic::game::record_path(&f.paths, APP);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "app_name = 'AppOffline'\n").unwrap();
+        let report = records(&f, None);
+        assert_eq!(codes(&report), [Code::EpicRecordInvalid]);
+        assert!(
+            report.problems[0]
+                .message
+                .ends_with("isn't a valid Epic game record (missing field `folder`)"),
+            "{}",
+            report.problems[0].message
+        );
+        // It could be fowl's, but notepad names no game.
+        assert_eq!(codes(&records(&f, Some("fowl"))), [Code::EpicRecordInvalid]);
+        assert_eq!(codes(&report_with(&f, Some("notepad"), &not_asked)), []);
+    }
+
+    #[test]
+    fn legendary_is_looked_for_only_once_an_epic_game_exists() {
+        let f = Fixture::new();
+        f.wine("notepad", HEALTHY);
+        assert!(report_with(&f, None, &not_asked).problems.is_empty());
+        game(&f, APP, Some(Work::Install));
+        let report = report_with(&f, None, &no_legendary);
+        let problem = report
+            .problems
+            .iter()
+            .find(|problem| problem.code == Code::EpicLegendaryMissing)
+            .unwrap();
+        assert_eq!(
+            problem.message,
+            "Epic games need Legendary, and none was found. wineo offers to download it the next time Epic needs it, or set [epic] legendary."
+        );
+        assert_eq!(
+            (problem.level, problem.environment.as_deref()),
+            (Level::Warning, None)
+        );
+        assert!(
+            !codes(&report_with(&f, Some("notepad"), &not_asked))
+                .contains(&Code::EpicLegendaryMissing)
+        );
+    }
+
+    #[test]
+    fn a_config_that_cant_be_read_may_still_own_a_game() {
+        let f = Fixture::new();
+        // Raw TOML with the key, refused as a config: native can't have it.
+        f.write_config("fowl", "kind = 'native'\nepic_id = 'AppOffline'\n");
+        // Not TOML at all.
+        f.write_config("broken", "epic_id = \n");
+        f.wine("notepad", HEALTHY);
+        let warning = |report: &Report| codes(report).contains(&Code::EpicLegendaryMissing);
+        assert!(warning(&report_with(&f, None, &no_legendary)));
+        assert!(warning(&report_with(&f, Some("fowl"), &no_legendary)));
+        // A config that isn't TOML may own a game but doesn't show one.
+        assert!(!warning(&report_with(&f, Some("broken"), &not_asked)));
+        assert!(!warning(&report_with(&f, Some("notepad"), &not_asked)));
+
+        let path = crate::epic::game::record_path(&f.paths, APP);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "app_name = 'AppOffline'\n").unwrap();
+        for name in ["fowl", "broken"] {
+            assert_eq!(
+                codes(&report_with(&f, Some(name), &no_legendary)),
+                [Code::EpicRecordInvalid, Code::EpicLegendaryMissing],
+                "{name}"
+            );
+        }
+        assert_eq!(codes(&report_with(&f, Some("notepad"), &not_asked)), []);
+    }
+
+    #[test]
+    fn a_version_only_one_side_has_is_a_disagreement() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let folder = f.root.join("Games").join(APP);
+        fs::create_dir_all(&folder).unwrap();
+        RecordLock::exclusive(&f.paths, APP, NEVER)
+            .unwrap()
+            .write(&f.paths, &Record::new(APP, folder.clone()))
+            .unwrap();
+        legendary_has(&f, &[(APP, &folder, "1.1")]);
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(
+                Code::EpicRecordMismatch,
+                Some("fowl"),
+                "fowl's Epic game has no version recorded, but Legendary has 1.1. Repair it with wineo update fowl --repair."
+            )]
+        );
+
+        game(&f, APP, None);
+        let state = crate::epic::state_dir(&f.paths);
+        fs::write(
+            state.join("installed.json"),
+            serde_json::json!({APP: {"install_path": folder}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(
+                Code::EpicRecordMismatch,
+                Some("fowl"),
+                "fowl's Epic game is version 1.0, but Legendary has no version for it. Repair it with wineo update fowl --repair."
+            )]
+        );
+    }
+
+    #[test]
+    fn legendary_that_is_too_old_or_unusable_is_named() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let older = || {
+            Ok(Found::Missing(Missing {
+                older_on_path: Some((
+                    PathBuf::from("/usr/bin/legendary"),
+                    crate::epic::Version::new(0, 20, 34),
+                )),
+            }))
+        };
+        let warning = |report: Report| {
+            report
+                .problems
+                .into_iter()
+                .find(|problem| problem.code == Code::EpicLegendaryMissing)
+                .map(|problem| problem.message)
+        };
+        assert_eq!(
+            warning(report_with(&f, Some("fowl"), &older)).unwrap(),
+            "Epic games need Legendary 0.21.1 or newer, and /usr/bin/legendary is 0.20.34. wineo offers to download it the next time Epic needs it, or set [epic] legendary."
+        );
+        let python = || Err(crate::epic::Error::Python);
+        assert_eq!(
+            warning(report_with(&f, None, &python)).unwrap(),
+            "Epic needs Python 3.10 or newer to run Legendary."
+        );
+        // A usable one, found as wineo would, is no problem.
+        let setup = crate::epic::fake::Setup::new();
+        setup.on_path(&crate::epic::fake::Fake::default());
+        let found = || {
+            crate::epic::legendary::find_with(
+                &setup.paths,
+                None,
+                setup.env(),
+                &crate::cancel::Token::new(),
+            )
+        };
+        assert_eq!(warning(report_with(&f, None, &found)), None);
+        assert!(setup.sweep().is_empty());
+    }
+
+    #[test]
+    fn a_portable_root_skips_host_epic_checks() {
+        let f = Fixture::new();
+        game(&f, APP, Some(Work::Update));
+        let portable = Fixture::xdg(&f.root, Some(&f.root.join("usb")));
+        let report = check_all(&portable).unwrap();
+        assert!(
+            !report
+                .problems
+                .iter()
+                .any(|problem| problem.area == Area::Epic),
+            "{:#?}",
+            report.problems
+        );
+    }
 }

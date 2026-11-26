@@ -292,6 +292,10 @@ pub struct EnvironmentConfig {
     /// The GOG product id of the game this environment owns. Its install
     /// state lives in the game folder's state file, not here.
     pub gog_id: Option<String>,
+    /// The Epic app name of the game this environment owns. Wine
+    /// environments only. Its install state lives in wineo's Epic record of
+    /// the game, not here.
+    pub epic_id: Option<String>,
     /// The `title` key as written, for every kind. On a Wine or native
     /// environment it is the person's own title for the card; on a proxied
     /// one it is the import's fallback, the same as `ProxiedConfig::title`.
@@ -439,6 +443,7 @@ struct RawEnvironmentConfig {
     vkd3d: Option<String>,
     heroic_id: Option<String>,
     gog_id: Option<String>,
+    epic_id: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
     winetricks: Option<Vec<String>>,
@@ -467,6 +472,17 @@ impl RawEnvironmentConfig {
         {
             validate_gog_id(gog_id)?;
         }
+        if kind_name == KindName::Wine
+            && let Some(epic_id) = &self.epic_id
+        {
+            validate_epic_id(epic_id)?;
+            if let Some(other) = ["gog_id", "heroic_id"]
+                .into_iter()
+                .find(|key| self.has(key))
+            {
+                return Err(epic_id_with_message(name, other));
+            }
+        }
         let kind = match kind_name {
             KindName::Wine => Kind::Wine(WineConfig {
                 prefix: self.prefix.ok_or_else(|| missing("prefix"))?,
@@ -488,6 +504,7 @@ impl RawEnvironmentConfig {
                     "vkd3d" => self.vkd3d.is_some(),
                     "wayland" => self.wayland.is_some(),
                     "winetricks" => self.winetricks.is_some(),
+                    "epic_id" => self.epic_id.is_some(),
                     _ => unreachable!("not a Wine-only key"),
                 };
                 if let Some(key) = WINE_ONLY_KEYS.iter().find(|key| set(key)) {
@@ -531,6 +548,7 @@ impl RawEnvironmentConfig {
             hooks: self.hooks,
             heroic_id: self.heroic_id,
             gog_id: self.gog_id,
+            epic_id: self.epic_id,
             title: self.title,
             tags: self.tags,
             winetricks: self.winetricks.unwrap_or_default(),
@@ -557,6 +575,7 @@ impl RawEnvironmentConfig {
             "vkd3d" => self.vkd3d.is_some(),
             "heroic_id" => self.heroic_id.is_some(),
             "gog_id" => self.gog_id.is_some(),
+            "epic_id" => self.epic_id.is_some(),
             "winetricks" => self.winetricks.is_some(),
             "env" => self.env.is_some(),
             "targets" => self.targets.is_some(),
@@ -598,13 +617,37 @@ pub fn validate_gog_id(gog_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// An Epic app name. Only what would make it unreadable or ambiguous is
+/// refused, since wineo never builds a path from it.
+pub fn validate_epic_id(epic_id: &str) -> Result<(), String> {
+    if epic_id.is_empty() {
+        return Err("Invalid epic_id: empty.".to_owned());
+    }
+    if epic_id.chars().any(char::is_control) {
+        return Err("Invalid epic_id: it has a control character.".to_owned());
+    }
+    // Written exactly as Epic names it, so one game has one spelling.
+    if epic_id.trim() != epic_id {
+        return Err(format!(
+            "Invalid epic_id: {epic_id:?} starts or ends with a space."
+        ));
+    }
+    Ok(())
+}
+
+/// The refusal for `epic_id` beside another store's id: one environment is
+/// one store's game.
+pub fn epic_id_with_message(name: &str, other: &str) -> String {
+    format!("{name} can't set both epic_id and {other}.")
+}
+
 /// Keys only a proxied environment can have.
 pub const PROXIED_ONLY_KEYS: [&str; 3] = ["launcher", "app_id", "desktop"];
 
 /// Keys a proxied environment can't have, since its launcher owns the prefix
 /// and the launch. Everything but `schema_version`, `kind`, `tags`, `hooks`,
 /// `title`, and the proxied-only keys.
-pub const PROXIED_REFUSED_KEYS: [&str; 17] = [
+pub const PROXIED_REFUSED_KEYS: [&str; 18] = [
     "prefix",
     "runner",
     "arch",
@@ -619,6 +662,7 @@ pub const PROXIED_REFUSED_KEYS: [&str; 17] = [
     "gamescope",
     "heroic_id",
     "gog_id",
+    "epic_id",
     "env",
     "targets",
     "emulation",
@@ -645,7 +689,7 @@ pub fn proxied_only_key_message(name: &str, key: &str) -> String {
 }
 
 /// Keys only a Wine environment can have.
-pub const WINE_ONLY_KEYS: [&str; 9] = [
+pub const WINE_ONLY_KEYS: [&str; 10] = [
     "prefix",
     "runner",
     "arch",
@@ -655,6 +699,7 @@ pub const WINE_ONLY_KEYS: [&str; 9] = [
     "vkd3d",
     "wayland",
     "winetricks",
+    "epic_id",
 ];
 
 /// The refusal for a Wine-only key on a native environment.

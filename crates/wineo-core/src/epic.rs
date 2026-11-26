@@ -5,6 +5,7 @@
 //! afterwards from what it printed or left behind.
 
 pub mod account;
+pub mod game;
 pub mod legendary;
 pub mod own_copy;
 pub mod owned;

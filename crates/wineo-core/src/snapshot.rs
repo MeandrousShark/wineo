@@ -111,6 +111,9 @@ pub struct RestoreOutcome {
     pub retained_old_prefix: Option<PathBuf>,
     /// The GOG id put back into a config saved before the game was migrated.
     pub gog_id_added: Option<String>,
+    /// The Epic id put back into a config saved before the game was
+    /// installed.
+    pub epic_id_added: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +143,9 @@ pub struct RestoreInspection {
     /// The game folder's GOG id, which the restore puts back when the saved
     /// config predates the migration.
     pub gog_id_added: Option<String>,
+    /// The environment's Epic id, which the restore puts back when the
+    /// saved config doesn't have it.
+    pub epic_id_added: Option<String>,
     current_fingerprint: SourceFingerprint,
     snapshot_fingerprint: SourceFingerprint,
 }
@@ -375,6 +381,7 @@ pub fn inspect_restore_with(
     let saved_config = fs::read_to_string(snapshot.join("config.toml"))?;
     let saved = EnvironmentConfig::parse(&snapshot.join("config.toml"), &saved_config)?;
     let gog_id_added = saved_gog_id(paths, name, &saved)?;
+    let epic_id_added = saved_epic_id(paths, name, env.config.epic_id.as_deref(), &saved)?;
     let Some(saved) = saved.wine() else {
         bail!("snapshot config points to a different prefix");
     };
@@ -395,6 +402,7 @@ pub fn inspect_restore_with(
         saved_runner: saved.runner.clone(),
         layout: manifest.layout,
         gog_id_added,
+        epic_id_added,
         current_fingerprint: current.fingerprint,
         snapshot_fingerprint,
     })
@@ -504,8 +512,12 @@ pub fn restore_reviewed_with(
         return Err(err);
     }
     let saved_config = match &reviewed.gog_id_added {
-        Some(gog_id) => with_gog_id(&reviewed.saved_config, gog_id)?,
+        Some(gog_id) => with_id(&reviewed.saved_config, "gog_id", gog_id)?,
         None => reviewed.saved_config.clone(),
+    };
+    let saved_config = match &reviewed.epic_id_added {
+        Some(epic_id) => with_id(&saved_config, "epic_id", epic_id)?,
+        None => saved_config,
     };
     let result = (|| -> Result<()> {
         exchange(&reviewed.prefix, &staging_path)?;
@@ -571,6 +583,7 @@ pub fn restore_reviewed_with(
     Ok(RestoreOutcome {
         retained_old_prefix,
         gog_id_added: reviewed.gog_id_added.clone(),
+        epic_id_added: reviewed.epic_id_added.clone(),
     })
 }
 
@@ -606,10 +619,49 @@ fn saved_gog_id(paths: &Paths, name: &str, saved: &EnvironmentConfig) -> Result<
     }
 }
 
-/// `text` with a `gog_id`, keeping its comments and formatting.
-fn with_gog_id(text: &str, gog_id: &str) -> Result<String> {
+/// The Epic game is the environment's, not the snapshot's, as for GOG: a
+/// saved config without the id the environment has now gets it back, and one
+/// naming another game is refused before anything changes. An environment
+/// with no game now takes the saved id back, as `saved_gog_id` does for one
+/// that owns no folder, unless another environment has that game now, since
+/// one environment owns a game.
+fn saved_epic_id(
+    paths: &Paths,
+    name: &str,
+    current: Option<&str>,
+    saved: &EnvironmentConfig,
+) -> Result<Option<String>> {
+    // Epic games live in the host library only.
+    if paths.portable_root().is_some() {
+        return Ok(None);
+    }
+    match (current, saved.epic_id.as_deref()) {
+        (Some(current), None) => Ok(Some(current.to_owned())),
+        (Some(current), Some(saved)) if saved != current => {
+            bail!("The snapshot's epic_id {saved} doesn't match {name}'s Epic game {current}.")
+        }
+        (None, Some(saved)) => {
+            if let Some(other) = crate::epic::game::owners(paths, saved)?
+                .into_iter()
+                .find(|owner| owner != name)
+            {
+                return Err(crate::epic::game::GameError::Taken {
+                    name: name.to_owned(),
+                    app: saved.to_owned(),
+                    other,
+                }
+                .into());
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `text` with `key` set to `id`, keeping its comments and formatting.
+fn with_id(text: &str, key: &str, id: &str) -> Result<String> {
     let mut doc: toml_edit::DocumentMut = text.parse()?;
-    crate::edit::store_value(doc.as_table_mut(), "gog_id", toml_edit::Value::from(gog_id));
+    crate::edit::store_value(doc.as_table_mut(), key, toml_edit::Value::from(id));
     crate::config::stamp_schema(&mut doc);
     Ok(doc.to_string())
 }
@@ -817,6 +869,7 @@ fn ensure_restore_same(a: &RestoreInspection, b: &RestoreInspection) -> Result<(
         || a.saved_runner != b.saved_runner
         || a.layout != b.layout
         || a.gog_id_added != b.gog_id_added
+        || a.epic_id_added != b.epic_id_added
         || a.current_fingerprint != b.current_fingerprint
         || a.snapshot_fingerprint != b.snapshot_fingerprint
     {
