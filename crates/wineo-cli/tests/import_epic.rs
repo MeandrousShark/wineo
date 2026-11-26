@@ -850,6 +850,20 @@ fn bare_import_epic_logs_in_when_logged_out() {
 }
 
 #[test]
+fn logging_in_works_in_a_portable_root_and_saves_the_login_on_the_host() {
+    let epic = Epic::new();
+    epic.on_path(&Fake::default());
+    let portable = epic.file("portable");
+    let mut command = command(&epic, &["--portable"]);
+    command.arg(&portable).args(["import", "epic", "--login"]);
+    let (status, seen) = paste(Pty::spawn(command), CODE);
+    assert!(status.success(), "{seen}");
+    assert!(epic.logged_in());
+    assert!(!portable.join("data").exists());
+    assert_code_kept_and_nothing_left(&epic, &seen);
+}
+
+#[test]
 fn the_import_menu_offers_epic_right_after_gog() {
     let epic = Epic::new();
     epic.on_path(&Fake::default());
