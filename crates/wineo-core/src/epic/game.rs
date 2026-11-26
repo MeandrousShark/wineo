@@ -225,6 +225,11 @@ pub enum GameError {
     RecordMissing { name: String, app: String },
     #[error("{name}'s Epic record can't be checked: {detail}.")]
     Unreadable { name: String, detail: String },
+    /// A record that can't be read and may cover a launched path: its own
+    /// folder holds one, or it doesn't say where its folder is. The detail
+    /// is validate's `epic_record_invalid` message.
+    #[error("{detail}")]
+    Invalid { detail: String },
     /// A launch found the folder's in-use lock held by an install, update,
     /// or repair.
     #[error("{label}'s Epic game is being {}.", .work.being())]
@@ -606,13 +611,23 @@ impl<'a> Touched<'a> {
             .map(|path| crate::paths::resolve(path))
             .collect();
         if !resolved.is_empty() {
-            // A record that can't be read can't say where its folder is;
-            // validate reports it.
-            for (_, record) in list(paths)? {
-                if let Ok(record) = record
-                    && resolved.iter().any(|path| path.starts_with(&record.folder))
-                {
-                    records.entry(folder_key(&record.folder)).or_insert(record);
+            let covers = |folder: &Path| resolved.iter().any(|path| path.starts_with(folder));
+            for (path, record) in list(paths)? {
+                match record {
+                    Ok(record) if covers(&record.folder) => {
+                        records.entry(folder_key(&record.folder)).or_insert(record);
+                    }
+                    Ok(_) => {}
+                    // Fails closed, as GOG does for a state it can't read:
+                    // a record that names a folder refuses launches from it,
+                    // and one that doesn't could be any folder's.
+                    Err(error) if claimed_folder(&path).is_none_or(|folder| covers(&folder)) => {
+                        return Err(GameError::Invalid {
+                            detail: format!("{error:#}"),
+                        }
+                        .into());
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -696,6 +711,61 @@ impl<'a> Touched<'a> {
     }
 }
 
+/// The folder a record that doesn't read names, if it names one at all.
+fn claimed_folder(path: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(path).ok()?;
+    let table: toml::Table = text.parse().ok()?;
+    let folder = PathBuf::from(table.get("folder")?.as_str()?);
+    folder.is_absolute().then_some(folder)
+}
+
+/// How many times a launch looks for its folders again when one became a
+/// game folder while it was locking, before giving up.
+const ATTEMPTS: usize = 3;
+
+/// Finds the folders a launch touches and takes their in-use locks. They
+/// are found without locks, so they're looked for again once locked: a
+/// record written meanwhile for a folder the launch runs from means
+/// starting over, which keeps the locks in key order.
+fn lock_touched<'a>(
+    paths: &Paths,
+    name: &'a str,
+    epic_id: Option<&'a str>,
+    touched: &[PathBuf],
+) -> Result<(Touched<'a>, Vec<InUseGuard>)> {
+    for _ in 0..ATTEMPTS {
+        let found = Touched::find(paths, name, epic_id, touched)?;
+        between_find_and_lock();
+        let guards = found.lock_in_use(paths)?;
+        let again = Touched::find(paths, name, epic_id, touched)?;
+        if again
+            .records
+            .keys()
+            .all(|key| found.records.contains_key(key))
+        {
+            return Ok((again, guards));
+        }
+    }
+    bail!("{name}'s Epic game folders changed while locking; retry")
+}
+
+#[cfg(test)]
+thread_local! {
+    static BETWEEN: std::cell::RefCell<Option<Box<dyn FnMut() -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs a test's hook between finding folders and locking them. It stays
+/// armed while it returns true.
+fn between_find_and_lock() {
+    #[cfg(test)]
+    if let Some(mut hook) = BETWEEN.with(|hook| hook.borrow_mut().take())
+        && hook()
+    {
+        BETWEEN.with(|slot| *slot.borrow_mut() = Some(hook));
+    }
+}
+
 /// What `protect` would refuse, found without keeping any lock, so a launch
 /// can be refused before its hooks run.
 pub fn precheck(
@@ -724,8 +794,7 @@ pub fn protect(
     touched: &[PathBuf],
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<InUseGuard>> {
-    let found = Touched::find(paths, name, epic_id, touched)?;
-    let guards = found.lock_in_use(paths)?;
+    let (found, guards) = lock_touched(paths, name, epic_id, touched)?;
     for record in found.records.values() {
         let now = RecordLock::shared(paths, &record.app_name, cancel)?
             .read(paths)

@@ -504,16 +504,119 @@ mod launch {
     }
 
     #[test]
-    fn a_broken_record_elsewhere_doesnt_block_a_plain_launch() {
+    fn a_record_that_cant_be_read_fails_closed() {
         let (root, paths) = setup();
+        let folder = folder(root.path());
+        let exe = folder.join("OfflineGame.exe");
+        let elsewhere = root.path().join("notepad.exe");
         let dir = paths.epic_games_dir();
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("broken.toml"), "not toml").unwrap();
-        let exe = root.path().join("notepad.exe");
+        let broken = dir.join("broken.toml");
+
+        // It names its folder: launches from there are refused, others aren't.
+        fs::write(
+            &broken,
+            format!(
+                "version = 9\napp_name = 'X'\nfolder = '{}'\n",
+                folder.display()
+            ),
+        )
+        .unwrap();
+        let message = format!(
+            "{} isn't a valid Epic game record (Epic game record version 9 is from a newer wineo)",
+            broken.display()
+        );
+        for result in [
+            protect(&paths, "copy", None, std::slice::from_ref(&exe), NEVER).map(drop),
+            precheck(&paths, "copy", None, std::slice::from_ref(&exe)),
+        ] {
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error.downcast_ref(),
+                Some(GameError::Invalid { .. })
+            ));
+            assert_eq!(error.to_string(), message);
+        }
         assert!(
-            protect(&paths, "notepad", None, &[exe], NEVER)
+            protect(
+                &paths,
+                "notepad",
+                None,
+                std::slice::from_ref(&elsewhere),
+                NEVER
+            )
+            .unwrap()
+            .is_empty()
+        );
+
+        // It names nothing readable, so it could be any folder's.
+        fs::write(&broken, "not toml").unwrap();
+        let error = protect(&paths, "notepad", None, &[elsewhere], NEVER).unwrap_err();
+        assert!(
+            error.to_string().starts_with(&format!(
+                "{} isn't a valid Epic game record (",
+                broken.display()
+            )),
+            "{error}"
+        );
+        // A launch naming no host path touches no folder.
+        assert!(
+            protect(&paths, "notepad", None, &[], NEVER)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// Writes a record whose folder holds `path` the first `times` times the
+    /// hook runs, one folder deeper each time.
+    fn appear_between(paths: &Paths, root: &Path, times: usize) {
+        let paths = paths.clone();
+        let root = root.to_owned();
+        let mut written = 0;
+        BETWEEN.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                written += 1;
+                let mut folder = root.join("Games/Deep");
+                for level in 1..written {
+                    folder.push(format!("d{level}"));
+                }
+                fs::create_dir_all(&folder).unwrap();
+                write(&paths, &Record::new(&format!("App{written}"), folder));
+                written < times
+            }));
+        });
+    }
+
+    #[test]
+    fn a_record_written_while_locking_is_found_again() {
+        let (root, paths) = setup();
+        let exe = root.path().join("Games/Deep/d1/d2/game.exe");
+        appear_between(&paths, root.path(), 1);
+        let guards = protect(&paths, "copy", None, std::slice::from_ref(&exe), NEVER).unwrap();
+        assert_eq!(guards.len(), 1);
+        let folder = root.path().join("Games/Deep");
+        assert_eq!(guards[0].lock().folder(), folder);
+        assert_eq!(
+            refusal(lock_for(&paths, &folder, "deep", Work::Update)),
+            "copy is running from this game folder. Stop it before updating deep."
+        );
+    }
+
+    #[test]
+    fn folders_that_keep_appearing_give_up_after_three_tries() {
+        let (root, paths) = setup();
+        let exe = root.path().join("Games/Deep/d1/d2/d3/game.exe");
+        appear_between(&paths, root.path(), 3);
+        assert_eq!(
+            refusal(protect(&paths, "copy", None, &[exe.clone()], NEVER)),
+            "copy's Epic game folders changed while locking; retry"
+        );
+        // Nothing is held after giving up.
+        let folder = root.path().join("Games/Deep");
+        assert!(lock_for(&paths, &folder, "deep", Work::Update).is_ok());
+        assert_eq!(
+            protect(&paths, "copy", None, &[exe], NEVER).unwrap().len(),
+            3
         );
     }
 

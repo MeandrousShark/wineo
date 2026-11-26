@@ -350,6 +350,27 @@ fn a_refused_start_runs_no_hook() {
 }
 
 #[test]
+fn a_start_from_a_folder_whose_record_cant_be_read_is_refused() {
+    let f = Fixture::new();
+    let folder = fowl(&f, None);
+    environment(&f, "copy", None, &folder.join("OfflineGame.exe"));
+    let record = game::record_path(&f.paths(), APP);
+    let text = fs::read_to_string(&record).unwrap();
+    fs::write(&record, text.replace("version = 1", "version = 9")).unwrap();
+    let message = format!(
+        "{} isn't a valid Epic game record (Epic game record version 9 is from a newer wineo)",
+        record.display()
+    );
+    assert_refused(&f.run(&["start", "copy"]), &message);
+    assert_refused(
+        &f.run(&["start", "fowl"]),
+        "fowl's Epic record can't be checked: ",
+    );
+    assert!(!f.runtime("copy").is_running().unwrap());
+    assert_eq!(sweep(&f), Vec::<i32>::new());
+}
+
+#[test]
 fn an_epic_id_without_a_record_refuses_to_start() {
     let f = Fixture::new();
     let folder = folder(&f);
