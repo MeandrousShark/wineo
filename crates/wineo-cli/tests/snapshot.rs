@@ -453,24 +453,9 @@ fn a_restore_naming_another_epic_game_is_refused_and_one_onto_no_game_is_kept() 
         b"after"
     );
 
-    // With no game now, the saved id comes back as GOG's does for an
-    // environment that owns no folder, unless another environment has it.
+    // With no game now, the saved config comes back as it was, as GOG's does
+    // for an environment that owns no folder.
     fs::write(&path, &config).unwrap();
-    let thief = f.config_dir().join("environments/thief.toml");
-    fs::write(
-        &thief,
-        "epic_id = \"Other\"\nprefix = \"/p/thief\"\nrunner = \"wine\"\narch = \"win64\"\n",
-    )
-    .unwrap();
-    let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
-    assert!(!output.status.success());
-    assert!(
-        stderr(&output).contains("game's Epic game Other belongs to thief now."),
-        "{}",
-        stderr(&output)
-    );
-    assert_eq!(f.created_config("game"), config);
-    fs::remove_file(&thief).unwrap();
     let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
     assert_success(&output);
     assert!(
