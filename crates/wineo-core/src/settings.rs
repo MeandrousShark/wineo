@@ -662,6 +662,8 @@ fn update_with_target(
             // GOG games live in the host library, so this is never
             // relative to a portable folder.
             (Scope::Global, "defaults.games_root") => paths.contract(&paths.absolute(value)?)?,
+            // Resolved now, so it names the same file wherever wineo runs.
+            (Scope::Global, "epic.legendary") => paths.contract(&paths.absolute(value)?)?,
             (Scope::Environment, key)
                 if key.starts_with("targets.")
                     && (key.ends_with(".exe") || key.ends_with(".cwd")) =>

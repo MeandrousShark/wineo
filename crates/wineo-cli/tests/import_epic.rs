@@ -933,3 +933,34 @@ fn the_import_menu_offers_epic_right_after_gog() {
     assert_eq!(epic.list_calls(), 1);
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn a_relative_legendary_setting_is_saved_resolved() {
+    let epic = Epic::new();
+    epic.log_in();
+    let tools = epic.file("tools");
+    let legendary = tools.join("legendary");
+    epic.legendary_at(&legendary, &Fake::default());
+    let set = command(&epic, &["set", "--global", "epic.legendary=./legendary"])
+        .current_dir(&tools)
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{}", stderr(&set));
+    let config = fs::read_to_string(epic.config()).unwrap();
+    assert!(
+        config.contains("legendary = \"~/tools/legendary\""),
+        "{config}"
+    );
+
+    // Found from anywhere, not only the folder it was set in.
+    let output = command(&epic, &["import", "epic", "--list"])
+        .current_dir(epic.file("."))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        epic.programs().last().unwrap(),
+        &legendary.display().to_string()
+    );
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
