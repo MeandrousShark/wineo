@@ -23,6 +23,7 @@ pub use test_script::{kill_fake_programs, write_script};
 // Only some test files guard a spawned process.
 #[allow(unused_imports)]
 pub use test_script::KillOnDrop;
+pub mod epic;
 pub mod gog_api;
 pub mod gog_world;
 pub mod pty;

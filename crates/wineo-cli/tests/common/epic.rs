@@ -71,7 +71,10 @@ impl Epic {
         let calls = epic.file("browser-calls");
         write_script(
             epic.bin.join("xdg-open"),
-            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", calls.display()),
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                calls.display()
+            ),
         );
         epic
     }
@@ -149,9 +152,72 @@ impl Epic {
         self.state().join("user.json").exists()
     }
 
-    /// Every command line the fake ran, oldest first.
+    /// Every command line the fake ran, oldest first, with a login code
+    /// written as `<code>`, so a search of the test's files for the code
+    /// finds only what wineo left.
     pub fn calls(&self) -> Vec<String> {
         lines(&self.file("calls"))
+    }
+
+    /// How many times the owned list was fetched.
+    pub fn list_calls(&self) -> usize {
+        self.calls()
+            .iter()
+            .filter(|call| call.as_str() == "list --json -T")
+            .count()
+    }
+
+    /// The file each run of the fake was started as, oldest first.
+    pub fn programs(&self) -> Vec<String> {
+        lines(&self.file("programs"))
+    }
+
+    /// The fake as wineo's own copy, as if downloaded earlier. It runs only
+    /// through `python3`.
+    pub fn own_copy_from(&self, fake: &Fake) -> PathBuf {
+        let path = self.own_copy();
+        self.legendary_at(&path, fake);
+        path
+    }
+
+    /// The owned list with `edit` applied, as a file of its own for
+    /// `Fake::list`.
+    pub fn edited_list(&self, edit: impl FnOnce(&mut serde_json::Value)) -> PathBuf {
+        let mut list: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(fixture("list.json")).unwrap()).unwrap();
+        edit(&mut list);
+        let path = self.file("edited-list.json");
+        fs::write(&path, serde_json::to_string(&list).unwrap()).unwrap();
+        path
+    }
+
+    /// Every file under the test's root that holds `needle`, leaving out
+    /// the fakes themselves, which hold the code they accept.
+    pub fn files_holding(&self, needle: &str) -> Vec<PathBuf> {
+        let skip = [self.bin.clone(), self.file("stand-in"), self.own_copy()];
+        let mut found = Vec::new();
+        let mut dirs = vec![self.f.root.path().to_owned()];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if skip.iter().any(|skipped| path.starts_with(skipped)) {
+                    continue;
+                }
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    dirs.push(path);
+                } else if kind.is_file()
+                    && fs::read(&path).is_ok_and(|bytes| {
+                        bytes
+                            .windows(needle.len())
+                            .any(|window| window == needle.as_bytes())
+                    })
+                {
+                    found.push(path);
+                }
+            }
+        }
+        found
     }
 
     pub fn browser_calls(&self) -> Vec<String> {
@@ -221,7 +287,9 @@ impl Epic {
         format!(
             "#!/bin/sh\n\
              root='{root}'\n\
-             printf '%s\\n' \"$*\" >> \"$root/calls\"\n\
+             printf '%s\\n' \"$0\" >> \"$root/programs\"\n\
+             if [ \"$1 $2\" = 'auth --code' ]; then echo 'auth --code <code>' >> \"$root/calls\"\n\
+             else printf '%s\\n' \"$*\" >> \"$root/calls\"; fi\n\
              user=\"$LEGENDARY_CONFIG_PATH/user.json\"\n\
              case \"$1\" in\n\
              --version) echo '{version}' ;;\n\
