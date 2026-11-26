@@ -392,6 +392,74 @@ fn a_restore_naming_another_gog_game_is_refused_before_anything_changes() {
 }
 
 #[test]
+fn a_restore_from_before_install_keeps_the_epic_id() {
+    let Some(f) = fixture() else { return };
+    let (_, config) = environment(&f);
+    assert_success(&f.run(&["snapshot", "create", "game", "before-epic"]));
+    let installed = config.replacen(
+        "# saved comment\n",
+        "# saved comment\nepic_id = \"AppOffline\"\n",
+        1,
+    );
+    fs::write(f.config_dir().join("environments/game.toml"), &installed).unwrap();
+
+    let output = f.run(&["snapshot", "restore", "game", "before-epic", "--yes"]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Put epic_id AppOffline back in game's config.\n"),
+        "{}",
+        stdout(&output)
+    );
+    let restored = f.created_config("game");
+    assert!(restored.starts_with("# saved comment\n"), "{restored}");
+    assert!(restored.contains("epic_id = \"AppOffline\""), "{restored}");
+
+    // Saved with the same game: nothing to put back, and nothing said.
+    assert_success(&f.run(&["snapshot", "create", "game", "with-epic"]));
+    let output = f.run(&["snapshot", "restore", "game", "with-epic", "--yes"]);
+    assert_success(&output);
+    assert!(!stdout(&output).contains("epic_id"), "{}", stdout(&output));
+    assert_eq!(f.created_config("game").matches("epic_id").count(), 1);
+}
+
+#[test]
+fn a_restore_that_would_change_the_epic_game_is_refused_before_anything_changes() {
+    let Some(f) = fixture() else { return };
+    let (prefix, config) = environment(&f);
+    let path = f.config_dir().join("environments/game.toml");
+    let with = |id: &str| {
+        config.replacen(
+            "# saved comment\n",
+            &format!("# saved comment\nepic_id = \"{id}\"\n"),
+            1,
+        )
+    };
+    fs::write(&path, with("Other")).unwrap();
+    assert_success(&f.run(&["snapshot", "create", "game", "other-game"]));
+    for (current, message) in [
+        (
+            with("AppOffline"),
+            "The snapshot's epic_id Other doesn't match game's Epic game AppOffline.",
+        ),
+        (
+            config.clone(),
+            "The snapshot's epic_id Other doesn't match game, which has no Epic game.",
+        ),
+    ] {
+        fs::write(&path, &current).unwrap();
+        fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
+        let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains(message), "{}", stderr(&output));
+        assert_eq!(f.created_config("game"), current);
+        assert_eq!(
+            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+            b"after"
+        );
+    }
+}
+
+#[test]
 fn an_unrelated_unreadable_gog_state_doesnt_block_a_restore() {
     let Some(f) = fixture() else { return };
     environment(&f);

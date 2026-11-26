@@ -117,7 +117,8 @@ enum Recovery {
 #[derive(Debug, Clone)]
 pub(crate) enum Review {
     Create(CreateInspection),
-    Restore(RestoreInspection),
+    // Boxed: an inspection is far larger than every other review.
+    Restore(Box<RestoreInspection>),
     Delete(String),
     Recover,
 }
@@ -597,7 +598,7 @@ impl Page {
                     },
                 )
                 .map_err(|error| error.to_string())?;
-                Ok(Review::Restore(review))
+                Ok(Review::Restore(Box::new(review)))
             },
             move |result| Event::Reviewed(generation, result),
         );
