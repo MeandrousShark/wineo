@@ -116,10 +116,18 @@ fn download(paths: &Paths, missing: &Missing, args: &Args) -> anyhow::Result<boo
         }
     }
     let version = own_copy::PINNED.version;
-    eprintln!("Downloading Legendary {version}...");
     let cancellation = Cancellation::new()?;
-    let fetched = own_copy::get(paths, &cancellation.token, |_, _| {});
-    cancellation.result(fetched.map_err(anyhow::Error::from))?;
-    eprintln!("Downloaded Legendary {version}.");
+    // Said once the first bytes arrive, so a copy another wineo fetched
+    // meanwhile isn't announced as a download.
+    let mut started = false;
+    let fetched = own_copy::get(paths, &cancellation.token, |_, _| {
+        if !std::mem::replace(&mut started, true) {
+            eprintln!("Downloading Legendary {version}...");
+        }
+    });
+    let fetched = cancellation.result(fetched.map_err(anyhow::Error::from))?;
+    if matches!(fetched, own_copy::Fetched::Downloaded(_)) {
+        eprintln!("Downloaded Legendary {version}.");
+    }
     Ok(true)
 }

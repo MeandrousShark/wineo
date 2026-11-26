@@ -108,6 +108,34 @@ impl Epic {
         );
     }
 
+    /// A `python3` like `python("3.14.0")` that, on the second time it is
+    /// asked its version, puts `stand_in` where wineo's own copy goes, as
+    /// another wineo finishing the download first would. That is the check
+    /// just before wineo takes the download's lock.
+    pub fn python_that_fetches_first(&self, stand_in: &Path) {
+        let count = self.file("python-versions");
+        let own = self.own_copy();
+        write_script(
+            self.bin.join("python3"),
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = --version ]; then\n\
+                   n=$({cat} '{count}' 2>/dev/null || echo 0); n=$((n + 1)); echo \"$n\" > '{count}'\n\
+                   if [ \"$n\" -eq 2 ]; then {mkdir} -p '{dir}' && {cp} '{stand_in}' '{own}'; fi\n\
+                   echo 'Python 3.14.0'; exit 0\n\
+                 fi\n\
+                 exec /bin/sh \"$@\"\n",
+                cat = tool("cat"),
+                mkdir = tool("mkdir"),
+                cp = tool("cp"),
+                count = count.display(),
+                dir = own.parent().unwrap().display(),
+                stand_in = stand_in.display(),
+                own = own.display(),
+            ),
+        );
+    }
+
     pub fn legendary_at(&self, path: &Path, fake: &Fake) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_script(path, self.script(fake));

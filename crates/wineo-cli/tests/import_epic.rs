@@ -252,6 +252,22 @@ fn yes_downloads_without_a_terminal() {
 }
 
 #[test]
+fn a_copy_another_wineo_fetched_meanwhile_isnt_called_a_download() {
+    let epic = Epic::new();
+    epic.log_in();
+    let stand_in = epic.stand_in(&Fake::default());
+    epic.python_that_fetches_first(&stand_in);
+    let output = with_stand_in(&epic, &["import", "epic", "--list", "--refresh", "--yes"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!stderr(&output).contains("Download"), "{}", stderr(&output));
+    assert!(stdout(&output).contains("Offline Game"));
+    assert_eq!(epic.list_calls(), 1);
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
+
+#[test]
 fn the_download_needs_a_terminal_or_yes() {
     let epic = Epic::new();
     epic.python("3.14.0");
