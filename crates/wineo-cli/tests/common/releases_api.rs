@@ -119,6 +119,20 @@ impl ReleasesApi {
         self.list(repo, tag, asset, size, Some(&digest));
     }
 
+    /// Lists several releases, newest first, as a full page does, so the
+    /// listing says there are more. Each is a tag and its asset.
+    pub fn announce_many(&self, repo: Repo, releases: &[(String, String)], size: u64) {
+        let digest = format!("sha256:{}", "0".repeat(64));
+        let body: Vec<_> = releases
+            .iter()
+            .map(|(tag, asset)| self.release(tag, asset, size, Some(&digest)))
+            .collect();
+        self.route(
+            repo.releases_path(),
+            Route::Body(serde_json::to_vec(&body).unwrap()),
+        );
+    }
+
     /// Lists a release whose archive arrives slowly and never finishes.
     pub fn drip(&self, repo: Repo, tag: &str, asset: &str, size: usize) {
         self.announce(repo, tag, asset, size as u64);
