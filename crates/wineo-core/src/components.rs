@@ -524,7 +524,7 @@ mod tests {
         assert!(message.contains("is not installed"), "{message}");
         assert!(message.contains("dxvk"), "{message}");
         assert!(
-            message.contains("Get one with: wineo download dxvk"),
+            message.contains("Get one with: wineo dxvk download"),
             "{message}"
         );
 
@@ -615,7 +615,7 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("dxvk"), "{message}");
         assert!(
-            message.contains("Get one with: wineo download dxvk"),
+            message.contains("Get one with: wineo dxvk download"),
             "{message}"
         );
     }

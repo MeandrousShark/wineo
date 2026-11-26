@@ -243,7 +243,7 @@ fn a_windows_game_without_a_runner_wineo_has_fails() {
     assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains(
-            "error: Disco Elysium needs a Proton runner. Get one with: wineo download ge-proton"
+            "error: Disco Elysium needs a Proton runner. Get one with: wineo runners download ge-proton"
         ),
         "{}",
         stderr(&out)

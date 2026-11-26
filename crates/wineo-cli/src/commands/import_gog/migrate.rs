@@ -223,7 +223,7 @@ fn automatic_runner(
         return match Runners::new(paths, global)?.newest_proton()? {
             Some(runner) => Ok(ChosenRunner::named(runner.selection().to_owned())),
             None => anyhow::bail!(
-                "{title} needs a Proton runner. Get one with: wineo download ge-proton"
+                "{title} needs a Proton runner. Get one with: wineo runners download ge-proton"
             ),
         };
     }

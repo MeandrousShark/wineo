@@ -103,7 +103,12 @@ enum Command {
     Restart(commands::restart::Args),
     /// List installed wine runners
     Runners(commands::runners::Args),
-    /// Download a runner or graphics component
+    // Moved under runners, dxvk, and vkd3d; hidden, since a command with a
+    // new parent can't be an alias.
+    #[command(
+        hide = true,
+        about = "Deprecated: use runners download, dxvk download, or vkd3d download"
+    )]
     Download(commands::download::Args),
     /// Copy or adopt a prefix, with optional Heroic launch settings
     Import(commands::import::Args),
@@ -221,10 +226,10 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Restart(args) => commands::restart::run(&paths, args),
         Command::Import(args) => commands::import::run(&paths, args, verbose),
         Command::Update(args) => commands::update::run(&paths, args),
-        Command::Download(args) => commands::download::run(&paths, args, verbose),
-        Command::Runners(args) => commands::runners::run(&paths, args),
-        Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args),
-        Command::Vkd3d(args) => commands::builds::run(&paths, Component::Vkd3d, args),
+        Command::Download(args) => commands::download::run_deprecated(&paths, args, verbose),
+        Command::Runners(args) => commands::runners::run(&paths, args, verbose),
+        Command::Dxvk(args) => commands::builds::run(&paths, Component::Dxvk, args, verbose),
+        Command::Vkd3d(args) => commands::builds::run(&paths, Component::Vkd3d, args, verbose),
         Command::Templates(args) => commands::templates::run(&paths, args),
         Command::Programs(args) => commands::programs::run(&paths, args),
         Command::Desktop(args) => commands::desktop::run(&paths, args),

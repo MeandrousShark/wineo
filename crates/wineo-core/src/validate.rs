@@ -1305,7 +1305,7 @@ fn check_wine(
         Err(err) => {
             push(
                 Code::RunnerMissing,
-                format!("{}\nGet one with: wineo download", chain(&err)),
+                format!("{}\nGet one with: wineo runners download", chain(&err)),
             );
             None
         }

@@ -119,6 +119,20 @@ impl ReleasesApi {
         self.list(repo, tag, asset, size, Some(&digest));
     }
 
+    /// Lists several releases, newest first, as a full page does, so the
+    /// listing says there are more. Each is a tag and its asset.
+    pub fn announce_many(&self, repo: Repo, releases: &[(String, String)], size: u64) {
+        let digest = format!("sha256:{}", "0".repeat(64));
+        let body: Vec<_> = releases
+            .iter()
+            .map(|(tag, asset)| self.release(tag, asset, size, Some(&digest)))
+            .collect();
+        self.route(
+            repo.releases_path(),
+            Route::Body(serde_json::to_vec(&body).unwrap()),
+        );
+    }
+
     /// Lists a release whose archive arrives slowly and never finishes.
     pub fn drip(&self, repo: Repo, tag: &str, asset: &str, size: usize) {
         self.announce(repo, tag, asset, size as u64);
@@ -147,8 +161,26 @@ impl ReleasesApi {
         self.status(&format!("/assets/{asset}"), code);
     }
 
-    fn list(&self, repo: Repo, tag: &str, asset: &str, size: u64, digest: Option<&str>) {
-        let body = serde_json::json!([{
+    /// Serves `tag` on its own, as `--version TAG` asks for it, with the
+    /// archive. A release that is listed too is the caller's to publish.
+    pub fn publish_tag(&self, repo: Repo, tag: &str, asset: &str, body: Vec<u8>) {
+        let digest = format!("sha256:{:x}", Sha256::digest(&body));
+        let release = self.release(tag, asset, body.len() as u64, Some(&digest));
+        self.route(
+            &format!("{}/tags/{tag}", repo.releases_path()),
+            Route::Body(serde_json::to_vec(&release).unwrap()),
+        );
+        self.route(&format!("/assets/{asset}"), Route::Body(body));
+    }
+
+    fn release(
+        &self,
+        tag: &str,
+        asset: &str,
+        size: u64,
+        digest: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
             "tag_name": tag,
             "assets": [{
                 "name": asset,
@@ -156,7 +188,11 @@ impl ReleasesApi {
                 "size": size,
                 "digest": digest,
             }],
-        }]);
+        })
+    }
+
+    fn list(&self, repo: Repo, tag: &str, asset: &str, size: u64, digest: Option<&str>) {
+        let body = serde_json::json!([self.release(tag, asset, size, digest)]);
         self.route(
             repo.releases_path(),
             Route::Body(serde_json::to_vec(&body).unwrap()),

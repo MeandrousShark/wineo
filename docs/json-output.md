@@ -2,7 +2,8 @@
 
 `status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
 `import epic --list`, `import roms --list`, `import roms --emulators`,
-`update --check`, and `runners update --check` accept `--json` for scripting:
+`update --check`, `runners update --check`, `dxvk update --check`, and
+`vkd3d update --check` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -356,7 +357,8 @@ fails prints no JSON. Epic ids are strings.
 
 `wineo runners update --check --json` says, for each family with a build
 installed, whether a newer release is out. It asks GitHub and downloads
-nothing. `--json` needs `--check`.
+nothing. `--json` needs `--check`. `wineo dxvk update --check --json` and
+`wineo vkd3d update --check --json` write the same document for one family.
 
 ```json
 {
