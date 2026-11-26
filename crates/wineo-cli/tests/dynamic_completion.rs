@@ -854,3 +854,61 @@ fn runners_update_completes_family_names() {
     let actions = complete(root.path(), "fish", &["wineo", "runners", ""]);
     assert!(actions.iter().any(|name| name == "update"), "{actions:?}");
 }
+
+#[test]
+fn the_old_download_stays_out_of_completion_and_the_new_commands_complete() {
+    let root = tempfile::tempdir().unwrap();
+    for shell in ["bash", "fish", "zsh"] {
+        let has = |offered: &[String], name: &str| offered.iter().any(|word| word == name);
+        for words in [&["wineo", ""][..], &["wineo", "d"], &["wineo", "help", ""]] {
+            let offered = complete(root.path(), shell, words);
+            assert!(!has(&offered, "download"), "{shell} {words:?}: {offered:?}");
+        }
+        let top = complete(root.path(), shell, &["wineo", ""]);
+        assert!(
+            has(&top, "runners") && has(&top, "dxvk"),
+            "{shell}: {top:?}"
+        );
+
+        for parent in ["runners", "dxvk", "vkd3d"] {
+            let actions = complete(root.path(), shell, &["wineo", parent, ""]);
+            assert!(has(&actions, "download"), "{shell} {parent}: {actions:?}");
+            assert!(has(&actions, "update"), "{shell} {parent}: {actions:?}");
+        }
+
+        // The runners take a provider, and only the two runner families are
+        // offered, though the command parses the other two to refuse them.
+        let mut providers = complete(root.path(), shell, &["wineo", "runners", "download", ""]);
+        providers.retain(|name| !name.starts_with('-'));
+        providers.sort();
+        assert_eq!(providers, ["ge-proton", "proton-cachyos"], "{shell}");
+
+        // The components take none, and every download offers its flags.
+        for words in [
+            &["wineo", "runners", "download", "ge-proton", "--"][..],
+            &["wineo", "dxvk", "download", "--"],
+            &["wineo", "vkd3d", "download", "--"],
+        ] {
+            let flags = complete(root.path(), shell, words);
+            for flag in ["--list", "--page", "--version"] {
+                assert!(has(&flags, flag), "{shell} {words:?}: {flags:?}");
+            }
+        }
+        for parent in ["dxvk", "vkd3d"] {
+            let mut values = complete(root.path(), shell, &["wineo", parent, "download", ""]);
+            values.retain(|name| !name.starts_with('-'));
+            assert_eq!(values, Vec::<String>::new(), "{shell} {parent}");
+        }
+
+        // `dxvk update` and `vkd3d update` take no family, only the flags.
+        for parent in ["dxvk", "vkd3d"] {
+            let offered = complete(root.path(), shell, &["wineo", parent, "update", ""]);
+            assert!(has(&offered, "--check"), "{shell} {parent}: {offered:?}");
+            assert!(has(&offered, "--json"), "{shell} {parent}: {offered:?}");
+            assert!(
+                offered.iter().all(|name| name.starts_with('-')),
+                "{shell} {parent}: {offered:?}"
+            );
+        }
+    }
+}
