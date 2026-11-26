@@ -1,8 +1,11 @@
 use std::process::ExitCode;
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 use wineo_core::config::GlobalConfig;
 use wineo_core::epic::account::Status;
+use wineo_core::epic::install::{self, Local, LocalState};
 use wineo_core::epic::legendary::Missing;
 use wineo_core::epic::owned::{self, Game, Owned};
 use wineo_core::epic::{self, Error};
@@ -17,6 +20,9 @@ use crate::commands::transfer::Cancellation;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     NotInstalled,
+    Unfinished,
+    Downloaded,
+    Installed,
     Unavailable,
 }
 
@@ -24,7 +30,17 @@ impl State {
     fn json(self) -> &'static str {
         match self {
             Self::NotInstalled => "not_installed",
+            Self::Unfinished => "unfinished",
+            Self::Downloaded => "downloaded",
+            Self::Installed => "installed",
             Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "not installed",
+            other => other.json(),
         }
     }
 }
@@ -58,8 +74,16 @@ impl Reason {
     }
 }
 
-/// A game's state from the owned list alone, before anything is installed.
-fn state(game: &Game) -> (State, Option<Reason>) {
+/// A game's state: what wineo has of it, else what the owned list says.
+fn state(game: &Game, local: Option<&Local>) -> (State, Option<Reason>) {
+    if let Some(local) = local {
+        let state = match local.state {
+            LocalState::Unfinished => State::Unfinished,
+            LocalState::Downloaded => State::Downloaded,
+            LocalState::Installed => State::Installed,
+        };
+        return (state, None);
+    }
     let reason = if game.third_party.is_some() {
         Some(Reason::ThirdParty)
     } else if game.version.is_none() {
@@ -103,6 +127,8 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
 
     let mut games: Vec<&Game> = owned.games.iter().collect();
     games.sort_by_cached_key(|game| (game.title.to_lowercase(), game.app_name.clone()));
+    // Epic games live in the host library, so a portable root has none.
+    let (local, errors) = install::local(paths)?;
 
     // On stderr in both modes, and in the JSON for scripts.
     for warning in &warnings {
@@ -110,15 +136,28 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     }
     if args.json {
         crate::commands::json::print(&json!({
-            "games": games.iter().map(|game| game_json(game)).collect::<Vec<_>>(),
-            // Filled once installed games are checked.
-            "errors": Vec::<Value>::new(),
+            "games": games
+                .iter()
+                .map(|game| game_json(game, local.get(&game.app_name)))
+                .collect::<Vec<_>>(),
+            // A record that can't be read names no game or environment.
+            "errors": errors
+                .iter()
+                .map(|message| json!({"name": Value::Null, "id": Value::Null, "message": message}))
+                .collect::<Vec<_>>(),
             "warnings": warnings,
         }))?;
     } else {
-        print_table(&games);
+        print_table(&games, &local);
+        for error in &errors {
+            eprintln!("Failed: {error}");
+        }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// What a listing would show, from the saved list alone: a dry run never
@@ -203,40 +242,74 @@ fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> anyhow::Result
     cancellation.result(owned.map_err(anyhow::Error::from))
 }
 
-fn game_json(game: &Game) -> Value {
-    let (state, reason) = state(game);
+fn game_json(game: &Game, local: Option<&Local>) -> Value {
+    let (state, reason) = state(game, local);
+    // Only installed DLC is listed, as for GOG.
+    let dlc: Vec<Value> = local
+        .map(|local| {
+            local
+                .dlc
+                .iter()
+                .map(|id| {
+                    let title = game
+                        .dlc
+                        .iter()
+                        .find(|dlc| dlc.app_name == *id)
+                        .map(|dlc| dlc.title.clone());
+                    json!({"id": id, "title": title, "state": "installed"})
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     json!({
         "id": game.app_name,
         "title": game.title,
         "state": state.json(),
-        "environment": Value::Null,
-        "version": Value::Null,
+        "environment": local.and_then(|local| local.environment.as_deref()),
+        "version": local.and_then(|local| local.version.as_deref()),
+        // Filled once updates are checked.
         "update": Value::Null,
         "reason": reason.map(Reason::json),
-        // Only installed DLC is listed, as for GOG.
-        "dlc": Vec::<Value>::new(),
+        "dlc": dlc,
     })
 }
 
-fn print_table(games: &[&Game]) {
+fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
     if games.is_empty() {
         println!("You don't own any Epic games.");
         return;
     }
-    let mut table = vec![["ID", "TITLE", "STATE"].map(str::to_owned)];
+    // The environment and version columns only once wineo has a game.
+    let wide = games.iter().any(|game| local.contains_key(&game.app_name));
+    let mut table = vec![["ID", "TITLE", "STATE", "ENVIRONMENT", "VERSION"].map(str::to_owned)];
     for game in games {
-        let (state, reason) = state(game);
+        let found = local.get(&game.app_name);
+        let (state, reason) = state(game, found);
         table.push([
             game.app_name.clone(),
             game.title.clone(),
             match reason {
                 Some(reason) => reason.label().to_owned(),
-                None if state == State::NotInstalled => "not installed".to_owned(),
-                None => state.json().to_owned(),
+                None => state.label().to_owned(),
             },
+            found
+                .and_then(|local| local.environment.clone())
+                .unwrap_or_default(),
+            found
+                .and_then(|local| local.version.clone())
+                .unwrap_or_default(),
         ]);
     }
-    for line in render_columns(&table) {
+    let lines = if wide {
+        render_columns(&table)
+    } else {
+        let narrow: Vec<[String; 3]> = table
+            .into_iter()
+            .map(|[id, title, state, _, _]| [id, title, state])
+            .collect();
+        render_columns(&narrow)
+    };
+    for line in lines {
         println!("{line}");
     }
 }

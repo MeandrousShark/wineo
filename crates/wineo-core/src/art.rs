@@ -1343,6 +1343,8 @@ pub enum Source {
     Manual(String),
     /// GOG's own artwork for the game with this ID.
     Gog(u64),
+    /// Epic's own artwork for the game with this app name.
+    Epic(String),
 }
 
 /// What `art.toml` says about one kind.
@@ -1495,6 +1497,7 @@ impl ArtFile {
             ),
             Source::Manual(original) => ("manual", Value::from(original.as_str())),
             Source::Gog(game) => ("gog", Value::from(self.integer(kind.as_str(), *game)?)),
+            Source::Epic(game) => ("epic", Value::from(game.as_str())),
         };
         let mut parent = self.doc.as_table_mut();
         if let Some(target) = target {
@@ -1506,7 +1509,7 @@ impl ArtFile {
         as_table(table);
         let table = table.as_table_mut().expect("just made a table");
         crate::edit::store_value(table, "file", Value::from(kind.file_name(record.format)));
-        for key in ["steamgriddb", "manual", "gog"] {
+        for key in ["steamgriddb", "manual", "gog", "epic"] {
             if key != source.0 {
                 table.remove(key);
             }
@@ -1650,6 +1653,7 @@ struct RawRecord {
     steamgriddb: Option<u64>,
     manual: Option<String>,
     gog: Option<u64>,
+    epic: Option<String>,
 }
 
 impl RawArt {
@@ -1708,13 +1712,14 @@ impl RawKinds {
                         .collect();
                     format!("`{key}.file` must be one of {}", names.join(", "))
                 })?;
-            let source = match (raw.steamgriddb, raw.manual, raw.gog) {
-                (Some(asset), None, None) => Source::SteamGridDb(asset),
-                (None, Some(original), None) => Source::Manual(original),
-                (None, None, Some(game)) => Source::Gog(game),
+            let source = match (raw.steamgriddb, raw.manual, raw.gog, raw.epic) {
+                (Some(asset), None, None, None) => Source::SteamGridDb(asset),
+                (None, Some(original), None, None) => Source::Manual(original),
+                (None, None, Some(game), None) => Source::Gog(game),
+                (None, None, None, Some(game)) if !game.is_empty() => Source::Epic(game),
                 _ => {
                     return Err(format!(
-                        "`{key}` needs exactly one of `steamgriddb`, `manual`, and `gog`"
+                        "`{key}` needs exactly one of `steamgriddb`, `manual`, `gog`, and `epic`"
                     ));
                 }
             };

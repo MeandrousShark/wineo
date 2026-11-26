@@ -323,6 +323,8 @@ fn a_saved_list_missing_fields_still_reads_and_without_a_time_is_stale() {
                 can_run_offline: false,
                 third_party: None,
                 partner_link: None,
+                ownership_token: false,
+                images: Vec::new(),
             },
             Game {
                 app_name: "AppDlc".to_owned(),
@@ -336,6 +338,8 @@ fn a_saved_list_missing_fields_still_reads_and_without_a_time_is_stale() {
                 can_run_offline: false,
                 third_party: None,
                 partner_link: None,
+                ownership_token: false,
+                images: Vec::new(),
             },
         ]
     );
@@ -365,4 +369,41 @@ fn a_saved_list_is_fresh_for_an_hour() {
         .unwrap();
         assert_eq!(cache_is_fresh(&setup.paths), fresh, "{fetched_at}");
     }
+}
+
+#[test]
+fn art_addresses_and_the_ownership_token_are_read() {
+    let games = parse_list(&list_text()).unwrap();
+    assert!(games[0].ownership_token, "AppToken's attribute");
+    assert!(!games[3].ownership_token);
+    assert!(games.iter().all(|game| game.images.is_empty()));
+
+    let text = edited(|list| {
+        list[3]["metadata"]["keyImages"] = serde_json::json!([
+            {"type": "DieselGameBoxTall", "url": "https://cdn.example.invalid/tall.jpg", "width": 1200},
+            {"type": "DieselGameBox", "url": ""},
+            {"url": "https://cdn.example.invalid/untyped.jpg"},
+            {"type": "DieselGameBoxLogo", "url": "https://cdn.example.invalid/logo.png"},
+        ])
+    });
+    let games = parse_list(&text).unwrap();
+    assert_eq!(
+        games[3].images,
+        [
+            Image {
+                kind: "DieselGameBoxTall".to_owned(),
+                url: "https://cdn.example.invalid/tall.jpg".to_owned(),
+            },
+            Image {
+                kind: "DieselGameBoxLogo".to_owned(),
+                url: "https://cdn.example.invalid/logo.png".to_owned(),
+            },
+        ],
+        "entries without a type or an address are skipped"
+    );
+    let text = edited(|list| list[3]["metadata"]["keyImages"] = Value::from("nope"));
+    assert_eq!(
+        parse_list(&text).unwrap_err().to_string(),
+        "Couldn't read what `legendary list --json -T` printed: [3] (AppOffline): `metadata.keyImages` is missing or isn't a list."
+    );
 }

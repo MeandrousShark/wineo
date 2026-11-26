@@ -1044,7 +1044,7 @@ pub fn check_overlap(paths: &Paths, folder: &Path) -> Result<()> {
 /// existing ancestor resolved, with the missing names after it. That is what
 /// `canonical` gives once the folder is created, so state files and the
 /// overlap check agree with it.
-fn canonical_new(folder: &Path) -> Result<PathBuf> {
+pub(crate) fn canonical_new(folder: &Path) -> Result<PathBuf> {
     if !folder.is_absolute() {
         bail!("{} isn't an absolute path.", folder.display());
     }

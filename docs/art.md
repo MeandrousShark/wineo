@@ -44,8 +44,9 @@ Import from GOG grid, is a separate cache at
 any environment's store and is safe to delete.
 
 `art/<env>/art.toml` records where each file came from: a SteamGridDB asset
-ID, a manual file with its original name, or a GOG game ID for art a GOG
-migration added. See [Config file
+ID, a manual file with its original name, a GOG game ID for art a GOG
+migration added, or an Epic game id for art an Epic install added (shown as
+`Epic, game APP`). See [Config file
 versioning](config-files.md) for its layout. A file that art.toml does not
 record, including every file when art.toml is absent, is unrecorded; `art
 fetch` never replaces it without `--replace` or `--asset`.

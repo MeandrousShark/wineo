@@ -2638,6 +2638,7 @@ fn prepare(paths: &Paths, draft: &Draft) -> Result<Review, String> {
         arch: Some(arch),
         template: template.clone(),
         gog_id: None,
+        epic_id: None,
         title: None,
     }
     .prefix_dir(paths, &global)

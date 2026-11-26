@@ -42,6 +42,21 @@ pub struct Game {
     /// The raw `partnerLinkType` attribute, naming the launcher whose
     /// account the game needs.
     pub partner_link: Option<String>,
+    /// The `OwnershipToken` attribute: the game checks a token Legendary
+    /// writes, which usually means Denuvo.
+    #[serde(default)]
+    pub ownership_token: bool,
+    /// Epic's art addresses for the game, from `metadata.keyImages`.
+    #[serde(default)]
+    pub images: Vec<Image>,
+}
+
+/// One of Epic's images for a game: its type, like `DieselGameBoxTall`, and
+/// where it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub kind: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,21 +228,24 @@ fn parse_game(game: &Value, at: &str) -> Result<Game, Error> {
             })
         })
         .collect::<Result<_, Error>>()?;
-    let attributes = match game.get("metadata") {
+    let metadata = match game.get("metadata") {
         None | Some(Value::Null) => None,
-        Some(metadata) => {
-            let metadata = metadata
+        Some(metadata) => Some(
+            metadata
                 .as_object()
-                .ok_or_else(|| mistyped(&at, "metadata", "an object"))?;
-            match metadata.get("customAttributes") {
-                None | Some(Value::Null) => None,
-                Some(attributes) => Some(
-                    attributes
-                        .as_object()
-                        .ok_or_else(|| mistyped(&at, "metadata.customAttributes", "an object"))?,
-                ),
-            }
-        }
+                .ok_or_else(|| mistyped(&at, "metadata", "an object"))?,
+        ),
+    };
+    let attributes = match metadata {
+        None => None,
+        Some(metadata) => match metadata.get("customAttributes") {
+            None | Some(Value::Null) => None,
+            Some(attributes) => Some(
+                attributes
+                    .as_object()
+                    .ok_or_else(|| mistyped(&at, "metadata.customAttributes", "an object"))?,
+            ),
+        },
     };
     let attribute = |name: &str| -> Result<Option<String>, Error> {
         let Some(entry) = attributes.and_then(|attributes| attributes.get(name)) else {
@@ -253,8 +271,38 @@ fn parse_game(game: &Value, at: &str) -> Result<Game, Error> {
             .is_some_and(|value| value.eq_ignore_ascii_case("true")),
         third_party: attribute("ThirdPartyManagedApp")?,
         partner_link: attribute("partnerLinkType")?,
+        ownership_token: attribute("OwnershipToken")?
+            .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+        images: metadata.map_or(Ok(Vec::new()), |metadata| images(metadata, &at))?,
         app_name,
     })
+}
+
+/// `metadata.keyImages`. Art is extra, so an entry without a type or an
+/// address is skipped rather than failing the list.
+fn images(metadata: &serde_json::Map<String, Value>, at: &str) -> Result<Vec<Image>, Error> {
+    let images = match metadata.get("keyImages") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(images) => images
+            .as_array()
+            .ok_or_else(|| mistyped(at, "metadata.keyImages", "a list"))?,
+    };
+    Ok(images
+        .iter()
+        .filter_map(|image| {
+            let field = |name: &str| {
+                image
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            };
+            Some(Image {
+                kind: field("type")?,
+                url: field("url")?,
+            })
+        })
+        .collect())
 }
 
 /// `asset_infos.Windows.build_version`, when there is a Windows build.

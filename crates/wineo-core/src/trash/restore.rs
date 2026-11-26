@@ -427,6 +427,22 @@ fn claim_epic(paths: &Paths, manifest: &Manifest) -> Result<Option<crate::epic::
     crate::epic::game::claim_for_restore(paths, &manifest.name, &epic_id).map(Some)
 }
 
+/// The trashed environment whose config names `epic_id`, if one does. An
+/// entry or config that can't be read names no game, as for a restore.
+pub fn epic_owner(paths: &Paths, epic_id: &str) -> Result<Option<String>> {
+    for id in super::raw_entries(paths)? {
+        let Ok(manifest) = super::manifest::read_manifest(paths, &id) else {
+            continue;
+        };
+        if let Ok(Some(config)) = return_config(paths, &manifest)
+            && config.epic_id.as_deref() == Some(epic_id)
+        {
+            return Ok(Some(manifest.name));
+        }
+    }
+    Ok(None)
+}
+
 /// Applies the rules that registering this prefix anew would: it may not
 /// nest with another environment's, and a prefix coming back from the trash
 /// may not land where another environment already points.

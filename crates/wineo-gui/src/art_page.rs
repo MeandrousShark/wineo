@@ -1375,6 +1375,10 @@ fn source_label(row: &RowData) -> String {
             source: Some(Source::Gog(game)),
             ..
         }) => format!("GOG, game {game}"),
+        Some(Resolved {
+            source: Some(Source::Epic(game)),
+            ..
+        }) => format!("Epic, game {game}"),
         Some(Resolved { .. }) => "Manual".to_owned(),
         None => "None".to_owned(),
     };

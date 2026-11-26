@@ -802,8 +802,9 @@ environment config, so adding art does not bump that config's schema.
 
 A top-level `game` holds the SteamGridDB game ID once picked. Each kind is a
 table with `file`, the stored file name, and exactly one source key:
-`steamgriddb` with the asset ID, `manual` with the original file name, or
-`gog` with the GOG game ID the art came from.
+`steamgriddb` with the asset ID, `manual` with the original file name,
+`gog` with the GOG game ID the art came from, or `epic` with the Epic game
+id.
 Target overrides live in the same file as `[targets.<target>.<kind>]` with
 the same fields, so the game ID is shared across the environment and its
 targets:

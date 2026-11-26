@@ -46,6 +46,9 @@ pub struct CreateRequest {
     /// The GOG game the environment runs, written with the rest of its first
     /// config.
     pub gog_id: Option<String>,
+    /// The Epic game the environment runs, written with the rest of its
+    /// first config.
+    pub epic_id: Option<String>,
 }
 
 /// Resolved creation choices, without locks or filesystem changes.
@@ -248,6 +251,7 @@ pub fn plan(paths: &Paths, request: CreateRequest) -> anyhow::Result<CreatePlan>
         arch,
         template,
         gog_id: request.gog_id,
+        epic_id: request.epic_id,
         title: request
             .title
             .as_deref()

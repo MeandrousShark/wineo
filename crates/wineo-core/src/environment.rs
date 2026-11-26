@@ -338,9 +338,42 @@ pub struct NewEnvironment {
     pub template: Option<Template>,
     /// The GOG game it runs, recorded in the same write as the rest.
     pub gog_id: Option<String>,
+    /// The Epic game it runs, recorded in the same write as the rest.
+    pub epic_id: Option<String>,
     /// The person's own title for the card, written as the `title` key. None
     /// writes no key.
     pub title: Option<String>,
+}
+
+/// A new Wine or Proton environment's first config.
+fn first_document(
+    prefix: &str,
+    runner: &Runner,
+    arch: Arch,
+    new: &NewEnvironment,
+    title: Option<String>,
+) -> DocumentMut {
+    let mut doc = config::new_document();
+    doc["prefix"] = value(prefix);
+    doc["runner"] = value(runner.selection());
+    doc["arch"] = value(arch.as_str());
+    if let Some(template) = &new.template {
+        template.apply(&mut doc);
+    }
+    if let Some(gog_id) = &new.gog_id {
+        doc["gog_id"] = value(gog_id.as_str());
+    }
+    if let Some(epic_id) = &new.epic_id {
+        doc["epic_id"] = value(epic_id.as_str());
+        // Some protonfixes branch on the store; Wine reads nothing here.
+        if runner.is_proton() {
+            doc["store"] = value("egs");
+        }
+    }
+    if let Some(title) = title {
+        doc["title"] = value(title);
+    }
+    doc
 }
 
 impl NewEnvironment {
@@ -520,19 +553,7 @@ impl Environment {
         };
 
         // A finished prefix is kept even if this write fails, so a retry adopts it.
-        let mut doc = config::new_document();
-        doc["prefix"] = value(prefix_value);
-        doc["runner"] = value(runner.selection());
-        doc["arch"] = value(arch.as_str());
-        if let Some(template) = &new.template {
-            template.apply(&mut doc);
-        }
-        if let Some(gog_id) = &new.gog_id {
-            doc["gog_id"] = value(gog_id.as_str());
-        }
-        if let Some(title) = title {
-            doc["title"] = value(title);
-        }
+        let doc = first_document(&prefix_value, runner, arch, new, title);
         let _guard = Locks::new(paths).config(&path)?;
         let _build_guards = build_lock::config(
             paths,

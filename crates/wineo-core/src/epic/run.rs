@@ -2,7 +2,8 @@
 //! process group, nothing on stdin, both pipes drained, a time limit, and
 //! a cancel that interrupts the whole group.
 
-use std::io::Read;
+use std::collections::{BTreeSet, VecDeque};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -154,6 +155,161 @@ pub(crate) fn run(
         )));
     }
     Ok(output)
+}
+
+/// How many of a long command's last stderr lines are kept for its errors
+/// and checks.
+const TAIL_LINES: usize = 2000;
+
+/// What a long command printed on stderr, as far as it is kept.
+#[derive(Debug, Default)]
+pub(crate) struct Streamed {
+    /// Its last lines, oldest first.
+    pub tail: Vec<String>,
+}
+
+/// Runs `command` until it exits, with no time limit, handing each stderr
+/// line to `line` as it comes and calling `tick` about every `POLL`. A
+/// cancel interrupts the whole group, as Legendary's own Ctrl+C handling
+/// expects, and kills what is left five seconds later. The shared memory
+/// the group's processes hold while it stops is noted from `/proc`, and once
+/// the group is gone whatever of it is left is removed: only those
+/// segments, never others by their names. An exit code that isn't 0 is an
+/// error; 0 proves nothing.
+pub(crate) fn stream(
+    mut command: Command,
+    label: &str,
+    token: &Token,
+    mut line: impl FnMut(&str),
+    mut tick: impl FnMut(),
+) -> Result<Streamed, Error> {
+    let failed = |detail: String| Error::Failed {
+        command: label.to_owned(),
+        detail,
+    };
+    if token.is_canceled() {
+        return Err(crate::Error::Canceled("legendary").into());
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| failed(format!("couldn't start it: {error}")))?;
+    let stdout = drain(
+        child.stdout.take().expect("stdout is piped"),
+        64 * 1024,
+        true,
+    );
+    let lines = lines(child.stderr.take().expect("stderr is piped"));
+    let mut tail = VecDeque::new();
+    let mut take = |text: String, line: &mut dyn FnMut(&str)| {
+        line(&text);
+        if tail.len() == TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(text);
+    };
+    let group = child.id();
+    let mut noted = BTreeSet::new();
+    let mut escalation = Escalation::new(STOP_GRACE, None);
+    let stopped = process::stop_group(
+        &child,
+        Signal::INT,
+        &mut escalation,
+        token,
+        Some(POLL),
+        |_| {
+            while let Ok(text) = lines.try_recv() {
+                take(text, &mut line);
+            }
+            // Looked at on every round while stopping, so the last look comes
+            // just before the kill.
+            if token.is_canceled() {
+                noted.extend(super::shm::held_by_group(group));
+            }
+            tick();
+            Ok::<(), ()>(())
+        },
+    );
+    let ended = match stopped {
+        Ok(Ok(Ended::Exited)) => {
+            // Anything it left behind in its group would hold the pipe open.
+            let _ = process::signal_led_group(&child, Signal::KILL);
+            Ok(())
+        }
+        Ok(Ok(Ended::Stopped | Ended::Unconfirmed)) => {
+            Err(Error::from(crate::Error::Canceled("legendary")))
+        }
+        Ok(Err(((), _))) => unreachable!("the tick never fails"),
+        Err(error) => Err(failed(format!("couldn't wait for it: {error}"))),
+    };
+    if let Err(error) = ended {
+        process::kill_and_reap(&mut child);
+        let _ = stdout.wait();
+        if !noted.is_empty() {
+            super::shm::remove(&noted);
+        }
+        return Err(error);
+    }
+    let status = child
+        .wait()
+        .map_err(|error| failed(format!("couldn't wait for it: {error}")))?;
+    // The rest of what it printed, up to the cleanup bound.
+    let deadline = Instant::now() + process::CLEANUP_BOUND;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match lines.recv_timeout(left) {
+            Ok(text) => take(text, &mut line),
+            Err(_) => break,
+        }
+    }
+    let _ = stdout.wait();
+    let tail: Vec<String> = tail.into_iter().collect();
+    if !status.success() {
+        let code = match (status.code(), status.signal()) {
+            (Some(code), _) => format!("exit code {code}"),
+            (None, Some(signal)) => format!("killed by signal {signal}"),
+            (None, None) => status.to_string(),
+        };
+        return Err(failed(match last_line(&tail.join("\n")) {
+            Some(line) => format!("{code}: {line}"),
+            None => code,
+        }));
+    }
+    Ok(Streamed { tail })
+}
+
+/// A pipe's lines, read on a thread of its own and sent as they come. Bytes
+/// that aren't UTF-8 are replaced, and a line longer than 64 KiB is cut.
+fn lines(pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader
+                .by_ref()
+                .take(64 * 1024)
+                .read_until(b'\n', &mut buffer)
+            {
+                Ok(0) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&buffer);
+                    let text = text.trim_end_matches(['\n', '\r']).to_owned();
+                    if sender.send(text).is_err() {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    });
+    receiver
 }
 
 /// The last line of `text` that says anything, made fit for one line of
