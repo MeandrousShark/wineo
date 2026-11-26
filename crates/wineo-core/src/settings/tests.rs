@@ -1199,6 +1199,25 @@ fn apply_keeps_a_failed_write_in_failed() {
     assert_eq!(applied.changed_runner, None);
 }
 
+#[test]
+fn epic_id_can_be_neither_set_nor_unset_by_an_edit() {
+    let text = "# mine\nepic_id = \"AppOffline\"\n";
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert_eq!(
+        edit::set(&mut doc, Scope::Environment, "epic_id", "Other")
+            .unwrap_err()
+            .to_string(),
+        "epic_id is set by wineo import epic."
+    );
+    assert_eq!(
+        edit::unset(&mut doc, Scope::Environment, "epic_id")
+            .unwrap_err()
+            .to_string(),
+        "epic_id is set by wineo import epic."
+    );
+    assert_eq!(doc.to_string(), text);
+}
+
 mod gog_id {
     use super::*;
     use crate::gog::folder::{

@@ -104,6 +104,11 @@ pub fn apply(
     {
         return Err(edit::read_only_gog_id().into());
     }
+    if let ConfigFile::Environment(_) = file
+        && (pairs.iter().any(|(key, _)| *key == "epic_id") || unset.contains(&"epic_id"))
+    {
+        return Err(edit::read_only_epic_id().into());
+    }
 
     // Pointing an environment somewhere else has to exclude whatever is using
     // either prefix, so a removal can't delete one this is about to adopt. A
