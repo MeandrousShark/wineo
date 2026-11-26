@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 use wineo_core::config::GlobalConfig;
+use wineo_core::epic::account::Status;
 use wineo_core::epic::legendary::Missing;
 use wineo_core::epic::owned::{self, Game, Owned};
 use wineo_core::epic::{self, Error};
@@ -121,9 +122,9 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
 }
 
 /// What a listing would show, from the saved list alone: a dry run never
-/// asks Epic or rewrites the saved list. Legendary is still looked up, so
-/// an unusable setting is an error here as everywhere else. None when
-/// there is no saved list, after saying so.
+/// asks Epic or rewrites the saved list. Legendary is still looked up and
+/// asked offline who is logged in, so a dry run fails where the real one
+/// would. None when there is no saved list, after saying so.
 fn dry_run(
     paths: &Paths,
     global: &GlobalConfig,
@@ -131,7 +132,24 @@ fn dry_run(
     warnings: &mut Vec<String>,
 ) -> anyhow::Result<Option<Owned>> {
     let found = setup::find(paths, global)?;
-    let Some(owned) = owned::cached(paths) else {
+    let account = match &found {
+        Found::Usable(legendary) => {
+            let cancellation = Cancellation::new()?;
+            let status = epic::account::status(legendary, &cancellation.token);
+            match cancellation.result(status.map_err(anyhow::Error::from))? {
+                Status::LoggedIn { account } => Some(account),
+                Status::LoggedOut => return Err(Error::LoggedOut.into()),
+            }
+        }
+        Found::Unusable { .. } => None,
+    };
+    // A list saved for another account is none, as for a real run.
+    let saved = owned::cached(paths).filter(|owned| {
+        account
+            .as_ref()
+            .is_none_or(|account| owned.account == *account)
+    });
+    let Some(owned) = saved else {
         match found {
             Found::Usable(_) => eprintln!("Dry run, so the owned Epic games weren't fetched."),
             Found::Unusable {

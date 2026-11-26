@@ -1015,3 +1015,58 @@ fn a_dry_run_over_a_fresh_saved_list_shows_it_without_a_warning() {
     assert_eq!(epic.list_calls(), 1);
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn a_dry_run_while_logged_out_fails_like_the_real_one() {
+    let epic = Epic::new();
+    saved_list(&epic);
+    epic.on_path(&Fake::default());
+    // As when Epic refuses the login and Legendary drops it, leaving the
+    // saved list behind.
+    fs::remove_file(epic.state().join("user.json")).unwrap();
+    for args in [
+        ["import", "epic", "--list"].as_slice(),
+        &["import", "epic", "--list", "--dry-run"],
+        &[
+            "import",
+            "epic",
+            "--list",
+            "--refresh",
+            "--dry-run",
+            "--json",
+        ],
+    ] {
+        let output = epic.run(args);
+        assert_fails_with(&output, LOGGED_OUT);
+        assert_eq!(stdout(&output), "", "{args:?}");
+    }
+
+    let fresh = Epic::new();
+    fresh.on_path(&Fake::default());
+    let output = fresh.run(&["import", "epic", "--list", "--dry-run"]);
+    assert_fails_with(&output, LOGGED_OUT);
+    assert_eq!(epic.list_calls(), 1, "only the listing that saved it");
+    assert_eq!(fresh.list_calls(), 0);
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+    assert_eq!(fresh.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn a_dry_run_ignores_a_list_saved_for_another_account() {
+    let epic = Epic::new();
+    saved_list(&epic);
+    epic.on_path(&Fake::default());
+    let mut cache: Value =
+        serde_json::from_str(&fs::read_to_string(epic.cache()).unwrap()).unwrap();
+    cache["account"] = json!("Someone Else");
+    fs::write(epic.cache(), serde_json::to_string(&cache).unwrap()).unwrap();
+    let output = epic.run(&["import", "epic", "--list", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "Dry run, so the owned Epic games weren't fetched.\n"
+    );
+    assert_eq!(epic.list_calls(), 1);
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
