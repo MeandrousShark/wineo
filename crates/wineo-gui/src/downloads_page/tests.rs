@@ -11,6 +11,8 @@ use wineo_core::components::Component;
 use wineo_core::download::{Asset, Client, Transport, UpstreamRelease, select_asset};
 use wineo_core::paths::Paths;
 
+mod update;
+
 fn fixture() -> (tempfile::TempDir, App) {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().to_owned();
