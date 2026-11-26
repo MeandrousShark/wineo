@@ -97,6 +97,9 @@ pub enum InstallError {
     Trashed { app: String, name: String },
     #[error("Forgetting Epic game {app} needs Legendary, to drop its own record of it.")]
     NeedsLegendary { app: String },
+    /// Another install of the game holds its folder now.
+    #[error("Another install of {title} is running. Try again once it's done.")]
+    Running { title: String },
 }
 
 /// What to install, and how.
@@ -655,7 +658,8 @@ pub fn apply(
     let app = plan.app_name.as_str();
     let folder = plan.folder.as_path();
     let never = || token.is_canceled();
-    let _in_use = game::lock_for(paths, folder, &plan.environment, Work::Install)?;
+    let _in_use = game::lock_for(paths, folder, &plan.environment, Work::Install)
+        .map_err(|error| another_install(paths, plan, error))?;
     {
         let lock = RecordLock::exclusive(paths, app, &never).map_err(|error| {
             match error.downcast_ref::<GameError>() {
@@ -1319,6 +1323,20 @@ pub fn is_cancel(error: &anyhow::Error) -> bool {
             error.downcast_ref::<crate::Error>(),
             Some(crate::Error::Canceled(_))
         )
+}
+
+/// The folder held while the game's record has an install mark is another
+/// install under way, not one left to finish.
+fn another_install(paths: &Paths, plan: &Plan, error: anyhow::Error) -> anyhow::Error {
+    if matches!(error.downcast_ref(), Some(GameError::InUse { .. }))
+        && left_unfinished(paths, &plan.app_name)
+    {
+        return InstallError::Running {
+            title: plan.title.clone(),
+        }
+        .into();
+    }
+    error
 }
 
 /// Whether it stopped after the mark was written, so it is there to finish.

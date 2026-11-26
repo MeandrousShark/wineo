@@ -526,7 +526,8 @@ fn two_installs_of_one_game_at_once_install_it_once() {
     assert_ok(&won);
     assert_code(&lost, 1);
     // It found the first's mark and would finish that install, but the
-    // first holds the folder.
+    // first holds the folder, so it says that one is still going rather
+    // than how to finish it.
     assert!(
         stdout(&lost).starts_with("Finish the interrupted install of Offline Game (AppOffline)\n"),
         "{}",
@@ -534,8 +535,7 @@ fn two_installs_of_one_game_at_once_install_it_once() {
     );
     assert_eq!(
         stderr(&lost),
-        "error: Something else is using offline-game's game folder. Try again once it's done.\n\
-         Finish the interrupted install with: wineo import epic --game AppOffline\n"
+        "error: Another install of Offline Game is running. Try again once it's done.\n"
     );
     assert_eq!(epic.install_calls().len(), 1);
     let environments: Vec<_> = fs::read_dir(epic.f.config_dir().join("environments"))

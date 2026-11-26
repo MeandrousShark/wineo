@@ -118,6 +118,10 @@ pub(super) fn one(paths: &Paths, args: &Args, app: &str) -> anyhow::Result<ExitC
             Ok(ExitCode::SUCCESS)
         }
         Err(error) if install::is_cancel(&error) => Ok(canceled(paths, app)),
+        // The mark there is the other install's, which is still going.
+        Err(error) if matches!(error.downcast_ref(), Some(InstallError::Running { .. })) => {
+            Err(error)
+        }
         Err(error) if install::left_unfinished(paths, app) => {
             eprintln!("{}", style::error_stderr(format!("error: {error:#}")));
             say_finish(app);
