@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 use wineo_core::config::GlobalConfig;
+use wineo_core::epic::legendary::Missing;
 use wineo_core::epic::owned::{self, Game, Owned};
 use wineo_core::epic::{self, Error};
 use wineo_core::paths::Paths;
@@ -76,28 +77,10 @@ fn state(game: &Game) -> (State, Option<Reason>) {
 pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let global = GlobalConfig::load(paths)?;
     let mut warnings = Vec::new();
-    let owned = if args.refresh && args.dry_run {
-        // Looked up first, so an unusable setting is an error here as on
-        // every other path.
-        let found = setup::find(paths, &global)?;
-        // A refresh rewrites the cache, which a dry run doesn't.
-        match owned::cached(paths) {
-            Some(owned) => {
-                warnings.push("Dry run, so the list wasn't refreshed.".to_owned());
-                owned
-            }
-            None => {
-                match found {
-                    Found::Unusable {
-                        missing: Some(missing),
-                    } => setup::say_dry_run(&missing),
-                    Found::Unusable { missing: None } => return Err(Error::Python.into()),
-                    Found::Usable(_) => {
-                        eprintln!("Dry run, so the owned Epic games weren't fetched.");
-                    }
-                }
-                return Ok(ExitCode::SUCCESS);
-            }
+    let owned = if args.dry_run {
+        match dry_run(paths, &global, args, &mut warnings)? {
+            Some(owned) => owned,
+            None => return Ok(ExitCode::SUCCESS),
         }
     } else if args.refresh {
         let legendary = setup::obtain(paths, &global, args)?.expect("only a dry run stops");
@@ -108,16 +91,9 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             Found::Usable(legendary) => load(&legendary, false)?,
             Found::Unusable { missing } => {
                 let Some(owned) = owned::cached(paths) else {
-                    return Err(match missing {
-                        Some(_) => Error::LoggedOut,
-                        None => Error::Python,
-                    }
-                    .into());
+                    return Err(not_listed(missing.as_ref()).into());
                 };
-                warnings.push(match missing {
-                    Some(_) => "Legendary isn't installed, so this is the saved list.".to_owned(),
-                    None => format!("{} This is the saved list.", Error::Python),
-                });
+                warnings.push(saved_list_warning(missing.as_ref()));
                 owned
             }
         }
@@ -142,6 +118,56 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         print_table(&games);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What a listing would show, from the saved list alone: a dry run never
+/// asks Epic or rewrites the saved list. Legendary is still looked up, so
+/// an unusable setting is an error here as everywhere else. None when
+/// there is no saved list, after saying so.
+fn dry_run(
+    paths: &Paths,
+    global: &GlobalConfig,
+    args: &Args,
+    warnings: &mut Vec<String>,
+) -> anyhow::Result<Option<Owned>> {
+    let found = setup::find(paths, global)?;
+    let Some(owned) = owned::cached(paths) else {
+        match found {
+            Found::Usable(_) => eprintln!("Dry run, so the owned Epic games weren't fetched."),
+            Found::Unusable {
+                missing: Some(missing),
+            } if args.refresh => setup::say_dry_run(&missing),
+            Found::Unusable { missing } => return Err(not_listed(missing.as_ref()).into()),
+        }
+        return Ok(None);
+    };
+    // Said only where a real run would have fetched the list again.
+    let not_refreshed = "Dry run, so the list wasn't refreshed.".to_owned();
+    match found {
+        Found::Usable(_) if args.refresh || !owned::cache_is_fresh(paths) => {
+            warnings.push(not_refreshed);
+        }
+        Found::Usable(_) => {}
+        Found::Unusable { .. } if args.refresh => warnings.push(not_refreshed),
+        Found::Unusable { missing } => warnings.push(saved_list_warning(missing.as_ref())),
+    }
+    Ok(Some(owned))
+}
+
+/// Why there is no list to show when no Legendary can be run.
+fn not_listed(missing: Option<&Missing>) -> Error {
+    match missing {
+        Some(_) => Error::LoggedOut,
+        None => Error::Python,
+    }
+}
+
+/// The warning over a saved list shown because no Legendary can be run.
+fn saved_list_warning(missing: Option<&Missing>) -> String {
+    match missing {
+        Some(_) => "Legendary isn't installed, so this is the saved list.".to_owned(),
+        None => format!("{} This is the saved list.", Error::Python),
+    }
 }
 
 fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> anyhow::Result<Owned> {

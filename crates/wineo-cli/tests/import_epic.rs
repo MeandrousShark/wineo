@@ -964,3 +964,54 @@ fn a_relative_legendary_setting_is_saved_resolved() {
     );
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+/// Makes the saved list older than the hour a listing trusts it for.
+fn age_saved_list(epic: &Epic) {
+    let mut cache: Value =
+        serde_json::from_str(&fs::read_to_string(epic.cache()).unwrap()).unwrap();
+    cache["fetched_at"] = json!(0);
+    fs::write(epic.cache(), serde_json::to_string(&cache).unwrap()).unwrap();
+}
+
+#[test]
+fn a_dry_run_never_fetches_or_rewrites_a_stale_saved_list() {
+    let epic = Epic::new();
+    let games = saved_list(&epic);
+    epic.on_path(&Fake::default());
+    age_saved_list(&epic);
+    let saved = fs::read(epic.cache()).unwrap();
+    let warning = "Dry run, so the list wasn't refreshed.";
+    for args in [
+        ["import", "epic", "--dry-run"].as_slice(),
+        &["import", "epic", "--list", "--dry-run"],
+    ] {
+        let output = epic.run(args);
+        assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+        assert!(stdout(&output).contains("Offline Game"), "{args:?}");
+        assert_eq!(stderr(&output), format!("warning: {warning}\n"), "{args:?}");
+    }
+    let output = epic.run(&["import", "epic", "--list", "--dry-run", "--json"]);
+    assert_eq!(
+        json_out(&output),
+        json!({"games": games, "errors": [], "warnings": [warning]})
+    );
+    assert_eq!(epic.list_calls(), 1, "only the listing that saved it");
+    assert_eq!(fs::read(epic.cache()).unwrap(), saved);
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn a_dry_run_over_a_fresh_saved_list_shows_it_without_a_warning() {
+    let epic = Epic::new();
+    let games = saved_list(&epic);
+    epic.on_path(&Fake::default());
+    let output = epic.run(&["import", "epic", "--list", "--dry-run", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        json_out(&output),
+        json!({"games": games, "errors": [], "warnings": []})
+    );
+    assert_eq!(epic.list_calls(), 1);
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
