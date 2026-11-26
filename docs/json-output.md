@@ -345,12 +345,17 @@ exits 1 with a diagnostic on stderr and no JSON.
 }
 ```
 
-`state` is `not_installed` or `unavailable`. `reason` is `null`, or for an
-unavailable game `third_party` (another launcher manages it),
-`needs_linking` (it needs an account at another launcher), or
-`no_windows_build`. `environment`, `version`, and `update` are `null` and
-`dlc` is `[]` for a game that isn't installed. `warnings` holds the same
-lines as stderr, like a list that couldn't be refreshed. A command that
+`state` is `not_installed`, `installed`, `unfinished`, `downloaded`, or
+`unavailable`. `reason` is `null`, or for an unavailable game
+`third_party` (another launcher manages it), `needs_linking` (it needs an
+account at another launcher), or `no_windows_build`. `environment` is the
+environment that owns the game, and `version` its installed version, both
+`null` when there's none. `dlc` lists the installed DLC as `{"id",
+"title", "state": "installed"}`, and is `[]` for a game that isn't
+installed. `update` is `null` for now. `warnings` holds the same lines as
+stderr, like a list that couldn't be refreshed. `errors` lists records
+wineo couldn't read, each as `{"name", "id", "message"}`, and the command
+exits 1 when there are any, as `import gog --list` does. A command that
 fails prints no JSON. Epic ids are strings.
 
 ## Runner and component updates

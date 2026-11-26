@@ -255,8 +255,8 @@ wineo manpages ~/.local/share/man/man1
 - **GOG games.** Log in and install the [GOG games](docs/gog.md) you own,
   native or Windows, or move the ones Heroic installed into wineo, then keep
   them and their DLC up to date. No GOG Galaxy client needed.
-- **Epic games.** Log in to Epic and list the [Epic games](docs/epic.md)
-  you own, through Legendary.
+- **Epic games.** Log in to Epic, list the [Epic games](docs/epic.md) you
+  own, and install them into Wine or Proton environments, through Legendary.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.

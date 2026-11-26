@@ -35,8 +35,10 @@ and fixing; warnings alone exit 0. See [Validate](validate.md).
 `import gog --list` and `update --check` print what they could check and
 exit 1 if any game couldn't be. `import epic --list` exits 0 when it shows
 the saved list with a warning, and 1 when it can't show a list, you aren't
-logged in, or `[epic] legendary` can't be used. Answering no to
-downloading Legendary exits 130.
+logged in, `[epic] legendary` can't be used, or a record of an installed
+game can't be read. Answering no to downloading Legendary or to an install
+exits 130, and so does Ctrl+C during an install, which keeps what was
+downloaded for the same command to resume.
 
 `runners update` updates every family it can and exits 1 if any family
 couldn't be checked or downloaded, after a summary; `dxvk update` and

@@ -33,7 +33,9 @@ finished. Restore claims the folder back, and refuses if another
 environment owns it by then.
 
 Removing an Epic game's environment leaves the game's files and wineo's and
-Legendary's records alone. Restore refuses while another environment has
+Legendary's records alone. A game that's mid-install, mid-update, or
+mid-repair is refused, naming the command that finishes it, unless you pass
+`--force`. Restore refuses while another environment has
 the same `epic_id`, naming it, and the entry stays in the trash.
 
 `rm` prints the entry ID along with the commands to restore or prune it.
