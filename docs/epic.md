@@ -81,8 +81,8 @@ Harbor   Harbor Tactics  unavailable: needs an account at another launcher
 files are whole but no environment owns them, like one whose environment
 is in the trash), or `unavailable`, with the reason: `another launcher
 manages it`, `needs an account at another launcher`, or `no Windows build`.
-Once wineo has installed one, the table adds ENVIRONMENT and VERSION
-columns. An empty library prints `You don't own any Epic games.`
+Once wineo has a record of a listed game, installed or not, the table
+adds ENVIRONMENT and VERSION columns. An empty library prints `You don't own any Epic games.`
 
 The list is cached for an hour; `--refresh` asks Epic again. If Epic
 can't send it, the saved list stands in with a warning. Plain `--list`
@@ -104,6 +104,7 @@ Install Kestrel Rally (Kestrel)
   dlc          Kestrel Rally Night Tracks
   download     12.4 GiB plus 1 DLC
   installed    18.0 GiB plus 1 DLC
+Esc or Ctrl+C to cancel.
 Install it? [Y/n]:
 Downloading 1 of 2: Kestrel Rally
 Downloading 1 of 2: 37%
@@ -119,7 +120,10 @@ the environment's runner, and a Proton environment gets `store = "egs"`.
 The game and each DLC you own are separate runs, each checked against
 Legendary's records when it ends. A DLC that fails is a warning, and the
 game installs without it. The environment is created last, with
-`epic_id` set to the game's id. `--yes` skips the questions, and is needed
+`epic_id` set to the game's id and a target for the program Legendary
+names. When that program isn't inside the game folder, the environment
+gets no target, and wineo says to pick one with `wineo setup NAME`.
+`--yes` skips the questions, and is needed
 without a terminal. `--dry-run` shows the review and installs nothing.
 
 The review warns about what may keep a game from running: Easy

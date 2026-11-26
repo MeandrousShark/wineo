@@ -354,8 +354,10 @@ environment that owns the game, and `version` its installed version, both
 "title", "state": "installed"}`, and is `[]` for a game that isn't
 installed. `update` is `null` for now. `warnings` holds the same lines as
 stderr, like a list that couldn't be refreshed. `errors` lists records
-wineo couldn't read, each as `{"name", "id", "message"}`, and the command
-exits 1 when there are any, as `import gog --list` does. A command that
+wineo couldn't read, each as `{"name", "id", "message"}` with `name` and
+`id` `null`, since an unreadable record can't say which game it's for;
+`message` names its file. The command exits 1 when there are any, as
+`import gog --list` does. A command that
 fails prints no JSON. Epic ids are strings.
 
 ## Runner and component updates
