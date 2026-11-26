@@ -31,6 +31,9 @@ the rows below have the details.
 2. Update installed runners: `wineo runners update` and an Update all
    button get the newest build of everything already downloaded in one
    step (plan 0074). Ships with plan 0073 in 1.11.0.
+3. Localization: wineo in more than one language, Pirate English first,
+   in two parts: the desktop app in 1.12.0, the terminal in 1.13.0
+   (plan 0075).
 
 itch.io and Amazon Games come after, one store per plan.
 
@@ -99,6 +102,10 @@ the first 1.x releases from 1.0 on:
 | Use Heroic's native file list | Compatibility | **4** | 0049 | Know which files a migrated native GOG game shipped before its first update | Left out of plan 0049. heroic-gogdl keeps `.gogdl-linux-manifest` (each file's name, size, CRC32, and whether it's a symlink) in the game folder. Importing it, checked against the folder, would give a migrated game winning files at once, so its first update could tell your changes from GOG's. Until then the first rebuild overwrites and lists files that differ. |
 | Achievements | UX | **4** | 0052, emulated games | Earn and see achievements for GOG and emulated games outside Steam | Parked by the maintainer (2026-10-14): GOG through comet and RetroAchievements. Details in the [sketch](sketches/achievements.md). |
 | Controller fullscreen mode | UX | **4** | 0066 | A whole controller-first mode for the couch, like Playnite's Fullscreen or Steam's Big Picture | Beyond plan 0066's coverflow picker: every page reachable from a gamepad. From the Playnite comparison (2026-10-14). Plan 0066 drives only the Library from a pad. Its acceptance (2026-11-14) found the expected way in: Left from the first column moves into the sidebar, Up and Down pick a page, A opens it, and Right or B comes back, which needs every page to answer B so a pad is never stranded (maintainer: full controller support later, partial for now). |
+| Shakespearean English | UX | **4** | 0075 | A second silly English for the desktop app and terminal | From the maintainer (2026-11-24): the next language after Pirate English, before Ancient Egyptian and German. Uses plan 0075's catalogs. Priority set by the primary session; the maintainer may move it. |
+| Ancient Egyptian | UX | **4** | 0075 | wineo in hieroglyphs | From the maintainer (2026-11-24), after Shakespearean English. Needs a font with the hieroglyph block (Noto Sans Egyptian Hieroglyphs exists) and a look at right-to-left and column layouts. Priority set by the primary session; the maintainer may move it. |
+| German | UX | **4** | 0075, core structured errors | The first real language, which the maintainer can read | From the maintainer (2026-11-24), after the silly ones. Its plan decides whether `WINEO_LANGUAGE` becomes a promised name (plan 0075, Q9), and it needs core structured errors first. Priority set by the primary session; the maintainer may move it. |
+| Core structured errors | Core | **4** | 0075 | Core returns errors that each front end phrases in its own language | Plan 0075 keeps core's errors English and wraps them. A real language needs core to hand back what went wrong, not a sentence, so the CLI and the desktop app can word it. Comes before German. Priority set by the primary session; the maintainer may move it. |
 
 ## 1.0
 
