@@ -323,6 +323,8 @@ fn a_saved_list_missing_fields_still_reads_and_without_a_time_is_stale() {
                 can_run_offline: false,
                 third_party: None,
                 partner_link: None,
+                ownership_token: false,
+                images: Vec::new(),
             },
             Game {
                 app_name: "AppDlc".to_owned(),
@@ -336,6 +338,8 @@ fn a_saved_list_missing_fields_still_reads_and_without_a_time_is_stale() {
                 can_run_offline: false,
                 third_party: None,
                 partner_link: None,
+                ownership_token: false,
+                images: Vec::new(),
             },
         ]
     );
