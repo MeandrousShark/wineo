@@ -3,17 +3,23 @@
 ## Download a runner or graphics component
 
 ```sh
-wineo download
-wineo download ge-proton --list
-wineo download ge-proton
-wineo download proton-cachyos
-wineo download dxvk
-wineo download vkd3d
+wineo runners download
+wineo runners download ge-proton --list
+wineo runners download ge-proton
+wineo runners download proton-cachyos
+wineo dxvk download
+wineo vkd3d download
 ```
 
-The guided command offers providers and releases. A provider without a version
-selects its latest supported stable upstream release. Use `--version <tag>` for
+Runners download under `wineo runners`, and DXVK and vkd3d-proton under their
+own commands. The guided `wineo runners download` offers providers and
+releases. A download without a version selects the latest supported stable
+upstream release. Use `--version <tag>` for
 an exact release and `--list --page 2` for older releases.
+
+`wineo download PROVIDER`, the old spelling, keeps working until 2.0 and
+warns with the new one, like `warning: download is deprecated; use runners
+download`.
 
 Downloads support Linux x86_64. CachyOS selection uses its baseline SLR build.
 wineo verifies published checksums before extraction and installs each build in
@@ -33,8 +39,9 @@ wineo runners update --check
 
 Gets the newest release of every family you already have a build of:
 GE-Proton, Proton-CachyOS, DXVK, and vkd3d-proton. Name one or more
-families to update only those. It doesn't ask first, and a run can
-download about 1 GiB.
+families to update only those; `wineo dxvk update` and `wineo vkd3d
+update` do the same for one family, with `--check` and `--json` alike. It
+doesn't ask first, and a run can download about 1 GiB.
 
 ```
 $ wineo runners update
@@ -293,7 +300,7 @@ With a Wine runner, Heroic's DXVK and vkd3d-proton toggles become
 `dxvk = "latest"` and `vkd3d = "latest"`. Proton bundles its own, so Proton
 imports leave them out. When no local build exists, guided imports offer to
 download the latest release. Noninteractive imports stop and name the
-`wineo download` command to run.
+download command to run.
 
 With a SteamGridDB key, the guided review has an `art` row that fetches art
 searching the Heroic title, and the fully specified flow fetches it with

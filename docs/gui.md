@@ -760,7 +760,7 @@ the file, the same as the CLI.
 
 **Download...** picks a provider and a release, newest stable first, with
 **Load more** for older ones, then **Install** downloads it with progress
-and **Cancel**, like `wineo download`. A canceled download leaves nothing
+and **Cancel**, like `wineo runners download`. A canceled download leaves nothing
 behind; one canceled after it finished installing stays installed.
 
 Downloads and deletes keep running when you switch sections, with a spinner
