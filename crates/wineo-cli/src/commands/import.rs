@@ -33,7 +33,7 @@ enum Source {
     Steam(import_steam::Args),
     /// Log in to GOG, list your games, install them, or migrate the ones Heroic installed
     Gog(import_gog::Args),
-    /// Log in to Epic and list your games
+    /// Log in to Epic, list your games, and install them
     Epic(import_epic::Args),
     /// Import emulated games from a folder of ROMs, or one game's file
     Roms(import_roms::Args),
