@@ -396,6 +396,27 @@ pub fn owners(paths: &Paths, app_name: &str) -> Result<Vec<String>> {
     Ok(owners)
 }
 
+/// Whether `name`'s config could name an Epic game, so the records have to
+/// be readable for it. As GOG's `may_track_game`: only a config that reads
+/// as TOML without `epic_id` can't.
+pub fn may_own_game(paths: &Paths, name: &str) -> bool {
+    match fs::read_to_string(paths.environment_config(name)) {
+        Ok(text) => text
+            .parse::<toml_edit::DocumentMut>()
+            .map_or(true, |doc| doc.get("epic_id").is_some()),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    }
+}
+
+/// Whether `name`'s config reads as TOML with `epic_id`, whether or not it
+/// is a valid config: evidence that an Epic game exists.
+pub fn names_epic_id(paths: &Paths, name: &str) -> bool {
+    fs::read_to_string(paths.environment_config(name))
+        .ok()
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        .is_some_and(|doc| doc.get("epic_id").is_some())
+}
+
 /// An environment's `epic_id`, if its config can be read.
 pub fn epic_id_of(paths: &Paths, name: &str) -> Option<String> {
     let path = paths.environment_config(name);

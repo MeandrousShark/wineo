@@ -972,11 +972,14 @@ fn check_epic(
         .filter_map(|name| Some((name.as_str(), game::epic_id_of(paths, name)?)))
         .collect();
     let wanted = |app: &str| selected.is_none_or(|name| ids.get(name).is_some_and(|id| id == app));
-    let selected_has_game = selected.is_none_or(|name| ids.contains_key(name));
+    // A config that can't be read could still name a game, as for GOG.
+    let selected_has_game = selected.is_none_or(|name| game::may_own_game(paths, name));
+    let mut any_record = false;
 
     let mut records = BTreeMap::new();
     match game::list(paths) {
         Ok(listed) => {
+            any_record = !listed.is_empty();
             for (_, record) in listed {
                 match record {
                     Ok(record) => {
@@ -1079,18 +1082,18 @@ fn check_epic(
                     "{who} is in {folder}, but Legendary has it in {}.",
                     path.display()
                 )),
-                (_, Some(version))
-                    if record
-                        .installed_version
-                        .as_ref()
-                        .is_some_and(|recorded| recorded != version) =>
-                {
-                    Some(format!(
-                        "{who} is version {}, but Legendary has {version}.",
-                        record.installed_version.as_deref().unwrap_or_default()
-                    ))
-                }
-                _ => None,
+                (_, version) => match (record.installed_version.as_deref(), version.as_deref()) {
+                    (Some(recorded), Some(version)) if recorded != version => Some(format!(
+                        "{who} is version {recorded}, but Legendary has {version}."
+                    )),
+                    (None, Some(version)) => Some(format!(
+                        "{who} has no version recorded, but Legendary has {version}."
+                    )),
+                    (Some(recorded), None) => Some(format!(
+                        "{who} is version {recorded}, but Legendary has no version for it."
+                    )),
+                    _ => None,
+                },
             },
         };
         if let Some(disagreement) = disagreement {
@@ -1140,7 +1143,18 @@ fn check_epic(
         }
     }
 
-    if !selected_has_game || (ids.is_empty() && records.is_empty()) {
+    // Only a record or a config naming a game shows one exists; a config
+    // that can't be read may own one, but doesn't show it.
+    let game_exists = selected_has_game
+        && (any_record
+            || match selected {
+                Some(name) => game::names_epic_id(paths, name),
+                None => names
+                    .iter()
+                    .filter(|name| !pending.contains(*name))
+                    .any(|name| game::names_epic_id(paths, name)),
+            });
+    if !game_exists {
         return;
     }
     let message = match legendary() {

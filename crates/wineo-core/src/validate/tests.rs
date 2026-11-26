@@ -3268,6 +3268,71 @@ mod epic_games {
     }
 
     #[test]
+    fn a_config_that_cant_be_read_may_still_own_a_game() {
+        let f = Fixture::new();
+        // Raw TOML with the key, refused as a config: native can't have it.
+        f.write_config("fowl", "kind = 'native'\nepic_id = 'AppOffline'\n");
+        // Not TOML at all.
+        f.write_config("broken", "epic_id = \n");
+        f.wine("notepad", HEALTHY);
+        let warning = |report: &Report| codes(report).contains(&Code::EpicLegendaryMissing);
+        assert!(warning(&report_with(&f, None, &no_legendary)));
+        assert!(warning(&report_with(&f, Some("fowl"), &no_legendary)));
+        // A config that isn't TOML may own a game but doesn't show one.
+        assert!(!warning(&report_with(&f, Some("broken"), &not_asked)));
+        assert!(!warning(&report_with(&f, Some("notepad"), &not_asked)));
+
+        let path = crate::epic::game::record_path(&f.paths, APP);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "app_name = 'AppOffline'\n").unwrap();
+        for name in ["fowl", "broken"] {
+            assert_eq!(
+                codes(&report_with(&f, Some(name), &no_legendary)),
+                [Code::EpicRecordInvalid, Code::EpicLegendaryMissing],
+                "{name}"
+            );
+        }
+        assert_eq!(codes(&report_with(&f, Some("notepad"), &not_asked)), []);
+    }
+
+    #[test]
+    fn a_version_only_one_side_has_is_a_disagreement() {
+        let f = Fixture::new();
+        epic(&f, "fowl", APP);
+        let folder = f.root.join("Games").join(APP);
+        fs::create_dir_all(&folder).unwrap();
+        RecordLock::exclusive(&f.paths, APP, NEVER)
+            .unwrap()
+            .write(&f.paths, &Record::new(APP, folder.clone()))
+            .unwrap();
+        legendary_has(&f, &[(APP, &folder, "1.1")]);
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(
+                Code::EpicRecordMismatch,
+                Some("fowl"),
+                "fowl's Epic game has no version recorded, but Legendary has 1.1. Repair it with wineo update fowl --repair."
+            )]
+        );
+
+        game(&f, APP, None);
+        let state = crate::epic::state_dir(&f.paths);
+        fs::write(
+            state.join("installed.json"),
+            serde_json::json!({APP: {"install_path": folder}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            messages(&records(&f, None)),
+            [(
+                Code::EpicRecordMismatch,
+                Some("fowl"),
+                "fowl's Epic game is version 1.0, but Legendary has no version for it. Repair it with wineo update fowl --repair."
+            )]
+        );
+    }
+
+    #[test]
     fn legendary_that_is_too_old_or_unusable_is_named() {
         let f = Fixture::new();
         epic(&f, "fowl", APP);
