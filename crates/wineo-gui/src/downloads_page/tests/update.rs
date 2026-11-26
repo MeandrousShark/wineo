@@ -531,12 +531,33 @@ fn the_update_list_scrolls_so_the_buttons_stay_in_a_short_window() {
     assert!(content.height > viewport.height);
 }
 
+/// The header's three buttons, by their bounds: the page's scrollable, its
+/// padded column, the header, then the right group.
+fn header_buttons(app: &App, width: f32) -> Vec<iced::Rectangle> {
+    let size = iced::Size::new(width, 300.0);
+    let mut view = app.downloads_view();
+    let node = crate::layout_probe::layout(&mut view, size);
+    (0..3)
+        .map(|index| crate::layout_probe::bounds_at(&node, &[0, 0, 0, 1, index]))
+        .collect()
+}
+
 #[test]
 fn the_header_fits_three_buttons_at_400_px() {
     let (_root, mut app) = fixture();
     open(&mut app);
     app.window_size = iced::Size::new(400.0, 300.0);
-    let size = iced::Size::new(400.0 - sidebar::WIDTH, 300.0);
+    let width = 400.0 - sidebar::WIDTH;
+    let natural = header_buttons(&app, 4000.0);
+    let narrow = header_buttons(&app, width);
+    assert_eq!(narrow.len(), 3);
+    for (button, natural) in narrow.iter().zip(&natural) {
+        assert_eq!(button.width, natural.width, "a button lost its width");
+        assert!(button.x + button.width <= width - 24.0, "{button:?}");
+    }
+    // They wrap onto a second line rather than squeeze.
+    assert!(narrow[2].y > narrow[0].y);
+    let size = iced::Size::new(width, 300.0);
     let mut view = app.downloads_view();
     let spilled =
         crate::layout_probe::probe(&mut view, size).outside(iced::Rectangle::with_size(size));
