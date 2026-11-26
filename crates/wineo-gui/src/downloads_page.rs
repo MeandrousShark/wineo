@@ -110,13 +110,89 @@ pub(crate) struct ReleasePage {
     pub(crate) has_more: bool,
 }
 
+/// A newer build the check found, with the newest one installed now.
+#[derive(Debug, Clone)]
+pub(crate) struct Offer {
+    pub(crate) installed: String,
+    pub(crate) release: Release,
+}
+
+/// What an update check found, ready to show.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Checked {
+    pub(crate) offers: Vec<Offer>,
+    pub(crate) errors: Vec<String>,
+    /// How many families were installed, to tell nothing installed from
+    /// nothing newer.
+    pub(crate) families: usize,
+    pub(crate) canceled: bool,
+}
+
+impl Checked {
+    pub(crate) fn failed(error: String) -> Self {
+        Self {
+            errors: vec![error],
+            ..Self::default()
+        }
+    }
+}
+
+/// What a batch of updates did, by folder name.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Applied {
+    pub(crate) installed: Vec<String>,
+    pub(crate) already: Vec<String>,
+    pub(crate) errors: Vec<String>,
+    pub(crate) canceled: bool,
+}
+
+impl Applied {
+    pub(crate) fn failed(error: String) -> Self {
+        Self {
+            errors: vec![error],
+            ..Self::default()
+        }
+    }
+
+    fn notice(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.installed.is_empty() {
+            parts.push(format!("Installed {}.", join(&self.installed)));
+        }
+        if !self.already.is_empty() {
+            parts.push(format!("Already installed: {}.", join(&self.already)));
+        }
+        if self.canceled {
+            parts.push("Update canceled.".into());
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
+}
+
+/// "a", "a and b", or "a, b, and c", as the terminal's summary reads.
+fn join(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
+/// The page's one dialog: deleting a build, or downloading newer ones.
+#[derive(Debug, Clone)]
+pub(crate) enum Review {
+    Delete(Build, Option<u64>),
+    Update(Vec<Offer>),
+}
+
 #[derive(Default)]
 pub(crate) struct Page {
     pub(crate) snapshot: Option<Result<Snapshot, String>>,
     pub(crate) loading: bool,
     generation: u64,
     review_generation: u64,
-    review: Option<(Build, Option<u64>)>,
+    review: Option<Review>,
     row_errors: HashMap<String, String>,
     notice: Option<String>,
     error: Option<String>,
@@ -155,14 +231,36 @@ impl Page {
 
 pub(crate) enum Change {
     Delete(Build),
-    Download { name: String, token: Token },
+    Download {
+        name: String,
+        token: Token,
+    },
+    Check(Token),
+    /// A batch of updates, with the build it is downloading now.
+    Update {
+        name: String,
+        token: Token,
+    },
 }
 
 impl Change {
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Delete(build) => format!("Busy: deleting {}", build.name),
-            Self::Download { name, .. } => format!("Busy: downloading {name}"),
+            Self::Download { name, .. } | Self::Update { name, .. } => {
+                format!("Busy: downloading {name}")
+            }
+            Self::Check(_) => "Busy: checking for newer builds".into(),
+        }
+    }
+
+    /// The token that stops this change, when it can be stopped.
+    pub(crate) fn token(&self) -> Option<&Token> {
+        match self {
+            Self::Delete(_) => None,
+            Self::Download { token, .. } | Self::Update { token, .. } | Self::Check(token) => {
+                Some(token)
+            }
         }
     }
 }
@@ -185,6 +283,11 @@ pub(crate) enum Event {
     Progress(u64, String),
     Cancel,
     Downloaded(u64, Result<Option<String>, String>),
+    UpdateAll,
+    Checked(u64, Checked),
+    /// The build a batch is downloading now, and its status line.
+    Stepped(u64, String, String),
+    Updated(u64, Applied),
 }
 
 fn message(event: Event) -> Message {
@@ -249,7 +352,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             let page = &mut app.downloads_page;
             page.review_generation = page.review_generation.wrapping_add(1);
             page.row_errors.remove(&id);
-            page.review = Some((build.clone(), None));
+            page.review = Some(Review::Delete(build.clone(), None));
             Task::batch([
                 downloads_work::measure(page.review_generation, app.paths.clone(), build),
                 iced::advanced::widget::operate(
@@ -260,7 +363,7 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Measured(generation, result)
             if generation == app.downloads_page.review_generation =>
         {
-            if let Some((build, size)) = &mut app.downloads_page.review {
+            if let Some(Review::Delete(build, size)) = &mut app.downloads_page.review {
                 match result {
                     Ok(bytes) => *size = Some(bytes),
                     Err(error) => {
@@ -285,12 +388,26 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         Event::Confirm
             if app.downloads_confirm_open() && !app.management_busy() && !app.close_prompt =>
         {
-            let Some((build, Some(_))) = app.downloads_page.review.clone() else {
-                return Task::none();
-            };
-            app.downloads_page.cancel_review();
-            app.begin_downloads_change(Change::Delete(build.clone()));
-            downloads_work::delete(app.change_generation, app.paths.clone(), build)
+            match app.downloads_page.review.clone() {
+                Some(Review::Delete(build, Some(_))) => {
+                    app.downloads_page.cancel_review();
+                    app.begin_downloads_change(Change::Delete(build.clone()));
+                    downloads_work::delete(app.change_generation, app.paths.clone(), build)
+                }
+                Some(Review::Update(offers)) => {
+                    app.downloads_page.cancel_review();
+                    let token = Token::new();
+                    app.downloads_page.error = None;
+                    app.downloads_page.notice = None;
+                    app.downloads_page.status = Some("Starting download...".into());
+                    app.begin_downloads_change(Change::Update {
+                        name: offers[0].release.installed_name.clone(),
+                        token: token.clone(),
+                    });
+                    downloads_work::update(app.change_generation, app.paths.clone(), offers, token)
+                }
+                _ => Task::none(),
+            }
         }
         Event::Deleted(generation, result)
             if generation == app.change_generation
@@ -428,9 +545,18 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             Task::none()
         }
         Event::Cancel => {
-            if let Some(removal::Change::Downloads(Change::Download { token, .. })) = &app.change {
+            if let Some(removal::Change::Downloads(change)) = &app.change
+                && let Some(token) = change.token()
+            {
                 token.cancel();
-                app.downloads_page.status = Some("Canceling download...".into());
+                app.downloads_page.status = Some(
+                    if matches!(change, Change::Check(_)) {
+                        "Canceling check..."
+                    } else {
+                        "Canceling download..."
+                    }
+                    .into(),
+                );
             }
             Task::none()
         }
@@ -452,6 +578,87 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
             }
             Task::batch([app.reload_after_change(), app.reload_downloads_page()])
         }
+        Event::UpdateAll if app.downloads_action_allowed() => {
+            let token = Token::new();
+            let page = &mut app.downloads_page;
+            page.error = None;
+            page.notice = None;
+            page.status = Some("Checking for newer builds".into());
+            app.begin_downloads_change(Change::Check(token.clone()));
+            downloads_work::check(app.change_generation, app.paths.clone(), token)
+        }
+        Event::Checked(generation, checked)
+            if generation == app.change_generation
+                && matches!(
+                    app.change,
+                    Some(removal::Change::Downloads(Change::Check(_)))
+                ) =>
+        {
+            app.change = None;
+            app.downloads_page.status = None;
+            // Nobody is looking at the page to answer a dialog.
+            if !app.downloads_showing() {
+                return Task::none();
+            }
+            let page = &mut app.downloads_page;
+            if !checked.errors.is_empty() {
+                page.error = Some(checked.errors.join("\n"));
+            }
+            if checked.canceled {
+                page.notice = Some("Check canceled.".into());
+                return Task::none();
+            }
+            if checked.offers.is_empty() {
+                if checked.errors.is_empty() {
+                    page.notice = Some(
+                        if checked.families == 0 {
+                            "Nothing to update."
+                        } else {
+                            "Everything is up to date."
+                        }
+                        .into(),
+                    );
+                }
+                return Task::none();
+            }
+            page.review_generation = page.review_generation.wrapping_add(1);
+            page.review = Some(Review::Update(checked.offers));
+            iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
+        }
+        Event::Stepped(generation, name, line)
+            if generation == app.change_generation
+                && matches!(
+                    app.change,
+                    Some(removal::Change::Downloads(Change::Update { .. }))
+                ) =>
+        {
+            if let Some(removal::Change::Downloads(Change::Update {
+                name: current,
+                token,
+            })) = &mut app.change
+            {
+                *current = name;
+                // A step that lands after Cancel mustn't hide that it's stopping.
+                if !token.is_canceled() {
+                    app.downloads_page.status = Some(line);
+                }
+            }
+            Task::none()
+        }
+        Event::Updated(generation, applied)
+            if generation == app.change_generation
+                && matches!(
+                    app.change,
+                    Some(removal::Change::Downloads(Change::Update { .. }))
+                ) =>
+        {
+            app.change = None;
+            let page = &mut app.downloads_page;
+            page.status = None;
+            page.notice = applied.notice();
+            page.error = (!applied.errors.is_empty()).then(|| applied.errors.join("\n"));
+            Task::batch([app.reload_after_change(), app.reload_downloads_page()])
+        }
         _ => Task::none(),
     }
 }
@@ -468,6 +675,14 @@ impl App {
         self.section == sidebar::Section::Downloads
             && self.settings.is_none()
             && self.downloads_page.review.is_some()
+    }
+
+    /// The page is on screen with nothing over it but the close prompt.
+    fn downloads_showing(&self) -> bool {
+        self.section == sidebar::Section::Downloads
+            && self.settings.is_none()
+            && self.flow.is_none()
+            && self.removal.is_none()
     }
 
     fn downloads_action_allowed(&self) -> bool {
@@ -489,46 +704,112 @@ impl App {
 
     fn downloads_confirm_controls(&self) -> Vec<&'static str> {
         let mut controls = vec![CANCEL_ID];
-        if matches!(self.downloads_page.review, Some((_, Some(_)))) && !self.management_busy() {
+        if matches!(
+            self.downloads_page.review,
+            Some(Review::Delete(_, Some(_)) | Review::Update(_))
+        ) && !self.management_busy()
+        {
             controls.push(CONFIRM_ID);
         }
         controls
     }
 
     pub(crate) fn downloads_confirm_view(&self) -> Element<'_, Message> {
-        let (build, size) = self.downloads_page.review.as_ref().unwrap();
+        match self.downloads_page.review.as_ref().unwrap() {
+            Review::Delete(build, size) => self.delete_confirm_view(build, *size),
+            Review::Update(offers) => self.update_confirm_view(offers),
+        }
+    }
+
+    /// The dialog's Cancel and its main action, at the right.
+    fn confirm_buttons(
+        &self,
+        label: &'static str,
+        color: iced::Color,
+        ready: bool,
+    ) -> Element<'static, Message> {
+        let palette = self.palette;
+        row![
+            Space::new().width(Fill),
+            focus_button::control(
+                secondary_button("Cancel", palette)
+                    .on_press(message(Event::Dismiss))
+                    .into(),
+                true,
+                CANCEL_ID,
+                message(Event::Dismiss)
+            ),
+            focus_button::control(
+                accent_button(label, color, ready, message(Event::Confirm)),
+                ready,
+                CONFIRM_ID,
+                message(Event::Confirm)
+            ),
+        ]
+        .spacing(12)
+        .into()
+    }
+
+    /// The tallest the list gets, bounded as the Trash confirm's is, so the
+    /// buttons stay in reach in a short window.
+    fn update_list_height(&self) -> f32 {
+        (self.window_size.height - 180.0).clamp(120.0, 480.0)
+    }
+
+    fn update_confirm_view<'a>(&'a self, offers: &'a [Offer]) -> Element<'a, Message> {
+        let palette = self.palette;
+        let mut list = column![].spacing(8);
+        for (index, offer) in offers.iter().enumerate() {
+            if index > 0 {
+                list = list.push(crate::ui::separator(palette));
+            }
+            list = list.push(column![
+                text(format!(
+                    "{} ({})",
+                    offer.release.installed_name,
+                    crate::size::format_bytes(offer.release.size)
+                )),
+                text(format!(
+                    "{}, replacing {}",
+                    offer.release.provider.label(),
+                    offer.installed
+                ))
+                .size(13)
+                .color(palette.muted),
+            ]);
+        }
+        let content = column![
+            page_title("Update downloads", palette),
+            text(match offers.len() {
+                1 => "Download this newer build?".to_owned(),
+                count => format!("Download these {count} newer builds?"),
+            }),
+            container(
+                scrollable(list)
+                    .wineo_style(palette)
+                    .height(iced::Length::Shrink)
+            )
+            .max_height(self.update_list_height()),
+            text("Older builds are kept.").size(13).color(palette.muted),
+            self.confirm_buttons("Download", palette.primary, !self.management_busy()),
+        ]
+        .spacing(16);
+        container(content)
+            .padding(24)
+            .width((self.window_size.width - 40.0).clamp(280.0, 600.0))
+            .style(move |_| crate::ui::section_style(palette))
+            .into()
+    }
+
+    fn delete_confirm_view<'a>(&self, build: &'a Build, size: Option<u64>) -> Element<'a, Message> {
         let palette = self.palette;
         let mut content = column![page_title("Delete download", palette)].spacing(16);
         content = content.push(text(format!("Delete {}?", build.name)));
         content = content.push(text(match size {
-            Some(bytes) => format!("This frees {}.", crate::size::format_bytes(*bytes)),
+            Some(bytes) => format!("This frees {}.", crate::size::format_bytes(bytes)),
             None => "Measuring size...".into(),
         }));
-        content = content.push(
-            row![
-                Space::new().width(Fill),
-                focus_button::control(
-                    secondary_button("Cancel", palette)
-                        .on_press(message(Event::Dismiss))
-                        .into(),
-                    true,
-                    CANCEL_ID,
-                    message(Event::Dismiss)
-                ),
-                focus_button::control(
-                    accent_button(
-                        "Delete",
-                        palette.danger,
-                        size.is_some(),
-                        message(Event::Confirm),
-                    ),
-                    size.is_some(),
-                    CONFIRM_ID,
-                    message(Event::Confirm)
-                ),
-            ]
-            .spacing(12),
-        );
+        content = content.push(self.confirm_buttons("Delete", palette.danger, size.is_some()));
         container(content)
             .padding(24)
             .width((self.window_size.width - 40.0).clamp(280.0, 600.0))
@@ -540,11 +821,13 @@ impl App {
         let palette = self.palette;
         let page = &self.downloads_page;
         let enabled = self.downloads_action_allowed();
-        let mut content = column![
+        let mut content = column![crate::ends::ends(
+            page_title("Downloads", palette),
             row![
-                page_title("Downloads", palette).width(Fill),
                 secondary_button("Refresh", palette)
                     .on_press_maybe(enabled.then_some(message(Event::Refresh))),
+                secondary_button("Update all", palette)
+                    .on_press_maybe(enabled.then_some(message(Event::UpdateAll))),
                 accent_button(
                     "Download...",
                     palette.primary,
@@ -554,7 +837,11 @@ impl App {
             ]
             .spacing(12)
             .align_y(Center)
-        ]
+            .wrap()
+            .vertical_spacing(8),
+            12.0,
+            crate::ends::MIN_LEFT,
+        )]
         .spacing(16);
         let mut feedback = column![].spacing(8);
         if page.loading {

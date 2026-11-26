@@ -93,6 +93,14 @@ fn build(app: &App, kind: Kind, name: &str) -> Build {
         .clone()
 }
 
+/// The delete dialog's measured size; panics when another dialog is open.
+fn delete_size(app: &App) -> Option<u64> {
+    match app.downloads_page.review.as_ref().unwrap() {
+        Review::Delete(_, size) => *size,
+        Review::Update(_) => panic!("the update dialog is open"),
+    }
+}
+
 fn review(app: &mut App, build: &Build) {
     send(Event::Review(build.id()), app);
     assert!(app.downloads_confirm_open());
@@ -217,7 +225,7 @@ fn an_unreadable_config_refuses_delete_on_the_row_but_still_warns_until_fixed() 
         ),
         &mut app,
     );
-    assert_eq!(app.downloads_page.review.as_ref().unwrap().1, Some(16));
+    assert_eq!(delete_size(&app), Some(16));
     let _ = app.downloads_confirm_view();
     send(Event::Confirm, &mut app);
     assert!(matches!(
@@ -440,9 +448,9 @@ fn confirm_keys_isolate_navigation_and_late_measurement_is_ignored() {
     send(Event::Measured(generation, Ok(1)), &mut app);
     assert!(app.downloads_page.review.is_none());
     send(Event::Review(unused.id()), &mut app);
-    assert!(app.downloads_page.review.as_ref().unwrap().1.is_none());
+    assert!(delete_size(&app).is_none());
     send(Event::Measured(generation, Ok(1)), &mut app);
-    assert!(app.downloads_page.review.as_ref().unwrap().1.is_none());
+    assert!(delete_size(&app).is_none());
 }
 
 #[test]
