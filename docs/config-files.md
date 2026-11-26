@@ -158,9 +158,10 @@ One global key is for Epic games (plan 0073), and needed no schema bump:
 `[epic] legendary`, the path of the Legendary program to use. wineo talks
 to Epic through Legendary, and looks for it here first, then for its own
 downloaded copy, then for `legendary` on `PATH`. Leave it unset unless you
-want a particular copy. A path that isn't there, can't be run, or is
-older than 0.21.1 is an error that names it, and wineo doesn't fall back
-to another copy.
+want a particular copy. `wineo set --global epic.legendary=PATH` saves
+the path made absolute, so give a path, not a bare program name. A path
+that isn't there, can't be run, or is older than 0.21.1 is an error that
+names it, and wineo doesn't fall back to another copy.
 
 ```toml
 [epic]

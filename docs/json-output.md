@@ -1,8 +1,8 @@
 # JSON output
 
 `status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
-`import epic --list`, `import roms --list`, `import roms --emulators`, `update --check`, and
-`runners update --check` accept `--json` for scripting:
+`import epic --list`, `import roms --list`, `import roms --emulators`,
+`update --check`, and `runners update --check` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json

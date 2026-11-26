@@ -35,8 +35,8 @@ wineo looks for Legendary in this order:
    when wineo offers its own download.
 
 `wineo set --global --unset epic.legendary` goes back to the other two.
-`--list` and `--logout` never offer the download: they use the saved list
-or remove the login without it.
+Plain `--list` and `--logout` never offer the download: they use the
+saved list or remove the login without it.
 
 ## Logging in
 
@@ -68,10 +68,10 @@ Bare `wineo import epic` logs you in, or lists your games once you are.
 
 ```
 $ wineo import epic --list
-ID         TITLE           STATE
-Kestrel    Kestrel Rally   not installed
-Lantern    Lantern Keeper  not installed
-Harbor     Harbor Tactics  unavailable: needs an account at another launcher
+ID       TITLE           STATE
+Kestrel  Kestrel Rally   not installed
+Lantern  Lantern Keeper  not installed
+Harbor   Harbor Tactics  unavailable: needs an account at another launcher
 ```
 
 `--list` shows what your account owns. A game is `not installed` or
