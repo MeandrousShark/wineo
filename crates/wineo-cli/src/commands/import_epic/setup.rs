@@ -68,7 +68,8 @@ pub(super) fn obtain(
 
 /// The question itself.
 pub(super) fn question() -> String {
-    let megabytes = own_copy::PINNED.size.div_ceil(1_000_000).max(1);
+    // Rounded to the nearest, so 3,093,622 bytes reads as the plan's 3 MB.
+    let megabytes = ((own_copy::PINNED.size + 500_000) / 1_000_000).max(1);
     format!(
         "Epic needs Legendary {} ({megabytes} MB, from its GitHub releases). Download it?",
         own_copy::PINNED.version
