@@ -319,8 +319,8 @@ exits 1 with a diagnostic on stderr and no JSON.
 {
   "games": [
     {
-      "id": "Fowl",
-      "title": "The Escapists 2",
+      "id": "Kestrel",
+      "title": "Kestrel Rally",
       "state": "not_installed",
       "reason": null,
       "environment": null,
@@ -329,8 +329,8 @@ exits 1 with a diagnostic on stderr and no JSON.
       "dlc": []
     },
     {
-      "id": "AppThirdParty",
-      "title": "Third Party Game",
+      "id": "Harbor",
+      "title": "Harbor Tactics",
       "state": "unavailable",
       "reason": "needs_linking",
       "environment": null,

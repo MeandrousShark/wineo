@@ -68,10 +68,10 @@ Bare `wineo import epic` logs you in, or lists your games once you are.
 
 ```
 $ wineo import epic --list
-ID             TITLE             STATE
-Fowl           The Escapists 2   not installed
-Sugar          Rocket League     not installed
-AppThirdParty  Third Party Game  unavailable: needs an account at another launcher
+ID         TITLE           STATE
+Kestrel    Kestrel Rally   not installed
+Lantern    Lantern Keeper  not installed
+Harbor     Harbor Tactics  unavailable: needs an account at another launcher
 ```
 
 `--list` shows what your account owns. A game is `not installed` or
@@ -80,5 +80,7 @@ account at another launcher`, or `no Windows build`. An empty library
 prints `You don't own any Epic games.`
 
 The list is cached for an hour; `--refresh` asks Epic again. If Epic
-can't send it, or Legendary or Python is missing, the saved list stands in
-with a warning. See [JSON output](json-output.md#epic) for `--json`.
+can't send it, the saved list stands in with a warning. Plain `--list`
+also falls back to it when Legendary or Python is missing; `--refresh`
+offers to download Legendary instead, and stops without Python. Being
+logged out is always an error, even with a saved list. See [JSON output](json-output.md#epic) for `--json`.
