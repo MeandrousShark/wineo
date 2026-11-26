@@ -10,7 +10,7 @@ use crate::cancel;
 
 mod account;
 mod extras;
-mod install;
+pub(super) mod install;
 mod list;
 mod migrate;
 

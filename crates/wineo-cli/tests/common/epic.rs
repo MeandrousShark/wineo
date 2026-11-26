@@ -11,6 +11,9 @@ use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 
 use super::{Fixture, find_on_path, write_script};
 
+#[path = "../../../wineo-core/tests/common/epic_install.rs"]
+mod epic_install;
+
 /// The code the fake accepts. It holds `SECRET`, so the pty's output hides
 /// it when printed and the tests can look for it.
 pub const CODE: &str = "SECRETepic0123456789abcdef";
@@ -96,6 +99,51 @@ impl Epic {
 
     pub fn run(&self, args: &[&str]) -> Output {
         self.command().args(args).output().unwrap()
+    }
+
+    /// `command` with the fixture's fake wine on `PATH` after the Epic
+    /// fakes, so an install can create the game's environment.
+    pub fn install_command(&self) -> Command {
+        let mut command = self.command();
+        let path =
+            std::env::join_paths([self.bin.as_os_str(), self.f.sandbox.as_os_str()]).unwrap();
+        command.env("PATH", path);
+        command
+    }
+
+    pub fn install(&self, args: &[&str]) -> Output {
+        self.install_command().args(args).output().unwrap()
+    }
+
+    /// How the fake's next install of `app` behaves; see `epic_install`.
+    pub fn set_mode(&self, app: &str, mode: &str) {
+        fs::write(self.file(&format!("mode-{app}")), mode).unwrap();
+    }
+
+    /// Waits for the fake to start installing `app`.
+    pub fn wait_started(&self, app: &str) {
+        let marker = self.file(&format!("installing-{app}"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake never started {app}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The fake's install runs, oldest first.
+    pub fn install_calls(&self) -> Vec<String> {
+        self.calls()
+            .into_iter()
+            .filter(|call| call.starts_with("-y install"))
+            .collect()
+    }
+
+    /// Where the games folder is by default.
+    pub fn games(&self) -> PathBuf {
+        fs::canonicalize(self.f.root.path()).unwrap().join("Games")
     }
 
     /// A `python3` that says it is `version` and runs any file with `sh`.
@@ -319,7 +367,10 @@ impl Epic {
              if [ \"$1 $2\" = 'auth --code' ]; then echo 'auth --code <code>' >> \"$root/calls\"\n\
              else printf '%s\\n' \"$*\" >> \"$root/calls\"; fi\n\
              user=\"$LEGENDARY_CONFIG_PATH/user.json\"\n\
+             if [ \"$1\" = -y ]; then shift; fi\n\
+             {functions}\
              case \"$1\" in\n\
+             {install_arms}\
              --version) echo '{version}' ;;\n\
              status) if [ -f \"$user\" ]; then {cat} '{status_in}'; else {cat} '{status_out}'; fi ;;\n\
              auth)\n\
@@ -342,6 +393,8 @@ impl Epic {
             failed = fixture("login-failed.stderr").display(),
             logged_out_list = fixture("logged-out-list.stderr").display(),
             list = fake.list.display(),
+            functions = epic_install::functions(&tool),
+            install_arms = epic_install::arms(&fixture(""), &tool),
         )
     }
 }

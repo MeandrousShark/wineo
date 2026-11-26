@@ -91,7 +91,7 @@ pub enum InstallError {
     #[error("Epic game {app} belongs to {name}, so it can't be forgotten.")]
     Owned { app: String, name: String },
     #[error(
-        "Epic game {app} belongs to {name} in the trash, so it can't be forgotten. Restore it with wineo restore, or empty the trash first."
+        "Epic game {app} belongs to {name} in the trash, so it can't be forgotten. Restore it with wineo restore, or remove it for good with wineo prune."
     )]
     Trashed { app: String, name: String },
     #[error("Forgetting Epic game {app} needs Legendary, to drop its own record of it.")]
