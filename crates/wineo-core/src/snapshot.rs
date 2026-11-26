@@ -619,10 +619,11 @@ fn saved_gog_id(paths: &Paths, name: &str, saved: &EnvironmentConfig) -> Result<
     }
 }
 
-/// The Epic game is the environment's, not the snapshot's: restore keeps
-/// the id it has now. A saved config without one gets it back, and one
-/// naming another game, or a game the environment no longer has, is refused
-/// before anything changes.
+/// The Epic game is the environment's, not the snapshot's, as for GOG: a
+/// saved config without the id the environment has now gets it back, and one
+/// naming another game is refused before anything changes. An environment
+/// with no game now takes the saved config as it is, as `saved_gog_id` does
+/// for an environment that owns no folder.
 fn saved_epic_id(
     paths: &Paths,
     name: &str,
@@ -637,9 +638,6 @@ fn saved_epic_id(
         (Some(current), None) => Ok(Some(current.to_owned())),
         (Some(current), Some(saved)) if saved != current => {
             bail!("The snapshot's epic_id {saved} doesn't match {name}'s Epic game {current}.")
-        }
-        (None, Some(saved)) => {
-            bail!("The snapshot's epic_id {saved} doesn't match {name}, which has no Epic game.")
         }
         _ => Ok(None),
     }

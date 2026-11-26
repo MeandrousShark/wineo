@@ -423,7 +423,7 @@ fn a_restore_from_before_install_keeps_the_epic_id() {
 }
 
 #[test]
-fn a_restore_that_would_change_the_epic_game_is_refused_before_anything_changes() {
+fn a_restore_naming_another_epic_game_is_refused_and_one_onto_no_game_is_kept() {
     let Some(f) = fixture() else { return };
     let (prefix, config) = environment(&f);
     let path = f.config_dir().join("environments/game.toml");
@@ -436,27 +436,34 @@ fn a_restore_that_would_change_the_epic_game_is_refused_before_anything_changes(
     };
     fs::write(&path, with("Other")).unwrap();
     assert_success(&f.run(&["snapshot", "create", "game", "other-game"]));
-    for (current, message) in [
-        (
-            with("AppOffline"),
-            "The snapshot's epic_id Other doesn't match game's Epic game AppOffline.",
-        ),
-        (
-            config.clone(),
-            "The snapshot's epic_id Other doesn't match game, which has no Epic game.",
-        ),
-    ] {
-        fs::write(&path, &current).unwrap();
-        fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
-        let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
-        assert!(!output.status.success());
-        assert!(stderr(&output).contains(message), "{}", stderr(&output));
-        assert_eq!(f.created_config("game"), current);
-        assert_eq!(
-            fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
-            b"after"
-        );
-    }
+    let current = with("AppOffline");
+    fs::write(&path, &current).unwrap();
+    fs::write(prefix.join("drive_c/Games/save.dat"), b"after").unwrap();
+    let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output)
+            .contains("The snapshot's epic_id Other doesn't match game's Epic game AppOffline."),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(f.created_config("game"), current);
+    assert_eq!(
+        fs::read(prefix.join("drive_c/Games/save.dat")).unwrap(),
+        b"after"
+    );
+
+    // With no game now, the saved config comes back as it was, as GOG's does
+    // for an environment that owns no folder.
+    fs::write(&path, &config).unwrap();
+    let output = f.run(&["snapshot", "restore", "game", "other-game", "--yes"]);
+    assert_success(&output);
+    assert!(
+        !stdout(&output).contains("Put epic_id"),
+        "{}",
+        stdout(&output)
+    );
+    assert_eq!(f.created_config("game"), with("Other"));
 }
 
 #[test]
