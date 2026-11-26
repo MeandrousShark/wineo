@@ -83,4 +83,5 @@ The list is cached for an hour; `--refresh` asks Epic again. If Epic
 can't send it, the saved list stands in with a warning. Plain `--list`
 also falls back to it when Legendary or Python is missing; `--refresh`
 offers to download Legendary instead, and stops without Python. Being
-logged out is always an error, even with a saved list. See [JSON output](json-output.md#epic) for `--json`.
+logged out is always an error, even with a saved list. See
+[JSON output](json-output.md#epic) for `--json`.
