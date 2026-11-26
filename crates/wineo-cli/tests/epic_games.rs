@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use common::{Fixture, assert_success, stderr, stdout};
+use common::{Fixture, assert_success, stderr, stdout, write_script};
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use wineo_core::epic::game::{self, Record, RecordLock, Work};
 
@@ -303,6 +303,28 @@ fn a_game_with_a_mark_refuses_to_start_and_says_what_finishes_it() {
         &f.run(&["start", "fowl"]),
         "fowl's Epic install didn't finish. Finish it with wineo import epic --game AppOffline.",
     );
+    assert_eq!(sweep(&f), Vec::<i32>::new());
+}
+
+#[test]
+fn a_refused_start_runs_no_hook() {
+    let f = Fixture::new();
+    fowl(&f, Some(Work::Update));
+    let ran = f.root.path().join("hook-ran");
+    let hook = f.root.path().join("before.sh");
+    write_script(&hook, format!("#!/bin/sh\n: > '{}'\n", ran.display()));
+    let config = config_path(&f, "fowl");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        format!("{text}\n[hooks]\nbefore = \"{}\"\n", hook.display()),
+    )
+    .unwrap();
+    assert_refused(
+        &f.run(&["start", "fowl"]),
+        "fowl's game folder is mid-update. Finish it with wineo update fowl.",
+    );
+    assert!(!ran.exists(), "the before hook ran");
     assert_eq!(sweep(&f), Vec::<i32>::new());
 }
 
