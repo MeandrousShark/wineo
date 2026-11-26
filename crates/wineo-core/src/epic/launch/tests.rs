@@ -217,6 +217,9 @@ fn a_login_epic_no_longer_takes_counts_as_logged_out() {
     assert_eq!(setup.sweep(), Vec::<i32>::new());
 }
 
+/// What looking for Legendary found, for a case of its own.
+type FindFn = fn() -> Result<Found, Error>;
+
 fn missing() -> Result<Found, Error> {
     Ok(Found::Missing(legendary::Missing {
         older_on_path: None,
@@ -242,7 +245,7 @@ fn without_legendary_a_game_marked_offline_starts_from_wineos_record() {
         can_run_offline: false,
         ..record.clone()
     };
-    let cases: [(fn() -> Result<Found, Error>, &str, &str); 3] = [
+    let cases: [(FindFn, &str, &str); 3] = [
         (
             missing,
             "Legendary isn't installed, so fowl starts offline. Online features may not work.",
