@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::{Output, Stdio};
 
 use common::epic::Epic;
+use common::pty::Pty;
 use common::{KillOnDrop, stderr, stdout};
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use serde_json::Value;
@@ -514,35 +515,27 @@ fn a_game_another_environment_owns_isnt_installed_again() {
 #[test]
 fn two_installs_of_one_game_at_once_install_it_once() {
     let epic = epic();
-    // Slow enough that the second starts while the first downloads.
+    // The second starts once the first is downloading, which takes it three
+    // seconds, so the two always overlap there.
     epic.set_mode(APP, "quiet");
     let first = spawn_install(&epic, APP);
+    epic.wait_started(APP);
     let second = spawn_install(&epic, APP);
-    let outputs = [
-        first.wait_with_output().unwrap(),
-        second.wait_with_output().unwrap(),
-    ];
-    let won: Vec<&Output> = outputs
-        .iter()
-        .filter(|output| output.status.success())
-        .collect();
-    assert_eq!(
-        won.len(),
-        1,
-        "{:?}",
-        outputs.iter().map(stderr).collect::<Vec<_>>()
-    );
-    let lost = outputs
-        .iter()
-        .find(|output| !output.status.success())
-        .unwrap();
-    assert_code(lost, 1);
-    let err = stderr(lost);
+    let lost = second.wait_with_output().unwrap();
+    let won = first.wait_with_output().unwrap();
+    assert_ok(&won);
+    assert_code(&lost, 1);
+    // It found the first's mark and would finish that install, but the
+    // first holds the folder.
     assert!(
-        err.contains("error: Something else is using offline-game's game folder. Try again once it's done.")
-            || err.contains("error: Epic game AppOffline's record changed since the install was planned; plan it again.")
-            || err.contains("error: environment offline-game"),
-        "{err}"
+        stdout(&lost).starts_with("Finish the interrupted install of Offline Game (AppOffline)\n"),
+        "{}",
+        stdout(&lost)
+    );
+    assert_eq!(
+        stderr(&lost),
+        "error: Something else is using offline-game's game folder. Try again once it's done.\n\
+         Finish the interrupted install with: wineo import epic --game AppOffline\n"
     );
     assert_eq!(epic.install_calls().len(), 1);
     let environments: Vec<_> = fs::read_dir(epic.f.config_dir().join("environments"))
@@ -661,5 +654,41 @@ fn a_game_only_epic_says_needs_another_launcher_is_refused_before_downloading() 
     );
     assert!(epic.install_calls().is_empty());
     assert!(record(&epic, "AppThirdParty").is_none());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn at_a_terminal_it_asks_and_no_installs_nothing() {
+    let epic = epic();
+    let mut command = epic.install_command();
+    command.args(["import", "epic", "--game", APP]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Install Offline Game (AppOffline)");
+    pty.expect("installed    2.3 GiB");
+    pty.expect("Esc or Ctrl+C to cancel.");
+    pty.expect("Install it? [Y/n]: ");
+    pty.send("n");
+    let (status, seen) = pty.finish();
+    assert_eq!(status.code(), Some(130), "{seen}");
+    assert!(seen.contains("Install canceled."), "{seen}");
+    assert!(epic.install_calls().is_empty());
+    assert!(record(&epic, APP).is_none(), "no record, so no mark");
+    assert!(!epic.f.config_dir().join("environments").exists());
+    assert!(!epic.games().exists());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+
+    // Yes installs it.
+    let mut command = epic.install_command();
+    command.args(["import", "epic", "--game", APP]);
+    let mut pty = Pty::spawn(command);
+    pty.expect("Install it? [Y/n]: ");
+    pty.send("y");
+    let (status, seen) = pty.finish();
+    assert!(status.success(), "{seen}");
+    assert!(
+        seen.contains("Installed Offline Game as offline-game."),
+        "{seen}"
+    );
+    assert_eq!(epic.install_calls().len(), 1);
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
