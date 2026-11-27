@@ -4,9 +4,9 @@
 //!
 //! - none or empty: progress lines, then the game's files and its entry in
 //!   `installed.json`, as Legendary 0.21.1 leaves them.
-//! - `hang`: starts downloading, then waits up to 30 seconds. An interrupt
-//!   writes the resume file, logs Legendary's abort line, and exits 0, as
-//!   Legendary does.
+//! - `hang`: starts downloading, then waits about 30 seconds in short naps,
+//!   so an interrupt is heeded within one. An interrupt writes the resume
+//!   file, logs Legendary's abort line, and exits 0, as Legendary does.
 //! - `deaf`: like `hang`, but ignores interrupts in its whole group and
 //!   holds `/dev/shm/psm_<tag>_held` open, `<tag>` read from
 //!   `<root>/shm-tag`, as a killed downloader leaves its shared memory.
@@ -36,9 +36,9 @@
 //!
 //! - `damaged`: logs a missing file and a failed check, as Legendary does
 //!   before it fetches what is missing, then finishes.
-//! - `hang`: sets its interrupt handler before its marker, then waits up to
-//!   30 seconds after checking; an interrupt logs the abort line and keeps
-//!   the repair file.
+//! - `hang`: sets its interrupt handler before its marker, then waits about
+//!   30 seconds in short naps after checking; an interrupt logs the abort
+//!   line and keeps the repair file.
 //! - `kept`: exits 0 with the repair file left, as a downloader that failed
 //!   leaves it.
 //! - `failed-write`: logs a failed write, then finishes.
@@ -62,10 +62,19 @@
 use std::path::Path;
 
 /// Shell functions the arms use, to put before the `case`.
+///
+/// `nap` waits about 30 seconds in short sleeps. A shell runs an interrupt
+/// trap only once its foreground child ends, and an interrupt sent to the
+/// group after its last check for traps but before it forks reaches the shell
+/// and not the new `sleep`, so one long sleep would hold the trap until wineo
+/// kills the group.
 pub fn functions(tool: &dyn Fn(&str) -> String) -> String {
-    let (cat, mv) = (tool("cat"), tool("mv"));
+    let (cat, mv, sleep) = (tool("cat"), tool("mv"), tool("sleep"));
     format!(
-        "rebuild() {{\n\
+        "nap() {{\n\
+           naps=0; while [ $naps -lt 300 ]; do {sleep} 0.1; naps=$((naps+1)); done\n\
+         }}\n\
+         rebuild() {{\n\
            d=\"$LEGENDARY_CONFIG_PATH/fake-installed\"; out=\"$LEGENDARY_CONFIG_PATH/installed.json\"\n\
            sep=''\n\
            {{ printf '{{'; for f in \"$d\"/*.json; do [ -f \"$f\" ] || continue; printf '%s' \"$sep\"; {cat} \"$f\"; sep=','; done; printf '}}'; }} > \"$out.tmp\"\n\
@@ -119,7 +128,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
              echo \"[DLManager] INFO: Download Manager running with process-id: $$\" >&2\n\
              echo '[DLManager] INFO: = Progress: 50.00% (1/2), Running for 00:00:01, ETA: 00:00:01' >&2\n\
              case \"$mode\" in\n\
-             hang) {sleep} 30; exit 0 ;;\n\
+             hang) nap; exit 0 ;;\n\
              kept) echo '[cli] WARNING: The following exception occurred while waiting for the downloader to finish: OSError().' >&2; exit 0 ;;\n\
              failed-write) echo '[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device' >&2 ;;\n\
              esac\n\
@@ -138,7 +147,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
              trap 'echo \"[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up...\" >&2; : > \"$LEGENDARY_CONFIG_PATH/tmp/$app.resume\"; echo \"$app\" >> \"$root/got-int\"; exit 0' INT\n\
              : > \"$root/installing-$app\"\n\
              echo '[DLManager] INFO: = Progress: 10.00% (1/10), Running for 00:00:01, ETA: 00:00:09' >&2\n\
-             {sleep} 30; exit 0 ;;\n\
+             nap; exit 0 ;;\n\
            deaf)\n\
              trap '' INT\n\
              exec 3>\"/dev/shm/psm_$({cat} \"$root/shm-tag\")_held\"\n\
