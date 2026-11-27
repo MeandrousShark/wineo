@@ -228,7 +228,8 @@ rimworld     1.6.4871 rev588   1.6.4900 rev600   update available
 the-witcher  1.5 (CS) GOG 0.2  1.5 (CS) GOG 0.2  up to date
 ```
 
-`wineo update --check` compares your GOG games with what GOG offers now.
+`wineo update --check` compares your GOG games with what GOG offers now,
+and your [Epic games](epic.md#updates) with what Epic offers.
 
 - **Galaxy games** compare the installed build with the latest one GOG
   lists on the branch the game follows, shown by GOG's name for each build (the build id when there's
