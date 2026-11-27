@@ -344,3 +344,24 @@ fn closing_or_leaving_mid_settings_call_stops_legendary() {
         assert!(epic.sweep().is_empty(), "{way}");
     }
 }
+
+#[test]
+fn closing_the_window_mid_startup_check_stops_legendary() {
+    use std::time::{Duration, Instant};
+    let epic = installed();
+    let hanging = epic.hang("status");
+    let calls = Calls::default();
+    let task = check_task(epic.paths.clone(), HashMap::new(), &calls);
+    let worker = crate::flow::epic_install::tests::run_in_background(task);
+    epic.wait_for(&hanging);
+    let closed = Instant::now();
+    calls.close();
+    let _ = worker.join().unwrap();
+    assert!(
+        closed.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        closed.elapsed()
+    );
+    assert!(!calls.running());
+    assert!(epic.sweep().is_empty());
+}
