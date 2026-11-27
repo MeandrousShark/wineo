@@ -7,6 +7,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use wineo_core::paths::Paths;
@@ -62,6 +63,7 @@ impl Epic {
         };
         fs::create_dir_all(epic.legendary.parent().unwrap()).unwrap();
         write_script(&epic.legendary, epic.script(version));
+        fs::copy(fixture("list.json"), epic.file("list.json")).unwrap();
         let config = epic.paths.global_config();
         fs::create_dir_all(config.parent().unwrap()).unwrap();
         fs::write(
@@ -98,6 +100,35 @@ impl Epic {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    /// How the fake's next install of `app` behaves; see `epic_install`.
+    pub(crate) fn set_mode(&self, app: &str, mode: &str) {
+        fs::write(self.file(&format!("mode-{app}")), mode).unwrap();
+    }
+
+    /// Waits for the fake to start installing `app`.
+    pub(crate) fn wait_started(&self, app: &str) {
+        let marker = self.file(&format!("installing-{app}"));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "the fake never started {app}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Where the games folder is by default.
+    pub(crate) fn games(&self) -> PathBuf {
+        fs::canonicalize(self.root.path()).unwrap().join("Games")
+    }
+
+    /// The owned list the fake prints, with `edit` applied.
+    pub(crate) fn edit_list(&self, edit: impl FnOnce(&mut serde_json::Value)) {
+        let path = self.file("list.json");
+        let mut list: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        edit(&mut list);
+        fs::write(&path, serde_json::to_string(&list).unwrap()).unwrap();
     }
 
     /// Kills every live process started from this test's root, and returns
@@ -177,7 +208,7 @@ impl Epic {
             status_out = fixture("status-logged-out.json").display(),
             failed = fixture("login-failed.stderr").display(),
             logged_out_list = fixture("logged-out-list.stderr").display(),
-            list = fixture("list.json").display(),
+            list = self.file("list.json").display(),
             functions = epic_install::functions(&tool),
             install_arms = epic_install::arms(&fixture(""), &tool),
         )

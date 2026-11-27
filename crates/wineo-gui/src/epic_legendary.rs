@@ -158,6 +158,11 @@ impl Offer {
         self.stage
     }
 
+    /// A download is running, which leaving the page has to wait for.
+    pub(crate) fn downloading(&self) -> bool {
+        self.token.is_some()
+    }
+
     pub(crate) fn cancel(&mut self) {
         if let Some(token) = &self.token {
             token.cancel();

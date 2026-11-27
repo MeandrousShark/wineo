@@ -1,6 +1,8 @@
 pub(crate) mod artwork;
 mod clone;
 mod emulated;
+mod epic;
+mod epic_install;
 mod frame;
 mod gog;
 mod gog_install;
@@ -85,6 +87,7 @@ pub(crate) enum Event {
     Steam,
     Gog,
     Emulated,
+    Epic,
     Back,
     AfterSubmit,
     Create(Box<new::Event>),
@@ -95,6 +98,7 @@ pub(crate) enum Event {
     GogMessage(Box<gog::Event>),
     UpdateMessage(Box<gog_update::Event>),
     EmulatedMessage(Box<emulated::Event>),
+    EpicMessage(Box<epic::Event>),
 }
 
 impl Event {
@@ -126,6 +130,7 @@ wrap_events! {
     gog::Event => GogMessage,
     gog_update::Event => UpdateMessage,
     emulated::Event => EmulatedMessage,
+    epic::Event => EpicMessage,
 }
 
 /// Runs `$body` with `$page` bound to whichever page is open. The pages' event
@@ -142,6 +147,7 @@ macro_rules! on_page {
             Self::Gog($page) => $body,
             Self::GogUpdate($page) => $body,
             Self::Emulated($page) => $body,
+            Self::Epic($page) => $body,
             Self::Choose(_) => $choose,
         }
     };
@@ -157,6 +163,7 @@ pub(crate) enum Page {
     Gog(Box<gog::Page>),
     GogUpdate(Box<gog_update::Page>),
     Emulated(Box<emulated::Page>),
+    Epic(Box<epic::Page>),
 }
 
 impl Page {
@@ -235,6 +242,10 @@ impl Page {
                 let (page, task) = emulated::Page::new(paths);
                 (Self::Emulated(Box::new(page)), task.map(Event::from))
             }
+            Event::Epic => {
+                let (page, task) = epic::Page::new(paths);
+                (Self::Epic(Box::new(page)), task.map(Event::from))
+            }
             _ => return None,
         })
     }
@@ -266,6 +277,7 @@ impl Page {
             (Self::Emulated(page), Event::EmulatedMessage(event)) => {
                 page.update(*event, key_available).map(Event::from)
             }
+            (Self::Epic(page), Event::EpicMessage(event)) => page.update(*event).map(Event::from),
             _ => Task::none(),
         }
     }
@@ -279,6 +291,7 @@ impl Page {
             Self::Gog(page) => page.waiting(),
             Self::GogUpdate(page) => page.waiting(),
             Self::Emulated(page) => page.waiting(),
+            Self::Epic(page) => page.waiting(),
             _ => false,
         }
     }
@@ -325,6 +338,7 @@ impl Page {
             Self::Gog(page) => page.view_at(palette, width).map(Event::from),
             Self::GogUpdate(page) => page.view(palette).map(Event::from),
             Self::Emulated(page) => page.view(palette, width, key_available).map(Event::from),
+            Self::Epic(page) => page.view_at(palette, width).map(Event::from),
             Self::Choose(_) => container(
                 column![
                     secondary_button("Back", palette).on_press(Event::Back),
@@ -401,6 +415,7 @@ impl Page {
             Self::Steam(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             Self::Gog(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             Self::Emulated(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
+            Self::Epic(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             _ => None,
         }
     }
@@ -437,6 +452,7 @@ impl Page {
             Self::Gog(_) => "a GOG import",
             Self::GogUpdate(_) => "a GOG update",
             Self::Emulated(_) => "an emulated games import",
+            Self::Epic(_) => "an Epic install",
         }
     }
 
@@ -463,6 +479,7 @@ impl Page {
             Self::Gog(page) => page.submit().map(Event::from),
             Self::GogUpdate(page) => page.submit().map(Event::from),
             Self::Emulated(page) => page.submit(key_available).map(Event::from),
+            Self::Epic(page) => page.submit().map(Event::from),
             Self::Choose(_) => self.update(Event::New, key_available),
         }
     }
