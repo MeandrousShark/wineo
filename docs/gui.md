@@ -309,7 +309,7 @@ several sections, the range starts at the copy you marked. Another Shift+click
 replaces that range and keeps your other marks, and Ctrl+Shift+click adds a
 range instead. Ctrl+A marks every shown game. A marked poster gets a wash in
 the theme's primary color and a check in its top-left corner, which moves the
-running light and GOG pill along to its right.
+running light and GOG or Epic pill along to its right.
 
 Marking never opens the panel or launches anything, even when the clicks
 land as a double-click. A plain click clears the marks and selects as usual.
@@ -350,7 +350,7 @@ a list, or [coverflow](#coverflow), and Ctrl+L cycles through them in that
 order: list, grid, coverflow. The list has one 56 px row per
 game: a small poster, the title with the environment name under it when
 they differ, then State, Playtime, Last played, Source, and Tags. A row
-shows what its poster does: the star, the eye, the Steam mark, a GOG pill,
+shows what its poster does: the star, the eye, the Steam mark, a GOG or Epic pill,
 the install bar, the state's dot, and the dim for a hidden or not installed
 game. Text that doesn't fit ends in an ellipsis.
 
@@ -453,7 +453,7 @@ the first one in view, stays where it was on screen.
 
 Below 90%, only the title shows under each poster. A game that's running,
 busy, installing, or has a problem gets a status dot in its poster's
-top-left corner instead, and a GOG badge that doesn't fit beside it becomes
+top-left corner instead, and a GOG or Epic badge that doesn't fit beside it becomes
 a small arrow; the panel has the details. Zooming across 90% fades the
 extra lines out or in, rather than cutting them.
 
@@ -648,10 +648,11 @@ An [Epic game](epic.md) gets the same: an **Update** row (**Up to date**,
 **Update** in the Actions and right-click menus, and **Finish update** or
 **Finish install** in place of Play when one was interrupted. **Update**
 reviews each run (`1.0 -> 1.1`, `not installed -> 1.1` for a new DLC)
-before it downloads, and a repair reviews `every file`. Once after the app
-starts, when you're logged in to Epic and not in a portable folder, it
-checks your Epic games in the background. While the app asks Epic how to start a game, the status line
-reads `Asking Epic...`.
+before it downloads. Repair is `wineo update NAME --repair` in the
+terminal; the app only finishes a repair that was interrupted. Once after
+the app starts, when you're logged in to Epic and not in a portable
+folder, it checks your Epic games in the background. While the app asks
+Epic how to start a game, the status line reads `Asking Epic...`.
 
 Games keep running after you close the app, the same as games started with
 `wineo start`. Reopen it to see or stop them.
@@ -1538,7 +1539,7 @@ Heroic and GOG lists, and the version picker:
 | Tab, Shift+Tab | Walk through the rows with the dialog's other controls |
 | Ctrl+Enter | Submit the dialog, without choosing the row |
 
-The first row has focus when a list appears, and **Add**'s 1 to 6 and New's
+The first row has focus when a list appears, and **Add**'s 1 to 7 and New's
 1 to 5 keys still work with a row focused. On New's choice page, the
 emulated import's emulator, core, and system pages, and Heroic's Sources
 page, Ctrl+Enter opens the focused row, since those pages have nothing else
@@ -1573,7 +1574,7 @@ In an Add, import, or clone flow:
 | Key | Does |
 |---|---|
 | Ctrl+Enter | Activate the page's primary action |
-| 1 to 6 (Add choices) | Choose New, prefix import, Heroic, Steam, GOG, or emulated games import |
+| 1 to 7 (Add choices) | Choose New, prefix import, Heroic, Steam, GOG, Epic, or emulated games import |
 | Arrow keys, Space (Heroic games) | Move between posters and toggle one |
 | Ctrl+A, Enter (Heroic games) | Select every eligible game, import the selection |
 | Tab, Shift+Tab | Move between controls |

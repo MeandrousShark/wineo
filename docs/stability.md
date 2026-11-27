@@ -32,7 +32,10 @@ match the docs.
 - **`--json` output.** Fields keep their names, types, and meanings, and new
   fields can appear. Enum fields like `install` can gain new values, so
   scripts should handle values they don't recognize. `wineo validate`'s
-  issue codes are stable. See [JSON output](json-output.md).
+  issue codes are stable. See [JSON output](json-output.md). For Epic
+  games that covers `epic_id`, `[epic] legendary`, `wineo import epic` and
+  its flags, `import epic --list --json`, the Epic rows of `update --check
+  --json`, and the seven `epic_*` validate codes.
 - **Where files live.** The config and data directories, and the
   [portable folder](portable.md) layout.
 - **Environment variables wineo reads.** `WINEO_PORTABLE_DIR`,
@@ -59,14 +62,16 @@ match the docs.
   turns on can improve. To keep a fixed set, write your own
   `templates/gaming.toml`, which replaces the built-in one.
 - **Shell completion output.** It follows the CLI, which is stable.
+- **Which Legendary versions work.** wineo pins its own copy and sets the
+  oldest version it accepts, and either can change in a release, so an
+  `[epic] legendary` that worked can be refused after an upgrade.
 - **Files wineo manages for itself.** Run records, locks, and logs in the
   state directory, GOG folder states, Galaxy records, support files,
   the redistributable store, `gog-branches.key`, Epic game records,
   Legendary's folder, and wineo's copy of Legendary and its version in the
-  data directory, caches like
-  `steam-owned-<steamid>.json` and the GOG lists, details, and downloads,
-  temporary
-  files, the desktop entries wineo writes, and the on-disk layout of
+  data directory, caches like `steam-owned-<steamid>.json`, the GOG lists,
+  details, and downloads, and the Epic lists and covers, temporary files,
+  the desktop entries wineo writes, and the on-disk layout of
   snapshots and the trash. Use the commands to work with them. Their
   formats aren't promised, but upgrades read them, and a newer release only
   adds fields an older one can skip. When wineo can't read one of them,

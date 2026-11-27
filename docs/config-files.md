@@ -154,6 +154,15 @@ wineo set --global steam=flatpak
 wineo set --global --unset steam
 ```
 
+An environment that owns an Epic game has a top-level `epic_id`, the
+game's Epic app name, and it needed no schema bump: an older wineo refuses
+the file for its unknown key rather than misreading it. Only `wineo import
+epic` sets it, and `wineo set` refuses to change or remove it (`epic_id is
+set by wineo import epic.`). It's valid on a Wine or Proton environment only,
+never with `gog_id` or `heroic_id`, and must be non-empty, with no control
+characters and no space at either end. See
+[docs/environment.toml.example](environment.toml.example).
+
 One global key is for Epic games (plan 0073), and needed no schema bump:
 `[epic] legendary`, the path of the Legendary program to use. wineo talks
 to Epic through Legendary, and looks for it here first, then for its own
@@ -168,24 +177,11 @@ names it, and wineo doesn't fall back to another copy.
 legendary = "~/.local/bin/legendary"
 ```
 
-Three global keys say where downloaded builds live, for downloads,
-`runners update`, the `*-Latest` aliases, and removal:
-`defaults.runner_root` (default `~/.local/share/wineo/runners`),
-`defaults.dxvk_root` (`~/.local/share/wineo/dxvk`), and
-`defaults.vkd3d_root` (`~/.local/share/wineo/vkd3d`). A
-[portable folder](portable.md) uses the host's builds unless its own
-`config.toml` sets these, and there a relative path is read from the
-portable folder.
-
-```sh
-wineo set --global defaults.runner_root=~/Runners
-```
-
 Two global keys are for installing GOG games, and needed no schema bump:
 
-- `defaults.games_root`, where new GOG games install, each in a folder
-  named after its title. Default `~/Games`. GOG games live in the host
-  library, so it's stored as `~/...` or an absolute path, never relative to
+- `defaults.games_root`, where new GOG and Epic games install, each in a
+  folder named after its title. Default `~/Games`. Store games live in the
+  host library, so it's stored as `~/...` or an absolute path, never relative to
   a portable folder.
 - `gog.language`, the language to install in, as a locale tag like `en-US`,
   `fr-FR`, or `pt-BR` (the default is `en-US`). wineo maps it to GOG's own

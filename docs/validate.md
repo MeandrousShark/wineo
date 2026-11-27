@@ -213,8 +213,8 @@ holder exits, so a stale one can't exist.
 Only the active root is checked: the standard locations, or the folder given
 by `--portable` or `WINEO_PORTABLE_DIR`. Portable environments never get
 desktop entries, so desktop checks are skipped there, apart from the warning
-about a hand-edited `desktop = true`. GOG games live in the host library
-only, so GOG checks are skipped in a portable root.
+about a hand-edited `desktop = true`. GOG and Epic games live in the host
+library only, so their checks are skipped in a portable root.
 
 Shared-prefix discovery is also limited to registrations in the selected root;
 idle registrations in other roots may not be detected.

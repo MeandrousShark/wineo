@@ -90,6 +90,8 @@ copy of the game's details.
 real update would show and download nothing. They don't cache GOG's
 details or record a build another tool installed, and `--refresh` still
 asks GOG for current details. Saving a renewed GOG login is the only write.
+For an Epic game they use the saved list of owned games, ask Epic nothing,
+and never download Legendary, ending with `Dry run, nothing was updated.`
 `update --all --dry-run` reports a game that would fail and exits 1.
 
 ## Art
