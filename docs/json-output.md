@@ -317,7 +317,8 @@ Epic rows have the same keys. `track`, `branch`, and `pinned` are `null`.
 `installed` is the version wineo recorded and `available` the Windows
 build Epic lists, `null` when unknown. `update` is `available`, `none`, or
 `cant_compare`, and `reason` is `null` or a sentence, never a word like
-`galaxy`. `applicable` is `false` when Legendary wants to check the game's
+`galaxy`. `applicable` is `true` only when `update` is `available`, and
+`false` when Legendary wants to check the game's
 files first; `wineo update NAME --repair` does that. An Epic DLC's `state`
 is `none`, `available`, `not_installed` (bought since, or one that failed
 to install; `wineo update` installs it), `cant_compare`, or `unavailable`

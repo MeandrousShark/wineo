@@ -532,8 +532,9 @@ fails, the error ends with the command that finishes it.
 ## Where GOG games live
 
 GOG games live in the host library. In a [portable folder](portable.md),
-logging in and listing work, but moving and updating say `GOG games live
-in the host library. Run this without --portable.`
+logging in and listing work, but moving says `GOG games live in the host
+library. Run this without --portable.`, and updating says `GOG and Epic
+games live in the host library. Run this without --portable.`
 
 A Galaxy game's support files live in wineo's data directory under
 `gog/support/`, and the redistributables every Galaxy game shares under

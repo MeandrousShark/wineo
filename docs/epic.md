@@ -82,7 +82,8 @@ files are whole but no environment owns them, like one whose environment
 is in the trash), or `unavailable`, with the reason: `another launcher
 manages it`, `needs an account at another launcher`, or `no Windows build`.
 Once wineo has a record of a listed game, installed or not, the table
-adds ENVIRONMENT and VERSION columns. An empty library prints `You don't own any Epic games.`
+adds ENVIRONMENT, VERSION, and UPDATE columns. An empty library prints
+`You don't own any Epic games.`
 
 The list is cached for an hour; `--refresh` asks Epic again. If Epic
 can't send it, the saved list stands in with a warning. Plain `--list`
@@ -177,7 +178,7 @@ files checked before it updates them, `update NAME` refuses and says to
 run `--repair` first.
 
 Ctrl+C stops an update or repair and exits 130, and the same command
-finishes it. Until then the game can't be started:
+finishes it; until then the game can't be started. It says:
 
 ```
 Update interrupted.
