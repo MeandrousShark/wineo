@@ -26,10 +26,10 @@ pub struct Args {
     /// Environment to check or update
     #[arg(value_name = "NAME", conflicts_with = "all", add = ArgValueCompleter::new(crate::completion::store_environments))]
     name: Option<String>,
-    /// Every GOG game, which is the default for --check
+    /// Every GOG and Epic game, which is the default for --check
     #[arg(long)]
     all: bool,
-    /// List the updates GOG offers and change nothing
+    /// List the updates GOG and Epic offer and change nothing
     #[arg(long)]
     check: bool,
     /// Rebuild a game from GOG's current files even when nothing changed
@@ -38,7 +38,7 @@ pub struct Args {
     /// With --reinstall, the track to put the game on
     #[arg(long, value_enum, requires = "reinstall", conflicts_with = "all")]
     track: Option<GogTrack>,
-    /// Check every file of a Galaxy game and fix what is missing or damaged
+    /// Check every file of a Galaxy or Epic game and fix what is missing or damaged
     #[arg(long, conflicts_with_all = ["reinstall", "track", "check", "all"])]
     repair: bool,
     /// Follow this Galaxy branch from now on, and update from it
