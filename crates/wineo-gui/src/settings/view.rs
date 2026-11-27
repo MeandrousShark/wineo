@@ -583,7 +583,7 @@ fn stores_tab<'a>(
     locked: bool,
     palette: Palette,
 ) -> Element<'a, Message> {
-    let (steam_key, gog) = (&page.steam_key, &page.gog);
+    let (steam_key, gog, epic) = (&page.steam_key, &page.gog, &page.epic);
     let portable = paths.portable_root().is_some();
     let steam = column![
         auto_import_rows(
@@ -610,6 +610,7 @@ fn stores_tab<'a>(
             .into(),
             palette
         ),
+        section("Epic", epic_row(epic, locked, palette), palette),
     ]
     .spacing(24)
     .width(Fill)
@@ -1619,6 +1620,144 @@ fn gog_row<'a>(
         if settings.shows_logout() {
             buttons = buttons.push(secondary_button("Log out", palette).on_press_maybe(
                 (idle && settings.logged_in()).then(|| gog_send(GogEvent::Logout)),
+            ));
+        }
+        rows = rows.push(buttons);
+    }
+    rows.into()
+}
+
+fn epic_send(event: super::epic::Event) -> Message {
+    send(Event::Epic(event))
+}
+
+/// The Epic section: the account and the Legendary in use, then the
+/// download offer, the login form, or the buttons.
+pub(super) fn epic_row<'a>(
+    settings: &'a super::epic::Settings,
+    locked: bool,
+    palette: Palette,
+) -> Element<'a, Message> {
+    use super::epic::{Event as EpicEvent, Program};
+    let status = status_or_checking(
+        settings.status.as_ref().map(super::epic::Status::label),
+        settings.status_error.is_some(),
+    );
+    let legendary: Element<'a, Message> = match &settings.status {
+        Some(status) => text(status.legendary_label())
+            .color(match status.legendary {
+                Program::Unusable(_) => palette.danger,
+                _ => palette.foreground,
+            })
+            .into(),
+        None => text(status_or_checking(None, settings.status_error.is_some()))
+            .color(palette.foreground)
+            .into(),
+    };
+    let mut rows = column![
+        setting_row(
+            "Account",
+            text(status).color(palette.foreground).into(),
+            None,
+            palette,
+        ),
+        setting_row("Legendary", legendary, None, palette),
+    ]
+    .spacing(12);
+    if let Some(error) = &settings.status_error {
+        rows = rows.push(text(error).size(13).color(palette.danger));
+    }
+    if let Some(result) = &settings.result {
+        rows = rows.push(text(result).size(13).color(palette.muted));
+    }
+    if let Some(error) = &settings.error {
+        rows = rows.push(text(error).size(13).color(palette.danger));
+    }
+    if let Some(busy) = settings.busy_line() {
+        rows = rows.push(
+            row![
+                crate::spinner::spinner(palette, 16.0),
+                text(busy).size(13).color(palette.muted),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    }
+    let idle = settings.busy.is_none() && !locked;
+    if let Some(offer) = &settings.offer {
+        let sequence = settings.busy_sequence.unwrap_or_default();
+        rows = rows.push(
+            offer
+                .view(palette)
+                .map(move |event| epic_send(EpicEvent::Offer(sequence, event))),
+        );
+    } else if settings.input_open {
+        rows = rows.push(
+            text("Log in to Epic in your browser. If it doesn't open, go to:")
+                .size(13)
+                .color(palette.muted),
+        );
+        rows = rows.push(
+            row![
+                text(wineo_core::epic::account::LOGIN_URL)
+                    .size(13)
+                    .color(palette.foreground)
+                    .width(Fill)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                secondary_button("Copy link", palette).on_press(epic_send(EpicEvent::CopyLink)),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+        rows = rows.push(
+            text("Then paste what the page shows, or only its authorizationCode.")
+                .size(13)
+                .color(palette.muted),
+        );
+        let ready = idle && !settings.input.as_str().trim().is_empty();
+        let field = text_input("Code", settings.input.as_str())
+            .secure(true)
+            .on_input_maybe(idle.then_some(|value| {
+                epic_send(EpicEvent::LoginText(super::key_settings::Secret::new(
+                    value,
+                )))
+            }))
+            .on_submit_maybe(ready.then(|| epic_send(EpicEvent::Login)))
+            .width(Fill)
+            .padding([6, 10])
+            .style(move |_, status| input_style(palette, status));
+        rows = rows.push(
+            row![
+                field,
+                action_button(
+                    "Log in",
+                    palette.primary,
+                    ready,
+                    epic_send(EpicEvent::Login)
+                ),
+                secondary_button("Cancel", palette).on_press_maybe(
+                    settings
+                        .busy
+                        .is_none()
+                        .then(|| epic_send(EpicEvent::LoginCancel))
+                ),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        );
+    } else {
+        let mut buttons = row![].spacing(8).align_y(Center);
+        if settings.shows_login() {
+            buttons = buttons.push(action_button(
+                "Log in",
+                palette.primary,
+                idle,
+                epic_send(EpicEvent::LoginOpen),
+            ));
+        }
+        if settings.shows_logout() {
+            buttons = buttons.push(secondary_button("Log out", palette).on_press_maybe(
+                (idle && settings.status.is_some()).then(|| epic_send(EpicEvent::Logout)),
             ));
         }
         rows = rows.push(buttons);

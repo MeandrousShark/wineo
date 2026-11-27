@@ -30,6 +30,7 @@ mod downloads_page;
 mod downloads_work;
 mod dropdown;
 mod ends;
+mod epic_legendary;
 mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
@@ -44,6 +45,8 @@ mod galaxy_fake;
 #[cfg(test)]
 mod gog_fake;
 // Shared with the other crates, which include the same file.
+#[cfg(test)]
+mod epic_fake;
 mod gog_library;
 mod grid;
 mod grid_motion;
@@ -392,6 +395,7 @@ pub(crate) struct App {
     steamgriddb_late_result: Option<settings::Event>,
     steam_key_work: settings::SteamKeyWork,
     gog_work: settings::GogWork,
+    epic_work: settings::EpicWork,
     /// What the background check found, by environment. Kept here rather
     /// than on cards, which every library refresh rebuilds.
     pub(crate) gog_updates: gog_library::GogState,
@@ -873,6 +877,7 @@ impl App {
             steamgriddb_late_result: None,
             steam_key_work: settings::SteamKeyWork::default(),
             gog_work: settings::GogWork::default(),
+            epic_work: settings::EpicWork::default(),
             gog_updates: gog_library::GogState::default(),
             version: None,
             version_generation: 0,

@@ -2,6 +2,7 @@
 
 mod appearance;
 mod editor;
+pub(crate) mod epic;
 mod form;
 mod global;
 pub(crate) mod gog;
@@ -145,6 +146,8 @@ pub(crate) enum Event {
     ShowAdvanced,
     /// The GOG login row.
     Gog(gog::Event),
+    /// The Epic section.
+    Epic(epic::Event),
     /// An edit on one target's card.
     Target(String, TargetEdit),
     /// Opens or closes a target's card, which only changes the view.
@@ -232,6 +235,17 @@ impl Event {
                         | gog::Event::LoginReady(..)
                         | gog::Event::LoggedIn(..)
                         | gog::Event::LoggedOut(..)
+                )
+                | Event::Epic(
+                    epic::Event::StatusLoaded(..)
+                        | epic::Event::LoginReady(..)
+                        | epic::Event::LoggedIn(..)
+                        | epic::Event::LoggedOut(..)
+                        | epic::Event::Offer(
+                            _,
+                            crate::epic_legendary::Event::Progress(..)
+                                | crate::epic_legendary::Event::Done(..)
+                        )
                 )
                 | Event::Scanned(..)
                 | Event::PickedPath(..)
@@ -490,6 +504,7 @@ pub(crate) struct Page {
     steam_key_input_session: Option<u64>,
     steam_key: steam_key::Settings,
     gog: gog::Settings,
+    epic: epic::Settings,
     /// The row to show once the page loads.
     pub(crate) reveal: Option<Reveal>,
     /// The controllers connected, by name, which the app keeps current.
@@ -568,6 +583,22 @@ impl GogWork {
     }
 }
 
+/// The Epic login, logout, or Legendary download the app owns, like
+/// `GogWork`, so it lands when Settings is opened again.
+#[derive(Default)]
+pub(crate) struct EpicWork {
+    sequence: u64,
+    pending: Option<(u64, epic::Busy)>,
+    late: Option<epic::Event>,
+}
+
+impl EpicWork {
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
 /// What the app does after the page handles an event.
 pub(crate) struct Step {
     task: Task<Message>,
@@ -636,6 +667,7 @@ impl Page {
             steam_key_input_session: None,
             steam_key: steam_key::Settings::default(),
             gog: gog::Settings::default(),
+            epic: epic::Settings::default(),
             reveal: None,
             pads: Vec::new(),
             pad_style: crate::pad::Style::default(),
@@ -722,13 +754,28 @@ impl Page {
     /// A key is being checked, saved, or removed, which spins the spinner.
     #[cfg(test)]
     pub(crate) fn key_busy(&self) -> bool {
-        self.steamgriddb.busy.is_some() || self.steam_key.busy.is_some() || self.gog.busy.is_some()
+        self.steamgriddb.busy.is_some()
+            || self.steam_key.busy.is_some()
+            || self.gog.busy.is_some()
+            || self.epic.busy.is_some()
     }
     fn refresh_gog(&mut self, paths: &Paths) -> Task<Message> {
         if !self.global || !matches!(self.view, View::Global(_)) {
             return Task::none();
         }
         self.gog.refresh(paths, self.generation)
+    }
+    fn refresh_epic(&mut self, paths: &Paths) -> Task<Message> {
+        if !self.global || !matches!(self.view, View::Global(_)) {
+            return Task::none();
+        }
+        self.epic.refresh(paths, self.generation)
+    }
+    fn epic_context(&self) -> epic::Context {
+        epic::Context {
+            generation: self.generation,
+            idle: self.global && !self.locked() && !self.loading(),
+        }
     }
     fn gog_context(&self) -> gog::Context {
         gog::Context {
@@ -1065,6 +1112,19 @@ impl App {
             task = Task::batch([task, step.task]);
         }
         self.gog_work.sequence = self.gog_work.sequence.max(page.gog.sequence);
+        page.epic.sequence = self.epic_work.sequence;
+        if let Some((sequence, busy)) = self.epic_work.pending {
+            page.epic.busy = Some(busy);
+            page.epic.busy_sequence = Some(sequence);
+        }
+        if let Some(event) = self.epic_work.late.take()
+            && let Some(sequence) = event.operation()
+        {
+            page.epic.busy_sequence = Some(sequence);
+            let step = page.update(&self.paths, Event::Epic(event.rebind(page.generation)));
+            task = Task::batch([task, step.task]);
+        }
+        self.epic_work.sequence = self.epic_work.sequence.max(page.epic.sequence);
         if let Some(event) = self.steamgriddb_late_result.take() {
             if !page.steamgriddb_input_session_touched
                 && let Some(session) = event.steamgriddb_input_session()
@@ -1110,6 +1170,23 @@ impl App {
         }
         task
     }
+    /// Notes an Epic login, logout, or download the open page runs, so its
+    /// result lands if the page is left first.
+    fn record_epic_work(&mut self) {
+        let Some(page) = self.settings.as_ref().filter(|page| page.is_global()) else {
+            return;
+        };
+        self.epic_work.sequence = self.epic_work.sequence.max(page.epic.sequence);
+        // Opening the login page ends with the page, so only logging in or
+        // out and a download outlive it.
+        if let (
+            Some(sequence),
+            Some(busy @ (epic::Busy::LoggingIn | epic::Busy::LoggingOut | epic::Busy::Downloading)),
+        ) = (page.epic.busy_sequence, page.epic.busy)
+        {
+            self.epic_work.pending = Some((sequence, busy));
+        }
+    }
     pub(crate) fn settings_update(&mut self, event: Event) -> Task<Message> {
         if let Event::CaptureButton(action) = event {
             return self.toggle_capture(action);
@@ -1146,6 +1223,40 @@ impl App {
                     }
                     None => {
                         self.gog_work.late = Some(gog_event);
+                        Task::none()
+                    }
+                };
+            }
+        }
+        if let Event::Epic(epic_event) = &event {
+            if matches!(
+                epic_event,
+                epic::Event::LoginOpen | epic::Event::Login | epic::Event::Logout
+            ) && self.epic_work.pending.is_some()
+            {
+                return Task::none();
+            }
+            if let Some(sequence) = epic_event.operation() {
+                if self
+                    .epic_work
+                    .pending
+                    .is_some_and(|(pending, _)| pending == sequence)
+                {
+                    self.epic_work.pending = None;
+                }
+                let Event::Epic(epic_event) = event else {
+                    unreachable!()
+                };
+                return match self.settings.as_mut().filter(|page| page.is_global()) {
+                    Some(page) => {
+                        let event = Event::Epic(epic_event.rebind(page.generation));
+                        let step = page.update(&self.paths, event);
+                        self.epic_work.sequence = self.epic_work.sequence.max(page.epic.sequence);
+                        self.record_epic_work();
+                        step.task
+                    }
+                    None => {
+                        self.epic_work.late = Some(epic_event);
                         Task::none()
                     }
                 };
@@ -1284,6 +1395,7 @@ impl App {
                 self.gog_work.pending = Some((sequence, busy));
             }
         }
+        self.record_epic_work();
         if let Some(page) = &self.settings {
             self.steamgriddb_input_session_sequence = self
                 .steamgriddb_input_session_sequence

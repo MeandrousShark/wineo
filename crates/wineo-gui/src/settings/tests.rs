@@ -3940,3 +3940,6 @@ fn retroarch_quit_switch_defaults_on_and_saves_through_set() {
         Some(true)
     );
 }
+
+#[path = "tests/epic_account.rs"]
+mod epic_account;
