@@ -417,7 +417,7 @@ fn both(epic: &Epic, api: &GogApi, args: &[&str]) -> Output {
 }
 
 #[test]
-fn check_lists_both_stores_with_gogs_rows_as_before() {
+fn check_lists_both_stores_with_a_store_on_each_row() {
     let epic = epic();
     offline_game(&epic);
     offer(&epic, "0.25");
@@ -447,7 +447,7 @@ fn check_lists_both_stores_with_gogs_rows_as_before() {
                 "unfinished": false, "dlc": [],
             },
             {
-                "name": "rimworld", "id": RIMWORLD.to_string(), "track": "installer",
+                "name": "rimworld", "id": RIMWORLD.to_string(), "store": "gog", "track": "installer",
                 "installed": "1.6.4871 rev588", "available": "1.6.4900 rev600",
                 "branch": null, "pinned": null, "update": "available", "applicable": true, "reason": null,
                 "unfinished": false,
@@ -896,6 +896,15 @@ fn the_owned_list_says_which_installed_games_have_an_update() {
     };
     assert_eq!(update(&epic, APP), "none");
     assert_eq!(update(&epic, "AppToken"), Value::Null);
+    let table = stdout(&epic.run(&["import", "epic", "--list"]));
+    assert!(
+        table.contains(
+            "ENVIRONMENT   VERSION  UPDATE\n\
+             Dlc Game       Dlc Game          not installed\n\
+             AppOffline     Offline Game      installed                                          offline-game  0.24     up to date\n"
+        ),
+        "{table}"
+    );
     offer(&epic, "0.25");
     assert_eq!(update(&epic, APP), "available");
     list_with(&epic, |list| {
