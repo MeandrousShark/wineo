@@ -182,8 +182,9 @@ login. Log in with wineo import epic --login.`
 The main target's program comes from Epic, so `wineo set`, `setup`, and
 the desktop app refuse to change it: `NAME's main program comes from Epic
 and can't be changed.` Its arguments, working folder, name, wrappers,
-hooks, and desktop entry can all be changed. A game's own pre-launch
-command isn't run; the install review says when a game has one.
+hooks, and desktop entry can all be changed. Legendary's own
+pre-launch command setting isn't used; wineo's Legendary folder never sets
+one, and [hooks](hooks.md) do that job.
 
 ### A game that stops at its title screen
 
