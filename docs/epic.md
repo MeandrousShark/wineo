@@ -173,8 +173,8 @@ starts, with a notice:
 Epic didn't answer, so kestrel-rally starts offline. Online features may not work.
 ```
 
-Logged out, or without Legendary or Python, it starts from what wineo
-recorded at install, which lacks any extra arguments Epic's own answer
+Logged out, without Legendary or Python, or with an `[epic] legendary`
+setting that can't be used, it starts from what wineo recorded at install, which lacks any extra arguments Epic's own answer
 would add. A game that isn't marked to run offline refuses and says why,
 like `kestrel-rally isn't marked to run offline, so it needs an Epic
 login. Log in with wineo import epic --login.`
