@@ -84,18 +84,6 @@ fn every_owned_game_shows_with_its_state_or_why_it_cant_install() {
 fn installed_unfinished_and_downloaded_games_say_what_wineo_has() {
     let epic = world();
     let paths = &epic.paths;
-    let planned = |game: &epic_install::Game| match epic_install::prepare_with(
-        paths,
-        game,
-        &Default::default(),
-        &Token::new(),
-    )
-    .unwrap()
-    {
-        epic_install::Prepared::Review(review) => review,
-        epic_install::Prepared::Offer(_) => unreachable!(),
-    };
-    let _ = planned;
     // An install canceled partway leaves the game unfinished.
     epic.set_mode("Dlc Game", "hang");
     let dlc = epic_install::Game {
