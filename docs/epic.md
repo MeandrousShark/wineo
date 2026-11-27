@@ -149,3 +149,45 @@ Finish the interrupted install with: wineo import epic --game Kestrel
 an unfinished or downloaded game and leaves its files where they are. It
 refuses a game an environment owns, in the trash too. Nothing in wineo
 deletes Epic game files.
+
+## Starting games
+
+`wineo start NAME` asks Legendary how to start the game, then runs the
+program it names in the environment's prefix with the environment's
+runner. The game gets its own parameters, then the target's saved
+arguments, then the command line's, then Epic's. The desktop app shows
+`Asking Epic...` meanwhile, which takes a second or two. Each start and
+`restart` asks again, and a game with an update waiting still starts.
+Other targets, tools, and `wineo exec` start without asking Epic.
+
+Epic's arguments carry a one-use login for the game, so wineo keeps them
+out of everything it saves or shows: the run's state, `restart`,
+`status`, `--json`, dry runs, logs, and desktop entries. The running
+game's own command line shows them to your other programs, as it does
+under Epic's launcher, and so would a Proton debug log you turn on.
+
+When Epic can't be asked, a game that's marked to run offline still
+starts, with a notice:
+
+```
+Epic didn't answer, so kestrel-rally starts offline. Online features may not work.
+```
+
+Logged out, or without Legendary or Python, it starts from what wineo
+recorded at install, which lacks any extra arguments Epic's own answer
+would add. A game that isn't marked to run offline refuses and says why,
+like `kestrel-rally isn't marked to run offline, so it needs an Epic
+login. Log in with wineo import epic --login.`
+
+The main target's program comes from Epic, so `wineo set`, `setup`, and
+the desktop app refuse to change it: `NAME's main program comes from Epic
+and can't be changed.` Its arguments, working folder, name, wrappers,
+hooks, and desktop entry can all be changed. A game's own pre-launch
+command isn't run; the install review says when a game has one.
+
+### A game that stops at its title screen
+
+Some games log in to Epic themselves and may need you to agree to
+something on Epic's site first, like new terms. The game opens a browser
+tab for that, and waits until you've answered. If no tab opens, check
+that the game can reach your desktop session, then start it again.
