@@ -19,7 +19,24 @@
 //! - `outside`: records a program outside the game folder.
 //!
 //! Every install writes `<root>/installing-<app>` once it has started, and
-//! `<root>/got-int` gets a line for each interrupt it heeded.
+//! `<root>/got-int` gets a line for each interrupt it heeded. It records
+//! the version in `<root>/version-<app>` (`1.0` without one) and the program
+//! in `<root>/exe-<app>` (`Binaries/Win64/Game.exe` without one), so a test
+//! can make a later run an update. `--update-only` refuses an app it hasn't
+//! recorded, as Legendary does.
+//!
+//! `install APP --repair` checks the recorded game: it writes the repair
+//! file `tmp/APP.repair`, logs what Legendary logs while checking, appends
+//! the app to `<root>/repaired`, removes the repair file, and leaves
+//! `installed.json` alone. Its modes:
+//!
+//! - `damaged`: logs a missing file and a failed check, as Legendary does
+//!   before it fetches what is missing, then finishes.
+//! - `hang`: waits up to 30 seconds after checking; an interrupt logs the
+//!   abort line and keeps the repair file.
+//! - `kept`: exits 0 with the repair file left, as a downloader that failed
+//!   leaves it.
+//! - `failed-write`: logs a failed write, then finishes.
 //!
 //! `launch APP --json` answers for a game installed through the fake, or
 //! one a test wrote `<state>/fake-installed/APP.launch` for: its folder on
@@ -70,13 +87,36 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            *) echo \"[cli] ERROR: Game not found: $2\" >&2 ;;\n\
            esac ;;\n\
          install)\n\
-           app=\"$2\"; shift 2; base=''; folder=''\n\
+           app=\"$2\"; shift 2; base=''; folder=''; repair=''; only=''\n\
            while [ $# -gt 0 ]; do\n\
-             case \"$1\" in --base-path) base=\"$2\"; shift ;; --game-folder) folder=\"$2\"; shift ;; esac\n\
+             case \"$1\" in --base-path) base=\"$2\"; shift ;; --game-folder) folder=\"$2\"; shift ;; --repair) repair=1 ;; --update-only) only=1 ;; esac\n\
              shift\n\
            done\n\
            mode=$({cat} \"$root/mode-$app\" 2>/dev/null)\n\
            if [ ! -f \"$user\" ]; then {cat} '{logged_out}' >&2; exit 1; fi\n\
+           recorded=\"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
+           if [ -n \"$only\" ] && [ ! -f \"$recorded\" ]; then echo \"[cli] ERROR: Update requested for \\\"$app\\\", but app not installed!\" >&2; exit 1; fi\n\
+           if [ -n \"$repair\" ]; then\n\
+             if [ ! -f \"$recorded\" ]; then echo \"[cli] ERROR: Game \\\"$app\\\" ($app) is not installed!\" >&2; exit 0; fi\n\
+             : > \"$root/installing-$app\"\n\
+             {mkdir} -p \"$LEGENDARY_CONFIG_PATH/tmp\"\n\
+             echo \"[cli] INFO: Loading installed manifest for \\\"$app\\\"\" >&2\n\
+             echo \"[cli] INFO: Verifying \\\"$app\\\" version \\\"1.0\\\"\" >&2\n\
+             : > \"$LEGENDARY_CONFIG_PATH/tmp/$app.repair\"\n\
+             if [ \"$mode\" = damaged ]; then echo '[cli] ERROR: File is missing: \"Binaries/Win64/Game.exe\"' >&2; echo '[cli] ERROR: Verification failed, 0 file(s) corrupted, 1 file(s) are missing.' >&2; fi\n\
+             echo \"[DLManager] INFO: Download Manager running with process-id: $$\" >&2\n\
+             case \"$mode\" in\n\
+             hang)\n\
+               trap 'echo \"[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up...\" >&2; echo \"$app\" >> \"$root/got-int\"; exit 0' INT\n\
+               {sleep} 30; exit 0 ;;\n\
+             kept) echo '[cli] WARNING: The following exception occurred while waiting for the downloader to finish: OSError().' >&2; exit 0 ;;\n\
+             failed-write) echo '[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device' >&2 ;;\n\
+             esac\n\
+             echo \"$app\" >> \"$root/repaired\"\n\
+             {rm} -f \"$LEGENDARY_CONFIG_PATH/tmp/$app.repair\"\n\
+             echo '[cli] INFO: Finished installation process in 0.01 seconds.' >&2\n\
+             exit 0\n\
+           fi\n\
            echo \"[cli] INFO: Preparing download for \\\"$app\\\" ($app)...\" >&2\n\
            echo \"[DLManager] INFO: Download Manager running with process-id: $$\" >&2\n\
            : > \"$root/installing-$app\"\n\
@@ -105,7 +145,9 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            path=\"$base/$folder\"; if [ \"$mode\" = elsewhere ]; then path=/elsewhere; fi\n\
            {mkdir} -p \"$LEGENDARY_CONFIG_PATH/fake-installed\"\n\
            exe=Binaries/Win64/Game.exe; if [ \"$mode\" = outside ]; then exe=Binaries/../../outside.exe; fi\n\
-           printf '\"%s\": {{\"app_name\": \"%s\", \"install_path\": \"%s\", \"version\": \"1.0\", \"executable\": \"%s\", \"launch_parameters\": \"-skipintro -lang=en\", \"can_run_offline\": true}}' \"$app\" \"$app\" \"$path\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
+           version=$({cat} \"$root/version-$app\" 2>/dev/null || echo 1.0)\n\
+           if [ -f \"$root/exe-$app\" ]; then exe=$({cat} \"$root/exe-$app\"); fi\n\
+           printf '\"%s\": {{\"app_name\": \"%s\", \"install_path\": \"%s\", \"version\": \"%s\", \"executable\": \"%s\", \"launch_parameters\": \"-skipintro -lang=en\", \"can_run_offline\": true}}' \"$app\" \"$app\" \"$path\" \"$version\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
            printf '%s\\n%s\\n' \"$path\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.launch\"\n\
            rebuild\n\
            {rm} -f \"$LEGENDARY_CONFIG_PATH/tmp/$app.resume\"\n\
