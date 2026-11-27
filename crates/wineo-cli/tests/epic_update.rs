@@ -1004,3 +1004,62 @@ fn every_form_of_update_is_refused_in_a_portable_root() {
     assert_eq!(epic.install_calls().len(), 1);
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn a_game_legendary_wants_checked_is_repaired_before_it_updates() {
+    let epic = epic();
+    offline_game(&epic);
+    offer(&epic, "0.25");
+    set_version(&epic, APP, "0.25");
+    // As Legendary leaves a game it wants checked before changing it again.
+    let recorded = epic.state().join("fake-installed/AppOffline.json");
+    let text = fs::read_to_string(&recorded).unwrap().replacen(
+        "{\"app_name\"",
+        "{\"needs_verification\": true, \"app_name\"",
+        1,
+    );
+    fs::write(&recorded, &text).unwrap();
+    fs::write(epic.state().join("installed.json"), format!("{{{text}}}")).unwrap();
+    let refusal = "Legendary wants to check offline-game's game files before it updates them. Repair it first with wineo update offline-game --repair.";
+
+    let json = check_json(&epic);
+    let row = row(&json, "offline-game");
+    assert_eq!(row["update"], "available");
+    assert_eq!(row["applicable"], false);
+    assert_eq!(row["reason"], refusal);
+    let table = stdout(&epic.run(&["update", "--check"]));
+    assert!(table.ends_with(&format!("  {refusal}\n")), "{table}");
+
+    let calls = epic.install_calls().len();
+    let output = epic.install(&["update", "offline-game", "--yes"]);
+    assert_code(&output, 1);
+    assert_eq!(stderr(&output), format!("error: {refusal}\n"));
+    let output = epic.install(&["update", "--all", "--yes"]);
+    assert_ok(&output);
+    assert_eq!(
+        stdout(&output),
+        format!("Skipped offline-game: {refusal}\nNothing to update.\n")
+    );
+    assert_eq!(epic.install_calls().len(), calls);
+    assert_eq!(mark(&epic, APP), None);
+
+    // An update left unfinished can't go on either, and the repair the
+    // refusal names takes it over.
+    let paths = epic.f.paths();
+    let lock = game::RecordLock::exclusive(&paths, APP, &|| false).unwrap();
+    let mut left = lock.read(&paths).unwrap().unwrap();
+    lock.mark(&paths, &mut left, Work::Update, APP).unwrap();
+    drop(lock);
+    let output = epic.install(&["update", "offline-game", "--yes"]);
+    assert_code(&output, 1);
+    assert_eq!(stderr(&output), format!("error: {refusal}\n"));
+    assert_ok(&epic.install(&["update", "offline-game", "--repair", "--yes"]));
+    assert_eq!(mark(&epic, APP), None);
+    let output = epic.install(&["update", "offline-game", "--yes"]);
+    assert_ok(&output);
+    assert_eq!(
+        record(&epic, APP).unwrap().installed_version.as_deref(),
+        Some("0.25")
+    );
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}

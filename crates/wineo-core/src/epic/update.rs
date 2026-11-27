@@ -130,12 +130,32 @@ pub enum UpdateError {
         label: String,
         detail: String,
     },
+    /// Legendary would turn the update into a check of the files, and
+    /// record no new version (`needs_verification`, its `cli.py:854-856`).
+    #[error("{}", needs_check_message(.name))]
+    NeedsCheck { name: String },
     #[error("{what} changed since this was planned; run it again.")]
     Changed { what: String },
     /// Stopped by a cancel. `marked` says whether the mark was written, so
     /// the work is there to finish.
     #[error("Canceled.")]
     Canceled { marked: bool },
+}
+
+fn needs_check_message(name: &str) -> String {
+    format!(
+        "Legendary wants to check {name}'s game files before it updates them. Repair it first with wineo update {name} --repair."
+    )
+}
+
+/// Whether Legendary's records say `app` has to have its files checked
+/// before it can be updated. Reads the file; one that can't be read says
+/// nothing, and the update's own checks catch the rest.
+fn needs_check(paths: &Paths, app: &str) -> bool {
+    game::legendary_installed(paths)
+        .ok()
+        .and_then(|installed| installed.get(app).map(|entry| entry.needs_verification))
+        .unwrap_or(false)
 }
 
 /// Every environment whose config names an Epic game, sorted, with the game
@@ -181,7 +201,12 @@ pub fn check(
     };
     let record = read_record(paths, name, &app)?;
     let owned = owned.map_err(|why| anyhow!("{why}"))?;
-    Ok(status_of(name, &record, owned))
+    let mut status = status_of(name, &record, owned);
+    if needs_check(paths, &app) {
+        status.applicable = false;
+        status.reason = Some(needs_check_message(name));
+    }
+    Ok(status)
 }
 
 /// `check` for every Epic game, the ones that can't be checked reported in
@@ -558,14 +583,24 @@ fn prepare(paths: &Paths, name: &str, repair: bool) -> Result<Prepared> {
         folder: record.folder.clone(),
         work,
     };
+    let needs_check = needs_check(paths, &app);
     let (work, resume) = match record.in_flight.as_ref().map(|mark| mark.work) {
         Some(Work::Install) => return Err(unfinished(Work::Install).into()),
+        // A repair takes over an update Legendary won't do until it has
+        // checked the files, so the way out the refusal names works.
+        Some(Work::Update) if repair && needs_check => (Work::Repair, false),
         Some(Work::Update) if repair => return Err(unfinished(Work::Update).into()),
         Some(Work::Update) => (Work::Update, true),
         Some(Work::Repair | Work::Unknown) => (Work::Repair, true),
         None if repair => (Work::Repair, false),
         None => (Work::Update, false),
     };
+    if work == Work::Update && needs_check {
+        return Err(UpdateError::NeedsCheck {
+            name: name.to_owned(),
+        }
+        .into());
+    }
     Ok(Prepared {
         app,
         seen,
