@@ -4,6 +4,12 @@ A finished plan bumps the minor version and fixes between plans bump the
 patch version. A plan released in parts bumps the minor version for each
 part. See `AGENTS.md` for the rule.
 
+## 1.10.1 - 2026-11-26
+
+A fix for Proton games on Gentoo.
+
+- Proton games start again where `umu-run` is a symlink to a wrapper that picks its program by name, like Gentoo's python-exec.
+
 ## 1.10.0 - 2026-11-24
 
 Stable environment identity (plan 0071, done) and the GameCube adapter as a

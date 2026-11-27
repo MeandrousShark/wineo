@@ -168,6 +168,19 @@ names it, and wineo doesn't fall back to another copy.
 legendary = "~/.local/bin/legendary"
 ```
 
+Three global keys say where downloaded builds live, for downloads,
+`runners update`, the `*-Latest` aliases, and removal:
+`defaults.runner_root` (default `~/.local/share/wineo/runners`),
+`defaults.dxvk_root` (`~/.local/share/wineo/dxvk`), and
+`defaults.vkd3d_root` (`~/.local/share/wineo/vkd3d`). A
+[portable folder](portable.md) uses the host's builds unless its own
+`config.toml` sets these, and there a relative path is read from the
+portable folder.
+
+```sh
+wineo set --global defaults.runner_root=~/Runners
+```
+
 Two global keys are for installing GOG games, and needed no schema bump:
 
 - `defaults.games_root`, where new GOG games install, each in a folder

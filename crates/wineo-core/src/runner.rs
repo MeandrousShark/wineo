@@ -264,7 +264,7 @@ impl Runner {
         let mut command = match &self.kind {
             Kind::Wine { wine, .. } => wrapped(wine, wrappers),
             Kind::Proton { root } => {
-                let umu = find_on_path(UMU).ok_or(Error::ProgramNotFound(UMU))?;
+                let umu = find_umu().ok_or(Error::ProgramNotFound(UMU))?;
                 let mut command = wrapped(&umu, wrappers);
                 command.env("PROTONPATH", root);
                 command
@@ -774,16 +774,28 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
+    find_in_path_as_found(path_var, program).and_then(|found| std::fs::canonicalize(found).ok())
+}
+
+/// The first executable `program` on `path_var`, without following
+/// symlinks: a wrapper like Gentoo's python-exec picks what to run by the
+/// name it was started as, so it has to be started by that name.
+pub(crate) fn find_in_path_as_found(path_var: &OsStr, program: &str) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(program))
         .find(|candidate| is_executable(candidate))
-        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
 }
 
 pub(crate) fn is_executable(path: &Path) -> bool {
     path.metadata()
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+/// Where umu-run is, by the name it was found under. Gentoo's is a symlink
+/// to a wrapper that refuses to run under any other name.
+fn find_umu() -> Option<PathBuf> {
+    find_in_path_as_found(&std::env::var_os("PATH").unwrap_or_default(), UMU)
 }
 
 #[cfg(test)]

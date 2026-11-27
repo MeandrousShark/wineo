@@ -188,9 +188,11 @@ impl Env {
             .map(|(_, value)| value.as_os_str())
     }
 
-    /// `name` on this environment's `PATH`, the way a shell would find it.
+    /// `name` on this environment's `PATH`, the way a shell would find it
+    /// and by the path a shell would start it as. `python3` and a packaged
+    /// `legendary` can be symlinks to a wrapper that reads its own name.
     fn find_program(&self, name: &str) -> Option<PathBuf> {
-        crate::runner::find_in_path(self.get("PATH").unwrap_or_default(), name)
+        crate::runner::find_in_path_as_found(self.get("PATH").unwrap_or_default(), name)
     }
 
     /// The variables for Legendary's process: Legendary's and Python's own

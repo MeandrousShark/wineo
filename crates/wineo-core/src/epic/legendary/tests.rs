@@ -445,3 +445,66 @@ fn the_older_line_names_the_passed_over_copy_and_the_floor() {
         None
     );
 }
+
+/// A wrapper that acts as `name` only when started by that name, as
+/// Gentoo's python-exec does; started by its own name it says what it is.
+fn name_picking_wrapper(setup: &Setup, name: &str, then: &str) -> PathBuf {
+    let wrapper = setup.root.path().join("lib/python-exec2c");
+    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    crate::test_script::write_script(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$0\" in\n*/{name}) ;;\n*) echo 'python-exec 2.4.10'; exit 0 ;;\nesac\n{then}\n"
+        ),
+    );
+    wrapper
+}
+
+#[test]
+fn a_python3_or_legendary_that_picks_by_its_name_is_started_by_that_name() {
+    let setup = Setup::new();
+    let root = setup.root.path().display().to_string();
+    let wrapper = name_picking_wrapper(
+        &setup,
+        "python3",
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{root}/python-calls'\nif [ \"$1\" = --version ]; then echo 'Python 3.14.10'; exit 0; fi\nexec /bin/sh \"$@\""
+        ),
+    );
+    std::os::unix::fs::symlink(&wrapper, setup.bin.join("python3")).unwrap();
+    assert_eq!(
+        python_with(&setup.env(), &Token::new()).unwrap(),
+        setup.bin.join("python3")
+    );
+    // wineo's own copy runs through it, by that name.
+    let own = setup.own_copy(&Fake::default());
+    let legendary = usable(found(&setup, None, setup.env()));
+    assert_eq!(legendary.source(), Source::Own);
+    assert_eq!(
+        account::status(&legendary, &Token::new()).unwrap(),
+        account::Status::LoggedOut
+    );
+    let calls = fs::read_to_string(setup.root.path().join("python-calls")).unwrap();
+    assert!(
+        calls.contains(&format!("{} status --offline --json", own.display())),
+        "{calls}"
+    );
+
+    // A packaged legendary on PATH can be the same kind of wrapper.
+    fs::remove_file(&own).unwrap();
+    let real = setup.root.path().join("lib/legendary-fake");
+    setup.legendary_at(&real, &Fake::default());
+    fs::remove_file(&wrapper).unwrap();
+    let wrapper = name_picking_wrapper(
+        &setup,
+        "legendary",
+        &format!("exec '{}' \"$@\"", real.display()),
+    );
+    std::os::unix::fs::symlink(&wrapper, setup.bin.join("legendary")).unwrap();
+    // python3 is gone with the old wrapper; legendary on PATH needs none.
+    let legendary = usable(found(&setup, None, setup.env()));
+    assert_eq!(legendary.source(), Source::Path);
+    assert_eq!(legendary.path(), setup.bin.join("legendary"));
+    assert_eq!(legendary.version(), FLOOR);
+    assert!(setup.sweep().is_empty());
+}
