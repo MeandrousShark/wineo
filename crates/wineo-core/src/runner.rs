@@ -787,15 +787,15 @@ pub(crate) fn find_in_path_as_found(path_var: &OsStr, program: &str) -> Option<P
         .find(|candidate| is_executable(candidate))
 }
 
+pub(crate) fn is_executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
 /// Where umu-run is, by the name it was found under. Gentoo's is a symlink
 /// to a wrapper that refuses to run under any other name.
 fn find_umu() -> Option<PathBuf> {
     find_in_path_as_found(&std::env::var_os("PATH").unwrap_or_default(), UMU)
-}
-
-pub(crate) fn is_executable(path: &Path) -> bool {
-    path.metadata()
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
