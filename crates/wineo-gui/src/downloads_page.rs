@@ -596,14 +596,17 @@ pub(crate) fn update(app: &mut App, event: Event) -> Task<Message> {
         {
             app.change = None;
             app.downloads_page.status = None;
-            // Nobody is looking at the page to answer a dialog.
+            let page = &mut app.downloads_page;
+            // Kept even when the page is hidden, so a failure isn't lost; it
+            // shows when the user comes back.
+            if !checked.errors.is_empty() {
+                page.error = Some(checked.errors.join("\n"));
+            }
+            // Nobody is looking at the page to answer a dialog or read a notice.
             if !app.downloads_showing() {
                 return Task::none();
             }
             let page = &mut app.downloads_page;
-            if !checked.errors.is_empty() {
-                page.error = Some(checked.errors.join("\n"));
-            }
             if checked.canceled {
                 page.notice = Some("Check canceled.".into());
                 return Task::none();

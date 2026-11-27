@@ -502,6 +502,32 @@ fn a_check_answered_after_leaving_the_page_is_dropped() {
 }
 
 #[test]
+fn a_failed_check_answered_after_leaving_the_page_keeps_its_error_line() {
+    let (_root, mut app) = fixture();
+    let client = two_updates(&app, &[Provider::Dxvk], &[]);
+    open(&mut app);
+    let (generation, token) = begin_check(&mut app);
+    let _ = app.update(Message::Section(sidebar::Section::Library));
+    let checked = downloads_work::check_builds(&client, &app.paths, &token);
+    assert_eq!(checked.offers.len(), 1);
+    send(Event::Checked(generation, checked), &mut app);
+    assert!(app.change.is_none());
+    assert!(app.downloads_page.review.is_none());
+    assert!(app.downloads_page.notice.is_none());
+    let _ = app.update(Message::Section(sidebar::Section::Downloads));
+    load(&mut app);
+    assert!(!app.downloads_confirm_open());
+    assert!(
+        app.downloads_page
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("Couldn't check DXVK: ")
+    );
+    let _ = app.downloads_view();
+}
+
+#[test]
 fn the_update_list_scrolls_so_the_buttons_stay_in_a_short_window() {
     let (_root, mut app) = fixture();
     open(&mut app);
