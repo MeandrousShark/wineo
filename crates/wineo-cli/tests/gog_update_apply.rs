@@ -459,7 +459,8 @@ fn a_portable_folder_is_refused() {
     );
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("GOG games live in the host library. Run this without --portable."),
+        stderr(&out)
+            .contains("GOG and Epic games live in the host library. Run this without --portable."),
         "{}",
         stderr(&out)
     );

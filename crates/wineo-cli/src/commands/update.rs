@@ -20,6 +20,9 @@ mod apply;
 mod builds;
 mod epic;
 
+/// What every form of `update` says in a portable root.
+const HOST_ONLY: &str = "GOG and Epic games live in the host library. Run this without --portable.";
+
 #[derive(clap::Args)]
 #[command(group = clap::ArgGroup::new("listing").args(["check", "builds"]))]
 pub struct Args {
@@ -121,6 +124,10 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
         return Ok(usage_error(format!(
             "{flag} is for Galaxy games, so leave out --track installer."
         )));
+    }
+    // Before any store is asked, so neither login is needed to be told.
+    if paths.portable_root().is_some() {
+        anyhow::bail!(HOST_ONLY);
     }
     if let Some(name) = &args.name
         && epic::is_epic(paths, name)
