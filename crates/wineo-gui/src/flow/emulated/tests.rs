@@ -849,7 +849,7 @@ fn a_missing_folder_or_one_without_cores_says_why() {
 }
 
 #[test]
-fn key_6_opens_the_emulator_page_and_the_arrows_walk_its_rows() {
+fn key_7_opens_the_emulator_page_and_the_arrows_walk_its_rows() {
     use crate::focus_button::{landed, walk_rows};
     use crate::{Message, flow};
     use iced::keyboard::{Modifiers, key::Named};
@@ -858,7 +858,7 @@ fn key_6_opens_the_emulator_page_and_the_arrows_walk_its_rows() {
     let mut app = crate::tests::app();
     let _ = app.update(Message::Add);
     let _ = app.update(Message::Key(
-        Key::Character("6".into()),
+        Key::Character("7".into()),
         Modifiers::empty(),
         iced::event::Status::Ignored,
     ));

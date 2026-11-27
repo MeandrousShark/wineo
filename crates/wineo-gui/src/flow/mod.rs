@@ -30,12 +30,13 @@ use crate::ui::{ListRow, ScrollStyle, list_group, list_row, list_row_text, secon
 const CHOICE_LIST: &str = "add";
 
 /// The Add choices' row ids, in order.
-const CHOICE_IDS: [&str; 6] = [
+const CHOICE_IDS: [&str; 7] = [
     "add-new",
     "add-prefix",
     "add-heroic",
     "add-steam",
     "add-gog",
+    "add-epic",
     "add-emulated",
 ];
 
@@ -418,7 +419,14 @@ impl Page {
                             ),
                             choice(
                                 CHOICE_IDS[5],
-                                "6 - Add emulated games",
+                                "6 - Import from Epic",
+                                "Install the Epic games you own",
+                                Event::Epic,
+                                palette,
+                            ),
+                            choice(
+                                CHOICE_IDS[6],
+                                "7 - Add emulated games",
                                 "A folder of games for Dolphin, RetroArch, or another emulator",
                                 Event::Emulated,
                                 palette,
@@ -568,8 +576,9 @@ mod tests {
         let paths =
             Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
         let page = Page::choose(paths);
-        // The Add dialog is 560 px high; its details wrap below about 520 px.
-        for width in [360.0, 520.0, 680.0] {
+        // The Add dialog is 560 px high; its details wrap below about 520 px,
+        // where seven rows scroll.
+        for width in [520.0, 680.0] {
             let mut view = page.view(Palette::DARK, width, false);
             let probe = probe(&mut view, iced::Size::new(width, 560.0));
             let (viewport, content) = probe.scrollables[0];
