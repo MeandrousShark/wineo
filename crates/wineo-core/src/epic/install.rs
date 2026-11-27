@@ -741,9 +741,12 @@ pub fn apply(
             legendary,
             run.app,
             folder,
-            index,
-            total,
-            stall,
+            &How {
+                extra: &[],
+                stall: Some(stall),
+                percent: true,
+            },
+            (index, total),
             token,
             &mut events,
         );
@@ -897,17 +900,27 @@ fn check_owners(paths: &Paths, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-/// One Legendary run of `app` into `folder`, reporting its progress. Holds
-/// the Epic lock until Legendary starts downloading, by which time its
-/// login is done. Returns the end of what it printed.
-#[allow(clippy::too_many_arguments)]
-fn download(
+/// How a run of Legendary's `install` is given and reported.
+pub(super) struct How<'a> {
+    /// Arguments after the folder ones, like `--repair`.
+    pub extra: &'a [&'a str],
+    /// How long it may go without progress before that is said. None never
+    /// says it, for a repair, whose check prints nothing while it reads.
+    pub stall: Option<Duration>,
+    /// Whether progress lines are passed on as percentages. A repair's
+    /// aren't, since its check's progress can't be read as it runs.
+    pub percent: bool,
+}
+
+/// One Legendary run of `app` into `folder`, reporting its progress as run
+/// `index` of `total`. Holds the Epic lock until Legendary is past its
+/// login. Returns the end of what it printed.
+pub(super) fn download(
     legendary: &Legendary,
     app: &str,
     folder: &Path,
-    index: usize,
-    total: usize,
-    stall: Duration,
+    how: &How,
+    (index, total): (usize, usize),
     token: &Token,
     events: &mut impl FnMut(Event),
 ) -> Result<Vec<String>> {
@@ -927,24 +940,26 @@ fn download(
     let last = Cell::new(Instant::now());
     let said_stall = Cell::new(false);
     let events = RefCell::new(events);
+    let mut args = vec![
+        "-y",
+        "install",
+        app,
+        "--base-path",
+        base,
+        "--game-folder",
+        name,
+        "--skip-dlcs",
+        "--disable-sdl",
+    ];
+    args.extend_from_slice(how.extra);
     let streamed = legendary.stream(
-        &[
-            "-y",
-            "install",
-            app,
-            "--base-path",
-            base,
-            "--game-folder",
-            name,
-            "--skip-dlcs",
-            "--disable-sdl",
-        ],
+        &args,
         token,
         |line| {
-            if started_downloading(line) {
+            if past_login(line) {
                 lock.take();
             }
-            let event = match progress(line) {
+            let event = match progress(line).filter(|_| how.percent) {
                 Some(percent) => {
                     last.set(Instant::now());
                     said_stall.set(false);
@@ -959,6 +974,7 @@ fn download(
             (events.borrow_mut())(event);
         },
         || {
+            let Some(stall) = how.stall else { return };
             let quiet = last.get().elapsed();
             if !said_stall.get() && quiet >= stall {
                 said_stall.set(true);
@@ -977,10 +993,10 @@ fn download(
     }
 }
 
-/// Whether Legendary is past its login and downloading: its download
-/// manager has started.
-fn started_downloading(line: &str) -> bool {
-    line.contains("[DLManager]")
+/// Whether Legendary is past its login: its download manager has started,
+/// or, in a repair, it has begun checking the installed files.
+fn past_login(line: &str) -> bool {
+    line.contains("[DLManager]") || line.contains("] INFO: Loading installed manifest for ")
 }
 
 /// The percentage in Legendary's progress line: `[DLManager] INFO: =
@@ -1057,13 +1073,13 @@ pub(super) fn same_folder(path: &Path, folder: &Path) -> bool {
 /// An entry of Legendary's `installed.json`: the same objects `list-installed
 /// --json` prints, read from the file instead of by running Legendary.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-struct Entry {
+pub(super) struct Entry {
     #[serde(default)]
     executable: Option<String>,
     #[serde(default)]
     launch_parameters: Option<String>,
     #[serde(default)]
-    can_run_offline: bool,
+    pub can_run_offline: bool,
 }
 
 impl Entry {
@@ -1073,7 +1089,7 @@ impl Entry {
     /// the program's folder as the working folder. Epic's metadata can add
     /// parameters of its own, which only Legendary's answer carries.
     /// None when it names no program, or one outside the folder.
-    fn offline_start(&self) -> Option<OfflineStart> {
+    pub(super) fn offline_start(&self) -> Option<OfflineStart> {
         let executable = inside(self.executable.as_deref()?)?;
         let arguments = self
             .launch_parameters
@@ -1109,7 +1125,7 @@ pub(super) fn inside(raw: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-fn installed_entries(paths: &Paths) -> Result<BTreeMap<String, Entry>> {
+pub(super) fn installed_entries(paths: &Paths) -> Result<BTreeMap<String, Entry>> {
     let path = super::state_dir(paths).join("installed.json");
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
