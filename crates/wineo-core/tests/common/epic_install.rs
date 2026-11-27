@@ -29,7 +29,8 @@
 //! `install APP --repair` checks the recorded game: it writes the repair
 //! file `tmp/APP.repair`, logs what Legendary logs while checking and
 //! fetching, appends the app to `<root>/repaired`, removes the repair file,
-//! and leaves `installed.json` alone. Its modes:
+//! and leaves `installed.json` alone but for clearing `needs_verification`,
+//! as Legendary does. Its modes:
 //!
 //! - `damaged`: logs a missing file and a failed check, as Legendary does
 //!   before it fetches what is missing, then finishes.
@@ -73,7 +74,13 @@ pub fn functions(tool: &dyn Fn(&str) -> String) -> String {
 /// The `case "$1"` arms for `info`, `install`, and `uninstall`. `fixtures`
 /// is the folder of Legendary's scrubbed output.
 pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
-    let (cat, mkdir, rm, sleep) = (tool("cat"), tool("mkdir"), tool("rm"), tool("sleep"));
+    let (cat, mkdir, rm, sleep, sed) = (
+        tool("cat"),
+        tool("mkdir"),
+        tool("rm"),
+        tool("sleep"),
+        tool("sed"),
+    );
     let launch = launch_arm(fixtures, tool);
     let fixture = |name: &str| fixtures.join(name).display().to_string();
     format!(
@@ -115,6 +122,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
              failed-write) echo '[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device' >&2 ;;\n\
              esac\n\
              echo \"$app\" >> \"$root/repaired\"\n\
+             {sed} -i 's/\"needs_verification\": true/\"needs_verification\": false/' \"$recorded\"; rebuild\n\
              {rm} -f \"$LEGENDARY_CONFIG_PATH/tmp/$app.repair\"\n\
              echo '[cli] INFO: Finished installation process in 0.01 seconds.' >&2\n\
              exit 0\n\
