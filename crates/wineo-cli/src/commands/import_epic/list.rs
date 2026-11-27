@@ -14,7 +14,7 @@ use wineo_core::paths::Paths;
 
 use super::Args;
 use super::setup::{self, Found};
-use crate::commands::gog_support::warn;
+use crate::commands::gog_support::{update_label, warn};
 use crate::commands::table::render_columns;
 use crate::commands::transfer::Cancellation;
 
@@ -156,7 +156,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             "warnings": warnings,
         }))?;
     } else {
-        print_table(&games, &local);
+        print_table(&games, &local, &updates);
         for error in &errors {
             eprintln!("Failed: {error}");
         }
@@ -299,14 +299,20 @@ fn game_json(game: &Game, local: Option<&Local>, update: Option<UpdateState>) ->
     })
 }
 
-fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
+fn print_table(
+    games: &[&Game],
+    local: &BTreeMap<String, Local>,
+    updates: &BTreeMap<String, UpdateState>,
+) {
     if games.is_empty() {
         println!("You don't own any Epic games.");
         return;
     }
-    // The environment and version columns only once wineo has a game.
+    // The environment, version, and update columns only once wineo has a
+    // game.
     let wide = games.iter().any(|game| local.contains_key(&game.app_name));
-    let mut table = vec![["ID", "TITLE", "STATE", "ENVIRONMENT", "VERSION"].map(str::to_owned)];
+    let mut table =
+        vec![["ID", "TITLE", "STATE", "ENVIRONMENT", "VERSION", "UPDATE"].map(str::to_owned)];
     for game in games {
         let found = local.get(&game.app_name);
         let (state, reason) = state(game, found);
@@ -323,6 +329,10 @@ fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
             found
                 .and_then(|local| local.version.clone())
                 .unwrap_or_default(),
+            updates
+                .get(&game.app_name)
+                .map(|state| update_label(*state).to_owned())
+                .unwrap_or_default(),
         ]);
     }
     let lines = if wide {
@@ -330,7 +340,7 @@ fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
     } else {
         let narrow: Vec<[String; 3]> = table
             .into_iter()
-            .map(|[id, title, state, _, _]| [id, title, state])
+            .map(|[id, title, state, _, _, _]| [id, title, state])
             .collect();
         render_columns(&narrow)
     };

@@ -134,9 +134,9 @@ fn a_game_installs_with_a_review_progress_and_its_environment() {
     let table = stdout(&epic.run(&["import", "epic", "--list"]));
     assert!(
         table.contains(
-            "ID             TITLE             STATE                                              ENVIRONMENT   VERSION\n\
+            "ID             TITLE             STATE                                              ENVIRONMENT   VERSION  UPDATE\n\
              Dlc Game       Dlc Game          not installed\n\
-             AppOffline     Offline Game      installed                                          offline-game  1.0\n"
+             AppOffline     Offline Game      installed                                          offline-game  1.0      update available\n"
         ),
         "{table}"
     );
