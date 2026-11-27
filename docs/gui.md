@@ -764,10 +764,25 @@ and **Cancel**, like `wineo runners download`, `wineo dxvk download`, and
 `wineo vkd3d download`. A canceled download leaves nothing behind; one
 canceled after it finished installing stays installed.
 
+**Update all** gets the newest release of every family wineo has a build
+of (GE-Proton, Proton-CachyOS, DXVK, and vkd3d-proton), by the same rules
+as `wineo runners update`. Nothing checks on its own. While it asks
+GitHub, the status line reads `Checking for newer builds` with **Cancel**,
+and the page's other actions wait. When nothing is newer it says
+`Everything is up to date.`, and with nothing installed `Nothing to
+update.` Newer builds open **Update downloads**, listing each build and
+its size with the build it replaces; **Download** fetches them one after
+another (`1 of 2: Downloaded 120 MiB of 498 MiB`), and older builds are
+kept. A family that couldn't be checked or downloaded gets its own line in
+the page's error line, like `Couldn't check DXVK: ...`, and the rest still
+update. Cancel or closing the window stops the current download and skips
+the rest; finished builds stay. If a check answers after you've left the
+page, its dialog and notices are dropped, but its errors stay for when you
+come back.
+
 Downloads and deletes keep running when you switch sections, with a spinner
 next to **Downloads**. Closing the window cancels a download and waits for a
-delete to finish. The list
-reloads when the page opens and after its own changes; **Refresh** reloads
+delete to finish. The list reloads when the page opens and after its own changes; **Refresh** reloads
 it after a game exits or a change from the CLI.
 
 ## Art
