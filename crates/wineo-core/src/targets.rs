@@ -366,6 +366,53 @@ fn base_default(targets: &BTreeMap<String, Target>) -> Option<String> {
         .map(|(name, _)| name.clone())
 }
 
+/// Refuses a write that changes the program of an Epic game's own target,
+/// which comes from Epic (Q12). Its other fields can change, and so can the
+/// way the same program is written. Removing the target isn't refused: the
+/// game then starts plainly, and launching never runs an edited program
+/// anyway.
+pub(crate) fn check_epic_program(
+    paths: &Paths,
+    environment: &str,
+    before: &EnvironmentConfig,
+    after: Option<&str>,
+) -> std::result::Result<(), crate::edit::EditError> {
+    let (Some(_), Some(old)) = (
+        before.epic_id.as_deref(),
+        before.targets.get(crate::epic::install::TARGET),
+    ) else {
+        return Ok(());
+    };
+    match after {
+        Some(new) if same_program(paths, &old.exe, new) => Ok(()),
+        _ => Err(crate::edit::EditError::Managed(format!(
+            "{environment}'s main program comes from Epic and can't be changed."
+        ))),
+    }
+}
+
+/// `check_epic_program` for a write that leaves `after` as the targets.
+fn check_epic_targets(
+    paths: &Paths,
+    environment: &str,
+    before: &EnvironmentConfig,
+    after: &BTreeMap<String, Target>,
+) -> std::result::Result<(), crate::edit::EditError> {
+    match after.get(crate::epic::install::TARGET) {
+        Some(target) => check_epic_program(paths, environment, before, Some(&target.exe)),
+        None => Ok(()),
+    }
+}
+
+/// Whether two ways of writing a target's program name one program.
+fn same_program(paths: &Paths, left: &str, right: &str) -> bool {
+    same_exe(left, right)
+        || matches!(
+            (paths.config_path(left), paths.config_path(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
+}
+
 pub fn same_exe(left: &str, right: &str) -> bool {
     if winpath::is_windows_path(left) && winpath::is_windows_path(right) {
         left.replace('/', "\\")
@@ -415,6 +462,7 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         updated = doc.to_string();
     }
     let written = EnvironmentConfig::parse(&path, &updated)?;
+    check_epic_targets(paths, environment, &current, &written.targets)?;
     let removed: Vec<String> = current
         .targets
         .keys()

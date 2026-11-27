@@ -97,6 +97,9 @@ pub enum InstallError {
     Trashed { app: String, name: String },
     #[error("Forgetting Epic game {app} needs Legendary, to drop its own record of it.")]
     NeedsLegendary { app: String },
+    /// Another install of the game holds its folder now.
+    #[error("Another install of {title} is running. Try again once it's done.")]
+    Running { title: String },
 }
 
 /// What to install, and how.
@@ -655,7 +658,8 @@ pub fn apply(
     let app = plan.app_name.as_str();
     let folder = plan.folder.as_path();
     let never = || token.is_canceled();
-    let _in_use = game::lock_for(paths, folder, &plan.environment, Work::Install)?;
+    let _in_use = game::lock_for(paths, folder, &plan.environment, Work::Install)
+        .map_err(|error| another_install(paths, plan, error))?;
     {
         let lock = RecordLock::exclusive(paths, app, &never).map_err(|error| {
             match error.downcast_ref::<GameError>() {
@@ -1046,7 +1050,7 @@ fn installed_at(paths: &Paths, app: &str, folder: &Path) -> Result<bool> {
         }))
 }
 
-fn same_folder(path: &Path, folder: &Path) -> bool {
+pub(super) fn same_folder(path: &Path, folder: &Path) -> bool {
     path == folder || fs::canonicalize(path).is_ok_and(|path| path == folder)
 }
 
@@ -1063,20 +1067,18 @@ struct Entry {
 }
 
 impl Entry {
-    /// What starting the game without Legendary runs, as Legendary would:
-    /// the program relative to the folder, its own parameters, and the
-    /// program's folder as the working folder.
+    /// What starting the game without Legendary runs, as Legendary 0.21.1
+    /// would (`get_launch_parameters` in its `core.py`): the program
+    /// relative to the folder, its own parameters split Legendary's way, and
+    /// the program's folder as the working folder. Epic's metadata can add
+    /// parameters of its own, which only Legendary's answer carries.
     /// None when it names no program, or one outside the folder.
     fn offline_start(&self) -> Option<OfflineStart> {
         let executable = inside(self.executable.as_deref()?)?;
         let arguments = self
             .launch_parameters
             .as_deref()
-            .filter(|parameters| !parameters.trim().is_empty())
-            .map(|parameters| {
-                shlex::split(parameters)
-                    .unwrap_or_else(|| parameters.split_whitespace().map(str::to_owned).collect())
-            })
+            .and_then(super::launch::split_parameters)
             .unwrap_or_default();
         let working_directory = Path::new(&executable)
             .parent()
@@ -1094,7 +1096,7 @@ impl Entry {
 /// `/` between its parts. Legendary drops leading slashes and takes `\\`
 /// for `/`, as this does. None for one with nothing in it or that leads out
 /// of the folder.
-fn inside(raw: &str) -> Option<String> {
+pub(super) fn inside(raw: &str) -> Option<String> {
     let normal = raw.replace('\\', "/");
     let mut parts = Vec::new();
     for part in Path::new(normal.trim_start_matches('/')).components() {
@@ -1321,6 +1323,20 @@ pub fn is_cancel(error: &anyhow::Error) -> bool {
             error.downcast_ref::<crate::Error>(),
             Some(crate::Error::Canceled(_))
         )
+}
+
+/// The folder held while the game's record has an install mark is another
+/// install under way, not one left to finish.
+fn another_install(paths: &Paths, plan: &Plan, error: anyhow::Error) -> anyhow::Error {
+    if matches!(error.downcast_ref(), Some(GameError::InUse { .. }))
+        && left_unfinished(paths, &plan.app_name)
+    {
+        return InstallError::Running {
+            title: plan.title.clone(),
+        }
+        .into();
+    }
+    error
 }
 
 /// Whether it stopped after the mark was written, so it is there to finish.

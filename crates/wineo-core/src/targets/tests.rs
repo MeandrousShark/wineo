@@ -437,3 +437,70 @@ fn a_batch_writes_through_a_symlinked_config() {
     }
     .check();
 }
+
+const EPIC: &str =
+    "epic_id = \"AppOffline\"\nprefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+
+fn epic_game(f: &Fixture) {
+    let exe = f.paths.home().join("Games/Game.exe").display().to_string();
+    fs::write(
+        f.paths.environment_config("hades"),
+        format!("{EPIC}\n[targets.game]\nexe = \"{exe}\"\ndefault = true\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_epic_games_main_program_cant_change_but_the_rest_of_its_target_can() {
+    let f = Fixture::new("");
+    epic_game(&f);
+    let before = f.text();
+    let mut batch = Batch::new(f.targets());
+    batch.edit("game", spec("/elsewhere/Other.exe"));
+    assert_eq!(
+        write(&f.paths, "hades", &batch).unwrap_err().to_string(),
+        "hades's main program comes from Epic and can't be changed."
+    );
+    assert_eq!(f.text(), before);
+
+    // The same program, written another way, with new arguments.
+    let mut batch = Batch::new(f.targets());
+    batch.edit(
+        "game",
+        Spec {
+            exe: "~/Games/Game.exe".to_owned(),
+            args: vec!["-x".to_owned()],
+            ..Spec::default()
+        },
+    );
+    assert!(matches!(
+        write(&f.paths, "hades", &batch).unwrap(),
+        Written::Saved
+    ));
+    assert_eq!(f.targets()["game"].args, ["-x"]);
+
+    // Another target, and removing the game's own, are the user's.
+    let mut batch = Batch::new(f.targets());
+    batch.add("tool", spec("/elsewhere/Tool.exe")).unwrap();
+    batch.remove("game");
+    assert!(matches!(
+        write(&f.paths, "hades", &batch).unwrap(),
+        Written::Saved
+    ));
+    assert!(!f.targets().contains_key("game"));
+}
+
+#[test]
+fn a_game_without_epic_id_can_change_its_program() {
+    let f = Fixture::new("");
+    epic_game(&f);
+    let text = f.text().replace("epic_id = \"AppOffline\"\n", "");
+    fs::write(f.paths.environment_config("hades"), text).unwrap();
+    let mut batch = Batch::new(f.targets());
+    batch.edit("game", spec("/elsewhere/Other.exe"));
+    assert!(matches!(
+        write(&f.paths, "hades", &batch).unwrap(),
+        Written::Saved
+    ));
+    assert_eq!(f.targets()["game"].exe, "/elsewhere/Other.exe");
+}

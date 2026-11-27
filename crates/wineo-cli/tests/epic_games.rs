@@ -16,6 +16,19 @@ use wineo_core::epic::game::{self, Record, RecordLock, Work};
 const APP: &str = "AppOffline";
 const NEVER: &dyn Fn() -> bool = &|| false;
 
+/// A fixture whose wineo sees only the fakes and a few real tools on
+/// `PATH`, so starting an Epic game can never find a real `legendary`.
+fn fixture() -> Fixture {
+    let mut f = Fixture::new();
+    f.path_var = f.sandbox.clone();
+    assert!(
+        std::env::split_paths(&f.path_var).all(|dir| !dir.join("legendary").exists()),
+        "{:?}",
+        f.path_var
+    );
+    f
+}
+
 /// The game's folder, with an exe the fake wine runs until stopped.
 fn folder(f: &Fixture) -> PathBuf {
     let folder = fs::canonicalize(f.root.path())
@@ -160,7 +173,7 @@ fn sweep(f: &Fixture) -> Vec<i32> {
 
 #[test]
 fn the_config_rules_reach_validate() {
-    let f = Fixture::new();
+    let f = fixture();
     let dir = f.config_dir().join("environments");
     fs::create_dir_all(&dir).unwrap();
     for (name, text, message) in [
@@ -195,7 +208,7 @@ fn the_config_rules_reach_validate() {
 
 #[test]
 fn set_refuses_epic_id_and_leaves_the_file_alone() {
-    let f = Fixture::new();
+    let f = fixture();
     fowl(&f, None);
     let config = config_path(&f, "fowl");
     let before = stamp(&config);
@@ -217,8 +230,54 @@ fn set_refuses_epic_id_and_leaves_the_file_alone() {
 }
 
 #[test]
+fn set_refuses_changing_the_main_program_and_allows_the_rest() {
+    let f = fixture();
+    let folder = fowl(&f, None);
+    let config = config_path(&f, "fowl");
+    let before = stamp(&config);
+    let refusal = "fowl's main program comes from Epic and can't be changed.";
+    assert_refused(
+        &f.run(&["set", "fowl", "targets.game.exe=/elsewhere/Other.exe"]),
+        refusal,
+    );
+    assert_refused(
+        &f.run(&["set", "fowl", "--unset", "targets.game.exe"]),
+        refusal,
+    );
+    // Refused before anything else a set does, like installing a component.
+    assert_refused(
+        &f.run(&[
+            "set",
+            "fowl",
+            "dxvk=missing-build",
+            "targets.game.exe=/elsewhere/Other.exe",
+        ]),
+        refusal,
+    );
+    assert_refused(
+        &f.run(&[
+            "set",
+            "fowl",
+            "targets.game.args=[\"-x\"]",
+            "targets.game.exe=/elsewhere/Other.exe",
+        ]),
+        refusal,
+    );
+    assert_eq!(stamp(&config), before);
+
+    let same = format!(
+        "targets.game.exe={}",
+        folder.join("OfflineGame.exe").display()
+    );
+    assert_success(&f.run(&["set", "fowl", &same, "targets.game.args=[\"-x\"]"]));
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(text.contains("args = [\"-x\"]"), "{text}");
+    assert_eq!(sweep(&f), Vec::<i32>::new());
+}
+
+#[test]
 fn set_refuses_epic_id_before_waiting_on_a_running_game() {
-    let f = Fixture::new();
+    let f = fixture();
     fowl(&f, None);
     let config = config_path(&f, "fowl");
     let before = stamp(&config);
@@ -239,7 +298,7 @@ fn set_refuses_epic_id_before_waiting_on_a_running_game() {
 
 #[test]
 fn clones_and_portable_copies_drop_epic_id() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, None);
     let record = stamp(&game::record_path(&f.paths(), APP));
     let line = "  change: epic_id removed (the copy starts the game without Epic's login, so only a game that runs offline works from it)\n";
@@ -276,7 +335,7 @@ fn clones_and_portable_copies_drop_epic_id() {
 
 #[test]
 fn trash_restore_is_refused_while_another_environment_has_the_game() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, None);
     let removed = f.run(&["rm", "fowl"]);
     assert_success(&removed);
@@ -309,7 +368,7 @@ fn trash_restore_is_refused_while_another_environment_has_the_game() {
 
 #[test]
 fn a_game_with_a_mark_refuses_to_start_and_says_what_finishes_it() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, Some(Work::Update));
     let message = "fowl's game folder is mid-update. Finish it with wineo update fowl.";
     assert_refused(&f.run(&["start", "fowl"]), message);
@@ -329,7 +388,7 @@ fn a_game_with_a_mark_refuses_to_start_and_says_what_finishes_it() {
 
 #[test]
 fn a_refused_start_runs_no_hook() {
-    let f = Fixture::new();
+    let f = fixture();
     fowl(&f, Some(Work::Update));
     let ran = f.root.path().join("hook-ran");
     let hook = f.root.path().join("before.sh");
@@ -351,7 +410,7 @@ fn a_refused_start_runs_no_hook() {
 
 #[test]
 fn a_start_from_a_folder_whose_record_cant_be_read_is_refused() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, None);
     environment(&f, "copy", None, &folder.join("OfflineGame.exe"));
     let record = game::record_path(&f.paths(), APP);
@@ -372,7 +431,7 @@ fn a_start_from_a_folder_whose_record_cant_be_read_is_refused() {
 
 #[test]
 fn an_epic_id_without_a_record_refuses_to_start() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = folder(&f);
     environment(&f, "fowl", Some(APP), &folder.join("OfflineGame.exe"));
     let message = "fowl's Epic record is missing. Repair it with wineo update fowl --repair.";
@@ -388,7 +447,7 @@ fn an_epic_id_without_a_record_refuses_to_start() {
 
 #[test]
 fn a_running_game_holds_its_folder_and_leaves_the_record_alone() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, None);
     let record = game::record_path(&f.paths(), APP);
     let before = stamp(&record);
@@ -406,7 +465,7 @@ fn a_running_game_holds_its_folder_and_leaves_the_record_alone() {
 
 #[test]
 fn a_copy_running_from_the_folder_holds_it_too() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, None);
     environment(&f, "copy", None, &folder.join("OfflineGame.exe"));
     assert_success(&f.run(&["start", "copy"]));
@@ -422,7 +481,7 @@ fn a_copy_running_from_the_folder_holds_it_too() {
 
 #[test]
 fn a_start_during_work_is_refused_naming_the_work() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, Some(Work::Repair));
     let working = game::lock_for(&f.paths(), &folder, "fowl", Work::Repair).unwrap();
     assert_refused(
@@ -436,7 +495,7 @@ fn a_start_during_work_is_refused_naming_the_work() {
 
 #[test]
 fn validate_reports_epic_problems_without_writing_anything() {
-    let f = Fixture::new();
+    let f = fixture();
     let folder = fowl(&f, Some(Work::Update));
     let record_file = game::record_path(&f.paths(), APP);
     let config = config_path(&f, "fowl");

@@ -8,6 +8,7 @@ pub mod account;
 pub mod art;
 pub mod game;
 pub mod install;
+pub mod launch;
 pub mod legendary;
 pub mod own_copy;
 pub mod owned;

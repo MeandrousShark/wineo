@@ -189,6 +189,7 @@ impl LogBuffer {
 pub(crate) fn status(event: &LaunchEvent) -> Option<&'static str> {
     match event {
         LaunchEvent::BuildingPrefix { .. } => Some("Building prefix..."),
+        LaunchEvent::AskingEpic => Some("Asking Epic..."),
         LaunchEvent::Winetricks(WinetricksEvent::Installing(_)) => Some("Installing..."),
         LaunchEvent::Starting | LaunchEvent::Started => Some("Starting..."),
         LaunchEvent::AfterHook(_) => Some("Running its after hook"),
@@ -1489,6 +1490,14 @@ mod tests {
             Some("Installing corefonts...".into())
         );
         assert_eq!(event_status(&LaunchEvent::NoWaylandSession), None);
+    }
+
+    #[test]
+    fn asking_epic_shows_while_legendary_answers() {
+        assert_eq!(
+            event_status(&LaunchEvent::AskingEpic),
+            Some("Asking Epic...".into())
+        );
     }
 
     fn progress(verb: &str, position: usize, total: usize) -> LaunchEvent {

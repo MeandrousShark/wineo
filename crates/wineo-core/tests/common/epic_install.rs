@@ -20,6 +20,22 @@
 //!
 //! Every install writes `<root>/installing-<app>` once it has started, and
 //! `<root>/got-int` gets a line for each interrupt it heeded.
+//!
+//! `launch APP --json` answers for a game installed through the fake, or
+//! one a test wrote `<state>/fake-installed/APP.launch` for: its folder on
+//! the first line, its program on the second. Epic's arguments in the
+//! answer hold `EPICSECRET`, a code only online, the account's name and id
+//! both ways. `<root>/launch-mode` changes it:
+//!
+//! - `unreachable`: online, logs Legendary's failed login and exits 1.
+//! - `expired`: online, drops the login as Legendary does when Epic no
+//!   longer takes it, and exits 1.
+//! - `outdated`: online without `--skip-version-check`, refuses as
+//!   Legendary does with an update waiting.
+//! - `env`: lists `FAKE_VAR`, `EPIC_FAKE`, and `WINEPREFIX`.
+//! - `elsewhere`: names another folder.
+//! - `outside`: names a program outside the folder.
+//! - `garbled`: prints something that isn't JSON, exit 0.
 
 use std::path::Path;
 
@@ -40,6 +56,7 @@ pub fn functions(tool: &dyn Fn(&str) -> String) -> String {
 /// is the folder of Legendary's scrubbed output.
 pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
     let (cat, mkdir, rm, sleep) = (tool("cat"), tool("mkdir"), tool("rm"), tool("sleep"));
+    let launch = launch_arm(fixtures, tool);
     let fixture = |name: &str| fixtures.join(name).display().to_string();
     format!(
         "info)\n\
@@ -89,17 +106,54 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            {mkdir} -p \"$LEGENDARY_CONFIG_PATH/fake-installed\"\n\
            exe=Binaries/Win64/Game.exe; if [ \"$mode\" = outside ]; then exe=Binaries/../../outside.exe; fi\n\
            printf '\"%s\": {{\"app_name\": \"%s\", \"install_path\": \"%s\", \"version\": \"1.0\", \"executable\": \"%s\", \"launch_parameters\": \"-skipintro -lang=en\", \"can_run_offline\": true}}' \"$app\" \"$app\" \"$path\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
+           printf '%s\\n%s\\n' \"$path\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.launch\"\n\
            rebuild\n\
            {rm} -f \"$LEGENDARY_CONFIG_PATH/tmp/$app.resume\"\n\
            echo '[cli] INFO: Finished installation process in 0.01 seconds.' >&2 ;;\n\
          uninstall)\n\
-           {rm} -f \"$LEGENDARY_CONFIG_PATH/fake-installed/$2.json\"\n\
-           rebuild ;;\n",
+           {rm} -f \"$LEGENDARY_CONFIG_PATH/fake-installed/$2.json\" \"$LEGENDARY_CONFIG_PATH/fake-installed/$2.launch\"\n\
+           rebuild ;;\n\
+         {launch}",
         logged_out = fixture("logged-out-list.stderr"),
         offline = fixture("info-offline.json"),
         dlc = fixture("info-dlc.json"),
         prereq = fixture("info-prereq.json"),
         token = fixture("info-token.json"),
         third_party = fixture("info-third-party.json"),
+    )
+}
+
+/// The `launch` arm; see the module's notes.
+fn launch_arm(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
+    let (cat, rm) = (tool("cat"), tool("rm"));
+    let fixture = |name: &str| fixtures.join(name).display().to_string();
+    format!(
+        "launch)\n\
+           app=\"$2\"; offline=''; skip=''\n\
+           for arg in \"$@\"; do case \"$arg\" in --offline) offline=1 ;; --skip-version-check) skip=1 ;; esac; done\n\
+           mode=$({cat} \"$root/launch-mode\" 2>/dev/null)\n\
+           if [ ! -f \"$user\" ]; then\n\
+             if [ -n \"$offline\" ]; then {cat} '{out_offline}' >&2; else {cat} '{out_online}' >&2; fi; exit 1\n\
+           fi\n\
+           where=\"$LEGENDARY_CONFIG_PATH/fake-installed/$app.launch\"\n\
+           if [ ! -f \"$where\" ]; then printf '[cli] ERROR: Game %s is not currently installed!\\n' \"$app\" >&2; exit 1; fi\n\
+           code=''\n\
+           if [ -z \"$offline\" ]; then\n\
+             case \"$mode\" in\n\
+             unreachable) echo '[Core] ERROR: HTTP request for login failed: ConnectionError(), please try again later.' >&2; echo '[cli] ERROR: Login failed, cannot continue!' >&2; exit 1 ;;\n\
+             expired) {rm} -f \"$user\"; echo '[Core] ERROR: Stored credentials are no longer valid! Please login again.' >&2; echo '[cli] ERROR: Login failed, cannot continue!' >&2; exit 1 ;;\n\
+             outdated) if [ -z \"$skip\" ]; then echo '[cli] ERROR: Game is out of date, please update or launch with update check skipping!' >&2; exit 1; fi ;;\n\
+             esac\n\
+             code=EPICSECRETcode\n\
+           fi\n\
+           if [ \"$mode\" = garbled ]; then echo 'Something Legendary never printed'; exit 0; fi\n\
+           {{ read -r dir; read -r exe; }} < \"$where\"\n\
+           if [ \"$mode\" = elsewhere ]; then dir=/elsewhere; fi\n\
+           if [ \"$mode\" = outside ]; then exe=../outside.exe; fi\n\
+           vars='{{}}'\n\
+           if [ \"$mode\" = env ]; then vars='{{\"FAKE_VAR\": \"legendary\", \"EPIC_FAKE\": \"legendary\", \"WINEPREFIX\": \"/legendary\"}}'; fi\n\
+           printf '{{\"egl_parameters\": [\"-AUTH_LOGIN=unused\", \"-AUTH_PASSWORD=%s\", \"-AUTH_TYPE=exchangecode\", \"-epicapp=%s\", \"-epicenv=Prod\", \"-EpicPortal\", \"-epicusername=EPICSECRETuser\", \"-epicuserid=EPICSECRETid\", \"-epiclocale=en\", \"-epicsandboxid=0\"], \"environment\": %s, \"game_directory\": \"%s\", \"game_executable\": \"%s\", \"game_parameters\": [\"-skipintro\", \"-lang=en\"], \"launch_command\": [], \"pre_launch_command\": \"\", \"pre_launch_wait\": false, \"user_parameters\": [], \"working_directory\": \"%s\"}}\\n' \"$code\" \"$app\" \"$vars\" \"$dir\" \"$exe\" \"$dir\" ;;\n",
+        out_offline = fixture("logged-out-launch-offline.stderr"),
+        out_online = fixture("logged-out-launch.stderr"),
     )
 }

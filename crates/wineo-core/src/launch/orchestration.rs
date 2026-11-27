@@ -124,6 +124,10 @@ pub enum LaunchEvent {
     Desktop(Vec<desktop::Change>),
     Winetricks(WinetricksEvent),
     NoWaylandSession,
+    /// Legendary is being asked what an Epic game's start runs.
+    AskingEpic,
+    /// Something to say before the start, like an Epic game starting offline.
+    Notice(String),
     /// The caller can release temporary signal handlers before supervisor IPC.
     Starting,
     /// Launcher-side cleanup uses a fresh token, even after a canceled before.
@@ -393,6 +397,17 @@ pub fn prepare(
         Environment::ensure_exists(paths, name)?;
         runtime.check_resolved(name)?;
         folders = protect(paths, &environment, &launch, token)?;
+        // Once per start, holding the game folder, so no update can change
+        // what Legendary named before the program runs.
+        ask_epic(
+            paths,
+            &global,
+            &environment,
+            overrides,
+            &mut launch,
+            token,
+            &mut events,
+        )?;
         reconcile(paths, &global, &environment, &launch, &mut events)?;
         retroarch_quit_file(paths, &global, &environment, &mut events);
         Ok::<_, anyhow::Error>(launch)
@@ -433,6 +448,38 @@ pub fn prepare(
         _reservation: reservation,
         folders,
     })
+}
+
+/// Asks Legendary what an Epic game's own start runs, and puts it in
+/// `launch`. Other targets, and anything in a portable root, where Epic
+/// games don't live, start as they are.
+fn ask_epic(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &Overrides,
+    launch: &mut Launch,
+    token: &Token,
+    mut events: impl FnMut(LaunchEvent),
+) -> anyhow::Result<()> {
+    let Some(app) = environment.config.epic_id.as_deref() else {
+        return Ok(());
+    };
+    if paths.portable_root().is_some()
+        || !matches!(launch.host, Host::Wine { .. })
+        || !crate::epic::launch::is_main_target(launch.target.as_deref())
+    {
+        return Ok(());
+    }
+    let (_, target) = resolve_target(environment, overrides.target.as_deref())?;
+    events(LaunchEvent::AskingEpic);
+    let start = crate::epic::launch::ask(paths, global, &environment.name, app, token)?;
+    if let Some(notice) = &start.notice {
+        events(LaunchEvent::Notice(notice.clone()));
+    }
+    let kept = target.args.len() + overrides.args.len();
+    launch.run_epic(start, kept, target.cwd.is_some());
+    Ok(())
 }
 
 /// Writes RetroArch's quit file from the global setting before a RetroArch

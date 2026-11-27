@@ -153,6 +153,7 @@ fn launch_note(event: &launch::LaunchEvent) -> Option<String> {
     match event {
         launch::LaunchEvent::NoWaylandSession => Some("No Wayland session is available".to_owned()),
         launch::LaunchEvent::Warning(warning) => Some(format!("Warning: {warning}")),
+        launch::LaunchEvent::Notice(notice) => Some(notice.clone()),
         _ => None,
     }
 }

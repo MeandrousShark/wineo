@@ -3907,6 +3907,8 @@ mod reveal;
 
 mod advanced_switch;
 
+mod epic;
+
 #[test]
 fn retroarch_quit_switch_defaults_on_and_saves_through_set() {
     let (_root, paths) = setup();

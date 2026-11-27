@@ -611,6 +611,7 @@ fn wrappers_go_in_front_of_wine() {
         wayland: Wayland::Off,
         gameid: None,
         store: None,
+        epic: crate::epic::launch::Secret::default(),
         build_guards: Vec::new(),
     };
     let wine = Runner::fake("wine")
