@@ -18,7 +18,9 @@
 //!   finishes.
 //! - `outside`: records a program outside the game folder.
 //!
-//! Every install writes `<root>/installing-<app>` once it has started, and
+//! Every install writes `<root>/installing-<app>` once it has started, in
+//! `hang` mode only once its interrupt handler is set, so a test that
+//! cancels on seeing it never catches the fake before it can react, and
 //! `<root>/got-int` gets a line for each interrupt it heeded. It records
 //! the version in `<root>/version-<app>` (`1.0` without one) and the program
 //! in `<root>/exe-<app>` (`Binaries/Win64/Game.exe` without one, and the
@@ -34,8 +36,9 @@
 //!
 //! - `damaged`: logs a missing file and a failed check, as Legendary does
 //!   before it fetches what is missing, then finishes.
-//! - `hang`: waits up to 30 seconds after checking; an interrupt logs the
-//!   abort line and keeps the repair file.
+//! - `hang`: sets its interrupt handler before its marker, then waits up to
+//!   30 seconds after checking; an interrupt logs the abort line and keeps
+//!   the repair file.
 //! - `kept`: exits 0 with the repair file left, as a downloader that failed
 //!   leaves it.
 //! - `failed-write`: logs a failed write, then finishes.
@@ -106,6 +109,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            if [ -n \"$only\" ] && [ ! -f \"$recorded\" ]; then echo \"[cli] ERROR: Update requested for \\\"$app\\\", but app not installed!\" >&2; exit 1; fi\n\
            if [ -n \"$repair\" ]; then\n\
              if [ ! -f \"$recorded\" ]; then echo \"[cli] ERROR: Game \\\"$app\\\" ($app) is not installed!\" >&2; exit 0; fi\n\
+             if [ \"$mode\" = hang ]; then trap 'echo \"[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up...\" >&2; echo \"$app\" >> \"$root/got-int\"; exit 0' INT; fi\n\
              : > \"$root/installing-$app\"\n\
              {mkdir} -p \"$LEGENDARY_CONFIG_PATH/tmp\"\n\
              echo \"[cli] INFO: Loading installed manifest for \\\"$app\\\"\" >&2\n\
@@ -115,9 +119,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
              echo \"[DLManager] INFO: Download Manager running with process-id: $$\" >&2\n\
              echo '[DLManager] INFO: = Progress: 50.00% (1/2), Running for 00:00:01, ETA: 00:00:01' >&2\n\
              case \"$mode\" in\n\
-             hang)\n\
-               trap 'echo \"[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up...\" >&2; echo \"$app\" >> \"$root/got-int\"; exit 0' INT\n\
-               {sleep} 30; exit 0 ;;\n\
+             hang) {sleep} 30; exit 0 ;;\n\
              kept) echo '[cli] WARNING: The following exception occurred while waiting for the downloader to finish: OSError().' >&2; exit 0 ;;\n\
              failed-write) echo '[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device' >&2 ;;\n\
              esac\n\
@@ -129,11 +131,12 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            fi\n\
            echo \"[cli] INFO: Preparing download for \\\"$app\\\" ($app)...\" >&2\n\
            echo \"[DLManager] INFO: Download Manager running with process-id: $$\" >&2\n\
-           : > \"$root/installing-$app\"\n\
+           [ \"$mode\" = hang ] || : > \"$root/installing-$app\"\n\
            case \"$mode\" in\n\
            hang)\n\
              {mkdir} -p \"$LEGENDARY_CONFIG_PATH/tmp\"\n\
              trap 'echo \"[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up...\" >&2; : > \"$LEGENDARY_CONFIG_PATH/tmp/$app.resume\"; echo \"$app\" >> \"$root/got-int\"; exit 0' INT\n\
+             : > \"$root/installing-$app\"\n\
              echo '[DLManager] INFO: = Progress: 10.00% (1/10), Running for 00:00:01, ETA: 00:00:09' >&2\n\
              {sleep} 30; exit 0 ;;\n\
            deaf)\n\
