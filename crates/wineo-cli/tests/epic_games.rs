@@ -217,6 +217,42 @@ fn set_refuses_epic_id_and_leaves_the_file_alone() {
 }
 
 #[test]
+fn set_refuses_changing_the_main_program_and_allows_the_rest() {
+    let f = Fixture::new();
+    let folder = fowl(&f, None);
+    let config = config_path(&f, "fowl");
+    let before = stamp(&config);
+    let refusal = "fowl's main program comes from Epic and can't be changed.";
+    assert_refused(
+        &f.run(&["set", "fowl", "targets.game.exe=/elsewhere/Other.exe"]),
+        refusal,
+    );
+    assert_refused(
+        &f.run(&["set", "fowl", "--unset", "targets.game.exe"]),
+        refusal,
+    );
+    assert_refused(
+        &f.run(&[
+            "set",
+            "fowl",
+            "targets.game.args=[\"-x\"]",
+            "targets.game.exe=/elsewhere/Other.exe",
+        ]),
+        refusal,
+    );
+    assert_eq!(stamp(&config), before);
+
+    let same = format!(
+        "targets.game.exe={}",
+        folder.join("OfflineGame.exe").display()
+    );
+    assert_success(&f.run(&["set", "fowl", &same, "targets.game.args=[\"-x\"]"]));
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(text.contains("args = [\"-x\"]"), "{text}");
+    assert_eq!(sweep(&f), Vec::<i32>::new());
+}
+
+#[test]
 fn set_refuses_epic_id_before_waiting_on_a_running_game() {
     let f = Fixture::new();
     fowl(&f, None);
