@@ -27,7 +27,7 @@ use super::epic_install::{self, Game as InstallGame, Install, Leave};
 use super::frame;
 use super::import_grid::{ImportGrid, Tile};
 use super::posters;
-use crate::epic_legendary::{self as legendary, Found};
+use crate::epic_legendary::{self as legendary, Found, Jobs};
 use crate::task;
 use crate::theme::Palette;
 use crate::ui::secondary_button;
@@ -127,9 +127,14 @@ pub(crate) struct Page {
     /// text tile.
     posters: HashMap<String, Option<image::Handle>>,
     poster_token: Option<Token>,
+    /// The listing Legendary is asked for.
+    list_job: Jobs,
     /// The environment whose interrupted install this page was opened to
     /// finish from the library, which it returns to instead of the grid.
     finishing: Option<String>,
+    /// The card this page finished an install for, for the library to check
+    /// again, once.
+    updated: Option<String>,
 }
 
 impl Drop for Page {
@@ -176,7 +181,9 @@ impl Page {
             grid: ImportGrid::new(GRID_ID, Event::ProgressDue, next_poster_load()),
             posters: HashMap::new(),
             poster_token: None,
+            list_job: Jobs::default(),
             finishing: None,
+            updated: None,
         }
     }
 
@@ -185,8 +192,25 @@ impl Page {
         self.generation
     }
 
+    /// Work closing the window waits for: an install, or a Legendary call.
     pub(crate) fn busy(&self) -> bool {
-        self.install.as_ref().is_some_and(|install| install.busy())
+        self.install.as_ref().is_some_and(|install| install.busy()) || self.list_job.running()
+    }
+
+    /// Work Back waits for. A listing or review is stopped instead.
+    fn working(&self) -> bool {
+        self.install
+            .as_ref()
+            .is_some_and(|install| install.working())
+    }
+
+    /// Stops the Legendary calls the page is waiting on, as the window
+    /// closes.
+    pub(crate) fn cancel_jobs(&self) {
+        self.list_job.cancel();
+        if let Some(install) = &self.install {
+            install.cancel_jobs();
+        }
     }
 
     pub(crate) fn waiting(&self) -> bool {
@@ -198,6 +222,7 @@ impl Page {
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
+        self.list_job.cancel();
         if let Some(install) = &mut self.install {
             install.cancel(force);
         }
@@ -205,6 +230,10 @@ impl Page {
 
     pub(crate) fn take_action(&mut self) -> Option<Action> {
         self.action.take()
+    }
+
+    pub(crate) fn take_updated(&mut self) -> Option<String> {
+        self.updated.take()
     }
 
     pub(crate) fn submit(&mut self) -> Task<Event> {
@@ -223,6 +252,7 @@ impl Page {
             let task = install.back();
             return self.installing(task);
         }
+        self.list_job.cancel();
         self.stop_posters();
         self.action = Some(Action::Choose);
         Task::none()
@@ -240,6 +270,7 @@ impl Page {
                     name: self.finishing.clone(),
                     launch: false,
                 });
+                self.updated = self.finishing.clone();
             }
             Some(Leave::Games) => {
                 self.install = None;
@@ -248,10 +279,13 @@ impl Page {
                 return self.list();
             }
             Some(Leave::Library(name)) => {
+                // Opened from a card, it goes back to that card whatever
+                // the install did.
                 self.action = Some(Action::Library {
-                    name,
+                    name: name.or_else(|| self.finishing.clone()),
                     launch: false,
                 });
+                self.updated = self.finishing.clone();
             }
             None => {}
         }
@@ -294,9 +328,10 @@ impl Page {
         self.stop_posters();
         self.status = "Reading your Epic games...".to_owned();
         let generation = self.next_generation();
+        let token = self.list_job.start(generation);
         let paths = self.paths.clone();
         task::blocking(
-            move || load_listing(&paths, &Token::new()),
+            move || load_listing(&paths, &token),
             move |result| Event::Listed(generation, result),
         )
     }
@@ -397,7 +432,12 @@ impl Page {
                 }
             }
             Event::Back => self.back(),
-            Event::Listed(generation, result) if generation == self.generation => {
+            Event::Listed(generation, _) if generation != self.generation => {
+                self.list_job.ended(generation);
+                Task::none()
+            }
+            Event::Listed(generation, result) => {
+                self.list_job.ended(generation);
                 self.status.clear();
                 match result {
                     Ok(listing) => {
@@ -432,7 +472,7 @@ impl Page {
             .as_ref()
             .is_some_and(|install| install.finished());
         let back = secondary_button("Back", palette)
-            .on_press_maybe((!self.busy() && !finished).then_some(Event::Back));
+            .on_press_maybe((!self.working() && !finished).then_some(Event::Back));
         let mut page = column![]
             .spacing(12)
             .max_width(frame::PAGE_MAX_WIDTH)
@@ -545,6 +585,22 @@ impl Page {
     #[cfg(test)]
     pub(super) fn listing(&self) -> Option<&Listing> {
         self.listing.as_ref()
+    }
+
+    /// A page showing `install`, as the grid opens one.
+    #[cfg(test)]
+    pub(super) fn holding(paths: Paths, install: Install) -> Self {
+        let mut page = Self::blank(paths);
+        page.install = Some(Box::new(install));
+        page.install_instance = 1;
+        page
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_canceled(&self) -> bool {
+        self.install
+            .as_ref()
+            .is_some_and(|install| install.canceled())
     }
 
     #[cfg(test)]
@@ -791,4 +847,4 @@ fn decode_cover(
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::flow) mod tests;

@@ -5,7 +5,7 @@ use wineo_core::download::Response;
 
 use super::*;
 use crate::epic_fake::Epic;
-use crate::flow::epic_install::tests::{offline, world};
+use crate::flow::epic_install::tests::{offline, run_in_background, world};
 
 /// The probe's list with one game another launcher manages, one with no
 /// Windows build, one that needs another launcher's account, and box art
@@ -337,3 +337,118 @@ impl Transport for Shared {
 }
 
 use std::fs;
+
+pub(in crate::flow) fn page_holding(paths: Paths, install: Install) -> Page {
+    Page::holding(paths, install)
+}
+
+#[test]
+fn back_stops_the_listing_so_a_later_one_isnt_held_up() {
+    use std::time::{Duration, Instant};
+    let epic = world();
+    let hanging = epic.hang("list");
+    let (mut page, task) = Page::new(epic.paths.clone());
+    assert!(page.busy(), "closing the window waits for the listing");
+    assert!(!page.working(), "Back doesn't");
+    let worker = run_in_background(task);
+    epic.wait_for(&hanging);
+    let _ = page.back();
+    assert!(matches!(page.take_action(), Some(Action::Choose)));
+    assert!(page.list_job.all_canceled());
+    fs::remove_file(epic.file("hang-list")).unwrap();
+    let started = Instant::now();
+    let listing = load_listing(&epic.paths, &Token::new()).unwrap();
+    assert!(!listing.games.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    let _ = worker.join().unwrap();
+    // Its answer, late, ends the job and opens nothing.
+    assert!(epic.sweep().is_empty());
+}
+
+#[test]
+fn the_listings_answer_ends_its_job_even_after_a_newer_listing() {
+    let epic = world();
+    let (mut page, _) = Page::new(epic.paths.clone());
+    let first = page.generation;
+    let _ = page.list();
+    let second = page.generation;
+    assert!(page.list_job.running());
+    let _ = page.update(Event::Listed(first, Err("late".to_owned())));
+    assert!(page.list_job.running(), "the newer one still runs");
+    assert!(page.error.is_none(), "a stale answer shows nothing");
+    let _ = page.update(Event::Listed(second, Ok(Listing::default())));
+    assert!(!page.list_job.running());
+    assert!(!page.busy());
+}
+
+#[test]
+fn a_cover_that_cant_be_decoded_is_dropped_so_the_next_load_fetches_it() {
+    let epic = world();
+    mixed(&epic);
+    let path = epic
+        .paths
+        .epic_covers_dir()
+        .join(format!("{}.png", wineo_core::epic::game::key("AppOffline")));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // PNG's signature, then nothing: a download cut short.
+    fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+    assert_eq!(
+        covers::cached(&epic.paths, "AppOffline"),
+        Some(path.clone())
+    );
+    let job = Job {
+        id: "AppOffline".to_owned(),
+        source: Source::Cover(Vec::new()),
+    };
+    let mut shown = Vec::new();
+    run_posters(
+        &epic.paths,
+        vec![job],
+        &Token::new(),
+        || Err("no network".to_owned()),
+        |id, poster| shown.push((id, poster.is_ok())),
+    );
+    assert_eq!(shown, [("AppOffline".to_owned(), false)]);
+    assert!(!path.exists());
+    assert_eq!(covers::cached(&epic.paths, "AppOffline"), None);
+}
+
+#[test]
+fn finish_install_from_a_card_returns_to_that_card_and_checks_it_again() {
+    let epic = world();
+    let game = epic_install::Game {
+        unfinished: true,
+        ..offline()
+    };
+    // Back from its review.
+    let (mut page, _) =
+        Page::finish_install(epic.paths.clone(), "offline-game".to_owned(), game.clone());
+    let _ = page.back();
+    assert!(matches!(
+        page.take_action(),
+        Some(Action::Library { name: Some(name), .. }) if name == "offline-game"
+    ));
+    assert_eq!(page.take_updated().as_deref(), Some("offline-game"));
+    // A failure, then Back to library, though no environment was saved.
+    let (mut page, _) = Page::finish_install(epic.paths.clone(), "offline-game".to_owned(), game);
+    let _ = page.update(Event::Installing(
+        1,
+        Box::new(epic_install::Event::Prepared(
+            1,
+            Err("Not logged in.".to_owned()),
+        )),
+    ));
+    let _ = page.update(Event::Installing(
+        1,
+        Box::new(epic_install::Event::BackToLibrary),
+    ));
+    assert!(matches!(
+        page.take_action(),
+        Some(Action::Library { name: Some(name), .. }) if name == "offline-game"
+    ));
+    assert_eq!(page.take_updated().as_deref(), Some("offline-game"));
+}

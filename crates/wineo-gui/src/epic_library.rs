@@ -21,6 +21,10 @@ pub(crate) struct EpicCard {
     pub(crate) app: String,
     /// Work on the game that didn't finish. It won't start until it is.
     pub(crate) unfinished: Option<Work>,
+    /// What the record says is installed, so a rescan sees an update or
+    /// repair made elsewhere.
+    pub(crate) installed_version: Option<String>,
+    pub(crate) dlc: Vec<(String, Option<String>)>,
 }
 
 impl EpicCard {
@@ -50,12 +54,43 @@ pub(crate) fn card(paths: &Paths, env: &Environment) -> Option<EpicCard> {
         return None;
     }
     let app = env.config.epic_id.clone()?;
-    let unfinished = game::peek(paths, &app)
-        .ok()
-        .flatten()
-        .and_then(|record| record.in_flight)
-        .map(|mark| mark.work);
-    Some(EpicCard { app, unfinished })
+    let record = game::peek(paths, &app).ok().flatten();
+    Some(EpicCard {
+        unfinished: record
+            .as_ref()
+            .and_then(|record| record.in_flight.as_ref())
+            .map(|mark| mark.work),
+        installed_version: record
+            .as_ref()
+            .and_then(|record| record.installed_version.clone()),
+        dlc: record
+            .map(|record| {
+                record
+                    .dlc
+                    .into_iter()
+                    .map(|dlc| (dlc.app_name, dlc.version))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        app,
+    })
+}
+
+/// The Epic games whose record says something new between the library's
+/// `old` cards and `new` ones, as GOG's `local_changes` finds for folders: an
+/// update, repair, or finished install made in the terminal or another
+/// window. A card seen for the first time has nothing to compare.
+pub(crate) fn local_changes(
+    old: &[crate::library::Card],
+    new: &[crate::library::Card],
+) -> Vec<String> {
+    new.iter()
+        .filter(|card| card.epic.is_some())
+        .filter_map(|card| {
+            let before = old.iter().find(|old| old.name == card.name)?;
+            (before.epic != card.epic).then(|| card.name.clone())
+        })
+        .collect()
 }
 
 pub(crate) fn badge(epic: Option<&EpicCard>, status: Option<&Status>) -> Option<Badge> {

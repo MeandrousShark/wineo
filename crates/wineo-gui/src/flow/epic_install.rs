@@ -24,7 +24,7 @@ use wineo_core::gog::install_dir::install_folder;
 use wineo_core::paths::Paths;
 
 use super::heroic;
-use crate::epic_legendary::{self as legendary, Found, Offer, Outcome};
+use crate::epic_legendary::{self as legendary, Found, Jobs, Offer, Outcome};
 use crate::runner_label::Choice;
 use crate::size::format_bytes;
 use crate::task;
@@ -62,6 +62,9 @@ pub(crate) struct Review {
     default_folder: PathBuf,
     /// What it was planned with.
     choices: Choices,
+    /// The plan failed in a way no folder, runner, or arch fixes, so the
+    /// review shows only why.
+    fatal: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +138,8 @@ pub(crate) struct Install {
     stalled: Option<u64>,
     error: Option<String>,
     leave: Option<Leave>,
+    /// The review's call to Legendary.
+    job: Jobs,
 }
 
 impl Install {
@@ -153,6 +158,7 @@ impl Install {
             stalled: None,
             error: None,
             leave: None,
+            job: Jobs::default(),
         };
         let task = page.prepare();
         (page, task)
@@ -163,9 +169,25 @@ impl Install {
         self.generation
     }
 
-    /// Installing, or downloading Legendary for it.
-    pub(crate) fn busy(&self) -> bool {
+    /// Installing, or downloading Legendary for it: work Back waits for.
+    pub(crate) fn working(&self) -> bool {
         self.token.is_some() || self.offer.as_ref().is_some_and(Offer::downloading)
+    }
+
+    /// Work closing the window waits for, the review's Legendary call too.
+    pub(crate) fn busy(&self) -> bool {
+        self.working() || self.job.running()
+    }
+
+    pub(crate) fn cancel_jobs(&self) {
+        self.job.cancel();
+    }
+
+    /// Whether its install or Legendary download was told to stop.
+    #[cfg(test)]
+    pub(crate) fn canceled(&self) -> bool {
+        self.token.as_ref().is_some_and(Token::is_canceled)
+            || self.offer.as_ref().is_some_and(Offer::canceled)
     }
 
     pub(crate) fn waiting(&self) -> bool {
@@ -181,6 +203,7 @@ impl Install {
     }
 
     pub(crate) fn cancel(&mut self, force: bool) {
+        self.job.cancel();
         if let Some(offer) = &mut self.offer {
             offer.cancel();
             return;
@@ -214,6 +237,7 @@ impl Install {
         self.stage == Stage::Review
             && !self.plan().is_some_and(Plan::resumes)
             && !self.game.unfinished
+            && !self.review.as_ref().is_some_and(|review| review.fatal)
     }
 
     fn ready(&self) -> bool {
@@ -232,12 +256,14 @@ impl Install {
     }
 
     pub(crate) fn back(&mut self) -> Task<Event> {
-        if self.busy() {
+        if self.working() {
             return Task::none();
         }
         match self.stage {
             Stage::Preparing | Stage::Asking | Stage::Review => {
-                // A reply to the plan must not reopen it.
+                // A reply to the plan must not reopen it, and Legendary
+                // stops asking.
+                self.job.cancel();
                 self.next_generation();
                 self.status.clear();
                 self.offer = None;
@@ -270,11 +296,12 @@ impl Install {
         self.status = format!("Checking {} with Epic...", self.game.title);
         self.error = None;
         let generation = self.next_generation();
+        let token = self.job.start(generation);
         let paths = self.paths.clone();
         let game = self.game.clone();
         let choices = self.choices.clone();
         task::blocking(
-            move || prepare_with(&paths, &game, &choices, &Token::new()),
+            move || prepare_with(&paths, &game, &choices, &token),
             move |result| Event::Prepared(generation, result),
         )
     }
@@ -320,7 +347,7 @@ impl Install {
 
     /// Plans again after a choice changed, unless the review is busy.
     fn replan(&mut self) -> Task<Event> {
-        if self.stage != Stage::Review || self.busy() {
+        if self.stage != Stage::Review || self.working() {
             return Task::none();
         }
         self.prepare()
@@ -328,7 +355,12 @@ impl Install {
 
     pub(crate) fn update(&mut self, event: Event) -> Task<Event> {
         match event {
-            Event::Prepared(generation, result) if generation == self.generation => {
+            Event::Prepared(generation, _) if generation != self.generation => {
+                self.job.ended(generation);
+                Task::none()
+            }
+            Event::Prepared(generation, result) => {
+                self.job.ended(generation);
                 self.status.clear();
                 match result {
                     Ok(Prepared::Review(review)) => {
@@ -817,6 +849,7 @@ fn prepare_found(
         .map(|(_, choices)| choices)
         .unwrap_or_default();
     let dir = choices.dir.trim();
+    let mut fatal = false;
     let plan = (|| {
         let dir = (!dir.is_empty())
             .then(|| paths.absolute(dir))
@@ -832,7 +865,10 @@ fn prepare_found(
         };
         install::plan(legendary, &request, listed, &existing, token)
             .map(Box::new)
-            .map_err(|error| format!("{error:#}"))
+            .map_err(|error| {
+                fatal = unrecoverable(&error);
+                format!("{error:#}")
+            })
     })();
     if token.is_canceled() {
         return Err(CANCELED.to_owned());
@@ -842,12 +878,34 @@ fn prepare_found(
         runners,
         default_folder,
         choices: choices.clone(),
+        fatal,
     })
 }
 
-/// How to finish an install that stopped, here or in the terminal.
-fn finish_hint() -> &'static str {
-    "Install it again here to finish it."
+/// Whether a plan's failure is one no other folder, runner, or arch can
+/// fix: the game can't be installed, Legendary failed, or the game is
+/// already on disk.
+fn unrecoverable(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<InstallError>(),
+        Some(
+            InstallError::Unavailable { .. }
+                | InstallError::Downloaded { .. }
+                | InstallError::NotOwned { .. }
+                | InstallError::Portable(_)
+                | InstallError::Running { .. }
+        )
+    ) || error.downcast_ref::<wineo_core::epic::Error>().is_some()
+}
+
+/// How to finish an install that stopped: from the library once its
+/// environment exists, else by installing it again, as GOG's says.
+fn finish_hint(paths: &Paths, name: &str) -> String {
+    if !name.is_empty() && paths.environment_config(name).exists() {
+        format!("Use Finish install on {name} in the library.")
+    } else {
+        "Install it again here to finish it.".to_owned()
+    }
 }
 
 /// Runs the install with a line for each step, then adds `extras`.
@@ -889,7 +947,10 @@ pub(crate) fn install_with(
         Ok(installed) => installed,
         Err(error) if install::is_cancel(&error) || token.is_canceled() => {
             return Err(if install::left_unfinished(paths, app) {
-                format!("Install interrupted. {}", finish_hint())
+                format!(
+                    "Install interrupted. {}",
+                    finish_hint(paths, plan.environment())
+                )
             } else {
                 CANCELED.to_owned()
             });
@@ -899,7 +960,10 @@ pub(crate) fn install_with(
             return Err(format!("{error:#}"));
         }
         Err(error) if install::left_unfinished(paths, app) => {
-            return Err(format!("{error:#} {}", finish_hint()));
+            return Err(format!(
+                "{error:#} {}",
+                finish_hint(paths, plan.environment())
+            ));
         }
         Err(error) => return Err(format!("{error:#}")),
     };

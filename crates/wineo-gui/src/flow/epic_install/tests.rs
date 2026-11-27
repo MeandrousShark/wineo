@@ -381,3 +381,128 @@ fn lines_say_each_run_and_its_whole_percentage_once() {
         Some("Stalled(5)".to_owned())
     );
 }
+
+/// Runs `task` on a thread of its own, as the app's runtime would, and
+/// returns what it sent.
+pub(in crate::flow) fn run_in_background<M: Send + 'static>(
+    task: Task<M>,
+) -> std::thread::JoinHandle<Vec<M>> {
+    std::thread::spawn(move || {
+        let mut sent = Vec::new();
+        crate::test_tasks::each_action(task, |action| {
+            if let iced_runtime::Action::Output(message) = action {
+                sent.push(message);
+            }
+        });
+        sent
+    })
+}
+
+#[test]
+fn back_or_leaving_stops_the_reviews_legendary_call_so_nothing_waits_on_it() {
+    use std::time::{Duration, Instant};
+    for leave in ["back", "drop"] {
+        let epic = world();
+        let hanging = epic.hang("info");
+        let (mut page, task) = Install::new(epic.paths.clone(), offline());
+        assert!(page.busy(), "closing the window waits for it");
+        assert!(!page.working(), "Back doesn't");
+        let worker = run_in_background(task);
+        epic.wait_for(&hanging);
+        if leave == "back" {
+            let _ = page.back();
+            assert!(matches!(page.take_leave(), Some(Leave::Games)));
+            assert!(page.job.all_canceled());
+        } else {
+            drop(page);
+        }
+        // The canceled `info` gives up the Epic lock a listing needs.
+        fs::remove_file(epic.file("hang-info")).unwrap();
+        let started = Instant::now();
+        let listing = crate::flow::epic::load_listing(&epic.paths, &Token::new()).unwrap();
+        assert!(!listing.games.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{leave}: the listing waited {:?}",
+            started.elapsed()
+        );
+        let _ = worker.join().unwrap();
+        assert!(epic.sweep().is_empty(), "{leave}");
+    }
+}
+
+#[test]
+fn a_review_that_no_choice_can_fix_shows_only_why() {
+    let epic = world();
+    // Only `info` says another launcher manages it.
+    let game = Game {
+        app: "AppThirdParty".to_owned(),
+        title: "Third Party Game".to_owned(),
+        unfinished: false,
+    };
+    let fatal = review(&epic, &game, &choices());
+    assert!(fatal.fatal);
+    let error = fatal.plan.as_ref().unwrap_err().clone();
+    let shown = texts(&page_with(&epic, game, fatal));
+    assert!(shown.contains(&error), "{shown:?}");
+    for control in ["Browse...", "Runner", "Arch"] {
+        assert!(!shown.contains(&control.to_owned()), "{control}: {shown:?}");
+    }
+    // A folder in the way is fixed by choosing another.
+    let folder = epic.games().join("Offline Game");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("save.dat"), "x").unwrap();
+    let blocked = review(&epic, &offline(), &choices());
+    assert!(!blocked.fatal);
+    assert!(blocked.plan.is_err());
+    assert!(texts(&page_with(&epic, offline(), blocked)).contains(&"Browse...".to_owned()));
+    assert!(epic.sweep().is_empty());
+}
+
+#[test]
+fn a_stopped_install_whose_environment_exists_points_at_its_card() {
+    let epic = world();
+    assert_eq!(
+        finish_hint(&epic.paths, "offline-game"),
+        "Install it again here to finish it."
+    );
+    let config = epic.paths.environment_config("offline-game");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "schema_version = 1\nkind = \"native\"\n").unwrap();
+    assert_eq!(
+        finish_hint(&epic.paths, "offline-game"),
+        "Use Finish install on offline-game in the library."
+    );
+}
+
+#[test]
+fn closing_the_window_during_an_install_or_a_legendary_download_asks_then_cancels() {
+    let epic = world();
+    let review = review(&epic, &offline(), &choices());
+    let mut installing = page_with(&epic, offline(), review);
+    let _ = installing.update(Event::Install);
+    let (mut downloading, _) = Install::new(epic.paths.clone(), offline());
+    let generation = downloading.generation;
+    let _ = downloading.update(Event::Prepared(
+        generation,
+        Ok(Prepared::Offer(Missing {
+            older_on_path: None,
+        })),
+    ));
+    let _ = downloading.update(Event::Offer(OfferEvent::Download));
+    for page in [installing, downloading] {
+        let mut app = crate::App::boot(epic.paths.clone()).0;
+        let flow = crate::flow::epic::tests::page_holding(epic.paths.clone(), page);
+        assert!(flow.busy());
+        app.flow = Some(super::super::Page::Epic(Box::new(flow)));
+        let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+        assert!(app.close_prompt);
+        let _ = app.update(crate::Message::CancelAndClose);
+        assert!(app.closing);
+        let Some(super::super::Page::Epic(page)) = &app.flow else {
+            panic!("the page stays until its work ends");
+        };
+        assert!(page.install_canceled());
+    }
+    assert!(epic.sweep().is_empty());
+}

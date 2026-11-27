@@ -97,6 +97,51 @@ fn shown(paths: &Paths, path: &Path) -> String {
     paths.contract_text(&path.display().to_string())
 }
 
+/// The Legendary calls a page started and is waiting on, like a listing or
+/// a review asking `info`. Each is canceled when the page moves on or goes
+/// away, so it gives up the host-wide Epic lock, and each counts as work
+/// until its answer lands, so closing the window waits for Legendary to
+/// stop rather than leaving it running.
+#[derive(Default)]
+pub(crate) struct Jobs(Vec<(u64, Token)>);
+
+impl Jobs {
+    /// A token for the call answering with `generation`. Calls started
+    /// before it are canceled, and still count until they answer.
+    pub(crate) fn start(&mut self, generation: u64) -> Token {
+        self.cancel();
+        let token = Token::new();
+        self.0.push((generation, token.clone()));
+        token
+    }
+
+    pub(crate) fn cancel(&self) {
+        for (_, token) in &self.0 {
+            token.cancel();
+        }
+    }
+
+    /// The call that answers with `generation` has stopped.
+    pub(crate) fn ended(&mut self, generation: u64) {
+        self.0.retain(|(started, _)| *started != generation);
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn all_canceled(&self) -> bool {
+        self.0.iter().all(|(_, token)| token.is_canceled())
+    }
+}
+
+impl Drop for Jobs {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 /// Where the offer is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
@@ -156,6 +201,11 @@ impl Offer {
 
     pub(crate) fn stage(&self) -> Stage {
         self.stage
+    }
+
+    #[cfg(test)]
+    pub(crate) fn canceled(&self) -> bool {
+        self.token.as_ref().is_some_and(Token::is_canceled)
     }
 
     /// A download is running, which leaving the page has to wait for.

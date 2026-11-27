@@ -29,6 +29,8 @@ fn epic_card(unfinished: Option<Work>) -> Option<EpicCard> {
     Some(EpicCard {
         app: "AppOffline".to_owned(),
         unfinished,
+        installed_version: Some("1.0".to_owned()),
+        dlc: Vec::new(),
     })
 }
 
@@ -37,6 +39,7 @@ fn a_card_reads_work_left_from_wineos_record() {
     let epic = installed();
     let environment = Environment::load(&epic.paths, "offline-game").unwrap();
     assert_eq!(card(&epic.paths, &environment), epic_card(None));
+    // The record's version is the one Legendary installed.
     epic.set_mode("AppOffline", "hang");
     let plan = match crate::flow::epic_update::plan_with(&epic.paths, "offline-game", &Token::new())
         .unwrap()
@@ -205,4 +208,36 @@ fn update_is_offered_and_finish_update_replaces_play() {
     assert!(app.flow.is_none());
     let _ = app.update(Message::EpicUpdate("broken".to_owned()));
     assert!(matches!(app.flow, Some(crate::flow::Page::EpicUpdate(_))));
+}
+
+#[test]
+fn a_record_changed_elsewhere_is_seen_on_the_next_rescan_and_checked_again() {
+    let mut app = app();
+    let mut before = test_card("offline-game", State::Inactive, 0);
+    before.epic = epic_card(None);
+    app.cards = vec![before.clone()];
+    app.epic_updates.insert(
+        "offline-game",
+        status("offline-game", UpdateState::Available),
+    );
+    // Nothing new: the status stays.
+    app.merge(vec![before.clone()]);
+    assert!(app.epic_updates.status("offline-game").is_some());
+    assert!(local_changes(&app.cards, &[before.clone()]).is_empty());
+    // The terminal updated it: the stale status goes, and a check is asked.
+    let mut after = before.clone();
+    after.epic.as_mut().unwrap().installed_version = Some("1.1".to_owned());
+    assert_eq!(
+        local_changes(&app.cards, &[after.clone()]),
+        ["offline-game"]
+    );
+    let mut dlc = before.clone();
+    dlc.epic.as_mut().unwrap().dlc = vec![("Dlc".to_owned(), Some("1.0".to_owned()))];
+    assert_eq!(local_changes(&app.cards, &[dlc]), ["offline-game"]);
+    app.merge(vec![after]);
+    assert!(app.epic_updates.status("offline-game").is_none());
+    // A card seen for the first time has nothing to compare.
+    let mut new = test_card("new-game", State::Inactive, 0);
+    new.epic = epic_card(None);
+    assert!(local_changes(&app.cards, &[new]).is_empty());
 }

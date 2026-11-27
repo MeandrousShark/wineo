@@ -233,6 +233,7 @@ impl Page {
     pub(crate) fn take_epic_updated(&mut self) -> Option<String> {
         match self {
             Self::EpicUpdate(page) => page.take_updated(),
+            Self::Epic(page) => page.take_updated(),
             _ => None,
         }
     }
@@ -509,6 +510,7 @@ impl Page {
         match self {
             Self::New(page) => page.cancel_fetch(),
             Self::Prefix(page) => page.cancel_fetch(),
+            Self::Epic(page) => page.cancel_jobs(),
             _ => {}
         }
     }

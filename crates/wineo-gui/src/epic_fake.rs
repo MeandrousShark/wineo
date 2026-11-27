@@ -117,6 +117,26 @@ impl Epic {
         }
     }
 
+    /// Makes the fake's next `command` (like `info` or `list`) hang until
+    /// it's interrupted, and returns the file it writes once it hangs.
+    pub(crate) fn hang(&self, command: &str) -> PathBuf {
+        fs::write(self.file(&format!("hang-{command}")), "").unwrap();
+        self.file(&format!("hanging-{command}"))
+    }
+
+    /// Waits for `marker` to appear.
+    pub(crate) fn wait_for(&self, marker: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "{} never appeared",
+                marker.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Where the games folder is by default.
     pub(crate) fn games(&self) -> PathBuf {
         fs::canonicalize(self.root.path()).unwrap().join("Games")
@@ -186,6 +206,7 @@ impl Epic {
              else printf '%s\\n' \"$*\" >> \"$root/calls\"; fi\n\
              user=\"$LEGENDARY_CONFIG_PATH/user.json\"\n\
              if [ \"$1\" = -y ]; then shift; fi\n\
+             if [ -f \"$root/hang-$1\" ]; then trap 'exit 0' INT; : > \"$root/hanging-$1\"; sleep 30; exit 0; fi\n\
              {functions}\
              case \"$1\" in\n\
              {install_arms}\

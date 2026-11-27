@@ -145,11 +145,17 @@ impl App {
     }
 
     /// Shows `cards`, and checks again each GOG game whose own folder now
-    /// says something new about it: that is newer than anything asked of GOG
-    /// before, so the app forgets it, and the check puts the Update row back.
+    /// says something new about it, and each Epic game whose record does:
+    /// that is newer than anything asked of the store before, so the app
+    /// forgets it, and the check puts the Update row back.
     pub(crate) fn merge_checked(&mut self, cards: Vec<Card>) -> Task<Message> {
         let changed = crate::gog_library::local_changes(&self.cards, &cards);
+        let epic = crate::epic_library::local_changes(&self.cards, &cards);
         let settled = self.merge_cards(cards);
+        let epic_rechecks = Task::batch(epic.into_iter().map(|name| {
+            self.epic_updates.changed(&name);
+            crate::epic_library::recheck(self, name)
+        }));
         let rechecks = Task::batch(changed.into_iter().map(|(name, check)| {
             self.gog_updates.changed(&name);
             if check {
@@ -158,7 +164,7 @@ impl App {
                 Task::none()
             }
         }));
-        Task::batch([settled, rechecks])
+        Task::batch([settled, rechecks, epic_rechecks])
     }
 
     /// Shows `cards`, and returns the scroll a motion it settled was

@@ -176,3 +176,63 @@ fn up_to_date_says_so_and_no_legendary_asks_first() {
     let _ = page.update(Event::Offer(OfferEvent::Decline));
     assert!(texts(&page).contains(&"Update canceled.".to_owned()));
 }
+
+#[test]
+fn planning_is_work_back_waits_cancel_stops_it_and_closing_asks() {
+    let epic = installed();
+    // With no saved list, planning asks Legendary for it.
+    fs::remove_file(epic.paths.epic_owned_cache()).unwrap();
+    let hanging = epic.hang("list");
+    let (mut page, task) = Page::new(epic.paths.clone(), "offline-game".to_owned());
+    assert!(page.busy());
+    let _ = page.back();
+    assert!(page.take_action().is_none(), "Back waits for planning");
+    assert!(texts(&page).contains(&"Cancel".to_owned()));
+    let worker = crate::flow::epic_install::tests::run_in_background(task);
+    epic.wait_for(&hanging);
+    let _ = page.update(Event::Cancel);
+    for event in worker.join().unwrap() {
+        let _ = page.update(event);
+    }
+    assert!(!page.busy());
+    assert_eq!(page.stage, Stage::Finished);
+    assert!(texts(&page).contains(&"Update canceled.".to_owned()));
+    assert!(epic.sweep().is_empty());
+
+    // Closing the window while it plans asks first, then cancels.
+    let (page, _) = Page::new(epic.paths.clone(), "offline-game".to_owned());
+    let mut app = crate::App::boot(epic.paths.clone()).0;
+    app.flow = Some(super::super::Page::EpicUpdate(Box::new(page)));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.close_prompt);
+    let _ = app.update(crate::Message::CancelAndClose);
+    assert!(app.closing);
+    let Some(super::super::Page::EpicUpdate(page)) = &app.flow else {
+        panic!("the page stays until its work ends");
+    };
+    assert!(page.token.as_ref().unwrap().is_canceled());
+}
+
+#[test]
+fn closing_the_window_during_an_update_asks_then_cancels() {
+    let epic = installed();
+    let mut page = page_with(&epic, Planning::Ready(Box::new(ready(&epic))));
+    let _ = page.update(Event::Update);
+    let mut app = crate::App::boot(epic.paths.clone()).0;
+    app.flow = Some(super::super::Page::EpicUpdate(Box::new(page)));
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.close_prompt);
+    let _ = app.update(crate::Message::CancelAndClose);
+    let Some(super::super::Page::EpicUpdate(page)) = &app.flow else {
+        panic!("the page stays until its work ends");
+    };
+    assert!(page.token.as_ref().unwrap().is_canceled());
+    assert!(epic.sweep().is_empty());
+}
+
+#[test]
+fn up_to_date_tells_the_library_to_check_the_card_again() {
+    let epic = world();
+    let mut page = page_with(&epic, Planning::UpToDate);
+    assert_eq!(page.take_updated().as_deref(), Some("offline-game"));
+}

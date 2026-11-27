@@ -171,10 +171,14 @@ impl Page {
         self.status = format!("Checking {} with Epic...", self.name);
         self.error = None;
         let generation = self.next_generation();
+        // Planning is work too, as GOG's is: Back waits for it, Cancel stops
+        // it, and closing the window asks first.
+        let token = Token::new();
+        self.token = Some(token.clone());
         let paths = self.paths.clone();
         let name = self.name.clone();
         task::blocking(
-            move || plan_with(&paths, &name, &Token::new()),
+            move || plan_with(&paths, &name, &token),
             move |result| Event::Planned(generation, result),
         )
     }
@@ -213,6 +217,11 @@ impl Page {
         match event {
             Event::Planned(generation, result) if generation == self.generation => {
                 self.status.clear();
+                let canceled = self.token.take().is_some_and(|token| token.is_canceled());
+                let result = match result {
+                    Err(_) if canceled => Err(CANCELED.to_owned()),
+                    result => result,
+                };
                 match result {
                     Ok(Planning::Ready(plan)) => {
                         self.plan = Some(*plan);
@@ -223,6 +232,8 @@ impl Page {
                             lines: vec!["Up to date.".to_owned()],
                             warnings: Vec::new(),
                         });
+                        // The card may still show an update made elsewhere.
+                        self.updated = Some(self.name.clone());
                         self.stage = Stage::Finished;
                     }
                     Ok(Planning::Offer(missing)) => {
@@ -262,11 +273,11 @@ impl Page {
                 }
             }
             Event::Update if self.stage == Stage::Review && !self.waiting() => self.start(),
-            Event::Cancel if self.stage == Stage::Working => {
+            Event::Cancel if matches!(self.stage, Stage::Planning | Stage::Working) => {
                 self.cancel(false);
                 Task::none()
             }
-            Event::Force if self.stage == Stage::Working => {
+            Event::Force if matches!(self.stage, Stage::Planning | Stage::Working) => {
                 self.cancel(true);
                 Task::none()
             }
@@ -375,7 +386,7 @@ impl Page {
                     .on_press_maybe((!self.waiting()).then_some(Event::Update))
                     .into()
             }),
-            Stage::Working => self.token.as_ref().map(|token| {
+            Stage::Planning | Stage::Working => self.token.as_ref().map(|token| {
                 let (label, event) = if token.is_canceled() {
                     ("Force stop", Event::Force)
                 } else {
@@ -388,7 +399,7 @@ impl Page {
                     .on_press(Event::BackToLibrary)
                     .into(),
             ),
-            Stage::Planning | Stage::Asking => None,
+            Stage::Asking => None,
         };
         let mut page = column![row![back].align_y(Center)]
             .spacing(12)
