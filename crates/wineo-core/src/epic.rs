@@ -6,6 +6,7 @@
 
 pub mod account;
 pub mod art;
+pub mod covers;
 pub mod game;
 pub mod install;
 pub mod launch;

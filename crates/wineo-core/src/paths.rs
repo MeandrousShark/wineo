@@ -382,6 +382,11 @@ impl Paths {
             .join(format!("epic-folder-{key}.holders"))
     }
 
+    /// Epic's box art for owned games, cached on the host like GOG's.
+    pub fn epic_covers_dir(&self) -> PathBuf {
+        self.cache.join("epic-covers")
+    }
+
     /// The cached list of Epic games the logged-in account owns, on the
     /// host like Steam's and GOG's.
     pub fn epic_owned_cache(&self) -> PathBuf {
