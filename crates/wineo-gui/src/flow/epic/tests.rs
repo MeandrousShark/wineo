@@ -201,8 +201,8 @@ fn picking_opens_an_install_or_the_installed_games_card_and_unavailable_ones_sta
     )
     .unwrap();
     let mut page = page(&epic);
-    // Only the installed game is bright.
-    assert_eq!(page.dimmed(), [true, false, true, true, true]);
+    // None is dimmed, as in GOG's grid.
+    assert_eq!(page.dimmed(), [false; 5]);
     // Third Party Game.
     let _ = page.update(Event::Open(3));
     assert!(!page.installing_game());
@@ -226,7 +226,7 @@ fn picking_opens_an_install_or_the_installed_games_card_and_unavailable_ones_sta
 }
 
 #[test]
-fn the_grid_dims_what_isnt_installed_and_names_each_state() {
+fn the_grid_names_each_state_and_dims_nothing() {
     let epic = world();
     mixed(&epic);
     let page = page(&epic);
@@ -244,8 +244,7 @@ fn the_grid_dims_what_isnt_installed_and_names_each_state() {
     ] {
         assert!(shown.iter().any(|text| text == line), "{line}: {shown:?}");
     }
-    let listing = page.listing().unwrap();
-    assert!(listing.games.iter().all(|game| !game.installed()));
+    assert!(page.dimmed().iter().all(|dimmed| !dimmed));
     assert!(epic.sweep().is_empty());
 }
 

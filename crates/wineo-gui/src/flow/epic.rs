@@ -74,10 +74,6 @@ impl Game {
             State::Unavailable(why) => (Some(capitalized(why)), None),
         }
     }
-
-    fn installed(&self) -> bool {
-        matches!(self.state, State::Installed(_))
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -558,9 +554,10 @@ impl Page {
                         note,
                         chosen: false,
                         focus_ring: self.grid.focus_ring(index),
-                        // Like the library: a game that isn't installed is
-                        // dimmed.
-                        dimmed: !game.installed(),
+                        // As GOG's grid: nearly every game here isn't
+                        // installed, so dimming those would wash out the
+                        // whole grid.
+                        dimmed: false,
                     },
                     Event::Open(index),
                 )
