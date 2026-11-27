@@ -63,9 +63,6 @@ pub fn cover(
     if let Some(path) = cached(paths, app_name) {
         return Ok(path);
     }
-    if token.is_canceled() {
-        return Err(CoverError::Skipped(anyhow::anyhow!("canceled")));
-    }
     let Some(url) = super::art::link(images, Kind::Grid) else {
         return Err(CoverError::Skipped(anyhow::anyhow!(
             "Epic has no cover for {app_name}"
