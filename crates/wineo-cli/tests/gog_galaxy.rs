@@ -295,7 +295,7 @@ fn check_shows_version_names_and_json_keeps_build_ids() {
     assert_eq!(
         json_of(&out)["environments"],
         json!([{
-            "name": NAME, "id": GAME.to_string(), "track": "galaxy",
+            "name": NAME, "id": GAME.to_string(), "store": "gog", "track": "galaxy",
             "installed": "100", "available": "200",
             "branch": null, "pinned": null,
             "update": "available", "applicable": true, "reason": null,

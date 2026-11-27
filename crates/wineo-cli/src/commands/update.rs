@@ -293,6 +293,7 @@ fn status_json(status: &Status) -> serde_json::Value {
     json!({
         "name": status.environment,
         "id": status.gog_id.to_string(),
+        "store": "gog",
         "track": status.track.as_str(),
         "installed": status.installed,
         "available": status.available,
