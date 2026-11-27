@@ -256,7 +256,9 @@ wineo manpages ~/.local/share/man/man1
   native or Windows, or move the ones Heroic installed into wineo, then keep
   them and their DLC up to date. No GOG Galaxy client needed.
 - **Epic games.** Log in to Epic, list the [Epic games](docs/epic.md) you
-  own, and install them into Wine or Proton environments, through Legendary.
+  own, install them into Wine or Proton environments, start them the way
+  Epic's launcher would, and keep them and their DLC up to date. wineo uses
+  Legendary for the Epic side, and downloads its own copy when you agree.
 - **Clones, snapshots, and portable folders.** Copy an environment, snapshot
   and restore its prefix on a filesystem with reflinks (Btrfs, XFS), or keep
   everything in a folder you can move to another drive.
@@ -293,7 +295,7 @@ couple of seconds.
   art, and more actions. Double-click a card to launch it right away.
 - **Add and import.** Guided flows create an environment from an installer
   or a program already on disk, import a prefix, or bring in games from
-  Heroic, Steam, and GOG. Clones work the same way. Each one ends in a
+  Heroic, Steam, GOG, and Epic. Clones work the same way. Each one ends in a
   review before anything changes.
 - **Settings.** Each environment has a page for its title, runner, launch
   options, targets, and environment variables. The global page holds the

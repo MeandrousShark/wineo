@@ -198,6 +198,14 @@ The build is renamed out of the way before it's deleted, so an interrupted
 removal never leaves a half build that lists as usable. The next removal in
 that root cleans up what's left.
 
+## Guided import
+
+`wineo import` with nothing else asks what to import: an existing prefix, a
+manually added Heroic game, a Steam game, a [GOG game](gog.md), an
+[Epic game](epic.md), or emulated games. Choosing Epic logs you in, or lists
+the Epic games you own once you are; install one with `wineo import epic
+--game ID`.
+
 ## Import an existing prefix
 
 Add `--dry-run` to any non-guided import to see what it would do without

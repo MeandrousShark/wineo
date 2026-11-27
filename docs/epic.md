@@ -11,7 +11,8 @@ your account owns, and installing them.
 Legendary is GPL-3.0 software from its own project, not part of wineo. The
 first time a command needs it, wineo offers to download one pinned release
 from Legendary's GitHub releases and checks its size and SHA-256 before
-using it:
+using it. That download is offered on Linux x86_64 only; elsewhere, install
+Legendary yourself and set `[epic] legendary`:
 
 ```
 $ wineo import epic --login
@@ -53,7 +54,11 @@ Logged in to Epic as rimworlder.
 
 Log in, then paste the page Epic shows, or only its `authorizationCode`.
 What you paste isn't shown, and it never appears in wineo's output or
-logs. Logging in replaces any saved login, and needs a terminal.
+logs. Legendary takes it on its command line for the moment it logs in, so
+another program of yours could read it then; it works only once. Logging
+in replaces any saved login, and needs a terminal. The desktop app logs in
+from Settings, and installs from **Add**, **Import from Epic** (see
+[Desktop app](gui.md)).
 
 The login lives in Legendary's own folder inside wineo's data,
 `~/.local/share/wineo/epic/legendary`, never in your own Legendary or
@@ -116,7 +121,8 @@ Installed Kestrel Rally as kestrel-rally.
 `--game ID` asks Epic about the game, shows what it would install, and
 asks first. The game goes in a new folder under
 [`defaults.games_root`](config-files.md) (`~/Games` unless set), or in
-`--dir PATH`, which has to be new or empty. `--runner` and `--arch` pick
+`--dir PATH`, which has to be new, empty, or this game's own unfinished
+install. `--runner` and `--arch` pick
 the environment's runner, and a Proton environment gets `store = "egs"`.
 The game and each DLC you own are separate runs, each checked against
 Legendary's records when it ends. A DLC that fails is a warning, and the
@@ -229,4 +235,40 @@ one, and [hooks](hooks.md) do that job.
 Some games log in to Epic themselves and may need you to agree to
 something on Epic's site first, like new terms. The game opens a browser
 tab for that, and waits until you've answered. If no tab opens, check
-that the game can reach your desktop session, then start it again.
+that the game can reach your desktop session, since that's how it opens
+a browser from inside its container, then start it again. The game's own
+log shows `errors.com.epicgames.oauth.corrective_action_required`, then
+`authorization_pending` every ten seconds while it waits.
+
+## Removing and copying
+
+`wineo rm` trashes the environment and leaves the game's files and both
+wineo's and Legendary's records, so `wineo restore` brings back a working
+game (see [Trash](trash.md)). Nothing in wineo deletes Epic game files.
+A [clone](clone.md) or [portable copy](portable.md) drops `epic_id` and
+shares the game folder, so only a game that runs offline works from it, and
+a [snapshot](snapshots.md) covers the prefix, not the game folder.
+
+## Where things live
+
+Everything Epic-related is in wineo's data folder,
+`~/.local/share/wineo/epic`: Legendary's own folder with the login
+(`legendary`), wineo's copy of Legendary (`bin`), wineo's record of each
+installed game (`games`), and a cache. Box art is cached in
+`~/.cache/wineo/epic-covers`. None of these are promised (see
+[Stability](stability.md)); use the commands. Epic games live in the host
+library: in a [portable folder](portable.md), logging in and listing work;
+installing, forgetting, and logging out say `Epic games live in the host
+library. Run this without --portable.`, and `wineo update` says the same for
+GOG and Epic games.
+
+## Limits
+
+- Windows builds only. A game another launcher manages (Ubisoft Connect, the
+  EA app), or that needs an account there, is listed but not installable.
+- Prerequisite installers, like Epic's online services or Easy Anti-Cheat's,
+  are named in the install review and never run. Anti-cheat works if the
+  game supports it on Linux; wineo does nothing for or against it.
+- No cloud saves, overlay, achievements, or Epic playtime, and no choosing
+  which parts or DLC to download.
+- Epic games get no umu game id, so umu's protonfixes don't apply to them.
