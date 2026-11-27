@@ -404,7 +404,7 @@ pub(super) fn link(links: &GameArt, kind: Kind) -> Option<&str> {
 
 /// Downloads one image and checks it is a format `kind` accepts. Nothing is
 /// written, and a cancel that came during the download fails it.
-pub(super) fn fetch_image(
+pub(crate) fn fetch_image(
     transport: &dyn Transport,
     url: &str,
     kind: Kind,

@@ -693,8 +693,10 @@ fn serve_run(reporter: &mut Reporter) -> Result<()> {
     io::stdin()
         .read_to_string(&mut text)
         .context(|| "failed to read the run spec".to_owned())?;
+    // Only the message: toml's full error quotes the line it stopped at,
+    // which can hold an Epic game's arguments.
     let spec: Spec = toml::from_str(&text)
-        .map_err(|err| Error::StartFailed(format!("invalid run spec: {err}")))?;
+        .map_err(|err| Error::StartFailed(format!("invalid run spec: {}", err.message())))?;
 
     // `start` holds a lock of its own until this one is taken, but it lets go
     // when it exits, so the run keeps its protection here instead.
@@ -1570,6 +1572,7 @@ done
                 wayland: crate::launch::Wayland::On,
                 gameid: Some("umu-hades".to_owned()),
                 store: Some("gog".to_owned()),
+                epic: crate::epic::launch::Secret::default(),
                 build_guards: Vec::new(),
             },
             overrides: Overrides {

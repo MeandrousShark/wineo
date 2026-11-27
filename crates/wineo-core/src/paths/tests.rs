@@ -388,6 +388,29 @@ fn prefix_locks_are_host_wide() {
         xdg.gog_credentials_lock(),
         Path::new("/home/me/.local/state/wineo/.locks/gog-credentials.lock")
     );
+    assert_eq!(one.epic_games_dir(), xdg.epic_games_dir());
+    assert_eq!(
+        xdg.epic_games_dir(),
+        Path::new("/home/me/.local/share/wineo/epic/games")
+    );
+    assert_eq!(one.epic_game_lock("ab"), xdg.epic_game_lock("ab"));
+    assert_eq!(
+        xdg.epic_game_lock("ab"),
+        Path::new("/home/me/.local/state/wineo/.locks/epic-game-ab.lock")
+    );
+    assert_eq!(
+        one.epic_folder_in_use_lock("ab"),
+        xdg.epic_folder_in_use_lock("ab")
+    );
+    assert_eq!(
+        xdg.epic_folder_in_use_lock("ab"),
+        Path::new("/home/me/.local/state/wineo/.locks/epic-folder-ab.in-use.lock")
+    );
+    assert_eq!(one.epic_folder_holders("ab"), xdg.epic_folder_holders("ab"));
+    assert_eq!(
+        xdg.epic_folder_holders("ab"),
+        Path::new("/home/me/.local/state/wineo/.locks/epic-folder-ab.holders")
+    );
     assert_eq!(
         xdg.restore_marker("hades"),
         Path::new("/home/me/.local/state/wineo/.locks/snapshot-restore-hades-restore.json")

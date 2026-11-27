@@ -156,6 +156,9 @@ fn restore_locked_noting(
     notes: &mut Vec<String>,
 ) -> Result<()> {
     let config = paths.environment_config(&manifest.name);
+    // Held until the config is back, so no install takes the game between
+    // the check and the return.
+    let mut _epic_claim = None;
     if !rollback && manifest.phase == Phase::Trashed {
         if identity(&config)?.is_some() {
             bail!("environment `{}` already exists", manifest.name);
@@ -172,6 +175,7 @@ fn restore_locked_noting(
                 .into());
             }
         }
+        _epic_claim = claim_epic(paths, manifest)?;
         if manifest.prefix_present == Some(true) && !manifest.include_prefix {
             let original = resolved(
                 paths,
@@ -403,6 +407,40 @@ fn reclaim_gog(paths: &Paths, manifest: &Manifest, gog: &[FolderLock]) -> Result
         }
     }
     Ok(())
+}
+
+/// Refuses bringing back an Epic game another environment has taken since,
+/// naming it. One environment owns a game, and unlike a GOG folder there is
+/// no owner to claim back later.
+fn claim_epic(paths: &Paths, manifest: &Manifest) -> Result<Option<crate::epic::game::RecordLock>> {
+    if paths.portable_root().is_some() {
+        return Ok(None);
+    }
+    // A config that can't be read names no game, and stays restorable.
+    let Some(epic_id) = return_config(paths, manifest)
+        .ok()
+        .flatten()
+        .and_then(|config| config.epic_id)
+    else {
+        return Ok(None);
+    };
+    crate::epic::game::claim_for_restore(paths, &manifest.name, &epic_id).map(Some)
+}
+
+/// The trashed environment whose config names `epic_id`, if one does. An
+/// entry or config that can't be read names no game, as for a restore.
+pub fn epic_owner(paths: &Paths, epic_id: &str) -> Result<Option<String>> {
+    for id in super::raw_entries(paths)? {
+        let Ok(manifest) = super::manifest::read_manifest(paths, &id) else {
+            continue;
+        };
+        if let Ok(Some(config)) = return_config(paths, &manifest)
+            && config.epic_id.as_deref() == Some(epic_id)
+        {
+            return Ok(Some(manifest.name));
+        }
+    }
+    Ok(None)
 }
 
 /// Applies the rules that registering this prefix anew would: it may not

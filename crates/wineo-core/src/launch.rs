@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{GamescopeSetting, GlobalConfig, Kind, Target, validate_env_var};
 use crate::environment::Environment;
+use crate::epic::launch::Secret;
 use crate::error::{Error, Result};
 use crate::gamescope::Gamescope;
 use crate::paths::Paths;
@@ -327,6 +328,11 @@ pub struct Launch {
     pub gameid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
+    /// Epic's own arguments, after all the others. Carried on the pipe to a
+    /// detached run's supervisor, which is the only place a `Launch` is
+    /// written out with them; nothing saves it.
+    #[serde(default, skip_serializing_if = "Secret::is_empty")]
+    pub epic: Secret,
     #[serde(skip)]
     pub build_guards: Vec<crate::build_lock::Guard>,
 }
@@ -420,6 +426,8 @@ impl Launch {
             env: merge_env(&runner, global, environment, &overrides.env)?,
             gameid: runner.is_proton().then(|| wine.gameid.clone()).flatten(),
             store: runner.is_proton().then(|| wine.store.clone()).flatten(),
+            epic: Secret::default(),
+
             build_guards,
             host: Host::Wine { runner, prefix },
             target: Some(name.to_owned()),
@@ -575,6 +583,8 @@ impl Launch {
             wayland: Wayland::Off,
             gameid: None,
             store: None,
+            epic: Secret::default(),
+
             build_guards,
         })
     }
@@ -602,8 +612,42 @@ impl Launch {
             wayland: Wayland::Off,
             gameid: None,
             store: None,
+            epic: Secret::default(),
+
             build_guards: Vec::new(),
         }
+    }
+
+    /// Runs an Epic game's start in place of its target's program: the
+    /// program first, then the game's own parameters ahead of the last
+    /// `kept` arguments, the target's and the command line's, and Epic's
+    /// after everything. Legendary's variables go under the launch's own,
+    /// leaving out any wineo sets itself. A missing working folder becomes
+    /// the program's.
+    pub(crate) fn run_epic(
+        &mut self,
+        start: crate::epic::launch::Start,
+        kept: usize,
+        cwd_set: bool,
+    ) {
+        let kept = self.args.split_off(self.args.len() - kept);
+        if let Some(program) = start.program {
+            if !cwd_set && let Some(dir) = program.parent() {
+                self.cwd = dir.to_owned();
+            }
+            self.args = vec![program.to_string_lossy().into_owned()];
+        }
+        self.args.extend(start.parameters);
+        self.args.extend(kept);
+        let managed = |key: &str| key == "WINEPREFIX" || MANAGED.contains(&key);
+        let mut env: BTreeMap<String, String> = start
+            .environment
+            .into_iter()
+            .filter(|(key, value)| !managed(key) && validate_env_var(key, value).is_ok())
+            .collect();
+        env.extend(std::mem::take(&mut self.env));
+        self.env = env;
+        self.epic = start.epic;
     }
 
     /// The host paths this launch names: its program, working directory, and
@@ -673,6 +717,7 @@ impl Launch {
         };
         command
             .args(&self.args)
+            .args(self.epic.reveal())
             .current_dir(&self.cwd)
             .envs(&self.env);
         // After `[env]`, so the setting wins over a stray DISPLAY there.
@@ -904,6 +949,8 @@ fn native_target(
         wayland: Wayland::Off,
         gameid: None,
         store: None,
+        epic: Secret::default(),
+
         build_guards: Vec::new(),
     })
 }
@@ -1119,6 +1166,8 @@ fn steam_target(
         wayland: Wayland::Off,
         gameid: None,
         store: None,
+        epic: Secret::default(),
+
         build_guards: Vec::new(),
     })
 }

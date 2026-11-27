@@ -770,9 +770,9 @@ fn the_import_menu_offers_emulated_games_and_esc_returns_to_it() {
         .arg("import");
     let mut pty = Pty::spawn(command);
     pty.expect("Import from where?");
-    pty.expect("5) Emulated games");
+    pty.expect("6) Emulated games");
     pty.expect("Source [1]: ");
-    pty.send("5");
+    pty.send("6");
     pty.expect("Which emulator?");
     pty.expect("Esc to go back");
     pty.esc();

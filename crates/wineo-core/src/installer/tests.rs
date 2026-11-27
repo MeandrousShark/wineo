@@ -39,6 +39,7 @@ fn installer(root: &Path, wine: &str) -> Installer {
             wayland: Default::default(),
             gameid: None,
             store: None,
+            epic: crate::epic::launch::Secret::default(),
             build_guards: Vec::new(),
         },
         runtime: runtime(root),

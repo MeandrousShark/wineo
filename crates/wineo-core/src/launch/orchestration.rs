@@ -124,6 +124,10 @@ pub enum LaunchEvent {
     Desktop(Vec<desktop::Change>),
     Winetricks(WinetricksEvent),
     NoWaylandSession,
+    /// Legendary is being asked what an Epic game's start runs.
+    AskingEpic,
+    /// Something to say before the start, like an Epic game starting offline.
+    Notice(String),
     /// The caller can release temporary signal handlers before supervisor IPC.
     Starting,
     /// Launcher-side cleanup uses a fresh token, even after a canceled before.
@@ -393,6 +397,17 @@ pub fn prepare(
         Environment::ensure_exists(paths, name)?;
         runtime.check_resolved(name)?;
         folders = protect(paths, &environment, &launch, token)?;
+        // Once per start, holding the game folder, so no update can change
+        // what Legendary named before the program runs.
+        ask_epic(
+            paths,
+            &global,
+            &environment,
+            overrides,
+            &mut launch,
+            token,
+            &mut events,
+        )?;
         reconcile(paths, &global, &environment, &launch, &mut events)?;
         retroarch_quit_file(paths, &global, &environment, &mut events);
         Ok::<_, anyhow::Error>(launch)
@@ -435,6 +450,38 @@ pub fn prepare(
     })
 }
 
+/// Asks Legendary what an Epic game's own start runs, and puts it in
+/// `launch`. Other targets, and anything in a portable root, where Epic
+/// games don't live, start as they are.
+fn ask_epic(
+    paths: &Paths,
+    global: &GlobalConfig,
+    environment: &Environment,
+    overrides: &Overrides,
+    launch: &mut Launch,
+    token: &Token,
+    mut events: impl FnMut(LaunchEvent),
+) -> anyhow::Result<()> {
+    let Some(app) = environment.config.epic_id.as_deref() else {
+        return Ok(());
+    };
+    if paths.portable_root().is_some()
+        || !matches!(launch.host, Host::Wine { .. })
+        || !crate::epic::launch::is_main_target(launch.target.as_deref())
+    {
+        return Ok(());
+    }
+    let (_, target) = resolve_target(environment, overrides.target.as_deref())?;
+    events(LaunchEvent::AskingEpic);
+    let start = crate::epic::launch::ask(paths, global, &environment.name, app, token)?;
+    if let Some(notice) = &start.notice {
+        events(LaunchEvent::Notice(notice.clone()));
+    }
+    let kept = target.args.len() + overrides.args.len();
+    launch.run_epic(start, kept, target.cwd.is_some());
+    Ok(())
+}
+
 /// Writes RetroArch's quit file from the global setting before a RetroArch
 /// game runs, so flipping the setting reaches every game without editing a
 /// target. The command isn't touched. A failure is only a warning.
@@ -470,27 +517,46 @@ pub fn precheck(
     environment: &Environment,
     overrides: &Overrides,
 ) -> anyhow::Result<()> {
-    if matches!(environment.config.kind, Kind::Proxied(_))
-        || (environment.config.gog_id.is_none() && !paths.gog_folders_dir().exists())
-    {
+    if matches!(environment.config.kind, Kind::Proxied(_)) {
+        return Ok(());
+    }
+    let gog = environment.config.gog_id.is_some() || paths.gog_folders_dir().exists();
+    let epic = environment.config.epic_id.is_some() || paths.epic_games_dir().exists();
+    if !gog && !epic {
         return Ok(());
     }
     let gog_id = environment.config.gog_id.as_deref();
+    let epic_id = environment.config.epic_id.as_deref();
     let Ok(launch) = Launch::target(paths, global, environment, overrides) else {
         // Without paths an ownerless folder to claim can't be found, so a
         // missing state is left to preparation too.
-        return match crate::gog::folder::precheck(paths, &environment.name, gog_id, &[]) {
-            Err(err) if matches!(err.downcast_ref(), Some(FolderError::StateMissing { .. })) => {
-                Ok(())
+        if gog {
+            match crate::gog::folder::precheck(paths, &environment.name, gog_id, &[]) {
+                Err(err)
+                    if matches!(err.downcast_ref(), Some(FolderError::StateMissing { .. })) => {}
+                result => result?,
             }
-            result => result,
-        };
+        }
+        // An Epic game's own folder is found from its record, not its
+        // paths, so an unfinished install is refused even when it is what
+        // broke the target.
+        if epic {
+            crate::epic::game::precheck(paths, &environment.name, epic_id, &[])?;
+        }
+        return Ok(());
     };
-    crate::gog::folder::precheck(paths, &environment.name, gog_id, &launch.named_paths())
+    let touched = launch.named_paths();
+    if gog {
+        crate::gog::folder::precheck(paths, &environment.name, gog_id, &touched)?;
+    }
+    if epic {
+        crate::epic::game::precheck(paths, &environment.name, epic_id, &touched)?;
+    }
+    Ok(())
 }
 
-/// Checks the GOG game folders a launch runs from and takes their in-use
-/// locks, which the caller holds until the program exits. Called holding
+/// Checks the GOG and Epic game folders a launch runs from and takes their
+/// in-use locks, which the caller holds until the program exits. Called holding
 /// the environment's operation lock, which comes first in lock order.
 pub fn protect(
     paths: &Paths,
@@ -513,17 +579,34 @@ pub(super) fn protect_as(
     if matches!(launch.host, Host::Proxied { .. }) {
         return Ok(Vec::new());
     }
-    crate::gog::folder::protect(
+    let touched = launch.named_paths();
+    let mut guards = crate::gog::folder::protect(
         paths,
         &environment.name,
         environment.config.gog_id.as_deref(),
-        &launch.named_paths(),
+        &touched,
         &|| token.is_canceled(),
     )
     .map_err(|err| match err.downcast_ref() {
         Some(FolderError::Canceled) => Error::Canceled(what).into(),
         _ => err,
-    })
+    })?;
+    if environment.config.epic_id.is_some() || paths.epic_games_dir().exists() {
+        guards.extend(
+            crate::epic::game::protect(
+                paths,
+                &environment.name,
+                environment.config.epic_id.as_deref(),
+                &touched,
+                &|| token.is_canceled(),
+            )
+            .map_err(|err| match err.downcast_ref() {
+                Some(crate::epic::game::GameError::Canceled) => Error::Canceled(what).into(),
+                _ => err,
+            })?,
+        );
+    }
+    Ok(guards)
 }
 
 fn check_not_running(

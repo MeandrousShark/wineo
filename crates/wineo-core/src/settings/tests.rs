@@ -758,6 +758,19 @@ fn games_root_is_stored_absolute_like_prefix_root() {
 }
 
 #[test]
+fn an_empty_epic_legendary_is_refused_naming_unset() {
+    let (_root, paths) = setup();
+    let original = "schema_version = 1\n[epic]\nlegendary = \"/opt/legendary\"\n";
+    write_global(&paths, original);
+    let err = update(&paths, ConfigFile::Global, &[("epic.legendary", "")], &[]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid value for `epic.legendary`: give the path to legendary, or remove the setting with --unset"
+    );
+    assert_eq!(fs::read_to_string(paths.global_config()).unwrap(), original);
+}
+
+#[test]
 fn a_bad_gog_language_is_refused_without_writing() {
     let (_root, paths) = setup();
     let original = "schema_version = 1\n[defaults]\nrunner = \"wine\"\n";
@@ -1184,6 +1197,25 @@ fn apply_keeps_a_failed_write_in_failed() {
     );
     assert!(applied.not_set.is_empty());
     assert_eq!(applied.changed_runner, None);
+}
+
+#[test]
+fn epic_id_can_be_neither_set_nor_unset_by_an_edit() {
+    let text = "# mine\nepic_id = \"AppOffline\"\n";
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert_eq!(
+        edit::set(&mut doc, Scope::Environment, "epic_id", "Other")
+            .unwrap_err()
+            .to_string(),
+        "epic_id is set by wineo import epic."
+    );
+    assert_eq!(
+        edit::unset(&mut doc, Scope::Environment, "epic_id")
+            .unwrap_err()
+            .to_string(),
+        "epic_id is set by wineo import epic."
+    );
+    assert_eq!(doc.to_string(), text);
 }
 
 mod gog_id {
@@ -1725,5 +1757,33 @@ fn a_legacy_global_config_with_retroarch_is_read_and_a_no_op_set_leaves_it_alone
         fs::read_to_string(&path)
             .unwrap()
             .contains("quit_with_game   =   true # off")
+    );
+}
+
+#[test]
+fn an_update_under_the_config_lock_refuses_a_new_main_program_for_an_epic_game() {
+    let (_root, paths) = setup();
+    let path = paths.environment_config("fowl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let text = "epic_id = \"AppOffline\"\nprefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.game]\nexe = \"/games/Game.exe\"\n";
+    fs::write(&path, text).unwrap();
+    let file = ConfigFile::Environment("fowl");
+    let error = update(
+        &paths,
+        file,
+        &[("targets.game.exe", "/games/Other.exe")],
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fowl's main program comes from Epic and can't be changed."
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    update(&paths, file, &[("targets.game.args", "[\"-x\"]")], &[]).unwrap();
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("args = [\"-x\"]")
     );
 }

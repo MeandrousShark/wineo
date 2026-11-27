@@ -477,7 +477,7 @@ fn rolling_back_pins_the_game_until_latest() {
     assert_eq!(
         json_of(&out)["environments"],
         json!([{
-            "name": NAME, "id": GAME.to_string(), "track": "galaxy",
+            "name": NAME, "id": GAME.to_string(), "store": "gog", "track": "galaxy",
             "installed": "100", "available": "200", "branch": null, "pinned": "100",
             "update": "available", "applicable": false, "reason": "pinned",
             "unfinished": false, "dlc": [],

@@ -1,9 +1,9 @@
 # JSON output
 
 `status`, `list`, `validate`, `stats`, `tag`, `import gog --list`,
-`import roms --list`, `import roms --emulators`, `update --check`,
-`runners update --check`, `dxvk update --check`, and `vkd3d update --check`
-accept `--json` for scripting:
+`import epic --list`, `import roms --list`, `import roms --emulators`,
+`update --check`, `runners update --check`, `dxvk update --check`, and
+`vkd3d update --check` accept `--json` for scripting:
 
 ```sh
 wineo status hades --json
@@ -13,6 +13,7 @@ wineo validate --json
 wineo stats --json
 wineo tag add co-op hades celeste --json
 wineo import gog --list --json
+wineo import epic --list --json
 wineo import roms ~/Games/roms/gamecube --emulator dolphin --list --json
 wineo import roms --emulators --json
 wineo update --check --json
@@ -209,7 +210,7 @@ whose update check failed, or any game in a [portable folder](portable.md),
 where the check is skipped, has its `environment` but `null` for the rest.
 
 `wineo update --check --json` checks the environments that track a GOG
-game:
+or Epic game. Each row's `store` is `gog` or `epic`:
 
 ```json
 {
@@ -217,6 +218,7 @@ game:
     {
       "name": "rimworld",
       "id": "1094900565",
+      "store": "gog",
       "track": "installer",
       "branch": null,
       "pinned": null,
@@ -310,6 +312,68 @@ newest first. `version` is GOG's name for the build, or `null`;
 update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
+
+Epic rows have the same keys. `track`, `branch`, and `pinned` are `null`.
+`installed` is the version wineo recorded and `available` the Windows
+build Epic lists, `null` when unknown. `update` is `available`, `none`, or
+`cant_compare`, and `reason` is `null` or a sentence, never a word like
+`galaxy`. `applicable` is `true` when `update` is `available` and wineo
+can apply it now, and `false` otherwise, including when Legendary wants to
+check the game's files first; `wineo update NAME --repair` does that. An Epic DLC's `state`
+is `none`, `available`, `not_installed` (bought since, or one that failed
+to install; `wineo update` installs it), `cant_compare`, or `unavailable`
+(no Windows build). An Epic game that can't be checked, like one whose
+record is missing or while logged out of Epic, goes in `errors`, and the
+command exits 1 with the rest still printed.
+
+## Epic
+
+`wineo import epic --list --json` lists the games your Epic account owns:
+
+```json
+{
+  "games": [
+    {
+      "id": "Kestrel",
+      "title": "Kestrel Rally",
+      "state": "not_installed",
+      "reason": null,
+      "environment": null,
+      "version": null,
+      "update": null,
+      "dlc": []
+    },
+    {
+      "id": "Harbor",
+      "title": "Harbor Tactics",
+      "state": "unavailable",
+      "reason": "needs_linking",
+      "environment": null,
+      "version": null,
+      "update": null,
+      "dlc": []
+    }
+  ],
+  "errors": [],
+  "warnings": []
+}
+```
+
+`state` is `not_installed`, `installed`, `unfinished`, `downloaded`, or
+`unavailable`. `reason` is `null`, or for an unavailable game
+`third_party` (another launcher manages it), `needs_linking` (it needs an
+account at another launcher), or `no_windows_build`. `environment` is the
+environment that owns the game, and `version` its installed version, both
+`null` when there's none. `dlc` lists the installed DLC as `{"id",
+"title", "state": "installed"}`, and is `[]` for a game that isn't
+installed. `update` is `available`, `none`, or `cant_compare` for an
+installed game, and `null` otherwise. `warnings` holds the same lines as
+stderr, like a list that couldn't be refreshed. `errors` lists records
+wineo couldn't read, each as `{"name", "id", "message"}` with `name` and
+`id` `null`, since an unreadable record can't say which game it's for;
+`message` names its file. The command exits 1 when there are any, as
+`import gog --list` does. A command that
+fails prints no JSON. Epic ids are strings.
 
 ## Runner and component updates
 
@@ -490,6 +554,7 @@ The codes are stable:
 | `steam` | `steam_not_found`, `steam_install_missing`, `steam_library_unavailable`, `steam_data_unknown` |
 | `trash` | `trash_interrupted`, `trash_invalid` |
 | `gog` | `gog_state_invalid`, `gog_state_missing`, `gog_folder_missing`, `gog_folder_taken`, `gog_mid_update`, `gog_owner_missing` |
+| `epic` | `epic_record_invalid`, `epic_record_missing`, `epic_record_mismatch`, `epic_folder_missing`, `epic_unfinished`, `epic_id_taken`, `epic_legendary_missing` |
 | `art` | `art_config_invalid`, `art_file_missing`, `art_target_unknown`, `art_duplicates`, `art_dir_stray` |
 | `library` | `library_invalid`, `library_field_invalid`, `library_key_unknown`, `library_entry_stray`, `theme_invalid` |
 

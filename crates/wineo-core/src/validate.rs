@@ -7,7 +7,7 @@
 //! names. The winetricks fix installs into an idle
 //! prefix; art fixes only drop records whose file or target is gone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -23,6 +23,7 @@ use crate::deprecated;
 use crate::desktop::{self, Entry, Pending};
 use crate::emulator;
 use crate::environment::{self, Environment};
+use crate::epic;
 use crate::error::{Error, IoContext, Result, chain};
 use crate::files;
 use crate::gog::folder::{self, DeviceOf, FolderState};
@@ -87,6 +88,7 @@ pub enum Area {
     Art,
     Trash,
     Gog,
+    Epic,
     Library,
     /// Any config file: global, template, environment, or art.
     Config,
@@ -108,6 +110,7 @@ impl Area {
             Area::Art => "art",
             Area::Trash => "trash",
             Area::Gog => "gog",
+            Area::Epic => "epic",
             Area::Library => "library",
             Area::Config => "config",
         }
@@ -204,6 +207,13 @@ codes! {
     GogFolderTaken => "gog_folder_taken", Level::Error, Area::Gog;
     GogMidUpdate => "gog_mid_update", Level::Error, Area::Gog;
     GogOwnerMissing => "gog_owner_missing", Level::Warning, Area::Gog;
+    EpicRecordInvalid => "epic_record_invalid", Level::Error, Area::Epic;
+    EpicRecordMissing => "epic_record_missing", Level::Error, Area::Epic;
+    EpicRecordMismatch => "epic_record_mismatch", Level::Error, Area::Epic;
+    EpicFolderMissing => "epic_folder_missing", Level::Warning, Area::Epic;
+    EpicUnfinished => "epic_unfinished", Level::Error, Area::Epic;
+    EpicIdTaken => "epic_id_taken", Level::Error, Area::Epic;
+    EpicLegendaryMissing => "epic_legendary_missing", Level::Warning, Area::Epic;
     DeprecatedKey => "deprecated_key", Level::Warning, Area::Config;
     LibraryInvalid => "library_invalid", Level::Error, Area::Library;
     LibraryFieldInvalid => "library_field_invalid", Level::Warning, Area::Library;
@@ -553,6 +563,14 @@ pub fn check_all(paths: &Paths) -> Result<Report> {
         &folder::device_of,
         &mut report,
     );
+    check_epic(
+        paths,
+        None,
+        &names,
+        &pending,
+        &|| find_legendary(paths, &global),
+        &mut report,
+    );
     let trash_readable = !report
         .problems
         .iter()
@@ -607,6 +625,14 @@ pub fn check_environment(paths: &Paths, name: &str) -> Result<Report> {
         &names,
         &pending,
         &folder::device_of,
+        &mut report,
+    );
+    check_epic(
+        paths,
+        Some(name),
+        &names,
+        &pending,
+        &|| find_legendary(paths, &global),
         &mut report,
     );
     check_library(paths, Some(name), &names, &pending, false, &mut report);
@@ -911,6 +937,244 @@ fn check_gog_folder(
             None,
         )),
     }
+}
+
+fn find_legendary(
+    paths: &Paths,
+    global: &GlobalConfig,
+) -> std::result::Result<epic::legendary::Found, epic::Error> {
+    // Looking only checks versions; nothing here downloads.
+    epic::legendary::find(paths, global, &crate::cancel::Token::new())
+}
+
+/// Epic game records, and environments whose `epic_id` names a game, read
+/// without running Legendary. Host root only, since Epic games live in the
+/// host library. With `selected`, only that environment and its game.
+/// `legendary` looks for Legendary, which is asked only once an Epic game
+/// exists, for a warning rather than an error.
+fn check_epic(
+    paths: &Paths,
+    selected: Option<&str>,
+    names: &[String],
+    pending: &BTreeSet<String>,
+    legendary: &dyn Fn() -> std::result::Result<epic::legendary::Found, epic::Error>,
+    report: &mut Report,
+) {
+    use epic::game::{self, GameError};
+
+    if paths.portable_root().is_some() {
+        return;
+    }
+    // An environment in the trash owns nothing until it comes back.
+    let ids: BTreeMap<&str, String> = names
+        .iter()
+        .filter(|name| !pending.contains(*name))
+        .filter_map(|name| Some((name.as_str(), game::epic_id_of(paths, name)?)))
+        .collect();
+    let wanted = |app: &str| selected.is_none_or(|name| ids.get(name).is_some_and(|id| id == app));
+    // A config that can't be read could still name a game, as for GOG.
+    let selected_has_game = selected.is_none_or(|name| game::may_own_game(paths, name));
+    let mut any_record = false;
+
+    let mut records = BTreeMap::new();
+    match game::list(paths) {
+        Ok(listed) => {
+            any_record = !listed.is_empty();
+            for (_, record) in listed {
+                match record {
+                    Ok(record) => {
+                        records.insert(record.app_name.clone(), record);
+                    }
+                    // Without its app name it could be the selected game's.
+                    Err(err) if selected_has_game => report.push(Problem::new(
+                        Code::EpicRecordInvalid,
+                        None,
+                        format!("{err:#}"),
+                        None,
+                    )),
+                    Err(_) => {}
+                }
+            }
+        }
+        Err(err) if selected_has_game => report.push(Problem::new(
+            Code::EpicRecordInvalid,
+            None,
+            format!("Epic game records can't be read: {err:#}"),
+            None,
+        )),
+        Err(_) => {}
+    }
+
+    let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (name, app) in &ids {
+        owners.entry(app.as_str()).or_default().push(name);
+    }
+    let installed = game::legendary_installed(paths);
+    let mut installed_reported = false;
+    for record in records.values().filter(|record| wanted(&record.app_name)) {
+        let owner = owners
+            .get(record.app_name.as_str())
+            .and_then(|names| names.first().copied());
+        if let Some(mark) = &record.in_flight {
+            let message = GameError::Unfinished {
+                name: owner.map(str::to_owned),
+                app: record.app_name.clone(),
+                folder: record.folder.clone(),
+                work: mark.work,
+            };
+            report.push(Problem::new(
+                Code::EpicUnfinished,
+                owner,
+                message.to_string(),
+                None,
+            ));
+            // Work under way leaves the folder and Legendary's records in
+            // between, so they aren't compared.
+            continue;
+        }
+        let folder = record.folder.display();
+        match record.folder.try_exists() {
+            Ok(true) => {}
+            Ok(false) => {
+                report.push(Problem::new(
+                    Code::EpicFolderMissing,
+                    owner,
+                    format!("Epic game folder {folder} is missing."),
+                    None,
+                ));
+                continue;
+            }
+            Err(err) => {
+                report.push(Problem::new(
+                    Code::EpicFolderMissing,
+                    owner,
+                    format!("Epic game folder {folder} can't be checked: {err}."),
+                    None,
+                ));
+                continue;
+            }
+        }
+        let installed = match &installed {
+            Ok(installed) => installed,
+            Err(err) => {
+                if !installed_reported {
+                    installed_reported = true;
+                    report.push(Problem::new(
+                        Code::EpicRecordMismatch,
+                        None,
+                        format!("Legendary's record of installed games can't be read: {err:#}"),
+                        None,
+                    ));
+                }
+                continue;
+            }
+        };
+        let who = owner.map_or_else(
+            || format!("Epic game {}", record.app_name),
+            |owner| format!("{owner}'s Epic game"),
+        );
+        let disagreement = match installed.get(&record.app_name) {
+            None => Some(format!(
+                "{who} isn't in Legendary's record of installed games."
+            )),
+            Some(entry) => match (&entry.install_path, &entry.version) {
+                (Some(path), _) if *path != record.folder => Some(format!(
+                    "{who} is in {folder}, but Legendary has it in {}.",
+                    path.display()
+                )),
+                (_, version) => match (record.installed_version.as_deref(), version.as_deref()) {
+                    (Some(recorded), Some(version)) if recorded != version => Some(format!(
+                        "{who} is version {recorded}, but Legendary has {version}."
+                    )),
+                    (None, Some(version)) => Some(format!(
+                        "{who} has no version recorded, but Legendary has {version}."
+                    )),
+                    (Some(recorded), None) => Some(format!(
+                        "{who} is version {recorded}, but Legendary has no version for it."
+                    )),
+                    _ => None,
+                },
+            },
+        };
+        if let Some(disagreement) = disagreement {
+            let hint = match owner {
+                Some(owner) => format!(" Repair it with wineo update {owner} --repair."),
+                None => format!(
+                    " Forget it with wineo import epic --forget {}.",
+                    record.app_name
+                ),
+            };
+            report.push(Problem::new(
+                Code::EpicRecordMismatch,
+                owner,
+                format!("{disagreement}{hint}"),
+                None,
+            ));
+        }
+    }
+
+    for (name, app) in &ids {
+        if selected.is_some_and(|selected| selected != *name) {
+            continue;
+        }
+        // A record that's there but can't be read is reported as invalid.
+        if !records.contains_key(app) && !game::record_path(paths, app).exists() {
+            let missing = GameError::RecordMissing {
+                name: (*name).to_owned(),
+                app: app.clone(),
+            };
+            report.push(Problem::new(
+                Code::EpicRecordMissing,
+                Some(name),
+                missing.to_string(),
+                None,
+            ));
+        }
+        let sharing = &owners[app.as_str()];
+        if let Some(first) = sharing.first().filter(|first| *first != name) {
+            report.push(Problem::new(
+                Code::EpicIdTaken,
+                Some(name),
+                format!(
+                    "{name} and {first} both have epic_id {app}, and one environment owns a game. Remove the copy with wineo rm."
+                ),
+                None,
+            ));
+        }
+    }
+
+    // Only a record or a config naming a game shows one exists; a config
+    // that can't be read may own one, but doesn't show it.
+    let game_exists = selected_has_game
+        && (any_record
+            || match selected {
+                Some(name) => game::names_epic_id(paths, name),
+                None => names
+                    .iter()
+                    .filter(|name| !pending.contains(*name))
+                    .any(|name| game::names_epic_id(paths, name)),
+            });
+    if !game_exists {
+        return;
+    }
+    let message = match legendary() {
+        Ok(epic::legendary::Found::Usable(_)) => return,
+        Ok(epic::legendary::Found::Missing(missing)) => match missing.older_on_path {
+            Some((path, version)) => format!(
+                "Epic games need Legendary {} or newer, and {} is {version}. wineo offers to download it the next time Epic needs it, or set [epic] legendary.",
+                epic::FLOOR,
+                path.display()
+            ),
+            None => "Epic games need Legendary, and none was found. wineo offers to download it the next time Epic needs it, or set [epic] legendary.".to_owned(),
+        },
+        Err(err) => err.to_string(),
+    };
+    report.push(Problem::new(
+        Code::EpicLegendaryMissing,
+        None,
+        message,
+        None,
+    ));
 }
 
 fn check_trash(

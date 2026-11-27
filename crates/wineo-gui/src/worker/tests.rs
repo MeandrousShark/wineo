@@ -412,6 +412,15 @@ fn a_launch_warning_and_a_missing_wayland_session_become_panel_notes() {
 }
 
 #[test]
+fn an_epic_game_starting_offline_says_so_in_the_panel() {
+    let notice = "Epic didn't answer, so fowl starts offline. Online features may not work.";
+    assert_eq!(
+        launch_note(&launch::LaunchEvent::Notice(notice.to_owned())).as_deref(),
+        Some(notice)
+    );
+}
+
+#[test]
 fn a_retroarch_quit_file_that_cant_be_written_reaches_the_panel_as_a_note() {
     let root = tempfile::tempdir().unwrap();
     let paths =

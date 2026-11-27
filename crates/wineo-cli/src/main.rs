@@ -112,7 +112,7 @@ enum Command {
     Download(commands::download::Args),
     /// Copy or adopt a prefix, with optional Heroic launch settings
     Import(commands::import::Args),
-    /// Check GOG for updates to the games wineo manages
+    /// Check GOG and Epic for updates to the games wineo manages
     Update(commands::update::Args),
     /// List installed DXVK builds
     Dxvk(commands::builds::Args),

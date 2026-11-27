@@ -67,6 +67,13 @@ arch = "win64"
 # Default: unset.
 # gog_id = "1094900565"
 
+# epic_id is the Epic app name of the game this environment owns, like
+# "Kestrel". Only `wineo import epic` sets it, and `wineo set` refuses to
+# change or remove it. A clone or portable copy drops it. A game that's
+# mid-install, mid-update, or mid-repair, or whose wineo record is missing,
+# can't be launched, even with `wineo exec`. It can't be combined with
+# gog_id or heroic_id. Default: unset.
+
 # Run every target under gamescope. Every field is optional, and an empty
 # table runs plain `gamescope --`. A target's own [targets.<name>.gamescope]
 # replaces this whole table. Default: off.

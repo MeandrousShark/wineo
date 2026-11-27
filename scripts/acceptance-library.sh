@@ -258,6 +258,8 @@ daily() {
 #   sessions="START@SECONDS ..."  play sessions in the stats log
 #   imported=SECONDS[@LAST_PLAYED]  a Heroic playtime import
 #   art=0..7                 a poster from the embedded list
+#   epic_art=APP             with art=, the poster's art.toml source is Epic's
+#                            art for APP instead of a manual file
 #   noprefix                 leave a Wine game's prefix unbuilt
 #   prefix_at=PATH           a Wine game's prefix at PATH under DIR instead
 #                            of prefixes/NAME
@@ -271,7 +273,7 @@ add() {
     shift
     local kind=wine title='' tags='' gog_id='' heroic_id='' store='' app_id='' added=''
     local sessions='' imported='' art='' prefix=1 favorite=0 hidden=0 run='' target=''
-    local emulator='' system='' rom='' prefix_at=''
+    local emulator='' system='' rom='' prefix_at='' epic_art=''
     local arg tag first
     for arg in "$@"; do
         case $arg in
@@ -286,6 +288,7 @@ add() {
             sessions=*) sessions=${arg#sessions=} ;;
             imported=*) imported=${arg#imported=} ;;
             art=*) art=${arg#art=} ;;
+            epic_art=*) epic_art=${arg#epic_art=} ;;
             run=*) run=${arg#run=} ;;
             target=*) target=${arg#target=} ;;
             emulator=*) emulator=${arg#emulator=} ;;
@@ -408,8 +411,13 @@ add() {
     if [[ -n $art ]]; then
         mkdir -p "$root/art/$name"
         printf '%s' "${posters[art]}" | base64 -d >"$root/art/$name/grid.png"
-        printf 'schema_version = 1\n\n[grid]\nfile = "grid.png"\nmanual = "poster.png"\n' \
-            >"$root/art/$name/art.toml"
+        if [[ -n $epic_art ]]; then
+            printf 'schema_version = 1\n\n[grid]\nfile = "grid.png"\nepic = "%s"\n' "$epic_art" \
+                >"$root/art/$name/art.toml"
+        else
+            printf 'schema_version = 1\n\n[grid]\nfile = "grid.png"\nmanual = "poster.png"\n' \
+                >"$root/art/$name/art.toml"
+        fi
     fi
 
     if [[ -n $sessions || -n $imported ]]; then
@@ -500,6 +508,9 @@ add epic-wild-voyage heroic_id=1a2b3c4d5e6f708192a3b4c5d6e7f809 store=egs hidden
 add epic-quiet-lagoon heroic_id=2b3c4d5e6f708192a3b4c5d6e7f80910 store=egs tags=game \
     added=2026-04-12T16:00:00Z imported=180000@2026-03-30T22:00:00Z \
     sessions="2026-10-02T20:00:00Z@3600 2026-10-03T20:00:00Z@2400"
+
+# source: Epic's art for an installed Epic game (the art page says "Epic, game AppTidepool"); tags: one; art
+add epic-store-art tags=game title="Tidepool Drift" added=2026-11-20T10:00:00Z art=3 epic_art=AppTidepool
 
 # Amazon games: a Heroic import whose store hint is amazon.
 

@@ -140,6 +140,7 @@ fn set_environment(root: &mut Table, key: &str, raw: &str) -> Result<(), EditErr
         }
         "arch" => Err(read_only_arch()),
         "gog_id" => Err(read_only_gog_id()),
+        "epic_id" => Err(read_only_epic_id()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;
@@ -239,6 +240,12 @@ fn set_global(root: &mut Table, key: &str, raw: &str) -> Result<(), EditError> {
         }
         "gamemode" | "wayland" | "mangohud" | "external_runners" => {
             store_value(root, key, Value::from(parse_bool(key, raw)?));
+            Ok(())
+        }
+        "epic.legendary" => {
+            let value = parse_string_value(key, raw)?;
+            let table = ensure_table(root, "epic", "epic", false)?;
+            store_value(table, "legendary", value);
             Ok(())
         }
         "retroarch.quit_with_game" => {
@@ -574,6 +581,7 @@ fn unset_environment(root: &mut Table, key: &str) -> Result<bool, EditError> {
             "{key} can't be unset on its own, since [emulation] needs it. Unset emulation to remove the table."
         ))),
         "arch" => Err(read_only_arch()),
+        "epic_id" => Err(read_only_epic_id()),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
                 let var = validate_env_var(key, var)?;
@@ -604,6 +612,7 @@ fn unset_global(root: &mut Table, key: &str) -> Result<bool, EditError> {
         "defaults.games_root" => unset_field(root, "defaults", "defaults", "games_root"),
         "gog.language" => unset_field(root, "gog", "gog", "language"),
         "art.fetch" => unset_field(root, "art", "art", "fetch"),
+        "epic.legendary" => unset_field(root, "epic", "epic", "legendary"),
         "retroarch.quit_with_game" => unset_field(root, "retroarch", "retroarch", "quit_with_game"),
         _ => {
             if let Some(var) = key.strip_prefix("env.") {
@@ -705,6 +714,13 @@ fn unset_target(root: &mut Table, key: &str, rest: &str) -> Result<bool, EditErr
 /// import sets it. Unsetting it stays allowed.
 pub fn read_only_gog_id() -> EditError {
     EditError::Managed("gog_id is set by wineo import gog.".to_owned())
+}
+
+/// `epic_id` names the Epic game an environment owns. Unlike `gog_id` it
+/// can't be unset either, since only the Epic import keeps the game's record
+/// in step with it.
+pub fn read_only_epic_id() -> EditError {
+    EditError::Managed("epic_id is set by wineo import epic.".to_owned())
 }
 
 fn read_only_arch() -> EditError {

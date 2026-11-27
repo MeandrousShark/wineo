@@ -38,6 +38,16 @@ impl InUseLock {
         })
     }
 
+    /// A lock at `path` with its holders' records in `holders`, for another
+    /// store's game folder. The caller has checked `folder`.
+    pub(crate) fn at(path: PathBuf, holders: PathBuf, folder: &Path) -> Self {
+        Self {
+            path,
+            holders,
+            folder: folder.to_owned(),
+        }
+    }
+
     pub fn folder(&self) -> &Path {
         &self.folder
     }

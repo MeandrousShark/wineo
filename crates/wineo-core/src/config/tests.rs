@@ -260,6 +260,77 @@ fn gog_id_must_be_digits() {
 }
 
 #[test]
+fn epic_id_is_optional_and_round_trips_for_wine() {
+    let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+    assert_eq!(environment(wine).unwrap().epic_id, None);
+    // An app name can be letters, a hex id, or have a space inside.
+    for id in ["AppOffline", "0000000000000000000000000000000c", "Dlc Game"] {
+        let config = environment(&format!("{wine}epic_id = \"{id}\"")).unwrap();
+        assert_eq!(config.epic_id.as_deref(), Some(id));
+    }
+}
+
+#[test]
+fn epic_id_is_refused_on_a_native_environment() {
+    let err = named("fowl", "kind = \"native\"\nepic_id = \"AppOffline\"\n").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid config /test/fowl.toml: native environment fowl can't set epic_id"
+    );
+}
+
+#[test]
+fn epic_id_must_be_one_clean_name() {
+    let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n";
+    for (value, message) in [
+        ("\"\"", "Invalid epic_id: empty."),
+        (
+            "\"App\\nOffline\"",
+            "Invalid epic_id: it has a control character.",
+        ),
+        (
+            "\"App\\u0000\"",
+            "Invalid epic_id: it has a control character.",
+        ),
+        (
+            "\" AppOffline\"",
+            "Invalid epic_id: \" AppOffline\" starts or ends with a space.",
+        ),
+        (
+            "\"AppOffline\\t\"",
+            "Invalid epic_id: it has a control character.",
+        ),
+        (
+            "\"AppOffline \"",
+            "Invalid epic_id: \"AppOffline \" starts or ends with a space.",
+        ),
+    ] {
+        let err = named("fowl", &format!("{wine}epic_id = {value}\n")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("invalid config /test/fowl.toml: {message}"),
+            "{value}"
+        );
+    }
+    assert!(environment(&format!("{wine}epic_id = 12\n")).is_err());
+}
+
+#[test]
+fn epic_id_is_refused_beside_another_stores_id() {
+    let wine = "prefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\nepic_id = \"AppOffline\"\n";
+    for (key, line) in [
+        ("gog_id", "gog_id = \"1094900565\""),
+        ("heroic_id", "heroic_id = \"abc\""),
+    ] {
+        let err = named("fowl", &format!("{wine}{line}\n")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("invalid config /test/fowl.toml: fowl can't set both epic_id and {key}.")
+        );
+    }
+}
+
+#[test]
 fn tags_parse_for_wine_and_native_environments() {
     let wine =
         environment("prefix = '/p'\nrunner = 'wine'\narch = 'win64'\ntags = ['game', 'co-op']\n")
@@ -959,6 +1030,7 @@ fn each_refused_key_is_refused_for_proxied() {
         ("gamescope", "gamescope = false"),
         ("heroic_id", "heroic_id = \"abc\""),
         ("gog_id", "gog_id = \"1094900565\""),
+        ("epic_id", "epic_id = \"AppOffline\""),
         ("env", "[env]"),
         ("targets", "[targets.game]\nexe = \"/bin/true\""),
     ] {

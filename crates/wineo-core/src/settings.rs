@@ -104,6 +104,18 @@ pub fn apply(
     {
         return Err(edit::read_only_gog_id().into());
     }
+    if let ConfigFile::Environment(_) = file
+        && (pairs.iter().any(|(key, _)| *key == "epic_id") || unset.contains(&"epic_id"))
+    {
+        return Err(edit::read_only_epic_id().into());
+    }
+    // Before anything is installed or locked. Checked again under the
+    // config lock, against what the file holds then.
+    if let ConfigFile::Environment(name) = file
+        && let Ok(environment) = Environment::load(paths, name)
+    {
+        check_epic_program(paths, name, &environment.config, pairs, unset)?;
+    }
 
     // Pointing an environment somewhere else has to exclude whatever is using
     // either prefix, so a removal can't delete one this is about to adopt. A
@@ -285,6 +297,27 @@ pub fn changes_the_launch(pairs: &[(&str, &str)], unset: &[&str]) -> bool {
     ["prefix", "runner", "dxvk", "vkd3d"]
         .iter()
         .any(|key| pairs.iter().any(|(set, _)| set == key) || unset.contains(key))
+}
+
+/// Refuses a set that changes an Epic game's main program.
+fn check_epic_program(
+    paths: &Paths,
+    name: &str,
+    before: &EnvironmentConfig,
+    pairs: &[(&str, &str)],
+    unset: &[&str],
+) -> Result<()> {
+    let key = format!("targets.{}.exe", crate::epic::install::TARGET);
+    if !pairs.iter().any(|(set, _)| *set == key) && !unset.contains(&key.as_str()) {
+        return Ok(());
+    }
+    let current = before
+        .targets
+        .get(crate::epic::install::TARGET)
+        .map(|target| target.exe.as_str());
+    let after = value_after(current, pairs, unset, &key);
+    crate::targets::check_epic_program(paths, name, before, after.as_deref())?;
+    Ok(())
 }
 
 /// The value a key will hold once this set is written, so a check can look at
@@ -662,6 +695,16 @@ fn update_with_target(
             // GOG games live in the host library, so this is never
             // relative to a portable folder.
             (Scope::Global, "defaults.games_root") => paths.contract(&paths.absolute(value)?)?,
+            (Scope::Global, "epic.legendary") if value.is_empty() => {
+                return Err(crate::edit::EditError::InvalidValue {
+                    key: "epic.legendary".to_owned(),
+                    reason: "give the path to legendary, or remove the setting with --unset"
+                        .to_owned(),
+                }
+                .into());
+            }
+            // Resolved now, so it names the same file wherever wineo runs.
+            (Scope::Global, "epic.legendary") => paths.contract(&paths.absolute(value)?)?,
             (Scope::Environment, key)
                 if key.starts_with("targets.")
                     && (key.ends_with(".exe") || key.ends_with(".cwd")) =>
@@ -708,6 +751,16 @@ fn update_with_target(
         Scope::Global => (Some(GlobalConfig::parse(&path, &updated)?), None),
         Scope::Environment => {
             let environment = EnvironmentConfig::parse(&path, &updated)?;
+            if let (ConfigFile::Environment(name), Some(text)) = (file, &text) {
+                let before = EnvironmentConfig::parse(&path, text)?;
+                let after = environment
+                    .targets
+                    .get(crate::epic::install::TARGET)
+                    .map(|target| target.exe.as_str());
+                if after.is_some() {
+                    crate::targets::check_epic_program(paths, name, &before, after)?;
+                }
+            }
             (None, Some(environment))
         }
     };

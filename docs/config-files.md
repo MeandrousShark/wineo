@@ -158,9 +158,10 @@ One global key is for Epic games (plan 0073), and needed no schema bump:
 `[epic] legendary`, the path of the Legendary program to use. wineo talks
 to Epic through Legendary, and looks for it here first, then for its own
 downloaded copy, then for `legendary` on `PATH`. Leave it unset unless you
-want a particular copy. A path that isn't there, can't be run, or is
-older than 0.21.1 is an error that names it, and wineo doesn't fall back
-to another copy.
+want a particular copy. `wineo set --global epic.legendary=PATH` saves
+the path made absolute, so give a path, not a bare program name. A path
+that isn't there, can't be run, or is older than 0.21.1 is an error that
+names it, and wineo doesn't fall back to another copy.
 
 ```toml
 [epic]
@@ -801,8 +802,9 @@ environment config, so adding art does not bump that config's schema.
 
 A top-level `game` holds the SteamGridDB game ID once picked. Each kind is a
 table with `file`, the stored file name, and exactly one source key:
-`steamgriddb` with the asset ID, `manual` with the original file name, or
-`gog` with the GOG game ID the art came from.
+`steamgriddb` with the asset ID, `manual` with the original file name,
+`gog` with the GOG game ID the art came from, or `epic` with the Epic game
+id.
 Target overrides live in the same file as `[targets.<target>.<kind>]` with
 the same fields, so the game ID is shared across the environment and its
 targets:

@@ -538,11 +538,13 @@ pub enum InUseAction {
     Update,
     Migrate,
     Forget,
+    Install,
+    Repair,
 }
 
 /// The refusal for an update or migration of `name`'s game folder while
 /// something runs from it.
-fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String {
+pub(crate) fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String {
     let (who, verb, stop) = match holders {
         [] => return format!("Something is running from {name}'s game folder. Stop it first."),
         [one] => (one.clone(), "is", "it"),
@@ -553,6 +555,8 @@ fn in_use_message(name: &str, holders: &[String], action: InUseAction) -> String
         InUseAction::Update => "updating",
         InUseAction::Migrate => "migrating",
         InUseAction::Forget => "forgetting",
+        InUseAction::Install => "installing",
+        InUseAction::Repair => "repairing",
     };
     format!("{who} {verb} running from this game folder. Stop {stop} before {doing} {name}.")
 }
@@ -1040,7 +1044,7 @@ pub fn check_overlap(paths: &Paths, folder: &Path) -> Result<()> {
 /// existing ancestor resolved, with the missing names after it. That is what
 /// `canonical` gives once the folder is created, so state files and the
 /// overlap check agree with it.
-fn canonical_new(folder: &Path) -> Result<PathBuf> {
+pub(crate) fn canonical_new(folder: &Path) -> Result<PathBuf> {
     if !folder.is_absolute() {
         bail!("{} isn't an absolute path.", folder.display());
     }

@@ -5,10 +5,16 @@
 //! afterwards from what it printed or left behind.
 
 pub mod account;
+pub mod art;
+pub mod game;
+pub mod install;
+pub mod launch;
 pub mod legendary;
 pub mod own_copy;
 pub mod owned;
 mod run;
+mod shm;
+pub mod update;
 
 #[cfg(test)]
 pub(crate) mod fake;

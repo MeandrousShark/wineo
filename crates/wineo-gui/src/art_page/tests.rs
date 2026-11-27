@@ -161,6 +161,10 @@ fn gog_art_is_labeled_with_its_game() {
         "GOG, game 1207658924, 342x482"
     );
     assert_eq!(
+        source_label(&row(Source::Epic("Dlc Game".into()))),
+        "Epic, game Dlc Game, 342x482"
+    );
+    assert_eq!(
         source_label(&row(Source::Manual("cover.png".into()))),
         "Manual, 342x482"
     );

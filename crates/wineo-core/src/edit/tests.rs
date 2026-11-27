@@ -852,6 +852,49 @@ fn unset_takes_the_table_or_its_system_only() {
 }
 
 #[test]
+fn global_epic_legendary_sets_and_unsets_without_losing_comments() {
+    let mut doc = parse("# mine\n[epic]\nlegendary = '/opt/legendary' # pinned\n");
+    // The same path in other quotes is a no-op, so the file isn't rewritten.
+    set(&mut doc, Scope::Global, "epic.legendary", "/opt/legendary").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "# mine\n[epic]\nlegendary = '/opt/legendary' # pinned\n"
+    );
+    set(&mut doc, Scope::Global, "epic.legendary", "~/bin/legendary").unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "# mine\n[epic]\nlegendary = \"~/bin/legendary\" # pinned\n"
+    );
+    let config: crate::config::GlobalConfig = toml::from_str(&doc.to_string()).unwrap();
+    assert_eq!(config.epic.legendary.as_deref(), Some("~/bin/legendary"));
+    assert!(unset(&mut doc, Scope::Global, "epic.legendary").unwrap());
+    assert!(!doc.to_string().contains("epic"));
+    assert!(!unset(&mut doc, Scope::Global, "epic.legendary").unwrap());
+
+    let mut doc = parse("stop_timeout = 3\n");
+    set(
+        &mut doc,
+        Scope::Global,
+        "epic.legendary",
+        "/usr/bin/legendary",
+    )
+    .unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "stop_timeout = 3\n\n[epic]\nlegendary = \"/usr/bin/legendary\"\n"
+    );
+    assert!(matches!(
+        set(
+            &mut doc,
+            Scope::Environment,
+            "epic.legendary",
+            "/usr/bin/legendary"
+        ),
+        Err(EditError::UnknownKey(_))
+    ));
+}
+
+#[test]
 fn global_retroarch_quit_with_game_sets_and_unsets_without_losing_comments() {
     let mut doc = parse("# mine\n[retroarch]\nquit_with_game = true # wanted\n");
     set(&mut doc, Scope::Global, "retroarch.quit_with_game", "false").unwrap();

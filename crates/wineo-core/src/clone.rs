@@ -264,6 +264,10 @@ fn ensure_same(expected: &CloneInspection, actual: &CloneInspection) -> Result<(
     Ok(())
 }
 
+/// The review's line for a copy of an Epic game. The copy runs the same game
+/// folder as a plain environment, which Epic's login never reaches.
+pub const EPIC_ID_REMOVED: &str = "epic_id removed (the copy starts the game without Epic's login, so only a game that runs offline works from it)";
+
 /// What copying a config changes or leaves pointing elsewhere, for a review.
 pub(crate) struct ConfigReview {
     pub changed_settings: Vec<String>,
@@ -281,6 +285,9 @@ pub(crate) fn review_config(
     // A copy shares the original game folder without owning it.
     if config.gog_id.is_some() {
         changed_settings.push("gog_id removed".to_owned());
+    }
+    if config.epic_id.is_some() {
+        changed_settings.push(EPIC_ID_REMOVED.to_owned());
     }
     let mut external_target_paths = Vec::new();
     let mut literal_source_paths = Vec::new();
@@ -335,6 +342,7 @@ pub(crate) fn transform_config(
         doc.as_table_mut().remove("heroic_id");
     }
     doc.as_table_mut().remove("gog_id");
+    doc.as_table_mut().remove("epic_id");
     if let Some(targets) = doc
         .get_mut("targets")
         .and_then(|item| item.as_table_like_mut())
