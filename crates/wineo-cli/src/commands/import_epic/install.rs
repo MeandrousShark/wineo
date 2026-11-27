@@ -225,7 +225,7 @@ fn print_review(paths: &Paths, plan: &Plan) {
 /// How long a download may go without progress before it is said. A debug
 /// build reads `WINEO_TEST_EPIC_STALL_SECONDS`, so tests needn't wait five
 /// minutes; release builds never look.
-fn stall() -> Duration {
+pub(crate) fn stall() -> Duration {
     #[cfg(debug_assertions)]
     if let Some(seconds) = std::env::var("WINEO_TEST_EPIC_STALL_SECONDS")
         .ok()
@@ -263,30 +263,45 @@ fn apply(paths: &Paths, legendary: &Legendary, plan: &Plan) -> anyhow::Result<In
 
 /// Prints a line as each run starts, then its percentage about once a
 /// second.
-#[derive(Default)]
-struct Progress {
+pub(crate) struct Progress {
+    /// What each line starts with: `Downloading`.
+    verb: &'static str,
     last: Option<Instant>,
     /// The whole percentage last said, for the run it was said for.
     said: Option<(usize, u64)>,
 }
 
+impl Default for Progress {
+    fn default() -> Self {
+        Self::new("Downloading")
+    }
+}
+
 impl Progress {
-    fn label(index: usize, total: usize) -> String {
-        if total == 1 {
-            "Downloading".to_owned()
-        } else {
-            format!("Downloading {index} of {total}")
+    pub(crate) fn new(verb: &'static str) -> Self {
+        Self {
+            verb,
+            last: None,
+            said: None,
         }
     }
 
-    fn show(&mut self, event: &Event) {
+    fn label(&self, index: usize, total: usize) -> String {
+        if total == 1 {
+            self.verb.to_owned()
+        } else {
+            format!("{} {index} of {total}", self.verb)
+        }
+    }
+
+    pub(crate) fn show(&mut self, event: &Event) {
         match *event {
             Event::Started {
                 index,
                 total,
                 ref title,
             } => {
-                eprintln!("{}: {title}", Self::label(index, total));
+                eprintln!("{}: {title}", self.label(index, total));
                 self.last = None;
             }
             Event::Progress {
@@ -303,7 +318,7 @@ impl Progress {
                 }
                 self.said = Some((index, whole));
                 self.last = Some(Instant::now());
-                eprintln!("{}: {whole}%", Self::label(index, total));
+                eprintln!("{}: {whole}%", self.label(index, total));
             }
             Event::Stalled { minutes, .. } => warn(format!(
                 "No download progress for {minutes} minutes. It keeps trying; press Ctrl+C to stop, and run the same command again to resume."

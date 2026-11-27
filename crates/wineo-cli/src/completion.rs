@@ -147,8 +147,9 @@ pub fn environments(current: &OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
-/// Completes the environments that record a GOG game.
-pub fn gog_environments(current: &OsStr) -> Vec<CompletionCandidate> {
+/// Completes the environments that own a GOG or Epic game, which `update`
+/// takes.
+pub fn store_environments(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(Completing { prefix, paths, .. }) = Completing::new(current) else {
         return Vec::new();
     };
@@ -157,8 +158,10 @@ pub fn gog_environments(current: &OsStr) -> Vec<CompletionCandidate> {
         .into_iter()
         .filter(|name| {
             name.starts_with(prefix)
-                && wineo_core::gog::update::recorded_gog_id(&paths, name)
+                && (wineo_core::gog::update::recorded_gog_id(&paths, name)
                     .is_ok_and(|id| id.is_some())
+                    || (paths.portable_root().is_none()
+                        && wineo_core::epic::game::epic_id_of(&paths, name).is_some()))
         })
         .map(CompletionCandidate::new)
         .collect()

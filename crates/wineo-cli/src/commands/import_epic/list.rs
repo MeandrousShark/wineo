@@ -8,12 +8,13 @@ use wineo_core::epic::account::Status;
 use wineo_core::epic::install::{self, Local, LocalState};
 use wineo_core::epic::legendary::Missing;
 use wineo_core::epic::owned::{self, Game, Owned};
+use wineo_core::epic::update::UpdateState;
 use wineo_core::epic::{self, Error};
 use wineo_core::paths::Paths;
 
 use super::Args;
 use super::setup::{self, Found};
-use crate::commands::gog_support::warn;
+use crate::commands::gog_support::{update_label, warn};
 use crate::commands::table::render_columns;
 use crate::commands::transfer::Cancellation;
 
@@ -129,6 +130,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     games.sort_by_cached_key(|game| (game.title.to_lowercase(), game.app_name.clone()));
     // Epic games live in the host library, so a portable root has none.
     let (local, errors) = install::local(paths)?;
+    let updates = updates(paths, &local, &owned);
 
     // On stderr in both modes, and in the JSON for scripts.
     for warning in &warnings {
@@ -138,7 +140,13 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         crate::commands::json::print(&json!({
             "games": games
                 .iter()
-                .map(|game| game_json(game, local.get(&game.app_name)))
+                .map(|game| {
+                    game_json(
+                        game,
+                        local.get(&game.app_name),
+                        updates.get(&game.app_name).copied(),
+                    )
+                })
                 .collect::<Vec<_>>(),
             // A record that can't be read names no game or environment.
             "errors": errors
@@ -148,7 +156,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             "warnings": warnings,
         }))?;
     } else {
-        print_table(&games, &local);
+        print_table(&games, &local, &updates);
         for error in &errors {
             eprintln!("Failed: {error}");
         }
@@ -164,7 +172,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
 /// asks Epic or rewrites the saved list. Legendary is still looked up and
 /// asked offline who is logged in, so a dry run fails where the real one
 /// would. None when there is no saved list, after saying so.
-fn dry_run(
+pub(crate) fn dry_run(
     paths: &Paths,
     global: &GlobalConfig,
     args: &Args,
@@ -221,7 +229,7 @@ fn dry_run(
 }
 
 /// Why there is no list to show when no Legendary can be run.
-fn not_listed(missing: Option<&Missing>) -> Error {
+pub(crate) fn not_listed(missing: Option<&Missing>) -> Error {
     match missing {
         Some(_) => Error::LoggedOut,
         None => Error::Python,
@@ -229,20 +237,38 @@ fn not_listed(missing: Option<&Missing>) -> Error {
 }
 
 /// The warning over a saved list shown because no Legendary can be run.
-fn saved_list_warning(missing: Option<&Missing>) -> String {
+pub(crate) fn saved_list_warning(missing: Option<&Missing>) -> String {
     match missing {
         Some(_) => "Legendary isn't installed, so this is the saved list.".to_owned(),
         None => format!("{} This is the saved list.", Error::Python),
     }
 }
 
-fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> anyhow::Result<Owned> {
+pub(crate) fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> anyhow::Result<Owned> {
     let cancellation = Cancellation::new()?;
     let owned = owned::load(legendary, refresh, &cancellation.token);
     cancellation.result(owned.map_err(anyhow::Error::from))
 }
 
-fn game_json(game: &Game, local: Option<&Local>) -> Value {
+/// Each installed game's update state against `owned`, by app name. One
+/// whose record can't be checked has none.
+fn updates(
+    paths: &Paths,
+    local: &BTreeMap<String, Local>,
+    owned: &Owned,
+) -> BTreeMap<String, UpdateState> {
+    local
+        .iter()
+        .filter(|(_, local)| local.state == LocalState::Installed)
+        .filter_map(|(app, local)| {
+            let name = local.environment.as_deref()?;
+            let status = epic::update::check(paths, name, Ok(owned)).ok()?;
+            Some((app.clone(), status.state))
+        })
+        .collect()
+}
+
+fn game_json(game: &Game, local: Option<&Local>, update: Option<UpdateState>) -> Value {
     let (state, reason) = state(game, local);
     // Only installed DLC is listed, as for GOG.
     let dlc: Vec<Value> = local
@@ -267,21 +293,26 @@ fn game_json(game: &Game, local: Option<&Local>) -> Value {
         "state": state.json(),
         "environment": local.and_then(|local| local.environment.as_deref()),
         "version": local.and_then(|local| local.version.as_deref()),
-        // Filled once updates are checked.
-        "update": Value::Null,
+        "update": update.map(UpdateState::as_str),
         "reason": reason.map(Reason::json),
         "dlc": dlc,
     })
 }
 
-fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
+fn print_table(
+    games: &[&Game],
+    local: &BTreeMap<String, Local>,
+    updates: &BTreeMap<String, UpdateState>,
+) {
     if games.is_empty() {
         println!("You don't own any Epic games.");
         return;
     }
-    // The environment and version columns only once wineo has a game.
+    // The environment, version, and update columns only once wineo has a
+    // game.
     let wide = games.iter().any(|game| local.contains_key(&game.app_name));
-    let mut table = vec![["ID", "TITLE", "STATE", "ENVIRONMENT", "VERSION"].map(str::to_owned)];
+    let mut table =
+        vec![["ID", "TITLE", "STATE", "ENVIRONMENT", "VERSION", "UPDATE"].map(str::to_owned)];
     for game in games {
         let found = local.get(&game.app_name);
         let (state, reason) = state(game, found);
@@ -298,6 +329,10 @@ fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
             found
                 .and_then(|local| local.version.clone())
                 .unwrap_or_default(),
+            updates
+                .get(&game.app_name)
+                .map(|state| update_label(*state).to_owned())
+                .unwrap_or_default(),
         ]);
     }
     let lines = if wide {
@@ -305,7 +340,7 @@ fn print_table(games: &[&Game], local: &BTreeMap<String, Local>) {
     } else {
         let narrow: Vec<[String; 3]> = table
             .into_iter()
-            .map(|[id, title, state, _, _]| [id, title, state])
+            .map(|[id, title, state, _, _, _]| [id, title, state])
             .collect();
         render_columns(&narrow)
     };

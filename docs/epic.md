@@ -82,7 +82,8 @@ files are whole but no environment owns them, like one whose environment
 is in the trash), or `unavailable`, with the reason: `another launcher
 manages it`, `needs an account at another launcher`, or `no Windows build`.
 Once wineo has a record of a listed game, installed or not, the table
-adds ENVIRONMENT and VERSION columns. An empty library prints `You don't own any Epic games.`
+adds ENVIRONMENT, VERSION, and UPDATE columns. An empty library prints
+`You don't own any Epic games.`
 
 The list is cached for an hour; `--refresh` asks Epic again. If Epic
 can't send it, the saved list stands in with a warning. Plain `--list`
@@ -149,6 +150,43 @@ Finish the interrupted install with: wineo import epic --game Kestrel
 an unfinished or downloaded game and leaves its files where they are. It
 refuses a game an environment owns, in the trash too. Nothing in wineo
 deletes Epic game files.
+
+## Updates
+
+```
+$ wineo update --check
+NAME           INSTALLED  AVAILABLE  STATE
+kestrel-rally  1.4.2      1.5.0      update available
+  DLC Kestrel Rally Night Tracks: not installed
+```
+
+`wineo update` covers Epic games beside GOG ones: `--check` compares what
+wineo installed with what Epic lists now, `wineo update NAME` updates one
+game, and `--all` every game. An update runs Legendary for the game when
+its version changed and for each DLC that changed or isn't installed, so
+DLC bought since and a DLC that failed to install come in with the next
+update. A DLC that fails is a warning, and the next update tries again.
+When Legendary names a new program, the main target and its desktop entry
+follow it. A running game is never updated, and a game with an update
+waiting still starts. See [JSON output](json-output.md) for
+`--check --json`.
+
+`wineo update NAME --repair` has Legendary check every file and fetch
+what's missing or damaged. It also rebuilds wineo's record of the game
+from Legendary's when the record is missing. When Legendary wants a game's
+files checked before it updates them, `update NAME` refuses and says to
+run `--repair` first.
+
+Ctrl+C stops an update or repair and exits 130, and the same command
+finishes it; until then the game can't be started. It says:
+
+```
+Update interrupted.
+Finish the interrupted update with: wineo update kestrel-rally
+```
+
+`wineo update` refuses a [portable folder](portable.md) for every form:
+GOG and Epic games live in the host library.
 
 ## Starting games
 

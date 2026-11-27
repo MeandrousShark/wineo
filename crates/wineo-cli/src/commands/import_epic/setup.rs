@@ -13,7 +13,7 @@ use crate::prompt::{self, Canceled, Prompt, Reply, Terminal};
 
 const NEEDS_YES: &str = "Downloading Legendary needs a terminal, or --yes to agree to it.";
 
-pub(super) enum Found {
+pub(crate) enum Found {
     Usable(Box<Legendary>),
     /// None to run. `missing` says what an offer to download names, and is
     /// None when wineo's own copy is there but Python can't run it.
@@ -24,7 +24,7 @@ pub(super) enum Found {
 
 /// Looks for Legendary without ever asking to download it. A setting that
 /// can't be used stays an error.
-pub(super) fn find(paths: &Paths, global: &GlobalConfig) -> anyhow::Result<Found> {
+pub(crate) fn find(paths: &Paths, global: &GlobalConfig) -> anyhow::Result<Found> {
     let cancellation = Cancellation::new()?;
     let found = legendary::find(paths, global, &cancellation.token);
     match cancellation.result(found.map_err(anyhow::Error::from)) {
@@ -41,7 +41,7 @@ pub(super) fn find(paths: &Paths, global: &GlobalConfig) -> anyhow::Result<Found
 
 /// A Legendary to run, downloading wineo's own copy first when the user
 /// agrees. None after a dry run that stopped at the question.
-pub(super) fn obtain(
+pub(crate) fn obtain(
     paths: &Paths,
     global: &GlobalConfig,
     args: &Args,
@@ -77,7 +77,7 @@ pub(super) fn question() -> String {
 }
 
 /// What a dry run says in place of asking.
-pub(super) fn say_dry_run(missing: &Missing) {
+pub(crate) fn say_dry_run(missing: &Missing) {
     say_older(missing);
     eprintln!("{}", question());
     eprintln!("Dry run, so wineo didn't ask or download anything.");
@@ -95,7 +95,7 @@ fn say_older(missing: &Missing) {
 /// Fails as offering the download would: on another machine, or without a
 /// new enough Python. A dry run checks this too, to fail where the real
 /// run would.
-pub(super) fn check_can_download() -> anyhow::Result<()> {
+pub(crate) fn check_can_download() -> anyhow::Result<()> {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err(epic::Error::Unsupported.into());
     }

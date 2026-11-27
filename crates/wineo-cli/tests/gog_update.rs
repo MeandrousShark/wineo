@@ -215,13 +215,13 @@ fn check_json_has_the_plans_shape() {
         json["environments"],
         json!([
             {
-                "name": "disco", "id": DISCO.to_string(), "track": "galaxy",
+                "name": "disco", "id": DISCO.to_string(), "store": "gog", "track": "galaxy",
                 "installed": "59781086834418085", "available": "59781086834418086",
                 "branch": null, "pinned": null, "update": "available", "applicable": true, "reason": null,
                 "unfinished": false, "dlc": [],
             },
             {
-                "name": "rimworld", "id": RIMWORLD.to_string(), "track": "installer",
+                "name": "rimworld", "id": RIMWORLD.to_string(), "store": "gog", "track": "installer",
                 "installed": "1.6.4871 rev588", "available": "1.6.4900 rev600",
                 "branch": null, "pinned": null, "update": "available", "applicable": true, "reason": null,
                 "unfinished": false,
@@ -322,7 +322,8 @@ fn check_refuses_a_portable_folder() {
     let out = common::gog_api::checked(out);
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("GOG games live in the host library. Run this without --portable."),
+        stderr(&out)
+            .contains("GOG and Epic games live in the host library. Run this without --portable."),
         "{}",
         stderr(&out)
     );

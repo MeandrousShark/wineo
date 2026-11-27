@@ -14,6 +14,7 @@ pub mod own_copy;
 pub mod owned;
 mod run;
 mod shm;
+pub mod update;
 
 #[cfg(test)]
 pub(crate) mod fake;

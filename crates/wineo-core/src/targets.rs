@@ -392,13 +392,17 @@ pub(crate) fn check_epic_program(
 }
 
 /// `check_epic_program` for a write that leaves `after` as the targets.
+/// `allowed` is the one new program an Epic update may write, and nothing
+/// else gets past.
 fn check_epic_targets(
     paths: &Paths,
     environment: &str,
     before: &EnvironmentConfig,
     after: &BTreeMap<String, Target>,
+    allowed: Option<&str>,
 ) -> std::result::Result<(), crate::edit::EditError> {
     match after.get(crate::epic::install::TARGET) {
+        Some(target) if allowed == Some(target.exe.as_str()) => Ok(()),
         Some(target) => check_epic_program(paths, environment, before, Some(&target.exe)),
         None => Ok(()),
     }
@@ -434,6 +438,54 @@ pub enum Written {
 /// Writes a reviewed batch in one validated config write, under the config
 /// lock `wineo set` shares.
 pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written> {
+    write_allowing(paths, environment, batch, None)
+}
+
+/// Points an Epic game's main target at `exe`, the program Legendary names
+/// after an update or repair, the only write Q12's guard lets change it.
+/// Its working folder follows when it is still `old_cwd`, the one wineo
+/// wrote for the old program, and is otherwise the user's. Nothing changes
+/// when the game has no main target, since removing it was the user's
+/// choice. Says whether the program changed.
+pub(crate) fn refresh_epic_program(
+    paths: &Paths,
+    environment: &str,
+    exe: &str,
+    cwd: Option<String>,
+    old_cwd: Option<String>,
+) -> anyhow::Result<bool> {
+    // Another write landing between the read and the write is read again.
+    for _ in 0..3 {
+        let current = crate::environment::Environment::load(paths, environment)?;
+        if current.config.epic_id.is_none() {
+            return Ok(false);
+        }
+        let Some(target) = current.config.targets.get(crate::epic::install::TARGET) else {
+            return Ok(false);
+        };
+        if same_program(paths, &target.exe, exe) {
+            return Ok(false);
+        }
+        let mut spec = Spec::of(target);
+        spec.exe = exe.to_owned();
+        if spec.cwd == old_cwd {
+            spec.cwd = cwd.clone();
+        }
+        let mut batch = Batch::new(current.config.targets.clone());
+        batch.edit(crate::epic::install::TARGET, spec);
+        if let Written::Saved = write_allowing(paths, environment, &batch, Some(exe))? {
+            return Ok(true);
+        }
+    }
+    anyhow::bail!("{environment}'s config kept changing while its main program was refreshed")
+}
+
+fn write_allowing(
+    paths: &Paths,
+    environment: &str,
+    batch: &Batch,
+    allowed: Option<&str>,
+) -> Result<Written> {
     if !name::is_valid(environment) {
         return Err(Error::InvalidName(environment.to_owned()));
     }
@@ -462,7 +514,7 @@ pub fn write(paths: &Paths, environment: &str, batch: &Batch) -> Result<Written>
         updated = doc.to_string();
     }
     let written = EnvironmentConfig::parse(&path, &updated)?;
-    check_epic_targets(paths, environment, &current, &written.targets)?;
+    check_epic_targets(paths, environment, &current, &written.targets, allowed)?;
     let removed: Vec<String> = current
         .targets
         .keys()

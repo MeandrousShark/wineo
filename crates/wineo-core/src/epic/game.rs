@@ -378,6 +378,10 @@ pub struct Installed {
     pub install_path: Option<PathBuf>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Legendary wants every file checked before it changes the game again,
+    /// and turns an update into a repair until then.
+    #[serde(default)]
+    pub needs_verification: bool,
 }
 
 /// Legendary's `installed.json` in wineo's Legendary folder, by app name,

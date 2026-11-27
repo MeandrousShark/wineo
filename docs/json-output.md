@@ -210,7 +210,7 @@ whose update check failed, or any game in a [portable folder](portable.md),
 where the check is skipped, has its `environment` but `null` for the rest.
 
 `wineo update --check --json` checks the environments that track a GOG
-game:
+or Epic game. Each row's `store` is `gog` or `epic`:
 
 ```json
 {
@@ -218,6 +218,7 @@ game:
     {
       "name": "rimworld",
       "id": "1094900565",
+      "store": "gog",
       "track": "installer",
       "branch": null,
       "pinned": null,
@@ -312,6 +313,19 @@ update on that branch goes to; and `private` marks a build listed with a
 saved password. A game on the installer track has no builds to list: it
 exits 1 with a diagnostic on stderr and no JSON.
 
+Epic rows have the same keys. `track`, `branch`, and `pinned` are `null`.
+`installed` is the version wineo recorded and `available` the Windows
+build Epic lists, `null` when unknown. `update` is `available`, `none`, or
+`cant_compare`, and `reason` is `null` or a sentence, never a word like
+`galaxy`. `applicable` is `true` when `update` is `available` and wineo
+can apply it now, and `false` otherwise, including when Legendary wants to
+check the game's files first; `wineo update NAME --repair` does that. An Epic DLC's `state`
+is `none`, `available`, `not_installed` (bought since, or one that failed
+to install; `wineo update` installs it), `cant_compare`, or `unavailable`
+(no Windows build). An Epic game that can't be checked, like one whose
+record is missing or while logged out of Epic, goes in `errors`, and the
+command exits 1 with the rest still printed.
+
 ## Epic
 
 `wineo import epic --list --json` lists the games your Epic account owns:
@@ -352,7 +366,8 @@ account at another launcher), or `no_windows_build`. `environment` is the
 environment that owns the game, and `version` its installed version, both
 `null` when there's none. `dlc` lists the installed DLC as `{"id",
 "title", "state": "installed"}`, and is `[]` for a game that isn't
-installed. `update` is `null` for now. `warnings` holds the same lines as
+installed. `update` is `available`, `none`, or `cant_compare` for an
+installed game, and `null` otherwise. `warnings` holds the same lines as
 stderr, like a list that couldn't be refreshed. `errors` lists records
 wineo couldn't read, each as `{"name", "id", "message"}` with `name` and
 `id` `null`, since an unreadable record can't say which game it's for;

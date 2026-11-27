@@ -10,9 +10,9 @@ use wineo_core::paths::Paths;
 use crate::cancel;
 
 mod account;
-mod install;
-mod list;
-mod setup;
+pub(crate) mod install;
+pub(crate) mod list;
+pub(crate) mod setup;
 
 /// The modes a `--game` flag conflicts with. clap skips `requires` when an
 /// argument that conflicts with it through the `mode` group is given, so

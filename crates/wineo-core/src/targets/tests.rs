@@ -504,3 +504,101 @@ fn a_game_without_epic_id_can_change_its_program() {
     ));
     assert_eq!(f.targets()["game"].exe, "/elsewhere/Other.exe");
 }
+
+#[test]
+fn an_epic_update_writes_legendarys_new_program_and_only_that_one() {
+    let f = Fixture::new("");
+    epic_game(&f);
+    let old = f.paths.home().join("Games/Game.exe").display().to_string();
+    let new = f
+        .paths
+        .home()
+        .join("Games/Bin/New.exe")
+        .display()
+        .to_string();
+    let mut batch = Batch::new(f.targets());
+    batch.edit(
+        "game",
+        Spec {
+            exe: old.clone(),
+            args: vec!["-x".to_owned()],
+            cwd: Some("/user/chose".to_owned()),
+            ..Spec::default()
+        },
+    );
+    write(&f.paths, "hades", &batch).unwrap();
+
+    assert!(
+        refresh_epic_program(
+            &f.paths,
+            "hades",
+            &new,
+            Some("/new/cwd".to_owned()),
+            Some("/old/cwd".to_owned()),
+        )
+        .unwrap()
+    );
+    let game = &f.targets()["game"];
+    assert_eq!(game.exe, new);
+    // Arguments and a working folder the user chose stay theirs.
+    assert_eq!(game.args, ["-x"]);
+    assert_eq!(game.cwd.as_deref(), Some("/user/chose"));
+    assert!(!refresh_epic_program(&f.paths, "hades", &new, None, None).unwrap());
+    // The same program written another way is no change.
+    let mut batch = Batch::new(f.targets());
+    let mut game = Spec::of(&f.targets()["game"]);
+    game.exe = "~/Games/Bin/New.exe".to_owned();
+    batch.edit("game", game);
+    write(&f.paths, "hades", &batch).unwrap();
+    let before = f.text();
+    assert!(!refresh_epic_program(&f.paths, "hades", &new, None, None).unwrap());
+    assert_eq!(f.text(), before);
+
+    // The guard still holds for everyone else.
+    let mut batch = Batch::new(f.targets());
+    batch.edit("game", spec(&old));
+    assert_eq!(
+        write(&f.paths, "hades", &batch).unwrap_err().to_string(),
+        "hades's main program comes from Epic and can't be changed."
+    );
+    let mut batch = Batch::new(f.targets());
+    batch.edit("game", spec("/elsewhere/Other.exe"));
+    assert_eq!(
+        write_allowing(&f.paths, "hades", &batch, Some(&new))
+            .unwrap_err()
+            .to_string(),
+        "hades's main program comes from Epic and can't be changed."
+    );
+}
+
+#[test]
+fn an_epic_refresh_moves_the_working_folder_wineo_wrote() {
+    let f = Fixture::new("");
+    epic_game(&f);
+    let mut batch = Batch::new(f.targets());
+    let mut game = Spec::of(&f.targets()["game"]);
+    game.cwd = Some("/old/cwd".to_owned());
+    batch.edit("game", game);
+    write(&f.paths, "hades", &batch).unwrap();
+    refresh_epic_program(
+        &f.paths,
+        "hades",
+        "/games/Bin/New.exe",
+        Some("/games/Bin".to_owned()),
+        Some("/old/cwd".to_owned()),
+    )
+    .unwrap();
+    assert_eq!(f.targets()["game"].cwd.as_deref(), Some("/games/Bin"));
+}
+
+#[test]
+fn an_epic_refresh_leaves_a_removed_main_target_removed() {
+    let f = Fixture::new("");
+    epic_game(&f);
+    let mut batch = Batch::new(f.targets());
+    batch.remove("game");
+    write(&f.paths, "hades", &batch).unwrap();
+    let before = f.text();
+    assert!(!refresh_epic_program(&f.paths, "hades", "/games/New.exe", None, None).unwrap());
+    assert_eq!(f.text(), before);
+}
