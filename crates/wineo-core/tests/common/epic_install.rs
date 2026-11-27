@@ -26,9 +26,9 @@
 //! recorded, as Legendary does.
 //!
 //! `install APP --repair` checks the recorded game: it writes the repair
-//! file `tmp/APP.repair`, logs what Legendary logs while checking, appends
-//! the app to `<root>/repaired`, removes the repair file, and leaves
-//! `installed.json` alone. Its modes:
+//! file `tmp/APP.repair`, logs what Legendary logs while checking and
+//! fetching, appends the app to `<root>/repaired`, removes the repair file,
+//! and leaves `installed.json` alone. Its modes:
 //!
 //! - `damaged`: logs a missing file and a failed check, as Legendary does
 //!   before it fetches what is missing, then finishes.
@@ -105,6 +105,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
              : > \"$LEGENDARY_CONFIG_PATH/tmp/$app.repair\"\n\
              if [ \"$mode\" = damaged ]; then echo '[cli] ERROR: File is missing: \"Binaries/Win64/Game.exe\"' >&2; echo '[cli] ERROR: Verification failed, 0 file(s) corrupted, 1 file(s) are missing.' >&2; fi\n\
              echo \"[DLManager] INFO: Download Manager running with process-id: $$\" >&2\n\
+             echo '[DLManager] INFO: = Progress: 50.00% (1/2), Running for 00:00:01, ETA: 00:00:01' >&2\n\
              case \"$mode\" in\n\
              hang)\n\
                trap 'echo \"[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up...\" >&2; echo \"$app\" >> \"$root/got-int\"; exit 0' INT\n\
