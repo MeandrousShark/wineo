@@ -912,3 +912,23 @@ fn the_old_download_stays_out_of_completion_and_the_new_commands_complete() {
         }
     }
 }
+
+#[test]
+fn update_completes_gog_and_epic_games_only() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    write_environment(
+        root.path(),
+        "rimworld",
+        "gog_id = '1094900565'\nprefix = '/p'\nrunner = 'wine'\narch = 'win64'\n",
+    );
+    write_environment(
+        root.path(),
+        "rally",
+        "epic_id = 'Kestrel'\nprefix = '/p'\nrunner = 'wine'\narch = 'win64'\n",
+    );
+    let mut offered = complete(root.path(), "fish", &["wineo", "update", ""]);
+    offered.retain(|word| !word.starts_with('-'));
+    offered.sort();
+    assert_eq!(offered, ["rally", "rimworld"]);
+}

@@ -24,7 +24,7 @@ mod epic;
 #[command(group = clap::ArgGroup::new("listing").args(["check", "builds"]))]
 pub struct Args {
     /// Environment to check or update
-    #[arg(value_name = "NAME", conflicts_with = "all", add = ArgValueCompleter::new(crate::completion::gog_environments))]
+    #[arg(value_name = "NAME", conflicts_with = "all", add = ArgValueCompleter::new(crate::completion::store_environments))]
     name: Option<String>,
     /// Every GOG game, which is the default for --check
     #[arg(long)]
