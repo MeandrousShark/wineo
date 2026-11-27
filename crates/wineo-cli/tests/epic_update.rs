@@ -848,3 +848,30 @@ fn an_unfinished_install_is_finished_by_installing_again() {
     );
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn the_owned_list_says_which_installed_games_have_an_update() {
+    let epic = epic();
+    offline_game(&epic);
+    let update = |epic: &Epic, app: &str| {
+        let output = epic.run(&["import", "epic", "--list", "--json"]);
+        assert_ok(&output);
+        let list: Value = serde_json::from_str(&stdout(&output)).unwrap();
+        list["games"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|game| game["id"] == app)
+            .unwrap()["update"]
+            .clone()
+    };
+    assert_eq!(update(&epic, APP), "none");
+    assert_eq!(update(&epic, "AppToken"), Value::Null);
+    offer(&epic, "0.25");
+    assert_eq!(update(&epic, APP), "available");
+    list_with(&epic, |list| {
+        listed(list, APP)["asset_infos"] = json!({});
+    });
+    assert_eq!(update(&epic, APP), "cant_compare");
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}

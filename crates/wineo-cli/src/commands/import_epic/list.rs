@@ -8,6 +8,7 @@ use wineo_core::epic::account::Status;
 use wineo_core::epic::install::{self, Local, LocalState};
 use wineo_core::epic::legendary::Missing;
 use wineo_core::epic::owned::{self, Game, Owned};
+use wineo_core::epic::update::UpdateState;
 use wineo_core::epic::{self, Error};
 use wineo_core::paths::Paths;
 
@@ -129,6 +130,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     games.sort_by_cached_key(|game| (game.title.to_lowercase(), game.app_name.clone()));
     // Epic games live in the host library, so a portable root has none.
     let (local, errors) = install::local(paths)?;
+    let updates = updates(paths, &local, &owned);
 
     // On stderr in both modes, and in the JSON for scripts.
     for warning in &warnings {
@@ -138,7 +140,13 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         crate::commands::json::print(&json!({
             "games": games
                 .iter()
-                .map(|game| game_json(game, local.get(&game.app_name)))
+                .map(|game| {
+                    game_json(
+                        game,
+                        local.get(&game.app_name),
+                        updates.get(&game.app_name).copied(),
+                    )
+                })
                 .collect::<Vec<_>>(),
             // A record that can't be read names no game or environment.
             "errors": errors
@@ -242,7 +250,25 @@ pub(crate) fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> any
     cancellation.result(owned.map_err(anyhow::Error::from))
 }
 
-fn game_json(game: &Game, local: Option<&Local>) -> Value {
+/// Each installed game's update state against `owned`, by app name. One
+/// whose record can't be checked has none.
+fn updates(
+    paths: &Paths,
+    local: &BTreeMap<String, Local>,
+    owned: &Owned,
+) -> BTreeMap<String, UpdateState> {
+    local
+        .iter()
+        .filter(|(_, local)| local.state == LocalState::Installed)
+        .filter_map(|(app, local)| {
+            let name = local.environment.as_deref()?;
+            let status = epic::update::check(paths, name, Ok(owned)).ok()?;
+            Some((app.clone(), status.state))
+        })
+        .collect()
+}
+
+fn game_json(game: &Game, local: Option<&Local>, update: Option<UpdateState>) -> Value {
     let (state, reason) = state(game, local);
     // Only installed DLC is listed, as for GOG.
     let dlc: Vec<Value> = local
@@ -267,8 +293,7 @@ fn game_json(game: &Game, local: Option<&Local>) -> Value {
         "state": state.json(),
         "environment": local.and_then(|local| local.environment.as_deref()),
         "version": local.and_then(|local| local.version.as_deref()),
-        // Filled once updates are checked.
-        "update": Value::Null,
+        "update": update.map(UpdateState::as_str),
         "reason": reason.map(Reason::json),
         "dlc": dlc,
     })
