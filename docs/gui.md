@@ -649,8 +649,8 @@ An [Epic game](epic.md) gets the same: an **Update** row (**Up to date**,
 **Finish install** in place of Play when one was interrupted. **Update**
 reviews each run (`1.0 -> 1.1`, `not installed -> 1.1` for a new DLC)
 before it downloads, and a repair reviews `every file`. Once after the app
-starts, when you're logged in to Epic, it checks your Epic games in the
-background. While the app asks Epic how to start a game, the status line
+starts, when you're logged in to Epic and not in a portable folder, it
+checks your Epic games in the background. While the app asks Epic how to start a game, the status line
 reads `Asking Epic...`.
 
 Games keep running after you close the app, the same as games started with
@@ -969,8 +969,8 @@ window while the content scrolls between them.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
 **Import from Heroic**, **Import from Steam**, **Import from GOG**,
-**Import from Epic**, or **Add emulated games**, keeping the library visible behind it. The same
-choices are available when the library is empty. Back preserves entries;
+**Import from Epic**, or **Add emulated games**, keeping the library visible
+behind it. The same choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
 
@@ -1105,8 +1105,8 @@ host library.
 
 **Import from Epic** (**Choose an Epic game**) shows every Epic game you own
 as tiles, like `wineo import epic` (see [Epic games](epic.md)). A tile says
-`Not installed`, `Install didn't finish`, or `Installed`; a game wineo
-can't install says why, like `Needs an account at another launcher` or `No
+`Not installed`, `Install didn't finish`, `Installed`, or `Downloaded, but
+no environment owns it.`; a game wineo can't install says why, like `Needs an account at another launcher` or `No
 Windows build`, and can't be picked, nor can one that's installed. Logged
 out, the page says to log in to Epic in Settings; without Legendary it shows
 the saved list. Picking a game opens **Review Epic install**: the
