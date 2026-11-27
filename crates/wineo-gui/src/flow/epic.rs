@@ -64,7 +64,8 @@ impl Game {
         match &self.state {
             State::NotInstalled => (None, Some("Not installed".to_owned())),
             State::Unfinished => (None, Some("Install didn't finish".to_owned())),
-            State::Installed(name) => (None, Some(format!("Installed as {name}."))),
+            // As GOG's: an installed game can't be picked again here.
+            State::Installed(_) => (Some("Installed".to_owned()), None),
             State::Downloaded => (
                 Some("Downloaded, but no environment owns it.".to_owned()),
                 None,
@@ -89,7 +90,7 @@ pub(crate) struct Listing {
 pub(crate) enum Event {
     Back,
     Listed(u64, Result<Listing, String>),
-    /// Opens the game at this index: its install, or its card once
+    /// Opens the install of the game at this index, when it can be
     /// installed.
     Open(usize),
     /// An install's event, with the instance it belongs to, so a reply to
@@ -403,13 +404,6 @@ impl Page {
                 };
                 self.grid.click(index);
                 match &game.state {
-                    State::Installed(name) => {
-                        self.action = Some(Action::Library {
-                            name: Some(name.clone()),
-                            launch: false,
-                        });
-                        Task::none()
-                    }
                     State::NotInstalled | State::Unfinished => {
                         let game = InstallGame {
                             app: game.app.clone(),
@@ -424,7 +418,7 @@ impl Page {
                         let instance = self.install_instance;
                         task.map(move |event| Event::Installing(instance, Box::new(event)))
                     }
-                    State::Downloaded | State::Unavailable(_) => Task::none(),
+                    State::Installed(_) | State::Downloaded | State::Unavailable(_) => Task::none(),
                 }
             }
             Event::Back => self.back(),

@@ -119,7 +119,7 @@ fn installed_unfinished_and_downloaded_games_say_what_wineo_has() {
     .unwrap();
     let shown = tiles(&listing(&epic));
     assert_eq!(shown[0].2.as_deref(), Some("Install didn't finish"));
-    assert_eq!(shown[1].2.as_deref(), Some("Installed as offline-game."));
+    assert_eq!(shown[1].1.as_deref(), Some("Installed"));
     // Moved to the trash, the game is whole with no environment owning it.
     fs::remove_file(paths.environment_config("offline-game")).unwrap();
     let shown = tiles(&listing(&epic));
@@ -186,7 +186,7 @@ fn page(epic: &Epic) -> Page {
 }
 
 #[test]
-fn picking_opens_an_install_or_the_installed_games_card_and_unavailable_ones_stay_put() {
+fn picking_opens_an_install_and_installed_or_unavailable_ones_stay_put() {
     let epic = world();
     mixed(&epic);
     epic.set_mode("AppOffline", "");
@@ -207,11 +207,10 @@ fn picking_opens_an_install_or_the_installed_games_card_and_unavailable_ones_sta
     let _ = page.update(Event::Open(3));
     assert!(!page.installing_game());
     assert!(page.take_action().is_none());
+    // Installed, so it stays put, as GOG's.
     let _ = page.update(Event::Open(1));
-    assert!(matches!(
-        page.take_action(),
-        Some(Action::Library { name: Some(name), launch: false }) if name == "offline-game"
-    ));
+    assert!(!page.installing_game());
+    assert!(page.take_action().is_none());
     let _ = page.update(Event::Open(0));
     assert!(page.installing_game());
     assert!(page.waiting(), "it checks the game with Epic");
