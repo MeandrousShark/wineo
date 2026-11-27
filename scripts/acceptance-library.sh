@@ -42,6 +42,11 @@
 #   host/config/retroarch/cores/    two fake RetroArch cores that both play .sfc
 #   host/config/wineo/environments/ one game already imported from host/roms
 #   host/roms/                      the ROM folders, one per emulator
+#   host/epic/                      a fake Legendary, the owned list it prints,
+#                                   and the versions Epic lists (below)
+#   host/data/wineo/epic/legendary/ its saved login
+#   host/data/wineo/runners/fake/   the fake Wine runner, for new Epic games
+#   host/config/wineo/config.toml   [epic] legendary and the "fake" runner
 # The imported game's ROM argument is absolute, so DIR/host can't be moved
 # after it's written. The fakes come first on PATH, and wineo takes the first
 # match, so a real emulator with the same command name is hidden behind its
@@ -64,6 +69,12 @@
 #   - A GOG "Update available" badge. The app never checks GOG in a portable
 #     folder, and a check needs a GOG login in the host keyring plus network.
 #     The GOG folder state behind "Finish update" is host-only as well.
+#   - Any Epic state in the portable library: Epic games live in the host
+#     library only, so a portable folder shows no Epic badge, Update row, or
+#     Finish update, and Import from Epic says "Epic games live in the host
+#     library". They are in DIR/host instead (below), where wineo's records
+#     of installed games would hold absolute folders, so the card states come
+#     from installing there.
 #   - Run state (exited, failed, stopped, lost). It lives in host XDG state.
 #     Starting the long-running game below creates a small folder there.
 #
@@ -908,6 +919,168 @@ default = true
 name = "Tekken 3"
 TEKKEN
 
+# Epic games (plan 0073 step 7). Epic games live in the host library, so they
+# share DIR/host with the emulated games. A fake Legendary, set as [epic]
+# legendary, answers from the files under host/epic and never reaches Epic:
+# any code that is only letters and digits logs in, as "Acceptance Tester".
+# A `legendary` on host/bin says it is 0.20.0, so removing the setting shows
+# the download offer naming that older copy; answering Yes then downloads the
+# real Legendary into DIR/host. Each game below says which case it covers.
+#
+# wineo's records of installed games hold absolute folders, so nothing here
+# is installed ahead: the card states come from using the app.
+#   - Update available: install Harbor Lights, change its line in
+#     host/epic/versions to AppHarbor=1.1, and start the app again.
+#   - Finish update: Cancel that update partway.
+#   - Install didn't finish (Finish install): Cancel an install partway.
+#   - Downloaded, but no environment owns it: remove an installed game's
+#     environment to the trash.
+epic_dir=$host/epic
+epic_data=$host/data/wineo/epic
+mkdir -p "$epic_dir/bin" "$epic_data/legendary" "$host/data/wineo/runners/fake/bin"
+printf 'schema_version = 1\n\n[defaults]\nrunner = "fake"\n\n[epic]\nlegendary = "~/epic/bin/legendary"\n' \
+    >"$host/config/wineo/config.toml"
+cp -- "$root/runners/fake/bin/wine" "$root/runners/fake/bin/wineserver" \
+    "$host/data/wineo/runners/fake/bin/"
+printf '{}\n' >"$epic_data/legendary/user.json"
+cat >"$host/bin/legendary" <<'OLD'
+#!/bin/sh
+[ "${1:-}" = --version ] && echo 'legendary version "0.20.0", codename "Acceptance"'
+exit 0
+OLD
+chmod +x "$host/bin/legendary"
+
+# The fake. Downloads take about ten seconds, so Cancel can be tried, and
+# leave a resume file a cancel keeps, as Legendary does. It finds its files
+# beside its own folder, so nothing in it names DIR.
+cat >"$epic_dir/bin/legendary" <<'LEGENDARY'
+#!/bin/bash
+here=$(cd "$(dirname -- "$0")/.." && pwd)
+state=$LEGENDARY_CONFIG_PATH
+user=$state/user.json
+[ "${1:-}" = -y ] && shift
+version() { sed -n "s/^$1=//p" "$here/versions"; }
+rebuild() {
+    local sep='' f
+    { printf '{'; for f in "$state"/fake-installed/*.json; do [ -f "$f" ] || continue
+      printf '%s' "$sep"; cat "$f"; sep=','; done; printf '}'; } >"$state/installed.json.tmp"
+    mv "$state/installed.json.tmp" "$state/installed.json"
+}
+case ${1:-} in
+--version) echo 'legendary version "0.21.1", codename "Acceptance"' ;;
+status)
+    if [ -f "$user" ]; then account='Acceptance Tester'; else account='<not logged in>'; fi
+    printf '{"account": "%s", "config_directory": "%s", "egl_sync_enabled": false, "games_available": 0, "games_installed": 0}\n' \
+        "$account" "$state" ;;
+auth)
+    case ${2:-} in
+    --delete) rm -f "$user" ;;
+    --code)
+        if [[ ${3:-} =~ ^[A-Za-z0-9]+$ ]]; then printf '{}\n' >"$user"
+        else echo '[cli] ERROR: Login attempt failed, please see log for details.' >&2; fi ;;
+    esac ;;
+list)
+    if [ ! -f "$user" ]; then echo 'ValueError: No saved credentials' >&2; exit 1; fi
+    # Each @APP@ is the version the versions file gives now.
+    script=''
+    while IFS='=' read -r app value; do script+="s|@$app@|$value|g;"; done <"$here/versions"
+    sed "$script" "$here/list.json" ;;
+info)
+    if [ ! -f "$user" ]; then echo 'ValueError: No saved credentials' >&2; exit 1; fi
+    printf '{"game": {"app_name": "%s", "external_activation": null, "title": "%s", "version": "%s"}, "install": null, "manifest": {"build_version": "%s", "disk_size": 2491276428, "download_size": 1513683825, "launch_exe": "Game.exe", "prerequisites": null}}\n' \
+        "$2" "$2" "$(version "$2")" "$(version "$2")" ;;
+install)
+    app=$2; shift 2; base=''; folder=''; repair=''
+    while [ $# -gt 0 ]; do
+        case $1 in --base-path) base=$2; shift ;; --game-folder) folder=$2; shift ;; --repair) repair=1 ;; esac
+        shift
+    done
+    if [ ! -f "$user" ]; then echo 'ValueError: No saved credentials' >&2; exit 1; fi
+    recorded=$state/fake-installed/$app.json
+    if [ -z "$base" ] && [ -f "$recorded" ]; then
+        path=$(sed -n 's/.*"install_path": "\([^"]*\)".*/\1/p' "$recorded")
+    else
+        path=$base/$folder
+    fi
+    mkdir -p "$state/tmp"
+    trap 'echo "[cli] INFO: Command was aborted via KeyboardInterrupt, cleaning up..." >&2; : >"$state/tmp/$app.resume"; exit 0' INT
+    echo "[cli] INFO: Preparing download for \"$app\" ($app)..." >&2
+    echo "[DLManager] INFO: Download Manager running with process-id: $$" >&2
+    for step in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        printf '[DLManager] INFO: = Progress: %d.00%% (%d/10), Running for 00:00:%02d, ETA: 00:00:%02d\n' \
+            $((step * 10)) "$step" "$step" $((10 - step)) >&2
+    done
+    mkdir -p "$path"
+    : >"$path/Game.exe"
+    mkdir -p "$state/fake-installed"
+    printf '"%s": {"app_name": "%s", "install_path": "%s", "version": "%s", "executable": "Game.exe", "launch_parameters": "", "can_run_offline": true, "needs_verification": false}' \
+        "$app" "$app" "$path" "$(version "$app")" >"$recorded"
+    rebuild
+    rm -f "$state/tmp/$app.resume" "$state/tmp/$app.repair"
+    echo '[cli] INFO: Finished installation process in 10.00 seconds.' >&2 ;;
+uninstall)
+    rm -f "$state/fake-installed/$2.json"
+    rebuild ;;
+launch)
+    app=$2
+    if [ ! -f "$user" ]; then echo '[cli] ERROR: Login failed, cannot continue!' >&2; exit 1; fi
+    path=$(sed -n 's/.*"install_path": "\([^"]*\)".*/\1/p' "$state/fake-installed/$app.json")
+    printf '{"egl_parameters": ["-epicapp=%s", "-EpicPortal"], "environment": {}, "game_directory": "%s", "game_executable": "Game.exe", "game_parameters": [], "launch_command": [], "pre_launch_command": "", "pre_launch_wait": false, "user_parameters": [], "working_directory": "%s"}\n' \
+        "$app" "$path" "$path" ;;
+*) echo "unknown command $1" >&2; exit 2 ;;
+esac
+exit 0
+LEGENDARY
+chmod +x "$epic_dir/bin/legendary"
+
+# What Epic lists now, by app, read each time the fake prints the list. An
+# installed game whose version differs has an update waiting.
+cat >"$epic_dir/versions" <<'VERSIONS'
+AppHarbor=1.0
+AppMeadow=1.0
+AppMeadowNight=1.0
+AppSiege=1.0
+AppLinked=1.0
+VERSIONS
+
+# epic_game APP TITLE [VERSION|-] [ATTRIBUTE=VALUE] [DLC_APP:DLC_TITLE]: one
+# entry of the owned list. A `-` version means no Windows build.
+epic_game() {
+    local app=$1 title=$2 version=${3:-} attribute=${4:-} dlc=${5:-} assets attributes='' dlcs=''
+    if [[ $version == - ]]; then
+        assets='{"Mac": {"build_version": "1.0"}}'
+    else
+        assets="{\"Windows\": {\"build_version\": \"@$app@\"}}"
+    fi
+    if [[ -n $attribute ]]; then
+        attributes="\"${attribute%%=*}\": {\"type\": \"STRING\", \"value\": \"${attribute#*=}\"}"
+    fi
+    if [[ -n $dlc ]]; then
+        dlcs="{\"app_name\": \"${dlc%%:*}\", \"app_title\": \"${dlc#*:}\", \"asset_infos\": {\"Windows\": {\"build_version\": \"@${dlc%%:*}@\"}}, \"metadata\": {}}"
+    fi
+    printf '{"app_name": "%s", "app_title": "%s", "asset_infos": %s, "metadata": {"customAttributes": {%s}, "keyImages": []}, "dlcs": [%s]}' \
+        "$app" "$title" "$assets" "$attributes" "$dlcs"
+}
+{
+    printf '['
+    # epic: not installed, dimmed; the game for Update available and Finish update (see above)
+    epic_game AppHarbor "Harbor Lights"
+    printf ','
+    # epic: not installed, dimmed; installs with one DLC ("plus 1 DLC", "Downloading 2 of 2"), and Cancel leaves it to finish ("Install didn't finish", then "Finish install")
+    epic_game AppMeadow "Meadow Run" 1 'CanRunOffline=true' 'AppMeadowNight:Meadow Run - Night Shift'
+    printf ','
+    # epic: another launcher manages it: "Another launcher manages it", can't be picked
+    epic_game AppSiege "Tower Siege" 1 'ThirdPartyManagedApp=Uplay'
+    printf ','
+    # epic: no Windows build: "No Windows build", can't be picked
+    epic_game AppOrchard "Orchard Mac" -
+    printf ','
+    # epic: needs an account at another launcher: "Needs an account at another launcher", can't be picked
+    epic_game AppLinked "Linked Legends" 1 'partnerLinkType=ubisoft'
+    printf ']\n'
+} >"$epic_dir/list.json"
+
 # Summary: the table comes from the `# source:` comment above each add call.
 summary=$(awk '
     /^# source:/ { note = substr($0, 11); next }
@@ -1021,3 +1194,5 @@ printf 'env HOME=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_STATE_HOME=%q XDG_CA
     "$final/host" "$final/host/config" "$final/host/data" "$final/host/state" \
     "$final/host/cache" "$final/host/bin"
 echo "Its ROM folders are in $final/host/roms."
+echo "Epic games are there too, with a fake Legendary set in its config.toml: see Settings"
+echo "and Import from Epic. The script's Epic notes say how to reach each card state."
