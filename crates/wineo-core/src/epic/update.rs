@@ -401,22 +401,14 @@ pub enum Planned {
 /// repair by either. A repair rebuilds a missing record from Legendary's.
 /// Reads only.
 pub fn plan(paths: &Paths, name: &str, owned: Option<&Owned>, repair: bool) -> Result<Planned> {
-    if paths.portable_root().is_some() {
-        return Err(InstallError::Portable(install::HOST_ONLY).into());
-    }
-    Environment::ensure_exists(paths, name)?;
-    let Some(app) = game::epic_id_of(paths, name) else {
-        return Err(if game::names_epic_id(paths, name) {
-            UpdateError::Unloadable {
-                name: name.to_owned(),
-            }
-        } else {
-            UpdateError::NotEpic {
-                name: name.to_owned(),
-            }
-        }
-        .into());
-    };
+    let Prepared {
+        app,
+        seen,
+        record,
+        rebuilt,
+        work,
+        resume,
+    } = prepare(paths, name, repair)?;
     let listed = owned.and_then(|owned| owned.games.iter().find(|game| game.app_name == app));
     let title = listed.map_or_else(|| app.clone(), |game| game.title.clone());
     let dlc_title = |dlc: &str| {
@@ -424,39 +416,7 @@ pub fn plan(paths: &Paths, name: &str, owned: Option<&Owned>, repair: bool) -> R
             .and_then(|game| game.dlc.iter().find(|offer| offer.app_name == dlc))
             .map_or_else(|| dlc.to_owned(), |offer| offer.title.clone())
     };
-    let seen = game::peek(paths, &app).map_err(|error| GameError::Unreadable {
-        name: name.to_owned(),
-        detail: format!("{error:#}"),
-    })?;
-    let (record, rebuilt) = match &seen {
-        Some(record) => (record.clone(), None),
-        None if repair => {
-            let rebuilt = rebuild(paths, name, &app)?;
-            (rebuilt.clone(), Some(rebuilt))
-        }
-        None => {
-            return Err(GameError::RecordMissing {
-                name: name.to_owned(),
-                app,
-            }
-            .into());
-        }
-    };
     let mark = record.in_flight.as_ref();
-    let unfinished = |work: Work| GameError::Unfinished {
-        name: Some(name.to_owned()),
-        app: app.clone(),
-        folder: record.folder.clone(),
-        work,
-    };
-    let (work, resume) = match mark.map(|mark| mark.work) {
-        Some(Work::Install) => return Err(unfinished(Work::Install).into()),
-        Some(Work::Update) if repair => return Err(unfinished(Work::Update).into()),
-        Some(Work::Update) => (Work::Update, true),
-        Some(Work::Repair | Work::Unknown) => (Work::Repair, true),
-        None if repair => (Work::Repair, false),
-        None => (Work::Update, false),
-    };
     let mut runs = Vec::new();
     let mut first = 0;
     if work == Work::Repair {
@@ -534,6 +494,82 @@ pub fn plan(paths: &Paths, name: &str, owned: Option<&Owned>, repair: bool) -> R
         runs,
         first,
     }))
+}
+
+/// What `plan` checks before it needs the owned list: that `name` owns an
+/// Epic game wineo has a record of, or with `repair` one Legendary has, and
+/// that no install of it is unfinished. Reads only, and never runs
+/// Legendary, so a front end can refuse before looking for it.
+pub fn precheck(paths: &Paths, name: &str, repair: bool) -> Result<()> {
+    prepare(paths, name, repair).map(drop)
+}
+
+struct Prepared {
+    app: String,
+    seen: Option<Record>,
+    record: Record,
+    rebuilt: Option<Record>,
+    work: Work,
+    resume: bool,
+}
+
+fn prepare(paths: &Paths, name: &str, repair: bool) -> Result<Prepared> {
+    if paths.portable_root().is_some() {
+        return Err(InstallError::Portable(install::HOST_ONLY).into());
+    }
+    Environment::ensure_exists(paths, name)?;
+    let Some(app) = game::epic_id_of(paths, name) else {
+        return Err(if game::names_epic_id(paths, name) {
+            UpdateError::Unloadable {
+                name: name.to_owned(),
+            }
+        } else {
+            UpdateError::NotEpic {
+                name: name.to_owned(),
+            }
+        }
+        .into());
+    };
+    let seen = game::peek(paths, &app).map_err(|error| GameError::Unreadable {
+        name: name.to_owned(),
+        detail: format!("{error:#}"),
+    })?;
+    let (record, rebuilt) = match &seen {
+        Some(record) => (record.clone(), None),
+        None if repair => {
+            let rebuilt = rebuild(paths, name, &app)?;
+            (rebuilt.clone(), Some(rebuilt))
+        }
+        None => {
+            return Err(GameError::RecordMissing {
+                name: name.to_owned(),
+                app,
+            }
+            .into());
+        }
+    };
+    let unfinished = |work: Work| GameError::Unfinished {
+        name: Some(name.to_owned()),
+        app: app.clone(),
+        folder: record.folder.clone(),
+        work,
+    };
+    let (work, resume) = match record.in_flight.as_ref().map(|mark| mark.work) {
+        Some(Work::Install) => return Err(unfinished(Work::Install).into()),
+        Some(Work::Update) if repair => return Err(unfinished(Work::Update).into()),
+        Some(Work::Update) => (Work::Update, true),
+        Some(Work::Repair | Work::Unknown) => (Work::Repair, true),
+        None if repair => (Work::Repair, false),
+        None => (Work::Update, false),
+    };
+    Ok(Prepared {
+        app,
+        seen,
+        record,
+        rebuilt,
+        work,
+        resume,
+    })
 }
 
 /// wineo's record of `app`, rebuilt from Legendary's: where it is, its
