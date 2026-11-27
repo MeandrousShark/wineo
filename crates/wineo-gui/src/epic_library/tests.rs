@@ -262,3 +262,85 @@ fn leaving_finish_install_forgets_the_cards_old_update_status() {
     let _ = app.update(Message::Flow(generation, crate::flow::Event::Back));
     assert!(app.epic_updates.status("offline-game").is_none());
 }
+
+#[test]
+fn calls_are_counted_until_they_end_and_a_newer_one_with_the_key_replaces_the_older() {
+    let calls = Calls::default();
+    assert!(!calls.running());
+    let first = calls.start(Some("recheck:game"));
+    let other = calls.start(Some("recheck:other"));
+    let unkeyed = calls.start(None);
+    assert!(calls.running());
+    let second = calls.start(Some("recheck:game"));
+    assert!(first.token().is_canceled(), "replaced");
+    assert!(!other.token().is_canceled());
+    assert!(!second.token().is_canceled());
+    drop((first, other, second));
+    assert!(calls.running(), "one still runs");
+    calls.close();
+    assert!(unkeyed.token().is_canceled());
+    let late = calls.start(None);
+    assert!(
+        late.token().is_canceled(),
+        "nothing new starts once closing"
+    );
+    drop((unkeyed, late));
+    assert!(!calls.running());
+}
+
+#[test]
+fn closing_the_window_mid_recheck_stops_legendary_and_then_exits() {
+    use std::time::{Duration, Instant};
+    let epic = installed();
+    let hanging = epic.hang("status");
+    let mut app = crate::App::boot(epic.paths.clone()).0;
+    let task = recheck(&mut app, "offline-game".to_owned());
+    assert!(app.epic_calls.running());
+    let worker = crate::flow::epic_install::tests::run_in_background(task);
+    epic.wait_for(&hanging);
+    let closed = Instant::now();
+    let _ = app.update(app.window_event(iced::window::Event::CloseRequested));
+    assert!(app.closing && app.close_quietly, "it waits without asking");
+    assert!(!app.exiting);
+    let sent = worker.join().unwrap();
+    assert!(
+        closed.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        closed.elapsed()
+    );
+    assert!(!app.epic_calls.running());
+    for message in sent {
+        let _ = app.update(message);
+    }
+    assert!(app.exiting, "the close goes on once Legendary has stopped");
+    assert!(epic.sweep().is_empty());
+}
+
+#[test]
+fn closing_or_leaving_mid_settings_call_stops_legendary() {
+    use std::time::{Duration, Instant};
+    for way in ["close", "leave"] {
+        let epic = installed();
+        let hanging = epic.hang("status");
+        let calls = Calls::default();
+        let mut row = crate::settings::epic::Settings::default();
+        row.calls = calls.clone();
+        let task = row.refresh(&epic.paths, 1);
+        let worker = crate::flow::epic_install::tests::run_in_background(task);
+        epic.wait_for(&hanging);
+        let stopped = Instant::now();
+        if way == "close" {
+            calls.close();
+        } else {
+            drop(row);
+        }
+        let _ = worker.join().unwrap();
+        assert!(
+            stopped.elapsed() < Duration::from_secs(10),
+            "{way}: {:?}",
+            stopped.elapsed()
+        );
+        assert!(!calls.running(), "{way}");
+        assert!(epic.sweep().is_empty(), "{way}");
+    }
+}

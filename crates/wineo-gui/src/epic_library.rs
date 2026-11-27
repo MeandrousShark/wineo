@@ -3,6 +3,7 @@
 //! background check says Epic offers, like GOG's.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use wineo_core::cancel::Token;
 use wineo_core::environment::Environment;
@@ -161,13 +162,96 @@ pub(crate) fn recheck_with(
         .map_err(|error| format!("{error:#}"))
 }
 
+/// The Legendary calls the app makes outside any page: the update checks
+/// and Settings' account calls. Each holds a `Call` for as long as it runs.
+/// Closing the window cancels every one, and every one made after, and
+/// waits for them to end, so no Legendary outlives the app or keeps the Epic
+/// lock. A call made with a key cancels the one before it with that key.
+#[derive(Clone, Default)]
+pub(crate) struct Calls(Arc<Mutex<Registry>>);
+
+#[derive(Default)]
+struct Registry {
+    closing: bool,
+    next: u64,
+    running: Vec<(u64, Option<String>, Token)>,
+}
+
+impl Calls {
+    pub(crate) fn start(&self, key: Option<&str>) -> Call {
+        let mut registry = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let token = Token::new();
+        if registry.closing {
+            token.cancel();
+        }
+        for (_, running, earlier) in &registry.running {
+            if key.is_some() && running.as_deref() == key {
+                earlier.cancel();
+            }
+        }
+        registry.next = registry.next.wrapping_add(1);
+        let id = registry.next;
+        registry
+            .running
+            .push((id, key.map(str::to_owned), token.clone()));
+        Call {
+            calls: self.clone(),
+            id,
+            token,
+        }
+    }
+
+    /// The window is closing: cancels what runs and anything started later.
+    pub(crate) fn close(&self) {
+        let mut registry = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        registry.closing = true;
+        for (_, _, token) in &registry.running {
+            token.cancel();
+        }
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        !self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .running
+            .is_empty()
+    }
+}
+
+/// One background call, counted until it's dropped with the work it ran.
+pub(crate) struct Call {
+    calls: Calls,
+    id: u64,
+    token: Token,
+}
+
+impl Call {
+    pub(crate) fn token(&self) -> &Token {
+        &self.token
+    }
+}
+
+impl Drop for Call {
+    fn drop(&mut self) {
+        let mut registry = self.calls.0.lock().unwrap_or_else(PoisonError::into_inner);
+        registry.running.retain(|(id, _, _)| *id != self.id);
+    }
+}
+
 /// Checks every Epic game for updates, once after start.
-pub(crate) fn check_task(paths: Paths, asked: HashMap<String, u64>) -> iced::Task<crate::Message> {
+pub(crate) fn check_task(
+    paths: Paths,
+    asked: HashMap<String, u64>,
+    calls: &Calls,
+) -> iced::Task<crate::Message> {
     if paths.portable_root().is_some() {
         return iced::Task::none();
     }
+    let call = calls.start(Some("check"));
     crate::task::blocking(
-        move || check_with(&paths, &Token::new()),
+        move || check_with(&paths, call.token()),
         move |result| crate::Message::EpicChecked(asked, result),
     )
 }
@@ -180,8 +264,10 @@ pub(crate) fn recheck(app: &mut crate::App, name: String) -> iced::Task<crate::M
         return iced::Task::none();
     }
     let checked = name.clone();
+    // A newer check of the same game replaces this one.
+    let call = app.epic_calls.start(Some(&format!("recheck:{name}")));
     crate::task::blocking(
-        move || recheck_with(&paths, &checked, &Token::new()),
+        move || recheck_with(&paths, &checked, call.token()),
         move |result| crate::Message::EpicRechecked(name, generation, result),
     )
 }

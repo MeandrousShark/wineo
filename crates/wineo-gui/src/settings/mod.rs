@@ -1080,6 +1080,7 @@ impl App {
         self.section = crate::sidebar::Section::Library;
         self.settings_generation = self.settings_generation.wrapping_add(1);
         let mut page = Page::new_global(self.settings_generation);
+        page.epic.calls = self.epic_calls.clone();
         page.steamgriddb_sequence = self.steamgriddb_sequence;
         page.steamgriddb_input_session_sequence = self.steamgriddb_input_session_sequence;
         let mut task = page.reload(&self.paths, Mode::Replace);

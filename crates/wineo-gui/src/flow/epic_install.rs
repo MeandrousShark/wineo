@@ -1035,4 +1035,4 @@ fn extras(paths: &Paths, plan: &Plan, name: &str, token: &Token) -> (Vec<String>
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+pub(crate) mod tests;

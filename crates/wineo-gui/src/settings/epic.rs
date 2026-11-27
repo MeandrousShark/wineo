@@ -15,6 +15,7 @@ use wineo_core::paths::Paths;
 use super::key_settings::Secret;
 use crate::Message;
 use crate::epic_legendary::{self as legendary, Found, Offer, Outcome};
+use crate::epic_library::{Call, Calls};
 use crate::task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +161,31 @@ pub(crate) struct Settings {
     pub(crate) busy_sequence: Option<u64>,
     /// The open form, so a result for an older one doesn't close it.
     pub(crate) input_session: Option<u64>,
+    /// Where its Legendary calls are counted, so closing the window stops
+    /// them.
+    pub(crate) calls: Calls,
+    /// The status and login-page calls, which end with the page. Logging in
+    /// and out outlive it.
+    own: OwnCalls,
+}
+
+/// Tokens of the calls a page drops when it goes.
+#[derive(Default)]
+struct OwnCalls(Vec<Token>);
+
+impl OwnCalls {
+    fn keep(&mut self, call: &Call) {
+        self.0.retain(|token| !token.is_canceled());
+        self.0.push(call.token().clone());
+    }
+}
+
+impl Drop for OwnCalls {
+    fn drop(&mut self) {
+        for token in &self.0 {
+            token.cancel();
+        }
+    }
 }
 
 impl std::fmt::Debug for Settings {
@@ -189,7 +215,9 @@ impl Settings {
 
     pub(crate) fn refresh(&mut self, paths: &Paths, generation: u64) -> Task<Message> {
         let sequence = self.bump();
-        status_task(paths.clone(), generation, sequence)
+        let call = self.calls.start(Some("settings-status"));
+        self.own.keep(&call);
+        status_task(paths.clone(), call, generation, sequence)
     }
 
     /// Whether the row offers Log out: to someone with a login saved, and
@@ -287,6 +315,7 @@ impl Settings {
                 self.busy_sequence = Some(sequence);
                 login_task(
                     paths.clone(),
+                    self.calls.start(None),
                     context.generation,
                     sequence,
                     self.input_session,
@@ -304,6 +333,7 @@ impl Settings {
                 self.busy_sequence = Some(sequence);
                 logout_task(
                     paths.clone(),
+                    self.calls.start(None),
                     context.generation,
                     sequence,
                     self.input_session,
@@ -373,7 +403,9 @@ impl Settings {
         self.busy = Some(Busy::Opening);
         let sequence = self.bump();
         self.busy_sequence = Some(sequence);
-        open_task(paths.clone(), generation, sequence)
+        let call = self.calls.start(Some("settings-open"));
+        self.own.keep(&call);
+        open_task(paths.clone(), call, generation, sequence)
     }
 
     fn offer_event(
@@ -540,19 +572,21 @@ pub(crate) fn logout_from(paths: &Paths, found: Found, token: &Token) -> Result<
     .to_owned())
 }
 
-pub(crate) fn status_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
+pub(crate) fn status_task(
+    paths: Paths,
+    call: Call,
+    generation: u64,
+    sequence: u64,
+) -> Task<Message> {
     task::blocking(
-        move || status_with(&paths, &Token::new()),
+        move || status_with(&paths, call.token()),
         move |result| epic_message(Event::StatusLoaded(generation, sequence, result)),
     )
 }
 
-fn open_task(paths: Paths, generation: u64, sequence: u64) -> Task<Message> {
+fn open_task(paths: Paths, call: Call, generation: u64, sequence: u64) -> Task<Message> {
     task::blocking(
-        move || {
-            let token = Token::new();
-            ready_from(legendary::find(&paths, &token)?, open_browser)
-        },
+        move || ready_from(legendary::find(&paths, call.token())?, open_browser),
         move |result| epic_message(Event::LoginReady(generation, sequence, result)),
     )
 }
@@ -579,25 +613,27 @@ fn open_browser(url: &str) {
 
 fn login_task(
     paths: Paths,
+    call: Call,
     generation: u64,
     sequence: u64,
     input_session: Option<u64>,
     pasted: Secret,
 ) -> Task<Message> {
     task::blocking(
-        move || login_with(&paths, pasted.as_str(), &Token::new()),
+        move || login_with(&paths, pasted.as_str(), call.token()),
         move |result| epic_message(Event::LoggedIn(generation, sequence, input_session, result)),
     )
 }
 
 fn logout_task(
     paths: Paths,
+    call: Call,
     generation: u64,
     sequence: u64,
     input_session: Option<u64>,
 ) -> Task<Message> {
     task::blocking(
-        move || logout_with(&paths, &Token::new()),
+        move || logout_with(&paths, call.token()),
         move |result| {
             epic_message(Event::LoggedOut(
                 generation,

@@ -384,7 +384,7 @@ fn lines_say_each_run_and_its_whole_percentage_once() {
 
 /// Runs `task` on a thread of its own, as the app's runtime would, and
 /// returns what it sent.
-pub(in crate::flow) fn run_in_background<M: Send + 'static>(
+pub(crate) fn run_in_background<M: Send + 'static>(
     task: Task<M>,
 ) -> std::thread::JoinHandle<Vec<M>> {
     std::thread::spawn(move || {
@@ -505,4 +505,29 @@ fn closing_the_window_during_an_install_or_a_legendary_download_asks_then_cancel
         assert!(page.install_canceled());
     }
     assert!(epic.sweep().is_empty());
+}
+
+#[test]
+fn a_game_already_on_disk_running_elsewhere_or_not_owned_is_unrecoverable() {
+    use std::path::PathBuf;
+    let fatal = [
+        InstallError::Downloaded {
+            app: "AppOffline".to_owned(),
+            folder: PathBuf::from("/games/Offline Game"),
+        },
+        InstallError::Running {
+            title: "Offline Game".to_owned(),
+        },
+        InstallError::NotOwned {
+            app: "AppOffline".to_owned(),
+        },
+    ];
+    for error in fatal {
+        let shown = error.to_string();
+        assert!(unrecoverable(&anyhow::Error::from(error)), "{shown}");
+    }
+    let fixable = InstallError::NotEmpty {
+        folder: PathBuf::from("/games/Offline Game"),
+    };
+    assert!(!unrecoverable(&anyhow::Error::from(fixable)));
 }
