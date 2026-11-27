@@ -3,7 +3,7 @@
 //! Log in, an install, and an update make when there is none to run, in the
 //! terminal's words.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc::unbounded;
@@ -62,13 +62,18 @@ pub(crate) fn find(paths: &Paths, token: &Token) -> Result<Found, String> {
             if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
                 return Ok(Found::Unusable(epic::Error::Unsupported.to_string()));
             }
-            Ok(match legendary::python(token) {
-                Ok(_) => Found::Offer(missing),
-                Err(error) => Found::Unusable(error.to_string()),
-            })
+            Ok(offerable(missing, legendary::python(token)))
         }
         Err(error @ epic::Error::Python) => Ok(Found::Unusable(error.to_string())),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The offer, when Python can run what it downloads.
+fn offerable(missing: Missing, python: Result<PathBuf, epic::Error>) -> Found {
+    match python {
+        Ok(_) => Found::Offer(missing),
+        Err(error) => Found::Unusable(error.to_string()),
     }
 }
 

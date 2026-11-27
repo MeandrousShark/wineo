@@ -136,3 +136,14 @@ fn a_setting_that_is_too_old_is_the_error_and_nothing_is_offered() {
     );
     assert!(epic.sweep().is_empty());
 }
+
+#[test]
+fn without_python_nothing_is_offered_and_the_terminals_reason_shows() {
+    let found = offerable(missing(false), Err(wineo_core::epic::Error::Python));
+    let Found::Unusable(why) = found else {
+        panic!("{found:?}");
+    };
+    assert_eq!(why, "Epic needs Python 3.10 or newer to run Legendary.");
+    let found = offerable(missing(true), Ok(PathBuf::from("/usr/bin/python3")));
+    assert!(matches!(found, Found::Offer(missing) if missing.older_on_path.is_some()));
+}

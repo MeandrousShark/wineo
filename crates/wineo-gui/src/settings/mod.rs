@@ -1229,10 +1229,8 @@ impl App {
             }
         }
         if let Event::Epic(epic_event) = &event {
-            if matches!(
-                epic_event,
-                epic::Event::LoginOpen | epic::Event::Login | epic::Event::Logout
-            ) && self.epic_work.pending.is_some()
+            if matches!(epic_event, epic::Event::Login | epic::Event::Logout)
+                && self.epic_work.pending.is_some()
             {
                 return Task::none();
             }
