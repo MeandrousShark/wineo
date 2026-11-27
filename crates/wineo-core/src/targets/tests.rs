@@ -510,7 +510,12 @@ fn an_epic_update_writes_legendarys_new_program_and_only_that_one() {
     let f = Fixture::new("");
     epic_game(&f);
     let old = f.paths.home().join("Games/Game.exe").display().to_string();
-    let new = f.paths.home().join("Games/Bin/New.exe").display().to_string();
+    let new = f
+        .paths
+        .home()
+        .join("Games/Bin/New.exe")
+        .display()
+        .to_string();
     let mut batch = Batch::new(f.targets());
     batch.edit(
         "game",

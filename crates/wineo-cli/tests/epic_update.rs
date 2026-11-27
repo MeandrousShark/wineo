@@ -103,7 +103,12 @@ fn mark(epic: &Epic, app: &str) -> Option<Work> {
 }
 
 fn config(epic: &Epic, name: &str) -> String {
-    fs::read_to_string(epic.f.config_dir().join(format!("environments/{name}.toml"))).unwrap()
+    fs::read_to_string(
+        epic.f
+            .config_dir()
+            .join(format!("environments/{name}.toml")),
+    )
+    .unwrap()
 }
 
 fn folder(epic: &Epic) -> PathBuf {
@@ -198,7 +203,8 @@ fn an_update_downloads_the_game_and_refreshes_its_record_and_main_program() {
          offline-game's main program is now ~/Games/Offline Game/Bin/New.exe.\n"
     );
     assert!(
-        stderr(&output).contains("Downloading: Offline Game\nDownloading: 50%\nDownloading: 100%\n"),
+        stderr(&output)
+            .contains("Downloading: Offline Game\nDownloading: 50%\nDownloading: 100%\n"),
         "{}",
         stderr(&output)
     );
@@ -213,7 +219,10 @@ fn an_update_downloads_the_game_and_refreshes_its_record_and_main_program() {
     let text = config(&epic, "offline-game");
     let folder = folder(&epic);
     assert!(
-        text.contains(&format!("exe = \"{}\"", folder.join("Bin/New.exe").display())),
+        text.contains(&format!(
+            "exe = \"{}\"",
+            folder.join("Bin/New.exe").display()
+        )),
         "{text}"
     );
     // wineo wrote the old working folder, so it follows the program.
@@ -223,7 +232,11 @@ fn an_update_downloads_the_game_and_refreshes_its_record_and_main_program() {
     );
 
     // The way past the guard is the update's alone.
-    let output = epic.run(&["set", "offline-game", "targets.game.exe=/elsewhere/Other.exe"]);
+    let output = epic.run(&[
+        "set",
+        "offline-game",
+        "targets.game.exe=/elsewhere/Other.exe",
+    ]);
     assert_code(&output, 1);
     assert!(
         stderr(&output)
@@ -525,7 +538,8 @@ fn all_updates_epic_games_beside_gogs_and_reports_a_logged_out_store() {
         stdout(&output)
     );
     assert!(
-        stderr(&output).contains("Failed rimworld: Log in to GOG first: wineo import gog --login.\n"),
+        stderr(&output)
+            .contains("Failed rimworld: Log in to GOG first: wineo import gog --login.\n"),
         "{}",
         stderr(&output)
     );
@@ -590,7 +604,10 @@ fn a_repair_checks_the_game_and_a_failed_one_is_finished_later() {
         epic.install_calls().last().unwrap(),
         &update_call(&epic, APP, "Offline Game", " --repair")
     );
-    assert_eq!(fs::read_to_string(epic.file("repaired")).unwrap(), "AppOffline\n");
+    assert_eq!(
+        fs::read_to_string(epic.file("repaired")).unwrap(),
+        "AppOffline\n"
+    );
     assert_eq!(mark(&epic, APP), None);
 
     for (mode, why) in [
@@ -653,7 +670,12 @@ fn a_repair_rebuilds_a_missing_record_from_legendarys() {
         stderr(&output),
         "error: offline-game's Epic record is missing. Repair it with wineo update offline-game --repair.\n"
     );
-    assert!(!epic.calls().iter().any(|call| call.contains("--update-only")));
+    assert!(
+        !epic
+            .calls()
+            .iter()
+            .any(|call| call.contains("--update-only"))
+    );
 
     let output = epic.install(&["update", "offline-game", "--repair", "--yes"]);
     assert_ok(&output);
@@ -746,7 +768,11 @@ fn ctrl_c_interrupts_an_update_keeps_the_mark_and_the_same_command_finishes_it()
          \x20 Offline Game  0.24 -> 0.25\n"
     );
     let calls = epic.install_calls();
-    assert_eq!(calls[calls.len() - 1], calls[calls.len() - 2], "the same run");
+    assert_eq!(
+        calls[calls.len() - 1],
+        calls[calls.len() - 2],
+        "the same run"
+    );
     assert_eq!(mark(&epic, APP), None);
     assert_eq!(
         record(&epic, APP).unwrap().installed_version.as_deref(),
@@ -806,7 +832,10 @@ fn a_running_game_refuses_an_update_and_a_repair() {
     let calls = epic.install_calls().len();
     for (args, doing) in [
         (&["update", "offline-game", "--yes"][..], "updating"),
-        (&["update", "offline-game", "--repair", "--yes"], "repairing"),
+        (
+            &["update", "offline-game", "--repair", "--yes"],
+            "repairing",
+        ),
     ] {
         let output = epic.install(args);
         assert_code(&output, 1);

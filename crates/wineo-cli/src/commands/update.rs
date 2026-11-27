@@ -213,7 +213,13 @@ fn check_stores(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let mut errors: Vec<(Option<&str>, serde_json::Value, String)> = gog
         .errors
         .iter()
-        .map(|error| (error.environment.as_deref(), error_json(error), error.subject()))
+        .map(|error| {
+            (
+                error.environment.as_deref(),
+                error_json(error),
+                error.subject(),
+            )
+        })
         .collect();
     errors.extend(epic.errors.iter().map(|error| {
         (

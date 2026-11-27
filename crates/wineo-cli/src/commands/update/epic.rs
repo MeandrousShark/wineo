@@ -421,10 +421,7 @@ pub(super) fn plan_all(paths: &Paths, args: &Args) -> anyhow::Result<All> {
 impl All {
     /// Updates one planned game, for `--all`.
     pub(super) fn apply(&self, paths: &Paths, plan: &Plan) -> anyhow::Result<Updated> {
-        let legendary = self
-            .legendary
-            .as_deref()
-            .expect("a real run has Legendary");
+        let legendary = self.legendary.as_deref().expect("a real run has Legendary");
         apply(paths, legendary, plan)
     }
 }
@@ -554,10 +551,11 @@ pub(super) fn report(paths: &Paths, plan: &Plan, updated: &Updated) {
             } else {
                 format!(
                     "{} -> {}",
-                    change
-                        .from
-                        .as_deref()
-                        .unwrap_or(if change.dlc { "not installed" } else { "unknown" }),
+                    change.from.as_deref().unwrap_or(if change.dlc {
+                        "not installed"
+                    } else {
+                        "unknown"
+                    }),
                     version(change.to.as_deref())
                 )
             };
@@ -568,8 +566,12 @@ pub(super) fn report(paths: &Paths, plan: &Plan, updated: &Updated) {
         println!("{line}");
     }
     if updated.program_changed
-        && let Ok(environment) = wineo_core::environment::Environment::load(paths, &updated.environment)
-        && let Some(target) = environment.config.targets.get(wineo_core::epic::install::TARGET)
+        && let Ok(environment) =
+            wineo_core::environment::Environment::load(paths, &updated.environment)
+        && let Some(target) = environment
+            .config
+            .targets
+            .get(wineo_core::epic::install::TARGET)
     {
         println!(
             "{}'s main program is now {}.",
@@ -581,4 +583,3 @@ pub(super) fn report(paths: &Paths, plan: &Plan, updated: &Updated) {
         warn(warning);
     }
 }
-

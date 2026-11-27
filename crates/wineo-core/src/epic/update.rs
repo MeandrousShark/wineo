@@ -236,9 +236,7 @@ pub fn status_of(name: &str, record: &Record, owned: &Owned) -> Status {
     };
     let Some(listed) = listed else {
         status.state = UpdateState::CantCompare;
-        status.reason = Some(format!(
-            "Epic doesn't list {app} among your games now."
-        ));
+        status.reason = Some(format!("Epic doesn't list {app} among your games now."));
         status.dlc = record
             .dlc
             .iter()
@@ -254,7 +252,10 @@ pub fn status_of(name: &str, record: &Record, owned: &Owned) -> Status {
     };
     let mut behind = false;
     for dlc in &record.dlc {
-        let offer = listed.dlc.iter().find(|offer| offer.app_name == dlc.app_name);
+        let offer = listed
+            .dlc
+            .iter()
+            .find(|offer| offer.app_name == dlc.app_name);
         let available = offer.and_then(|offer| offer.version.clone());
         let state = match (&available, &dlc.version) {
             (None, _) | (_, None) => DlcState::CantCompare,
@@ -293,7 +294,10 @@ pub fn status_of(name: &str, record: &Record, owned: &Owned) -> Status {
     match (&status.installed, &status.available) {
         (_, None) => {
             status.state = UpdateState::CantCompare;
-            status.reason = Some(format!("Epic has no Windows build of {} now.", listed.title));
+            status.reason = Some(format!(
+                "Epic has no Windows build of {} now.",
+                listed.title
+            ));
         }
         (None, _) => {
             status.state = UpdateState::CantCompare;
@@ -630,7 +634,8 @@ fn refresh(paths: &Paths, record: &mut Record, failed: &[&str]) -> Result<()> {
     record.offline = entry.and_then(|entry| entry.offline_start());
     let mut dlc: Vec<game::Dlc> = Vec::new();
     for old in &record.dlc {
-        let version = here(&old.app_name).map_or_else(|| old.version.clone(), |e| e.version.clone());
+        let version =
+            here(&old.app_name).map_or_else(|| old.version.clone(), |e| e.version.clone());
         dlc.push(game::Dlc {
             app_name: old.app_name.clone(),
             version,
@@ -918,7 +923,8 @@ fn check_run(paths: &Paths, run: &Run, folder: &Path, tail: &[String], repair: b
     {
         return Err(failed("it was interrupted".to_owned()));
     }
-    let installed = game::legendary_installed(paths).map_err(|error| failed(format!("{error:#}")))?;
+    let installed =
+        game::legendary_installed(paths).map_err(|error| failed(format!("{error:#}")))?;
     let Some(entry) = installed.get(&run.app_name) else {
         return Err(failed(
             "it isn't in Legendary's records afterwards".to_owned(),
@@ -939,7 +945,9 @@ fn check_run(paths: &Paths, run: &Run, folder: &Path, tail: &[String], repair: b
             .join("tmp")
             .join(format!("{}.repair", run.app_name));
         if left.exists() {
-            return Err(failed("it stopped before fetching what its check found".to_owned()));
+            return Err(failed(
+                "it stopped before fetching what its check found".to_owned(),
+            ));
         }
     } else if run.from.is_some() && run.from != run.to && entry.version == run.from {
         return Err(failed(format!(

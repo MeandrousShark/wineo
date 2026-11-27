@@ -64,7 +64,10 @@ fn another_version_of_the_game_or_a_dlc_is_an_update() {
     assert_eq!(status.state, UpdateState::Available);
     assert_eq!(
         states(&status),
-        [(DLC_ONE, DlcState::Available), (DLC_TWO, DlcState::UpToDate)]
+        [
+            (DLC_ONE, DlcState::Available),
+            (DLC_TWO, DlcState::UpToDate)
+        ]
     );
 }
 
@@ -77,7 +80,10 @@ fn an_owned_dlc_the_game_lacks_is_not_installed_and_an_update() {
     assert!(status.applicable);
     assert_eq!(
         states(&status),
-        [(DLC_ONE, DlcState::UpToDate), (DLC_TWO, DlcState::NotInstalled)]
+        [
+            (DLC_ONE, DlcState::UpToDate),
+            (DLC_TWO, DlcState::NotInstalled)
+        ]
     );
     assert_eq!(
         status.dlc[1].title.as_deref(),
@@ -117,10 +123,7 @@ fn a_mark_is_unfinished_work_with_the_command_that_finishes_it() {
         (Work::Repair, "wineo update dlc-game --repair"),
         (Work::Unknown, "wineo update dlc-game --repair"),
     ] {
-        record.in_flight = Some(InFlight {
-            work,
-            app: None,
-        });
+        record.in_flight = Some(InFlight { work, app: None });
         let status = status_of("dlc-game", &record, &owned());
         assert_eq!(status.unfinished, Some(work));
         assert_eq!(status.finish_command().as_deref(), Some(command));
@@ -135,7 +138,9 @@ fn a_repair_ignores_what_its_check_found_but_not_other_errors() {
     assert!(found_by_check(
         "[cli] ERROR: Verification failed, 0 file(s) corrupted, 1 file(s) are missing."
     ));
-    assert!(found_by_check("[cli] ERROR: File does not match hash: \"a.pak\""));
+    assert!(found_by_check(
+        "[cli] ERROR: File does not match hash: \"a.pak\""
+    ));
     assert!(!found_by_check(
         "[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device"
     ));

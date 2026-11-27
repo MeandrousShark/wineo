@@ -12,9 +12,9 @@ pub mod launch;
 pub mod legendary;
 pub mod own_copy;
 pub mod owned;
-pub mod update;
 mod run;
 mod shm;
+pub mod update;
 
 #[cfg(test)]
 pub(crate) mod fake;
