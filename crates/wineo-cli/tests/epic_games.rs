@@ -231,6 +231,16 @@ fn set_refuses_changing_the_main_program_and_allows_the_rest() {
         &f.run(&["set", "fowl", "--unset", "targets.game.exe"]),
         refusal,
     );
+    // Refused before anything else a set does, like installing a component.
+    assert_refused(
+        &f.run(&[
+            "set",
+            "fowl",
+            "dxvk=missing-build",
+            "targets.game.exe=/elsewhere/Other.exe",
+        ]),
+        refusal,
+    );
     assert_refused(
         &f.run(&[
             "set",

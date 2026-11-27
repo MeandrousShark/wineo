@@ -1759,3 +1759,31 @@ fn a_legacy_global_config_with_retroarch_is_read_and_a_no_op_set_leaves_it_alone
             .contains("quit_with_game   =   true # off")
     );
 }
+
+#[test]
+fn an_update_under_the_config_lock_refuses_a_new_main_program_for_an_epic_game() {
+    let (_root, paths) = setup();
+    let path = paths.environment_config("fowl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let text = "epic_id = \"AppOffline\"\nprefix = \"/p\"\nrunner = \"wine\"\narch = \"win64\"\n\n[targets.game]\nexe = \"/games/Game.exe\"\n";
+    fs::write(&path, text).unwrap();
+    let file = ConfigFile::Environment("fowl");
+    let error = update(
+        &paths,
+        file,
+        &[("targets.game.exe", "/games/Other.exe")],
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fowl's main program comes from Epic and can't be changed."
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    update(&paths, file, &[("targets.game.args", "[\"-x\"]")], &[]).unwrap();
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("args = [\"-x\"]")
+    );
+}
