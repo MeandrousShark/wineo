@@ -136,6 +136,9 @@ fn the_page_works_cancels_and_tells_the_library_to_check_again() {
     let shown = texts(&page);
     assert!(shown.contains(&"Downloading: 37%".to_owned()), "{shown:?}");
     assert!(shown.contains(&crate::flow::epic_install::stalled_line(5)));
+    // Progress clears the stall.
+    let _ = page.update(Event::Progress(generation, "Downloading: 38%".to_owned()));
+    assert!(!texts(&page).contains(&crate::flow::epic_install::stalled_line(5)));
     // Back waits while it works.
     let _ = page.back();
     assert!(page.take_action().is_none());
