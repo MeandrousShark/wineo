@@ -396,7 +396,7 @@ impl Plan {
 #[derive(Debug, Clone)]
 pub enum Planned {
     UpToDate,
-    Ready(Plan),
+    Ready(Box<Plan>),
 }
 
 /// Works out an update of `name`'s Epic game, or with `repair` a check of
@@ -486,7 +486,7 @@ pub fn plan(paths: &Paths, name: &str, owned: Option<&Owned>, repair: bool) -> R
             return Ok(Planned::UpToDate);
         }
     }
-    Ok(Planned::Ready(Plan {
+    Ok(Planned::Ready(Box::new(Plan {
         environment: name.to_owned(),
         app_name: app,
         title,
@@ -497,7 +497,7 @@ pub fn plan(paths: &Paths, name: &str, owned: Option<&Owned>, repair: bool) -> R
         rebuilt,
         runs,
         first,
-    }))
+    })))
 }
 
 /// What `plan` checks before it needs the owned list: that `name` owns an

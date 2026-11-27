@@ -410,7 +410,7 @@ pub(super) fn plan_all(paths: &Paths, args: &Args) -> anyhow::Result<All> {
             }
         }
         match core_update::plan(paths, name, Some(&owned), false) {
-            Ok(Planned::Ready(plan)) => all.ready.push(plan),
+            Ok(Planned::Ready(plan)) => all.ready.push(*plan),
             Ok(Planned::UpToDate) => {}
             Err(error) => all.failures.push((name.clone(), format!("{error:#}"))),
         }
