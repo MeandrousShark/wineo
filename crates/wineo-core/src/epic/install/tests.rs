@@ -372,6 +372,69 @@ fn a_cancel_interrupts_the_group_keeps_the_mark_and_the_same_install_resumes() {
     assert_eq!(setup.sweep(), Vec::<i32>::new());
 }
 
+/// A cancel's group interrupt that lands after the fake's shell last looked
+/// for traps but before it forks its sleep reaches the shell alone, and a
+/// shell runs its trap only once its foreground child ends. Sent to the
+/// waiting shell alone, the interrupt must still be heeded within wineo's
+/// grace, or the cancel tests lose the resume file to the kill.
+#[test]
+fn the_fake_heeds_an_interrupt_its_sleep_never_got() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    use rustix::process::{Pid, Signal, kill_process};
+
+    use crate::test_script::KillOnDrop;
+
+    let (setup, _legendary) = host();
+    let app = "AppOffline";
+    set_mode(&setup, app, "hang");
+    let base = games(&setup).display().to_string();
+    let mut command = Command::new(setup.bin.join("legendary"));
+    command
+        .args(["-y", "install", app, "--base-path", &base])
+        .args(["--game-folder", "Offline Game"])
+        .env_clear()
+        .envs(setup.env().for_legendary(&setup.paths))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let mut fake = KillOnDrop::group(command.spawn().unwrap());
+    wait_started(&setup, app);
+    let pid = fake.id();
+    let children = format!("/proc/{pid}/task/{pid}/children");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fs::read_to_string(&children).unwrap().trim().is_empty() {
+        assert!(Instant::now() < deadline, "the fake never slept");
+        thread::sleep(Duration::from_millis(5));
+    }
+    kill_process(Pid::from_raw(pid as i32).unwrap(), Signal::INT).unwrap();
+    // wineo's grace before it kills the group.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = fake.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the interrupt waited on the sleep"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status}");
+    assert_eq!(
+        fs::read_to_string(setup.root.path().join("got-int")).unwrap(),
+        "AppOffline\n"
+    );
+    assert!(
+        crate::epic::state_dir(&setup.paths)
+            .join("tmp/AppOffline.resume")
+            .exists()
+    );
+    assert_eq!(setup.sweep(), Vec::<i32>::new());
+}
+
 #[test]
 fn a_group_that_ignores_the_interrupt_is_killed_and_only_its_shared_memory_removed() {
     let (setup, legendary) = host();
