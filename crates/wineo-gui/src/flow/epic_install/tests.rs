@@ -25,6 +25,12 @@ pub(in crate::flow) fn world() -> Epic {
     let epic = Epic::new();
     epic.log_in();
     crate::gog_fake::inno_runner(&epic.paths, &epic.file("inno-runs"));
+    // Also the default, so a review that picks no runner never looks for a
+    // real Wine on PATH.
+    let config = epic.paths.global_config();
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("\n[defaults]\nrunner = \"inno\"\n");
+    fs::write(&config, text).unwrap();
     epic
 }
 
