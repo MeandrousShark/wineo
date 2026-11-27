@@ -213,6 +213,8 @@ fn picking_opens_an_install_or_the_installed_games_card_and_unavailable_ones_sta
     )
     .unwrap();
     let mut page = page(&epic);
+    // Only the installed game is bright.
+    assert_eq!(page.dimmed(), [true, false, true, true, true]);
     // Third Party Game.
     let _ = page.update(Event::Open(3));
     assert!(!page.installing_game());

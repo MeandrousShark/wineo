@@ -468,23 +468,48 @@ impl Page {
             }
             return frame::scroll_body(body, None, palette);
         }
-        let tiles = listing.games.iter().enumerate().map(|(index, game)| {
-            let (reason, note) = game.tile_text();
-            (
-                Tile {
-                    title: &game.title,
-                    poster: self.posters.get(&game.app).and_then(Option::as_ref),
-                    reason,
-                    note,
-                    chosen: false,
-                    focus_ring: self.grid.focus_ring(index),
-                    // Like the library: a game that isn't installed is dimmed.
-                    dimmed: !game.installed(),
-                },
-                Event::Open(index),
-            )
-        });
+        let tiles = self.tiles(listing);
         self.grid.view(body.into(), tiles, width, palette)
+    }
+
+    /// Each game's tile, with what picking it sends.
+    fn tiles<'a>(&'a self, listing: &'a Listing) -> Vec<(Tile<'a>, Event)> {
+        listing
+            .games
+            .iter()
+            .enumerate()
+            .map(|(index, game)| {
+                let (reason, note) = game.tile_text();
+                (
+                    Tile {
+                        title: &game.title,
+                        poster: self.posters.get(&game.app).and_then(Option::as_ref),
+                        reason,
+                        note,
+                        chosen: false,
+                        focus_ring: self.grid.focus_ring(index),
+                        // Like the library: a game that isn't installed is
+                        // dimmed.
+                        dimmed: !game.installed(),
+                    },
+                    Event::Open(index),
+                )
+            })
+            .collect()
+    }
+
+    /// Whether each tile is dimmed, in grid order.
+    #[cfg(test)]
+    pub(super) fn dimmed(&self) -> Vec<bool> {
+        self.listing
+            .as_ref()
+            .map(|listing| {
+                self.tiles(listing)
+                    .iter()
+                    .map(|(tile, _)| tile.dimmed)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
