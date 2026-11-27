@@ -1775,6 +1775,33 @@ fn tools_on_proton_run_inside_umu() {
 
 const HADES: &str = "[targets.hades]\nexe = \"hades\"\n";
 
+/// Gentoo's `umu-run` is a symlink to python-exec2, which picks the program by
+/// the name it was started as and refuses any other.
+#[test]
+fn umu_is_started_by_the_name_it_was_found_under() {
+    let f = Fixture::new();
+    f.install_proton("GE-Proton9-20");
+    f.proton_environment("hades", "GE-Proton9-20", HADES);
+    let wrapper = f.root.path().join("python-exec2");
+    let body = FAKE_UMU.replacen(
+        "#!/bin/sh\n",
+        "#!/bin/sh\ncase \"$(basename \"$0\")\" in\numu-run) ;;\n*)\n    echo \"python-exec2 is a wrapper, it must not be run directly.\" >&2\n    exit 1\n    ;;\nesac\n",
+        1,
+    );
+    write_script(&wrapper, &body);
+    let link = f.root.path().join("bin/umu-run");
+    fs::remove_file(&link).unwrap();
+    symlink(&wrapper, &link).unwrap();
+
+    let out = f.run(&["exec", "hades", "winecfg"]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains("umu-run: winecfg"),
+        "{}",
+        stdout(&out)
+    );
+}
+
 #[test]
 fn a_proton_target_launches_through_umu() {
     let f = Fixture::new();
