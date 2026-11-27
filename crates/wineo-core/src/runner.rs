@@ -774,11 +774,17 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn find_in_path(path_var: &OsStr, program: &str) -> Option<PathBuf> {
+    find_in_path_as_found(path_var, program).and_then(|found| std::fs::canonicalize(found).ok())
+}
+
+/// The first executable `program` on `path_var`, without following
+/// symlinks: a wrapper like Gentoo's python-exec picks what to run by the
+/// name it was started as, so it has to be started by that name.
+pub(crate) fn find_in_path_as_found(path_var: &OsStr, program: &str) -> Option<PathBuf> {
     std::env::split_paths(path_var)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(program))
         .find(|candidate| is_executable(candidate))
-        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
 }
 
 pub(crate) fn is_executable(path: &Path) -> bool {
