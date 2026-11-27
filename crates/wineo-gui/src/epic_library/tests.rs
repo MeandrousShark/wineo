@@ -241,3 +241,24 @@ fn a_record_changed_elsewhere_is_seen_on_the_next_rescan_and_checked_again() {
     new.epic = epic_card(None);
     assert!(local_changes(&app.cards, &[new]).is_empty());
 }
+
+#[test]
+fn leaving_finish_install_forgets_the_cards_old_update_status() {
+    let epic = crate::epic_fake::Epic::new();
+    let mut app = crate::App::boot(epic.paths.clone()).0;
+    app.epic_updates.insert(
+        "offline-game",
+        status("offline-game", UpdateState::Available),
+    );
+    let game = crate::flow::epic_install::Game {
+        app: "AppOffline".to_owned(),
+        title: "Offline Game".to_owned(),
+        unfinished: true,
+    };
+    let (page, _) =
+        crate::flow::Page::epic_finish_install(epic.paths.clone(), "offline-game".to_owned(), game);
+    app.flow = Some(page);
+    let generation = app.flow_generation;
+    let _ = app.update(Message::Flow(generation, crate::flow::Event::Back));
+    assert!(app.epic_updates.status("offline-game").is_none());
+}
