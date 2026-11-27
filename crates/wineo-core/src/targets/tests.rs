@@ -539,6 +539,15 @@ fn an_epic_update_writes_legendarys_new_program_and_only_that_one() {
     assert_eq!(game.args, ["-x"]);
     assert_eq!(game.cwd.as_deref(), Some("/user/chose"));
     assert!(!refresh_epic_program(&f.paths, "hades", &new, None, None).unwrap());
+    // The same program written another way is no change.
+    let mut batch = Batch::new(f.targets());
+    let mut game = Spec::of(&f.targets()["game"]);
+    game.exe = "~/Games/Bin/New.exe".to_owned();
+    batch.edit("game", game);
+    write(&f.paths, "hades", &batch).unwrap();
+    let before = f.text();
+    assert!(!refresh_epic_program(&f.paths, "hades", &new, None, None).unwrap());
+    assert_eq!(f.text(), before);
 
     // The guard still holds for everyone else.
     let mut batch = Batch::new(f.targets());

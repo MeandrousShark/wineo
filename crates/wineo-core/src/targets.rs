@@ -463,7 +463,7 @@ pub(crate) fn refresh_epic_program(
         let Some(target) = current.config.targets.get(crate::epic::install::TARGET) else {
             return Ok(false);
         };
-        if target.exe == exe {
+        if same_program(paths, &target.exe, exe) {
             return Ok(false);
         }
         let mut spec = Spec::of(target);
