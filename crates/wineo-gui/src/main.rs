@@ -31,6 +31,7 @@ mod downloads_work;
 mod dropdown;
 mod ends;
 mod epic_legendary;
+mod epic_library;
 mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
@@ -399,6 +400,8 @@ pub(crate) struct App {
     /// What the background check found, by environment. Kept here rather
     /// than on cards, which every library refresh rebuilds.
     pub(crate) gog_updates: gog_library::GogState,
+    /// What the Epic check found, by environment, like `gog_updates`.
+    pub(crate) epic_updates: epic_library::EpicState,
     /// The Version picker, which takes the panel's details' place like Log.
     pub(crate) version: Option<version_picker::Picker>,
     version_generation: u64,
@@ -640,6 +643,17 @@ pub(crate) enum Message {
         u64,
         Result<Option<Box<wineo_core::gog::update::Status>>, String>,
     ),
+    /// Updates an Epic game, or finishes its interrupted work.
+    EpicUpdate(String),
+    EpicChecked(
+        HashMap<String, u64>,
+        Result<Option<wineo_core::epic::update::Batch>, String>,
+    ),
+    EpicRechecked(
+        String,
+        u64,
+        Result<Option<Box<wineo_core::epic::update::Status>>, String>,
+    ),
     /// The Version picker in a GOG game's panel.
     Version(version_picker::Event),
     Context(String),
@@ -879,6 +893,7 @@ impl App {
             gog_work: settings::GogWork::default(),
             epic_work: settings::EpicWork::default(),
             gog_updates: gog_library::GogState::default(),
+            epic_updates: epic_library::EpicState::default(),
             version: None,
             version_generation: 0,
             art_page: None,
@@ -980,6 +995,7 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
+        let epic_check = epic_library::check_task(app.paths.clone(), app.epic_updates.asked_all());
         let (main_window, open) =
             open_main_window(launch, app.interface_size, app.fullscreen.is_set());
         app.main_window = Some(main_window);
@@ -994,6 +1010,7 @@ impl App {
                 prune,
                 key_presence,
                 gog_check,
+                epic_check,
                 iced::system::theme().map(Message::ThemeChanged),
             ]),
         )
@@ -1444,6 +1461,7 @@ impl App {
                     | Message::NudgeDismiss(_)
                     | Message::CloneEnvironment(_)
                     | Message::GogUpdate(_)
+                    | Message::EpicUpdate(_)
                     | Message::Checkup(
                         checkup::Event::Fix(_)
                             | checkup::Event::Check(_)
@@ -1950,6 +1968,15 @@ impl App {
                 Task::none()
             }
             Message::GogUpdate(name) => self.gog_update_requested(name)?,
+            Message::EpicChecked(asked, result) => {
+                epic_library::checked_since(self, &asked, result);
+                Task::none()
+            }
+            Message::EpicRechecked(name, generation, result) => {
+                epic_library::rechecked(self, name, generation, result);
+                Task::none()
+            }
+            Message::EpicUpdate(name) => self.epic_update_requested(name)?,
             Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
                 let open = self.action_menu.take();

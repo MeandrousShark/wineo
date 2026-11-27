@@ -2,7 +2,8 @@ pub(crate) mod artwork;
 mod clone;
 mod emulated;
 mod epic;
-mod epic_install;
+pub(crate) mod epic_install;
+pub(crate) mod epic_update;
 mod frame;
 mod gog;
 mod gog_install;
@@ -99,6 +100,7 @@ pub(crate) enum Event {
     UpdateMessage(Box<gog_update::Event>),
     EmulatedMessage(Box<emulated::Event>),
     EpicMessage(Box<epic::Event>),
+    EpicUpdateMessage(Box<epic_update::Event>),
 }
 
 impl Event {
@@ -131,6 +133,7 @@ wrap_events! {
     gog_update::Event => UpdateMessage,
     emulated::Event => EmulatedMessage,
     epic::Event => EpicMessage,
+    epic_update::Event => EpicUpdateMessage,
 }
 
 /// Runs `$body` with `$page` bound to whichever page is open. The pages' event
@@ -148,6 +151,7 @@ macro_rules! on_page {
             Self::GogUpdate($page) => $body,
             Self::Emulated($page) => $body,
             Self::Epic($page) => $body,
+            Self::EpicUpdate($page) => $body,
             Self::Choose(_) => $choose,
         }
     };
@@ -164,6 +168,7 @@ pub(crate) enum Page {
     GogUpdate(Box<gog_update::Page>),
     Emulated(Box<emulated::Page>),
     Epic(Box<epic::Page>),
+    EpicUpdate(Box<epic_update::Page>),
 }
 
 impl Page {
@@ -204,6 +209,31 @@ impl Page {
     pub(crate) fn gog_finish_install(paths: Paths, offer: Offer) -> (Self, Task<Event>) {
         let (page, task) = gog::Page::finish_install(paths, offer);
         (Self::Gog(Box::new(page)), task.map(Event::from))
+    }
+
+    /// Updates `name`'s Epic game, or finishes its interrupted work.
+    pub(crate) fn epic_update(paths: Paths, name: String) -> (Self, Task<Event>) {
+        let (page, task) = epic_update::Page::new(paths, name);
+        (Self::EpicUpdate(Box::new(page)), task.map(Event::from))
+    }
+
+    /// Finishes the interrupted install of `name`'s Epic game, on the
+    /// install page.
+    pub(crate) fn epic_finish_install(
+        paths: Paths,
+        name: String,
+        game: epic_install::Game,
+    ) -> (Self, Task<Event>) {
+        let (page, task) = epic::Page::finish_install(paths, name, game);
+        (Self::Epic(Box::new(page)), task.map(Event::from))
+    }
+
+    /// The environment an Epic update just finished for, once.
+    pub(crate) fn take_epic_updated(&mut self) -> Option<String> {
+        match self {
+            Self::EpicUpdate(page) => page.take_updated(),
+            _ => None,
+        }
     }
 
     /// The environment a GOG update just finished for, once.
@@ -278,6 +308,9 @@ impl Page {
                 page.update(*event, key_available).map(Event::from)
             }
             (Self::Epic(page), Event::EpicMessage(event)) => page.update(*event).map(Event::from),
+            (Self::EpicUpdate(page), Event::EpicUpdateMessage(event)) => {
+                page.update(*event).map(Event::from)
+            }
             _ => Task::none(),
         }
     }
@@ -292,6 +325,7 @@ impl Page {
             Self::GogUpdate(page) => page.waiting(),
             Self::Emulated(page) => page.waiting(),
             Self::Epic(page) => page.waiting(),
+            Self::EpicUpdate(page) => page.waiting(),
             _ => false,
         }
     }
@@ -339,6 +373,7 @@ impl Page {
             Self::GogUpdate(page) => page.view(palette).map(Event::from),
             Self::Emulated(page) => page.view(palette, width, key_available).map(Event::from),
             Self::Epic(page) => page.view_at(palette, width).map(Event::from),
+            Self::EpicUpdate(page) => page.view(palette).map(Event::from),
             Self::Choose(_) => container(
                 column![
                     secondary_button("Back", palette).on_press(Event::Back),
@@ -453,6 +488,7 @@ impl Page {
             Self::GogUpdate(_) => "a GOG update",
             Self::Emulated(_) => "an emulated games import",
             Self::Epic(_) => "an Epic install",
+            Self::EpicUpdate(_) => "an Epic update",
         }
     }
 
@@ -480,6 +516,7 @@ impl Page {
             Self::GogUpdate(page) => page.submit().map(Event::from),
             Self::Emulated(page) => page.submit(key_available).map(Event::from),
             Self::Epic(page) => page.submit().map(Event::from),
+            Self::EpicUpdate(page) => page.submit().map(Event::from),
             Self::Choose(_) => self.update(Event::New, key_available),
         }
     }

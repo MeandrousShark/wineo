@@ -127,6 +127,9 @@ pub(crate) struct Page {
     /// text tile.
     posters: HashMap<String, Option<image::Handle>>,
     poster_token: Option<Token>,
+    /// The environment whose interrupted install this page was opened to
+    /// finish from the library, which it returns to instead of the grid.
+    finishing: Option<String>,
 }
 
 impl Drop for Page {
@@ -139,7 +142,29 @@ impl Drop for Page {
 
 impl Page {
     pub(crate) fn new(paths: Paths) -> (Self, Task<Event>) {
-        let mut page = Self {
+        let mut page = Self::blank(paths);
+        let task = page.list();
+        (page, task)
+    }
+
+    /// Opens the install page for `game`, whose install stopped after `name`
+    /// was created, without the grid: the library's Finish install does.
+    pub(crate) fn finish_install(
+        paths: Paths,
+        name: String,
+        game: epic_install::Game,
+    ) -> (Self, Task<Event>) {
+        let mut page = Self::blank(paths);
+        page.finishing = Some(name);
+        let (install, task) = Install::new(page.paths.clone(), game);
+        page.install = Some(Box::new(install));
+        page.install_instance = 1;
+        let task = task.map(|event| Event::Installing(1, Box::new(event)));
+        (page, task)
+    }
+
+    fn blank(paths: Paths) -> Self {
+        Self {
             paths,
             generation: 0,
             listing: None,
@@ -151,9 +176,8 @@ impl Page {
             grid: ImportGrid::new(GRID_ID, Event::ProgressDue, next_poster_load()),
             posters: HashMap::new(),
             poster_token: None,
-        };
-        let task = page.list();
-        (page, task)
+            finishing: None,
+        }
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -211,6 +235,12 @@ impl Page {
             .as_mut()
             .and_then(|install| install.take_leave())
         {
+            Some(Leave::Games) if self.finishing.is_some() => {
+                self.action = Some(Action::Library {
+                    name: self.finishing.clone(),
+                    launch: false,
+                });
+            }
             Some(Leave::Games) => {
                 self.install = None;
                 self.error = None;

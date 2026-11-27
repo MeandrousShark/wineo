@@ -339,7 +339,13 @@ impl App {
                 .star_pops
                 .progress(slot)
                 .map_or(0.0, crate::star_pop::lift),
-            gog: crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name)),
+            gog: crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
+                .or_else(|| {
+                    crate::epic_library::badge(
+                        card.epic.as_ref(),
+                        self.epic_updates.status(&card.name),
+                    )
+                }),
             eye: card.hidden,
             steam: card.kind == Some(CardKind::Proxied),
             install: card.install_progress(),

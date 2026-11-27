@@ -706,18 +706,30 @@ impl Said {
 
 /// Turns the install's events into lines, a run's start and then its whole
 /// percentage as it changes.
-#[derive(Default)]
 pub(crate) struct Lines {
+    /// What each line starts with: `Downloading`, or `Repairing`.
+    verb: &'static str,
     said: Option<(usize, u64)>,
 }
 
+impl Default for Lines {
+    fn default() -> Self {
+        Self::new("Downloading")
+    }
+}
+
 impl Lines {
+    pub(crate) fn new(verb: &'static str) -> Self {
+        Self { verb, said: None }
+    }
+
     pub(crate) fn line(&mut self, event: &InstallEvent) -> Option<Said> {
+        let verb = self.verb;
         let label = |index: usize, total: usize| {
             if total == 1 {
-                "Downloading".to_owned()
+                verb.to_owned()
             } else {
-                format!("Downloading {index} of {total}")
+                format!("{verb} {index} of {total}")
             }
         };
         match *event {
@@ -847,7 +859,15 @@ pub(crate) fn install_with(
     mut say: impl FnMut(Said),
     extras: Extras,
 ) -> Result<Done, String> {
-    let legendary = match legendary::find(paths, token)? {
+    // A cancel while Legendary is looked for stops before anything starts.
+    let found = legendary::find(paths, token).map_err(|error| {
+        if token.is_canceled() {
+            CANCELED.to_owned()
+        } else {
+            error
+        }
+    })?;
+    let legendary = match found {
         Found::Usable(legendary) => legendary,
         Found::Offer(_) => {
             return Err("Legendary is gone. Install the game again to get it.".to_owned());

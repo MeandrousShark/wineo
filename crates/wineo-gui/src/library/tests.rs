@@ -92,6 +92,7 @@ fn launch_button_label_uses_the_exact_game_tag() {
         art: None,
         panel_art: HashMap::new(),
         gog: None,
+        epic: None,
     };
 
     assert_eq!(card(vec!["game"]).launch_button_label(), "Play");
