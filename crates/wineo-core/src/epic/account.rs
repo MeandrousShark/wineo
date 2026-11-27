@@ -10,6 +10,9 @@ use crate::cancel::Token;
 use crate::error::IoContext;
 use crate::paths::Paths;
 
+/// The page that logs in to Epic as Legendary and then shows the code.
+pub const LOGIN_URL: &str = "https://legendary.gl/epiclogin";
+
 /// What `status` names as the account when nobody is logged in.
 const LOGGED_OUT: &str = "<not logged in>";
 
