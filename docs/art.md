@@ -40,8 +40,9 @@ converted copy; see [Desktop entries](#desktop-entries) below.
 
 GOG box art for games you haven't installed, shown in the desktop app's
 Import from GOG grid, is a separate cache at
-`$XDG_CACHE_HOME/wineo/gog-covers/`, always on the host. It isn't part of
-any environment's store and is safe to delete.
+`$XDG_CACHE_HOME/wineo/gog-covers/`, always on the host, and Epic's for
+the Import from Epic grid is `$XDG_CACHE_HOME/wineo/epic-covers/`. Neither
+is part of any environment's store, and both are safe to delete.
 
 `art/<env>/art.toml` records where each file came from: a SteamGridDB asset
 ID, a manual file with its original name, a GOG game ID for art a GOG

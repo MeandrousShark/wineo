@@ -29,7 +29,7 @@ Completion offers configured environment names in the environment arguments
 for `setup`, `config`, `start`, `stop`, `restart`, `programs`, `rm`, `status`,
 `logs`, `run`, and `exec`. It also offers the environment argument for `set`
 unless `--global` is present, and the first environment value passed to
-`winetricks`. `update` offers only environments that track a GOG game. For example, `wineo start <Tab>` offers environments.
+`winetricks`. `update` offers only environments that track a GOG or Epic game. For example, `wineo start <Tab>` offers environments.
 
 `tag add` and `tag remove` (or `rm`) offer the tags already in use first,
 then environment names, and keep offering names after each one. `remove`

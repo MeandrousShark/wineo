@@ -724,7 +724,7 @@ For a frontend that rereads often, like the desktop app's 2 s rescan:
   edits within one tick can look alike until the next change.
 - `source::Source::of(config)` says where an environment comes from: a
   store (Steam, GOG, Epic, Amazon, or none), how wineo knows it (Steam
-  library, GOG install, Heroic import, or plain), and whether it's native.
+  library, GOG install, Epic install, Heroic import, or plain), and whether it's native.
   `label()` gives the store, or Native or Windows when there's none.
 
 ## Not in core yet
