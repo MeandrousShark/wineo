@@ -75,6 +75,7 @@ pub(crate) fn card(name: &str, state: State, seconds: i64) -> Card {
         art: None,
         panel_art: HashMap::new(),
         gog: None,
+        epic: None,
     }
 }
 /// Runs the grid's motion to its end.

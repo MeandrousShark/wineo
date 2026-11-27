@@ -366,3 +366,11 @@ fn a_symlink_at_the_destination_is_an_error_and_left_alone() {
     assert_eq!(fs::read(&real).unwrap(), BODY);
     assert_eq!(serve.hits.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn the_question_names_the_pinned_version_and_its_size_in_whole_megabytes() {
+    assert_eq!(
+        question(),
+        "Epic needs Legendary 0.21.1 (3 MB, from its GitHub releases). Download it?"
+    );
+}

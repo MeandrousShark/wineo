@@ -84,6 +84,13 @@ impl App {
             }
             None => task,
         };
+        let task = match self.flow.as_mut().and_then(flow::Page::take_epic_updated) {
+            Some(name) => {
+                self.epic_updates.changed(&name);
+                Task::batch([task, crate::epic_library::recheck(self, name)])
+            }
+            None => task,
+        };
         let Some(page) = &mut self.flow else {
             return task;
         };
@@ -236,6 +243,42 @@ impl App {
             return ControlFlow::Break(Task::none());
         }
         ControlFlow::Continue(self.open_gog_update(name, None))
+    }
+
+    /// Update or Finish update on an Epic game's card.
+    pub(crate) fn epic_update_requested(&mut self, name: String) -> Early {
+        let Some(card) = self.cards.iter().find(|card| card.name == name) else {
+            return ControlFlow::Break(Task::none());
+        };
+        let enabled = (card.epic_unfinished() || self.epic_update_action(&name))
+            && self.gog_update_enabled(card);
+        if !enabled || self.settings.is_some() || self.art_page.is_some() || self.flow.is_some() {
+            return ControlFlow::Break(Task::none());
+        }
+        // An install that stopped after its environment was made is
+        // finished by installing again, on the install page.
+        let install = card
+            .epic
+            .as_ref()
+            .filter(|epic| epic.unfinished == Some(wineo_core::epic::game::Work::Install))
+            .map(|epic| flow::epic_install::Game {
+                app: epic.app.clone(),
+                title: card.display_title.clone(),
+                unfinished: true,
+            });
+        self.close_log();
+        self.action_menu = None;
+        self.flow_generation = self.flow_generation.wrapping_add(1);
+        let generation = self.flow_generation;
+        let (page, task) = match install {
+            Some(game) => flow::Page::epic_finish_install(self.paths.clone(), name, game),
+            None => flow::Page::epic_update(self.paths.clone(), name),
+        };
+        self.flow = Some(page);
+        ControlFlow::Continue(Task::batch([
+            task.map(move |event| Message::Flow(generation, event)),
+            iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus()),
+        ]))
     }
 
     pub(crate) fn clone_environment(&mut self, name: String) -> Early {

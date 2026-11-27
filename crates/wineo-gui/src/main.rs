@@ -30,6 +30,8 @@ mod downloads_page;
 mod downloads_work;
 mod dropdown;
 mod ends;
+mod epic_legendary;
+mod epic_library;
 mod exit_watchdog;
 mod filter_control;
 mod filter_tab;
@@ -44,6 +46,8 @@ mod galaxy_fake;
 #[cfg(test)]
 mod gog_fake;
 // Shared with the other crates, which include the same file.
+#[cfg(test)]
+mod epic_fake;
 mod gog_library;
 mod grid;
 mod grid_motion;
@@ -392,9 +396,14 @@ pub(crate) struct App {
     steamgriddb_late_result: Option<settings::Event>,
     steam_key_work: settings::SteamKeyWork,
     gog_work: settings::GogWork,
+    epic_work: settings::EpicWork,
     /// What the background check found, by environment. Kept here rather
     /// than on cards, which every library refresh rebuilds.
     pub(crate) gog_updates: gog_library::GogState,
+    /// What the Epic check found, by environment, like `gog_updates`.
+    pub(crate) epic_updates: epic_library::EpicState,
+    /// The Legendary calls running outside any page.
+    pub(crate) epic_calls: epic_library::Calls,
     /// The Version picker, which takes the panel's details' place like Log.
     pub(crate) version: Option<version_picker::Picker>,
     version_generation: u64,
@@ -636,6 +645,17 @@ pub(crate) enum Message {
         u64,
         Result<Option<Box<wineo_core::gog::update::Status>>, String>,
     ),
+    /// Updates an Epic game, or finishes its interrupted work.
+    EpicUpdate(String),
+    EpicChecked(
+        HashMap<String, u64>,
+        Result<Option<wineo_core::epic::update::Batch>, String>,
+    ),
+    EpicRechecked(
+        String,
+        u64,
+        Result<Option<Box<wineo_core::epic::update::Status>>, String>,
+    ),
     /// The Version picker in a GOG game's panel.
     Version(version_picker::Event),
     Context(String),
@@ -873,7 +893,10 @@ impl App {
             steamgriddb_late_result: None,
             steam_key_work: settings::SteamKeyWork::default(),
             gog_work: settings::GogWork::default(),
+            epic_work: settings::EpicWork::default(),
             gog_updates: gog_library::GogState::default(),
+            epic_updates: epic_library::EpicState::default(),
+            epic_calls: epic_library::Calls::default(),
             version: None,
             version_generation: 0,
             art_page: None,
@@ -975,6 +998,11 @@ impl App {
         .discard();
         let key_presence = settings::key_presence_task(app.paths.clone(), app.steamgriddb_sequence);
         let gog_check = gog_library::check_task(app.paths.clone(), app.gog_updates.asked_all());
+        let epic_check = epic_library::check_task(
+            app.paths.clone(),
+            app.epic_updates.asked_all(),
+            &app.epic_calls,
+        );
         let (main_window, open) =
             open_main_window(launch, app.interface_size, app.fullscreen.is_set());
         app.main_window = Some(main_window);
@@ -989,6 +1017,7 @@ impl App {
                 prune,
                 key_presence,
                 gog_check,
+                epic_check,
                 iced::system::theme().map(Message::ThemeChanged),
             ]),
         )
@@ -1349,7 +1378,7 @@ impl App {
             && !self.exiting
             && self.close_by.is_none()
             && !self.foreground_busy()
-            && self.library_writes_pending()
+            && self.quiet_work_pending()
         {
             self.close_by = Some(Instant::now() + app_window::SORT_SAVE_WAIT);
         }
@@ -1439,6 +1468,7 @@ impl App {
                     | Message::NudgeDismiss(_)
                     | Message::CloneEnvironment(_)
                     | Message::GogUpdate(_)
+                    | Message::EpicUpdate(_)
                     | Message::Checkup(
                         checkup::Event::Fix(_)
                             | checkup::Event::Check(_)
@@ -1945,6 +1975,15 @@ impl App {
                 Task::none()
             }
             Message::GogUpdate(name) => self.gog_update_requested(name)?,
+            Message::EpicChecked(asked, result) => {
+                epic_library::checked_since(self, &asked, result);
+                Task::none()
+            }
+            Message::EpicRechecked(name, generation, result) => {
+                epic_library::rechecked(self, name, generation, result);
+                Task::none()
+            }
+            Message::EpicUpdate(name) => self.epic_update_requested(name)?,
             Message::CloneEnvironment(name) => self.clone_environment(name)?,
             Message::Context(name) => {
                 let open = self.action_menu.take();
@@ -2101,7 +2140,13 @@ impl App {
     /// What closing the window waits for: foreground work, and
     /// `library.toml` writes that haven't reached the file yet.
     fn exit_waits(&self) -> bool {
-        self.foreground_busy() || self.library_writes_pending()
+        self.foreground_busy() || self.quiet_work_pending()
+    }
+
+    /// What a close waits for without asking: `library.toml` writes, and
+    /// background Legendary calls, which the close has already canceled.
+    fn quiet_work_pending(&self) -> bool {
+        self.library_writes_pending() || self.epic_calls.running()
     }
 
     /// A sort, favorite, hidden, or tag write is in flight, or an

@@ -498,6 +498,9 @@ impl App {
             * step;
         let room = layout.art_frame().width - CORNER_PADDING - MARKS_ROOM - ahead;
         let gog = crate::gog_library::badge(card.gog.as_ref(), self.gog_updates.status(&card.name))
+            .or_else(|| {
+                crate::epic_library::badge(card.epic.as_ref(), self.epic_updates.status(&card.name))
+            })
             .map(|badge| {
                 let color = badge.color(palette);
                 let ink = ui::accent_ink(color);
@@ -966,6 +969,7 @@ impl App {
             let transfer_actions = self.transfer_actions(name);
             let uninstall_action = self.uninstall_action(name);
             let update_action = self.gog_update_action(name);
+            let epic_update_action = self.epic_update_action(name);
             let version_action = self
                 .cards
                 .iter()
@@ -978,7 +982,7 @@ impl App {
                 + usize::from(wine_actions) * 3
                 + usize::from(transfer_actions) * 2
                 + usize::from(uninstall_action)
-                + usize::from(update_action)
+                + usize::from(update_action || epic_update_action)
                 + usize::from(version_action);
             let menu_dividers = 2 + usize::from(wine_actions);
             let body_content_height =
@@ -1024,6 +1028,19 @@ impl App {
                     palette,
                     false,
                     enabled.then(|| Message::GogUpdate(name.clone())),
+                ));
+            }
+            if epic_update_action && !update_action {
+                let enabled = self
+                    .cards
+                    .iter()
+                    .find(|card| &card.name == name)
+                    .is_some_and(|card| self.gog_update_enabled_with(&self.facts, card));
+                scroll_items = scroll_items.push(context_menu_button(
+                    "Update",
+                    palette,
+                    false,
+                    enabled.then(|| Message::EpicUpdate(name.clone())),
                 ));
             }
             if version_action {

@@ -119,6 +119,7 @@ impl Page {
                     self.refresh_steamgriddb(paths),
                     self.refresh_steam_key(paths),
                     self.refresh_gog(paths),
+                    self.refresh_epic(paths),
                     reveal,
                 ]));
             }

@@ -101,7 +101,7 @@ impl App {
         } else if self.foreground_busy() {
             self.close_prompt = true;
             Task::none()
-        } else if self.library_writes_pending() {
+        } else if self.quiet_work_pending() {
             // The window closes once the file has the final view, or when
             // the wait runs out. Like any accepted close it takes the input,
             // but it shows nothing.
@@ -163,6 +163,7 @@ impl App {
         if let Some(flow) = &self.flow {
             flow.cancel_fetch();
         }
+        self.epic_calls.close();
         if self.left {
             return;
         }

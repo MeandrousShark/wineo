@@ -35,6 +35,16 @@ pub const PINNED: Pin<'static> = Pin {
     sha256: "dbed33bbe96031e65858233e4badf0a1d401bb6cb0cc995d1237cf3a0c826a45",
 };
 
+/// What every frontend asks before downloading the pinned Legendary.
+pub fn question() -> String {
+    // Rounded to the nearest, so 3,093,622 bytes reads as the plan's 3 MB.
+    let megabytes = ((PINNED.size + 500_000) / 1_000_000).max(1);
+    format!(
+        "Epic needs Legendary {} ({megabytes} MB, from its GitHub releases). Download it?",
+        PINNED.version
+    )
+}
+
 /// Where wineo's copy of `version` lives. Never in a portable root.
 pub fn file(paths: &Paths, version: &str) -> PathBuf {
     super::bin_dir(paths).join(format!("legendary-{version}"))

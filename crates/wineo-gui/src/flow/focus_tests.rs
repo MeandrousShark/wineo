@@ -75,6 +75,7 @@ fn opened(app: &App) -> &'static str {
         Some(Page::Steam(_)) => "steam",
         Some(Page::Gog(_)) => "gog",
         Some(Page::Emulated(_)) => "emulated",
+        Some(Page::Epic(_)) => "epic",
         _ => "other",
     }
 }
@@ -132,9 +133,10 @@ fn tab_walks_the_choices_after_the_controls_it_walked_before() {
     (now, tree) = tab(&mut app, tree, true);
     assert!(now.is_empty());
     (now, tree) = tab(&mut app, tree, true);
-    assert_eq!(now, [Id::new(CHOICE_IDS[5])]);
+    let last = CHOICE_IDS.len() - 1;
+    assert_eq!(now, [Id::new(CHOICE_IDS[last])]);
     (now, _) = tab(&mut app, tree, true);
-    assert_eq!(now, [Id::new(CHOICE_IDS[4])]);
+    assert_eq!(now, [Id::new(CHOICE_IDS[last - 1])]);
 }
 
 #[test]
@@ -145,7 +147,7 @@ fn the_number_keys_still_choose_with_a_row_focused() {
         ("3", "heroic"),
         ("4", "steam"),
         ("5", "gog"),
-        ("6", "emulated"),
+        ("7", "emulated"),
     ] {
         // Focus on another choice than the one the key picks.
         let (mut app, tree) = add_at(2);
@@ -160,6 +162,19 @@ fn the_number_keys_still_choose_with_a_row_focused() {
         assert!(published.is_empty(), "{published:?}");
         assert_eq!(opened(&app), page, "{digit}");
     }
+}
+
+#[test]
+fn key_6_opens_import_from_epic_right_after_gog() {
+    assert_eq!(CHOICE_IDS[4..6], ["add-gog", "add-epic"]);
+    let (mut app, tree) = add_at(2);
+    let _ = key(
+        &mut app,
+        tree,
+        Key::Character("6".into()),
+        Modifiers::empty(),
+    );
+    assert_eq!(opened(&app), "epic");
 }
 
 #[test]

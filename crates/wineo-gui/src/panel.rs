@@ -221,6 +221,7 @@ pub(crate) fn play_enabled(card: &Card, operation_busy: bool, target: Option<&st
         && !card.active()
         && card.install_allows_play()
         && !card.gog_blocks_play()
+        && !card.epic_unfinished()
         && !operation_busy
         && target.is_some()
 }
@@ -243,6 +244,18 @@ impl App {
             && self.operation.is_none()
             && !self.management_busy()
             && self.remove_reason_with(facts, &card.name).is_none()
+    }
+
+    /// Whether the menu offers Update for an Epic game: the background check
+    /// found one, with nothing to finish first.
+    pub(crate) fn epic_update_action(&self, name: &str) -> bool {
+        self.epic_updates
+            .status(name)
+            .is_some_and(crate::epic_library::updatable)
+            && self
+                .cards
+                .iter()
+                .any(|card| card.name == name && card.epic.is_some() && !card.epic_unfinished())
     }
 
     /// Whether the menu offers Update: a GOG game, on either track, the
@@ -931,6 +944,14 @@ impl App {
                     Message::Install,
                     PANEL_INSTALL_ID,
                 )
+            } else if let Some(epic) = card.epic.as_ref().filter(|_| card.epic_unfinished()) {
+                panel_action_button(
+                    epic.finish_label(),
+                    palette.primary,
+                    self.gog_update_enabled_with(&self.facts, card),
+                    Message::EpicUpdate(card.name.clone()),
+                    PANEL_PLAY_ID,
+                )
             } else if let Some(gog) = card.gog.as_ref().filter(|_| card.finish_update()) {
                 panel_action_button(
                     gog.finish_label(),
@@ -1036,6 +1057,25 @@ impl App {
                     .size(14)
                     .color(palette.warning),
                 );
+            }
+            if let Some(epic) = card.epic.as_ref().filter(|_| card.epic_unfinished()) {
+                inner = inner.push(
+                    text(epic.interrupted_note())
+                        .size(14)
+                        .color(palette.warning),
+                );
+            }
+            if !card.epic_unfinished()
+                && let Some(status) = self.epic_updates.status(&card.name)
+            {
+                inner = inner.push(detail_row(
+                    "Update",
+                    crate::epic_library::status_label(status),
+                    palette,
+                ));
+                if let Some(reason) = &status.reason {
+                    inner = inner.push(text(reason).size(13).color(palette.muted));
+                }
             }
             if crate::version_picker::has_version(card) {
                 inner = inner.push(version_row(
@@ -1392,6 +1432,7 @@ mod tests {
             art: None,
             panel_art: HashMap::new(),
             gog: None,
+            epic: None,
         }
     }
 

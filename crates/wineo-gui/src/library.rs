@@ -110,6 +110,8 @@ pub(super) struct Card {
     /// GOG facts read from disk: whether it is a GOG game, and whether an
     /// interrupted update stops it from launching.
     pub(super) gog: Option<crate::gog_library::GogCard>,
+    /// Epic facts from wineo's record: the game, and work left to finish.
+    pub(super) epic: Option<crate::epic_library::EpicCard>,
 }
 
 impl Card {
@@ -172,6 +174,13 @@ impl Card {
         self.gog
             .as_ref()
             .is_some_and(|gog| gog.unfinished || gog.blocked_by.is_some())
+    }
+
+    /// Work left on an Epic game stops it from starting until finished.
+    pub(super) fn epic_unfinished(&self) -> bool {
+        self.epic
+            .as_ref()
+            .is_some_and(|epic| epic.unfinished.is_some())
     }
 
     /// Finish update takes Play's place for the owner of a GOG game whose
@@ -423,6 +432,7 @@ pub(super) fn load_library_with(
         let title = item.title.clone();
         let mut panel_art = HashMap::new();
         let mut gog_card = None;
+        let mut epic_card = None;
         // The overview's kind, for when the config can't be loaded here.
         let mut source = Source::new(Facts {
             steam: matches!(item.kind, Some(report::KindReport::Proxied { .. })),
@@ -438,6 +448,7 @@ pub(super) fn load_library_with(
                 kind = Some(CardKind::new(&env.config.kind));
                 source = Source::of(&env.config, steam_platform);
                 gog_card = gog.card(paths, env);
+                epic_card = crate::epic_library::card(paths, env);
                 prefix = env.prefix(paths).ok();
                 targets = env.config.targets.keys().cloned().collect();
                 default_target = launch::default_target(env).ok().map(str::to_owned);
@@ -506,6 +517,7 @@ pub(super) fn load_library_with(
             default_target,
             panel_art,
             gog: gog_card,
+            epic: epic_card,
         });
     }
     for error in overview.errors {
@@ -547,6 +559,7 @@ pub(super) fn load_library_with(
             default_target: None,
             panel_art: HashMap::new(),
             gog: None,
+            epic: None,
         });
     }
     cards.sort_by(|a, b| a.name.cmp(&b.name));

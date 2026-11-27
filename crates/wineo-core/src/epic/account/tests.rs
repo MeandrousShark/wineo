@@ -312,3 +312,44 @@ fn logging_out_without_legendary_removes_a_symlink_and_not_what_it_names() {
     assert!(state.join("user.json").symlink_metadata().is_err());
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "{}");
 }
+
+#[test]
+fn logging_out_is_refused_in_a_portable_root_and_keeps_the_hosts_login() {
+    let setup = Setup::new();
+    let home = setup.root.path().to_owned();
+    let portable = Paths::select(
+        move |key| (key == "HOME").then(|| std::ffi::OsString::from(home.as_os_str())),
+        Some(&setup.root.path().join("portable")),
+    )
+    .unwrap();
+    setup.on_path(&Fake::default());
+    let legendary =
+        match crate::epic::legendary::find_with(&portable, None, setup.env(), &Token::new())
+            .unwrap()
+        {
+            crate::epic::legendary::Found::Usable(legendary) => legendary,
+            other => panic!("{other:?}"),
+        };
+    let user = crate::epic::state_dir(&portable).join("user.json");
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(&user, "{}\n").unwrap();
+    let host_only = "Epic games live in the host library. Run this without --portable.";
+    assert_eq!(
+        logout(&legendary, &Token::new()).unwrap_err().to_string(),
+        host_only
+    );
+    assert_eq!(
+        logout_without_legendary(&portable).unwrap_err().to_string(),
+        host_only
+    );
+    assert!(user.exists());
+    assert!(
+        !setup
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("auth") || call.starts_with("status")),
+        "Legendary wasn't asked: {:?}",
+        setup.calls()
+    );
+    assert!(setup.sweep().is_empty());
+}

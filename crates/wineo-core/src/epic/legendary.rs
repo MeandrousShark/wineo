@@ -89,6 +89,18 @@ pub struct Missing {
     pub older_on_path: Option<(PathBuf, Version)>,
 }
 
+impl Missing {
+    /// Said before the offer to download, when it passed one over.
+    pub fn older_line(&self) -> Option<String> {
+        self.older_on_path.as_ref().map(|(path, version)| {
+            format!(
+                "The legendary on PATH ({}) is {version}, older than {FLOOR}.",
+                path.display()
+            )
+        })
+    }
+}
+
 /// Looks for Legendary in order, with wineo's own environment.
 pub fn find(paths: &Paths, global: &GlobalConfig, token: &Token) -> Result<Found, Error> {
     find_with(

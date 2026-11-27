@@ -428,6 +428,24 @@ fn a_secret_cut_by_the_stderr_limit_leaves_no_fragment() {
     assert!(setup.sweep().is_empty());
 }
 
+#[test]
+fn the_older_line_names_the_passed_over_copy_and_the_floor() {
+    let missing = Missing {
+        older_on_path: Some((PathBuf::from("/usr/bin/legendary"), Version::new(0, 20, 34))),
+    };
+    assert_eq!(
+        missing.older_line().as_deref(),
+        Some("The legendary on PATH (/usr/bin/legendary) is 0.20.34, older than 0.21.1.")
+    );
+    assert_eq!(
+        Missing {
+            older_on_path: None
+        }
+        .older_line(),
+        None
+    );
+}
+
 /// A wrapper that acts as `name` only when started by that name, as
 /// Gentoo's python-exec does; started by its own name it says what it is.
 fn name_picking_wrapper(setup: &Setup, name: &str, then: &str) -> PathBuf {

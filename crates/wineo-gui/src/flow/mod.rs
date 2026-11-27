@@ -1,6 +1,9 @@
 pub(crate) mod artwork;
 mod clone;
 mod emulated;
+mod epic;
+pub(crate) mod epic_install;
+pub(crate) mod epic_update;
 mod frame;
 mod gog;
 mod gog_install;
@@ -27,12 +30,13 @@ use crate::ui::{ListRow, ScrollStyle, list_group, list_row, list_row_text, secon
 const CHOICE_LIST: &str = "add";
 
 /// The Add choices' row ids, in order.
-const CHOICE_IDS: [&str; 6] = [
+const CHOICE_IDS: [&str; 7] = [
     "add-new",
     "add-prefix",
     "add-heroic",
     "add-steam",
     "add-gog",
+    "add-epic",
     "add-emulated",
 ];
 
@@ -85,6 +89,7 @@ pub(crate) enum Event {
     Steam,
     Gog,
     Emulated,
+    Epic,
     Back,
     AfterSubmit,
     Create(Box<new::Event>),
@@ -95,6 +100,8 @@ pub(crate) enum Event {
     GogMessage(Box<gog::Event>),
     UpdateMessage(Box<gog_update::Event>),
     EmulatedMessage(Box<emulated::Event>),
+    EpicMessage(Box<epic::Event>),
+    EpicUpdateMessage(Box<epic_update::Event>),
 }
 
 impl Event {
@@ -126,6 +133,8 @@ wrap_events! {
     gog::Event => GogMessage,
     gog_update::Event => UpdateMessage,
     emulated::Event => EmulatedMessage,
+    epic::Event => EpicMessage,
+    epic_update::Event => EpicUpdateMessage,
 }
 
 /// Runs `$body` with `$page` bound to whichever page is open. The pages' event
@@ -142,6 +151,8 @@ macro_rules! on_page {
             Self::Gog($page) => $body,
             Self::GogUpdate($page) => $body,
             Self::Emulated($page) => $body,
+            Self::Epic($page) => $body,
+            Self::EpicUpdate($page) => $body,
             Self::Choose(_) => $choose,
         }
     };
@@ -157,6 +168,8 @@ pub(crate) enum Page {
     Gog(Box<gog::Page>),
     GogUpdate(Box<gog_update::Page>),
     Emulated(Box<emulated::Page>),
+    Epic(Box<epic::Page>),
+    EpicUpdate(Box<epic_update::Page>),
 }
 
 impl Page {
@@ -199,6 +212,32 @@ impl Page {
         (Self::Gog(Box::new(page)), task.map(Event::from))
     }
 
+    /// Updates `name`'s Epic game, or finishes its interrupted work.
+    pub(crate) fn epic_update(paths: Paths, name: String) -> (Self, Task<Event>) {
+        let (page, task) = epic_update::Page::new(paths, name);
+        (Self::EpicUpdate(Box::new(page)), task.map(Event::from))
+    }
+
+    /// Finishes the interrupted install of `name`'s Epic game, on the
+    /// install page.
+    pub(crate) fn epic_finish_install(
+        paths: Paths,
+        name: String,
+        game: epic_install::Game,
+    ) -> (Self, Task<Event>) {
+        let (page, task) = epic::Page::finish_install(paths, name, game);
+        (Self::Epic(Box::new(page)), task.map(Event::from))
+    }
+
+    /// The environment an Epic update just finished for, once.
+    pub(crate) fn take_epic_updated(&mut self) -> Option<String> {
+        match self {
+            Self::EpicUpdate(page) => page.take_updated(),
+            Self::Epic(page) => page.take_updated(),
+            _ => None,
+        }
+    }
+
     /// The environment a GOG update just finished for, once.
     pub(crate) fn take_updated(&mut self) -> Option<String> {
         match self {
@@ -235,6 +274,10 @@ impl Page {
                 let (page, task) = emulated::Page::new(paths);
                 (Self::Emulated(Box::new(page)), task.map(Event::from))
             }
+            Event::Epic => {
+                let (page, task) = epic::Page::new(paths);
+                (Self::Epic(Box::new(page)), task.map(Event::from))
+            }
             _ => return None,
         })
     }
@@ -266,6 +309,10 @@ impl Page {
             (Self::Emulated(page), Event::EmulatedMessage(event)) => {
                 page.update(*event, key_available).map(Event::from)
             }
+            (Self::Epic(page), Event::EpicMessage(event)) => page.update(*event).map(Event::from),
+            (Self::EpicUpdate(page), Event::EpicUpdateMessage(event)) => {
+                page.update(*event).map(Event::from)
+            }
             _ => Task::none(),
         }
     }
@@ -279,6 +326,8 @@ impl Page {
             Self::Gog(page) => page.waiting(),
             Self::GogUpdate(page) => page.waiting(),
             Self::Emulated(page) => page.waiting(),
+            Self::Epic(page) => page.waiting(),
+            Self::EpicUpdate(page) => page.waiting(),
             _ => false,
         }
     }
@@ -325,6 +374,8 @@ impl Page {
             Self::Gog(page) => page.view_at(palette, width).map(Event::from),
             Self::GogUpdate(page) => page.view(palette).map(Event::from),
             Self::Emulated(page) => page.view(palette, width, key_available).map(Event::from),
+            Self::Epic(page) => page.view_at(palette, width).map(Event::from),
+            Self::EpicUpdate(page) => page.view(palette).map(Event::from),
             Self::Choose(_) => container(
                 column![
                     secondary_button("Back", palette).on_press(Event::Back),
@@ -369,7 +420,14 @@ impl Page {
                             ),
                             choice(
                                 CHOICE_IDS[5],
-                                "6 - Add emulated games",
+                                "6 - Import from Epic",
+                                "Install the Epic games you own",
+                                Event::Epic,
+                                palette,
+                            ),
+                            choice(
+                                CHOICE_IDS[6],
+                                "7 - Add emulated games",
                                 "A folder of games for Dolphin, RetroArch, or another emulator",
                                 Event::Emulated,
                                 palette,
@@ -401,6 +459,7 @@ impl Page {
             Self::Steam(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             Self::Gog(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             Self::Emulated(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
+            Self::Epic(page) => page.key(key, modifiers, width).map(|t| t.map(Event::from)),
             _ => None,
         }
     }
@@ -437,6 +496,8 @@ impl Page {
             Self::Gog(_) => "a GOG import",
             Self::GogUpdate(_) => "a GOG update",
             Self::Emulated(_) => "an emulated games import",
+            Self::Epic(_) => "an Epic install",
+            Self::EpicUpdate(_) => "an Epic update",
         }
     }
 
@@ -449,6 +510,7 @@ impl Page {
         match self {
             Self::New(page) => page.cancel_fetch(),
             Self::Prefix(page) => page.cancel_fetch(),
+            Self::Epic(page) => page.cancel_jobs(),
             _ => {}
         }
     }
@@ -463,6 +525,8 @@ impl Page {
             Self::Gog(page) => page.submit().map(Event::from),
             Self::GogUpdate(page) => page.submit().map(Event::from),
             Self::Emulated(page) => page.submit(key_available).map(Event::from),
+            Self::Epic(page) => page.submit().map(Event::from),
+            Self::EpicUpdate(page) => page.submit().map(Event::from),
             Self::Choose(_) => self.update(Event::New, key_available),
         }
     }
@@ -514,8 +578,9 @@ mod tests {
         let paths =
             Paths::from_lookup(|key| (key == "HOME").then(|| OsString::from(root.path()))).unwrap();
         let page = Page::choose(paths);
-        // The Add dialog is 560 px high; its details wrap below about 520 px.
-        for width in [360.0, 520.0, 680.0] {
+        // The Add dialog is 560 px high; its details wrap below about 520 px,
+        // where seven rows scroll.
+        for width in [520.0, 680.0] {
             let mut view = page.view(Palette::DARK, width, false);
             let probe = probe(&mut view, iced::Size::new(width, 560.0));
             let (viewport, content) = probe.scrollables[0];

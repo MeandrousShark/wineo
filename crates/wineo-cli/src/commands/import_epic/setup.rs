@@ -4,7 +4,7 @@
 use wineo_core::cancel::Token;
 use wineo_core::config::GlobalConfig;
 use wineo_core::epic::legendary::{self, Legendary, Missing};
-use wineo_core::epic::{self, FLOOR, own_copy};
+use wineo_core::epic::{self, own_copy};
 use wineo_core::paths::Paths;
 
 use super::Args;
@@ -66,29 +66,16 @@ pub(crate) fn obtain(
     }
 }
 
-/// The question itself.
-pub(super) fn question() -> String {
-    // Rounded to the nearest, so 3,093,622 bytes reads as the plan's 3 MB.
-    let megabytes = ((own_copy::PINNED.size + 500_000) / 1_000_000).max(1);
-    format!(
-        "Epic needs Legendary {} ({megabytes} MB, from its GitHub releases). Download it?",
-        own_copy::PINNED.version
-    )
-}
-
 /// What a dry run says in place of asking.
 pub(crate) fn say_dry_run(missing: &Missing) {
     say_older(missing);
-    eprintln!("{}", question());
+    eprintln!("{}", own_copy::question());
     eprintln!("Dry run, so wineo didn't ask or download anything.");
 }
 
 fn say_older(missing: &Missing) {
-    if let Some((path, version)) = &missing.older_on_path {
-        eprintln!(
-            "The legendary on PATH ({}) is {version}, older than {FLOOR}.",
-            path.display()
-        );
+    if let Some(line) = missing.older_line() {
+        eprintln!("{line}");
     }
 }
 
@@ -118,7 +105,7 @@ fn download(paths: &Paths, missing: &Missing, args: &Args) -> anyhow::Result<boo
         // On stderr, so `--list --json` keeps stdout for its JSON.
         let mut prompt =
             Prompt::new(Terminal::open()?, crate::output::stderr()).with_first_question(true);
-        match prompt.confirm(&question(), true)? {
+        match prompt.confirm(&own_copy::question(), true)? {
             Reply::Value(true) => {}
             Reply::Value(false) | Reply::Back => return Err(Canceled.into()),
         }

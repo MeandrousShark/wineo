@@ -357,6 +357,13 @@ impl Page {
                 let context = self.gog_context();
                 Step::task(self.gog.update(paths, context, event))
             }
+            Event::Epic(event) => {
+                if !self.global {
+                    return Step::none();
+                }
+                let context = self.epic_context();
+                Step::task(self.epic.update(paths, context, event))
+            }
             Event::SteamKeySetOpen => self.steam_key_set_open(),
             Event::SteamKeySetCancel => self.steam_key_set_cancel(),
             Event::SteamKeyText(value) => self.steam_key_text(value),

@@ -1,16 +1,13 @@
 use std::process::{Command, ExitCode, Stdio};
 
 use wineo_core::config::GlobalConfig;
-use wineo_core::epic::account::{self, LoginCode};
+use wineo_core::epic::account::{self, LOGIN_URL, LoginCode};
 use wineo_core::paths::Paths;
 
 use super::setup::{self, Found};
 use super::{Args, HOST_ONLY};
 use crate::commands::transfer::Cancellation;
 use crate::prompt;
-
-/// The page that logs in to Epic as Legendary and then shows the code.
-const LOGIN_URL: &str = "https://legendary.gl/epiclogin";
 
 /// Opens Epic's login page and logs in with what the page shows. That holds
 /// a one-time login code, so it is read without echo and never printed.
