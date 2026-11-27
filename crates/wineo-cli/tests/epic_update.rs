@@ -115,6 +115,27 @@ fn folder(epic: &Epic) -> PathBuf {
     epic.games().join("Offline Game")
 }
 
+/// The window classes of the desktop entries wineo wrote.
+fn desktop_classes(epic: &Epic) -> Vec<String> {
+    let dir = epic.f.root.path().join("data/applications");
+    let mut classes: Vec<String> = fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+                .flat_map(|text| {
+                    text.lines()
+                        .filter_map(|line| line.strip_prefix("StartupWMClass="))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    classes.sort();
+    classes
+}
+
 fn check_json(epic: &Epic) -> Value {
     let output = epic.run(&["update", "--check", "--json"]);
     serde_json::from_str(&stdout(&output)).unwrap()
@@ -169,6 +190,7 @@ fn an_update_downloads_the_game_and_refreshes_its_record_and_main_program() {
     assert_ok(&output);
     assert_eq!(stdout(&output), "Up to date.\n");
 
+    assert_eq!(desktop_classes(&epic), ["Game.exe"]);
     offer(&epic, "0.25");
     set_version(&epic, APP, "0.25");
     fs::write(epic.file("exe-AppOffline"), "Bin/New.exe").unwrap();
@@ -225,6 +247,8 @@ fn an_update_downloads_the_game_and_refreshes_its_record_and_main_program() {
         )),
         "{text}"
     );
+    // The entry's window class follows the new program.
+    assert_eq!(desktop_classes(&epic), ["New.exe"], "{}", stderr(&output));
     // wineo wrote the old working folder, so it follows the program.
     assert!(
         text.contains(&format!("cwd = \"{}\"", folder.join("Bin").display())),
@@ -946,5 +970,37 @@ fn without_legendary_check_uses_the_saved_list_and_update_offers_the_download() 
         "error: Downloading Legendary needs a terminal, or --yes to agree to it.\n"
     );
     assert!(!epic.own_copy().exists());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
+
+#[test]
+fn every_form_of_update_is_refused_in_a_portable_root() {
+    let epic = epic();
+    offline_game(&epic);
+    let portable = epic.f.root.path().join("portable");
+    for args in [
+        &["update", "--check"][..],
+        &["update", "--check", "--json"],
+        &["update", "--check", "offline-game"],
+        &["update", "offline-game", "--yes"],
+        &["update", "offline-game", "--repair", "--yes"],
+        &["update", "--all", "--yes"],
+    ] {
+        let output = epic
+            .install_command()
+            .arg("--portable")
+            .arg(&portable)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_code(&output, 1);
+        assert_eq!(
+            stderr(&output),
+            "error: GOG and Epic games live in the host library. Run this without --portable.\n",
+            "{args:?}"
+        );
+        assert_eq!(stdout(&output), "", "{args:?}");
+    }
+    assert_eq!(epic.install_calls().len(), 1);
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }

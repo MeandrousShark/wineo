@@ -565,6 +565,12 @@ pub(super) fn report(paths: &Paths, plan: &Plan, updated: &Updated) {
     for line in table::aligned_rows(rows) {
         println!("{line}");
     }
+    if updated.program_changed {
+        // The entry's window class and icon come from the program.
+        if let Err(error) = crate::commands::art::apply_desktop(paths, &updated.environment) {
+            warn(format!("Couldn't update desktop entries: {error:#}"));
+        }
+    }
     if updated.program_changed
         && let Ok(environment) =
             wineo_core::environment::Environment::load(paths, &updated.environment)

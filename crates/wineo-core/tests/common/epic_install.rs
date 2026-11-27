@@ -21,9 +21,10 @@
 //! Every install writes `<root>/installing-<app>` once it has started, and
 //! `<root>/got-int` gets a line for each interrupt it heeded. It records
 //! the version in `<root>/version-<app>` (`1.0` without one) and the program
-//! in `<root>/exe-<app>` (`Binaries/Win64/Game.exe` without one), so a test
-//! can make a later run an update. `--update-only` refuses an app it hasn't
-//! recorded, as Legendary does.
+//! in `<root>/exe-<app>` (`Binaries/Win64/Game.exe` without one, and the
+//! program named there is created), so a test can make a later run an
+//! update. `--update-only` refuses an app it hasn't recorded, as Legendary
+//! does.
 //!
 //! `install APP --repair` checks the recorded game: it writes the repair
 //! file `tmp/APP.repair`, logs what Legendary logs while checking and
@@ -147,7 +148,7 @@ pub fn arms(fixtures: &Path, tool: &dyn Fn(&str) -> String) -> String {
            {mkdir} -p \"$LEGENDARY_CONFIG_PATH/fake-installed\"\n\
            exe=Binaries/Win64/Game.exe; if [ \"$mode\" = outside ]; then exe=Binaries/../../outside.exe; fi\n\
            version=$({cat} \"$root/version-$app\" 2>/dev/null || echo 1.0)\n\
-           if [ -f \"$root/exe-$app\" ]; then exe=$({cat} \"$root/exe-$app\"); fi\n\
+           if [ -f \"$root/exe-$app\" ]; then exe=$({cat} \"$root/exe-$app\"); {mkdir} -p \"$base/$folder/${{exe%/*}}\"; : > \"$base/$folder/$exe\"; fi\n\
            printf '\"%s\": {{\"app_name\": \"%s\", \"install_path\": \"%s\", \"version\": \"%s\", \"executable\": \"%s\", \"launch_parameters\": \"-skipintro -lang=en\", \"can_run_offline\": true}}' \"$app\" \"$app\" \"$path\" \"$version\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.json\"\n\
            printf '%s\\n%s\\n' \"$path\" \"$exe\" > \"$LEGENDARY_CONFIG_PATH/fake-installed/$app.launch\"\n\
            rebuild\n\
