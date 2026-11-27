@@ -452,3 +452,16 @@ fn finish_install_from_a_card_returns_to_that_card_and_checks_it_again() {
     ));
     assert_eq!(page.take_updated().as_deref(), Some("offline-game"));
 }
+
+#[test]
+fn every_way_out_of_the_app_stops_the_listing() {
+    let epic = world();
+    let (page, _) = Page::new(epic.paths.clone());
+    let mut app = crate::App::boot(epic.paths.clone()).0;
+    app.flow = Some(super::super::Page::Epic(Box::new(page)));
+    app.start_leaving();
+    let Some(super::super::Page::Epic(page)) = &app.flow else {
+        panic!("still open");
+    };
+    assert!(page.list_job.all_canceled());
+}

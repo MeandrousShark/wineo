@@ -190,8 +190,15 @@ fn planning_is_work_back_waits_cancel_stops_it_and_closing_asks() {
     assert!(texts(&page).contains(&"Cancel".to_owned()));
     let worker = crate::flow::epic_install::tests::run_in_background(task);
     epic.wait_for(&hanging);
+    let canceled = std::time::Instant::now();
     let _ = page.update(Event::Cancel);
-    for event in worker.join().unwrap() {
+    let sent = worker.join().unwrap();
+    assert!(
+        canceled.elapsed() < std::time::Duration::from_secs(10),
+        "Cancel stopped Legendary: {:?}",
+        canceled.elapsed()
+    );
+    for event in sent {
         let _ = page.update(event);
     }
     assert!(!page.busy());
