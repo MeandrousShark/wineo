@@ -84,7 +84,11 @@ fn the_review_shows_what_the_terminal_prints() {
     assert!(rows[3].1.ends_with(" plus 2 DLC"), "{rows:?}");
     assert_eq!(rows[3].0, "Download");
     assert_eq!(rows[4].0, "Installed");
-    let page = page_with(&epic, game, review);
+    let page = page_with(&epic, game.clone(), review.clone());
+    let mut typed = page_with(&epic, game.clone(), review.clone());
+    let _ = typed.update(Event::Folder("/elsewhere".to_owned()));
+    assert!(!typed.ready(), "a typed folder counts once it's planned");
+    assert!(texts(&typed).contains(&"Press Enter to check the new folder.".to_owned()));
     let shown = texts(&page);
     for line in [
         "Review Epic install",
