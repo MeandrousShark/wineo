@@ -904,3 +904,38 @@ fn the_owned_list_says_which_installed_games_have_an_update() {
     assert_eq!(update(&epic, APP), "cant_compare");
     assert_eq!(epic.sweep(), Vec::<i32>::new());
 }
+
+#[test]
+fn without_legendary_check_uses_the_saved_list_and_update_offers_the_download() {
+    let epic = epic();
+    offline_game(&epic);
+    assert_ok(&epic.run(&["update", "--check"]));
+    fs::remove_file(epic.bin.join("legendary")).unwrap();
+    epic.python("3.14.0");
+
+    let output = epic.run(&["update", "--check", "--json"]);
+    assert_ok(&output);
+    let json: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(
+        json["warnings"],
+        json!(["Legendary isn't installed, so this is the saved list."])
+    );
+    assert_eq!(row(&json, "offline-game")["update"], "none");
+
+    let output = epic.run(&["update", "offline-game", "--dry-run"]);
+    assert_ok(&output);
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "Epic needs Legendary 0.21.1 (3 MB, from its GitHub releases). Download it?\n\
+         Dry run, so wineo didn't ask or download anything.\n"
+    );
+    let output = epic.run(&["update", "offline-game"]);
+    assert_code(&output, 1);
+    assert_eq!(
+        stderr(&output),
+        "error: Downloading Legendary needs a terminal, or --yes to agree to it.\n"
+    );
+    assert!(!epic.own_copy().exists());
+    assert_eq!(epic.sweep(), Vec::<i32>::new());
+}
