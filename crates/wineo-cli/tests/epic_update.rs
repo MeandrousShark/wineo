@@ -526,6 +526,7 @@ fn all_updates_epic_games_beside_gogs_and_reports_a_logged_out_store() {
     // A dry run uses the saved list.
     assert_ok(&both(&epic, &api, &["update", "--check"]));
 
+    let before = epic.calls().len();
     let output = both(&epic, &api, &["update", "--all", "--dry-run"]);
     assert_ok(&output);
     assert_eq!(
@@ -535,8 +536,17 @@ fn all_updates_epic_games_beside_gogs_and_reports_a_logged_out_store() {
          \x20 Offline Game  0.24 -> 0.25\n\
          Dry run, nothing was updated.\n"
     );
-    let calls = epic.install_calls().len();
-    assert_eq!(epic.install_calls().len(), calls);
+    // Besides finding Legendary, it is only asked offline who is logged in,
+    // and the game is as it was.
+    let asked: Vec<String> = epic.calls()[before..]
+        .iter()
+        .filter(|call| call.as_str() != "--version")
+        .cloned()
+        .collect();
+    assert_eq!(asked, ["status --offline --json"]);
+    let untouched = record(&epic, APP).unwrap();
+    assert_eq!(untouched.installed_version.as_deref(), Some("0.24"));
+    assert_eq!(untouched.in_flight, None);
 
     let output = both(&epic, &api, &["update", "--all", "--yes"]);
     assert_ok(&output);
