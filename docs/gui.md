@@ -643,6 +643,16 @@ app starts, when you're logged in to GOG and not in a portable folder, it
 checks your GOG games for updates in the background; a failure only goes to
 the terminal.
 
+An [Epic game](epic.md) gets the same: an **Update** row (**Up to date**,
+**Update available**, or **Can't compare**), the **Update available** badge,
+**Update** in the Actions and right-click menus, and **Finish update** or
+**Finish install** in place of Play when one was interrupted. **Update**
+reviews each run (`1.0 -> 1.1`, `not installed -> 1.1` for a new DLC)
+before it downloads, and a repair reviews `every file`. Once after the app
+starts, when you're logged in to Epic, it checks your Epic games in the
+background. While the app asks Epic how to start a game, the status line
+reads `Asking Epic...`.
+
 Games keep running after you close the app, the same as games started with
 `wineo start`. Reopen it to see or stop them.
 
@@ -958,8 +968,8 @@ Clone) in a strip pinned at the bottom, so both stay reachable in a short
 window while the content scrolls between them.
 
 **Add** opens a compact overlay for **New environment**, **Import prefix**,
-**Import from Heroic**, **Import from Steam**, **Import from GOG**, or
-**Add emulated games**, keeping the library visible behind it. The same
+**Import from Heroic**, **Import from Steam**, **Import from GOG**,
+**Import from Epic**, or **Add emulated games**, keeping the library visible behind it. The same
 choices are available when the library is empty. Back preserves entries;
 leaving an initial draft returns to Add choices and asks before discarding
 edits.
@@ -1092,6 +1102,23 @@ prompt, Cancel, and closing the window during work behave like Heroic
 import; a cancel after the move keeps it and skips what's left of the
 playtime and art. In a portable folder the page says GOG games live in the
 host library.
+
+**Import from Epic** (**Choose an Epic game**) shows every Epic game you own
+as tiles, like `wineo import epic` (see [Epic games](epic.md)). A tile says
+`Not installed`, `Install didn't finish`, or `Installed`; a game wineo
+can't install says why, like `Needs an account at another launcher` or `No
+Windows build`, and can't be picked, nor can one that's installed. Logged
+out, the page says to log in to Epic in Settings; without Legendary it shows
+the saved list. Picking a game opens **Review Epic install**: the
+environment it creates, the **Folder** (with **Browse...**; new games go
+under Settings' **Games folder**), **Runner** and **Arch**, the version, each
+DLC, and the download and installed sizes, with any warnings about
+anti-cheat, an ownership token, or a prerequisite installer. **Install**, or
+**Finish install** for one that didn't finish, downloads the game and its DLC
+with progress (`Downloading 2 of 3: 37%`); **Cancel** then **Force stop**
+stop it, and installing again resumes. Without Legendary the page first
+offers to download it, as Settings does. Closing the window during an
+install asks first. **Back to library** selects the new game.
 
 **Add emulated games** imports games that run in an emulator, like `wineo
 import roms` (see [Emulated games](emulators.md)). It lists the emulators
@@ -1311,7 +1338,7 @@ defaults** puts every button back. The rows save with the Save bar to
 `[input.buttons]` in `library.toml` (see [config files](config-files.md)).
 See [Controller](#controller).
 
-**Stores** holds the Steam and GOG sections.
+**Stores** holds the Steam, GOG, and Epic sections.
 
 **Steam**: **Import new Steam games automatically**, off by default, skips the
 [banner](#new-steam-games) and imports new installs with the same defaults as
@@ -1344,6 +1371,19 @@ masked **Address** field for the address of the page you land on, like
 out**, shown while you're logged in, removes the login and that account's
 owned-games list. Both run outside the Save bar, and their result shows if
 you leave and come back. The section works in a portable folder too.
+
+**Epic**: **Account** shows who's logged in, and **Legendary** which copy
+is in use: `downloaded by wineo`, `from [epic] legendary`, or `on PATH`,
+with its version, or why none can run. **Log in** opens Epic's login page
+in your browser with **Copy link**, then a masked **Code** field for what
+the page shows, like `wineo import epic --login`; what you paste is never
+shown or logged. Without a usable Legendary, it first asks `Epic needs
+Legendary 0.21.1 (3 MB, from its GitHub releases). Download it?` with
+**No** and **Yes**, then shows progress and **Cancel**. **Log out** removes
+the login. All three keep going if you leave the page, and their result
+shows when you come back. In a portable folder, Log out is refused, since
+Epic games live in the host library. Epic installs use the GOG section's
+**Games folder**.
 
 **Advanced** starts with **Show advanced settings**, off by default. With
 it off, the tab shows only the switch and what it covers. With it on, it
