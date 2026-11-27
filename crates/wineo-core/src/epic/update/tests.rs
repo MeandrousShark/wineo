@@ -141,6 +141,9 @@ fn a_repair_ignores_what_its_check_found_but_not_other_errors() {
     assert!(found_by_check(
         "[cli] ERROR: File does not match hash: \"a.pak\""
     ));
+    assert!(found_by_check(
+        "[cli] ERROR: Other failure (see log), treating file as missing: \"b.pak\""
+    ));
     assert!(!found_by_check(
         "[FileWorker] ERROR: Writing file failed: [Errno 28] No space left on device"
     ));
