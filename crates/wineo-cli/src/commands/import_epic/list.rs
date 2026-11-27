@@ -164,7 +164,7 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
 /// asks Epic or rewrites the saved list. Legendary is still looked up and
 /// asked offline who is logged in, so a dry run fails where the real one
 /// would. None when there is no saved list, after saying so.
-fn dry_run(
+pub(crate) fn dry_run(
     paths: &Paths,
     global: &GlobalConfig,
     args: &Args,
@@ -221,7 +221,7 @@ fn dry_run(
 }
 
 /// Why there is no list to show when no Legendary can be run.
-fn not_listed(missing: Option<&Missing>) -> Error {
+pub(crate) fn not_listed(missing: Option<&Missing>) -> Error {
     match missing {
         Some(_) => Error::LoggedOut,
         None => Error::Python,
@@ -229,14 +229,14 @@ fn not_listed(missing: Option<&Missing>) -> Error {
 }
 
 /// The warning over a saved list shown because no Legendary can be run.
-fn saved_list_warning(missing: Option<&Missing>) -> String {
+pub(crate) fn saved_list_warning(missing: Option<&Missing>) -> String {
     match missing {
         Some(_) => "Legendary isn't installed, so this is the saved list.".to_owned(),
         None => format!("{} This is the saved list.", Error::Python),
     }
 }
 
-fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> anyhow::Result<Owned> {
+pub(crate) fn load(legendary: &epic::legendary::Legendary, refresh: bool) -> anyhow::Result<Owned> {
     let cancellation = Cancellation::new()?;
     let owned = owned::load(legendary, refresh, &cancellation.token);
     cancellation.result(owned.map_err(anyhow::Error::from))

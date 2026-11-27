@@ -1,22 +1,24 @@
-//! `wineo update`: what GOG offers for the games wineo manages, and
-//! applying it to native games.
+//! `wineo update`: what GOG and Epic offer for the games wineo manages, and
+//! applying it.
 
 use std::process::ExitCode;
 
 use clap_complete::ArgValueCompleter;
 use serde_json::json;
 use wineo_core::gog::update::galaxy::Choice;
-use wineo_core::gog::update::{self, Batch, Status};
+use wineo_core::gog::update::{self, Batch, GameError, Status};
 use wineo_core::paths::Paths;
 
 use super::galaxy::GogTrack;
 use super::gog_support::{
-    Account, dlc_json, dlc_notes, error_json, reason_json, state_label, usage_error, warn,
+    Account, LOGGED_OUT, dlc_json, dlc_notes, error_json, reason_json, state_label, usage_error,
+    warn,
 };
 use super::table::render_columns;
 
 mod apply;
 mod builds;
+mod epic;
 
 #[derive(clap::Args)]
 #[command(group = clap::ArgGroup::new("listing").args(["check", "builds"]))]
@@ -120,6 +122,18 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
             "{flag} is for Galaxy games, so leave out --track installer."
         )));
     }
+    if let Some(name) = &args.name
+        && epic::is_epic(paths, name)
+    {
+        if let Some(flag) = epic::gog_flag(&args) {
+            anyhow::bail!("{flag} is for GOG games.");
+        }
+        return if args.check {
+            epic::check_one(paths, &args, name)
+        } else {
+            apply::run(paths, &args)
+        };
+    }
     if args.builds {
         builds::run(paths, &args)
     } else if args.check {
@@ -130,6 +144,9 @@ pub fn run(paths: &Paths, args: Args) -> anyhow::Result<ExitCode> {
 }
 
 fn check(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
+    if args.name.is_none() && epic::has_games(paths)? {
+        return check_stores(paths, args);
+    }
     let account = Account::new();
     let mut session = account.session(paths)?;
     let batch = match &args.name {
@@ -156,7 +173,7 @@ fn check(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
             "warnings": warnings,
         }))?;
     } else {
-        print_table(&batch.statuses);
+        print_table(&batch.statuses.iter().map(Row::Gog).collect::<Vec<_>>());
         for error in &batch.errors {
             eprintln!("Failed {}: {}", error.subject(), error.message);
         }
@@ -169,6 +186,101 @@ fn check(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// `update --check` with Epic games beside GOG's. Logged out of one store,
+/// its games are errors and the other's are checked.
+fn check_stores(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
+    let account = Account::new();
+    let gog = match account.open(paths)? {
+        Some(mut session) => update::check_all(&mut session, args.refresh)?,
+        None => logged_out_of_gog(paths)?,
+    };
+    let (offered, epic_warnings) = epic::offered(paths, args.refresh)?;
+    let epic = epic::check_all(paths, &offered)?;
+    let mut warnings: Vec<&String> = gog
+        .statuses
+        .iter()
+        .flat_map(|status| &status.warnings)
+        .collect();
+    warnings.extend(&epic_warnings);
+    for warning in &warnings {
+        warn(warning);
+    }
+    let mut rows: Vec<Row> = gog.statuses.iter().map(Row::Gog).collect();
+    rows.extend(epic.statuses.iter().map(Row::Epic));
+    rows.sort_by(|a, b| a.name().cmp(b.name()));
+    let mut errors: Vec<(Option<&str>, serde_json::Value, String)> = gog
+        .errors
+        .iter()
+        .map(|error| (error.environment.as_deref(), error_json(error), error.subject()))
+        .collect();
+    errors.extend(epic.errors.iter().map(|error| {
+        (
+            Some(error.environment.as_str()),
+            epic::error_json(error),
+            error.environment.clone(),
+        )
+    }));
+    errors.sort_by(|a, b| a.0.cmp(&b.0));
+    if args.json {
+        super::json::print(&json!({
+            "environments": rows.iter().map(Row::json).collect::<Vec<_>>(),
+            "errors": errors.iter().map(|(_, json, _)| json).collect::<Vec<_>>(),
+            "warnings": warnings,
+        }))?;
+    } else {
+        print_table(&rows);
+        for (_, json, subject) in &errors {
+            eprintln!(
+                "Failed {subject}: {}",
+                json["message"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// Each GOG game as an error that says to log in, for a check that goes on
+/// with Epic's games.
+fn logged_out_of_gog(paths: &Paths) -> anyhow::Result<Batch> {
+    let mut batch = Batch::default();
+    for name in wineo_core::environment::names(paths)? {
+        if let Ok(Some(id)) = update::recorded_gog_id(paths, &name) {
+            batch.errors.push(GameError {
+                environment: Some(name),
+                id: id.parse().ok(),
+                message: LOGGED_OUT.to_owned(),
+            });
+        }
+    }
+    Ok(batch)
+}
+
+/// A row of the check, from either store.
+enum Row<'a> {
+    Gog(&'a Status),
+    Epic(&'a wineo_core::epic::update::Status),
+}
+
+impl Row<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::Gog(status) => &status.environment,
+            Self::Epic(status) => &status.environment,
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        match self {
+            Self::Gog(status) => status_json(status),
+            Self::Epic(status) => epic::status_json(status),
+        }
+    }
 }
 
 fn status_json(status: &Status) -> serde_json::Value {
@@ -188,8 +300,8 @@ fn status_json(status: &Status) -> serde_json::Value {
     })
 }
 
-fn print_table(statuses: &[Status]) {
-    if statuses.is_empty() {
+fn print_table(rows: &[Row]) {
+    if rows.is_empty() {
         return;
     }
     // A Galaxy build reads by GOG's name for it, else by its id.
@@ -199,18 +311,28 @@ fn print_table(statuses: &[Status]) {
             .unwrap_or_else(|| "-".to_owned())
     };
     let mut table = vec![["NAME", "INSTALLED", "AVAILABLE", "STATE"].map(str::to_owned)];
-    table.extend(statuses.iter().map(|status| {
-        [
+    table.extend(rows.iter().map(|row| match row {
+        Row::Gog(status) => [
             status.environment.clone(),
             shown(&status.installed_name, &status.installed),
             shown(&status.available_name, &status.available),
             state_label(status).to_owned(),
-        ]
+        ],
+        Row::Epic(status) => epic::table_row(status),
     }));
     let mut lines = render_columns(&table).into_iter();
     println!("{}", lines.next().expect("the header"));
-    for (status, line) in statuses.iter().zip(lines) {
+    for (row, line) in rows.iter().zip(lines) {
         println!("{line}");
+        let status = match row {
+            Row::Gog(status) => status,
+            Row::Epic(status) => {
+                for note in epic::notes(status) {
+                    println!("{note}");
+                }
+                continue;
+            }
+        };
         if let Some(reason) = &status.reason {
             println!("  {}", reason.note());
         } else if let Some(note) = status.pin_note() {

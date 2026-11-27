@@ -17,6 +17,7 @@ use wineo_core::gog::update::{
 use wineo_core::paths::Paths;
 
 use super::Args;
+use super::epic;
 use crate::cancel;
 use crate::commands::galaxy;
 use crate::commands::gog_support::{
@@ -119,7 +120,11 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let result = if args.all {
         all(paths, args)
     } else if let Some(name) = &args.name {
-        one(paths, args, name)
+        if epic::is_epic(paths, name) {
+            epic::one(paths, args, name)
+        } else {
+            one(paths, args, name)
+        }
     } else {
         Ok(usage_error(NAME_A_GAME))
     };
@@ -139,6 +144,12 @@ pub(super) fn run(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
                 eprintln!("Update canceled.");
                 Ok(cancel::exit_code())
             }
+            Some(Stop::Epic) => {
+                if let Some(interrupted) = error.downcast_ref::<epic::Interrupted>() {
+                    interrupted.say();
+                }
+                Ok(cancel::exit_code())
+            }
             None => Err(error),
         },
         other => other,
@@ -149,6 +160,9 @@ enum Stop {
     Canceled,
     Interrupted(String),
     InstallInterrupted(String),
+    /// An Epic update or repair stopped after its mark, which says itself
+    /// how to finish it.
+    Epic,
 }
 
 /// Whether Ctrl+C or a refused question ended the command, and how far the
@@ -160,6 +174,12 @@ fn stopped(error: &anyhow::Error) -> Option<Stop> {
         } else {
             Stop::Interrupted(name.clone())
         });
+    }
+    if error.downcast_ref::<epic::Interrupted>().is_some() {
+        return Some(Stop::Epic);
+    }
+    if epic::stopped(error) {
+        return Some(Stop::Canceled);
     }
     let canceled = cancel::prompted(error)
         || matches!(
@@ -378,8 +398,11 @@ fn one(paths: &Paths, args: &Args, name: &str) -> anyhow::Result<ExitCode> {
 
 fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     let asking = !args.yes && !args.dry_run;
+    let epic_games = epic::has_games(paths)?;
     let account = Account::new();
     let mut session = account.open(paths)?;
+    // Logged out of GOG, its games fail and Epic's still update.
+    let mut gog_logged_out = Vec::new();
     let batch = match session.as_mut() {
         Some(session) => update::check_all_with(
             session,
@@ -388,13 +411,21 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
                 read_only: args.dry_run,
             },
         )?,
+        None if epic_games => {
+            for name in wineo_core::environment::names(paths)? {
+                if let Ok(Some(_)) = update::recorded_gog_id(paths, &name) {
+                    gog_logged_out.push((name, LOGGED_OUT.to_owned()));
+                }
+            }
+            update::Batch::default()
+        }
         None => anyhow::bail!(LOGGED_OUT),
     };
 
     // A game that couldn't even be checked is a failure like one that can't
     // be planned, unless it has a journal: finishing one needs no check, and
     // may not need GOG at all.
-    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut failures: Vec<(String, String)> = gog_logged_out;
     let mut journaled: Vec<(String, wineo_core::gog::folder::Journal)> = Vec::new();
     for error in &batch.errors {
         match error
@@ -467,14 +498,19 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         }
     }
     drop(planning);
+    let epic = epic::plan_all(paths, args)?;
+    failures.extend(epic.failures.iter().cloned());
 
     // Only something to confirm needs a terminal, so a library with nothing
     // to update is fine without one.
-    if asking && !ready.is_empty() && !prompt::interactive() {
+    if asking && !(ready.is_empty() && epic.ready.is_empty()) && !prompt::interactive() {
         anyhow::bail!(NEEDS_YES);
     }
-    for line in &skipped {
+    for line in skipped.iter().chain(&epic.skipped) {
         println!("{line}");
+    }
+    for warning in &epic.warnings {
+        warn(warning);
     }
     // A game being updated says its warnings in its review.
     for status in &batch.statuses {
@@ -490,8 +526,11 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
     for item in &ready {
         print_review(paths, item);
     }
-    let total = ready.len();
-    if ready.is_empty() && failures.is_empty() {
+    for plan in &epic.ready {
+        epic::print_review(paths, plan);
+    }
+    let total = ready.len() + epic.ready.len();
+    if total == 0 && failures.is_empty() {
         println!("Nothing to update.");
         return Ok(ExitCode::SUCCESS);
     }
@@ -502,7 +541,7 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
         println!("Dry run, nothing was updated.");
         return Ok(failure_code(&failures));
     }
-    if !ready.is_empty() && asking {
+    if total > 0 && asking {
         let noun = text::plural(total, "game", "games");
         match terminal()?.confirm(&format!("Update {total} {noun}?"), true)? {
             Reply::Value(true) => {}
@@ -529,6 +568,27 @@ fn all(paths: &Paths, args: &Args) -> anyhow::Result<ExitCode> {
                 break;
             }
             Err(error) => failures.push((item.environment().to_owned(), format!("{error:#}"))),
+        }
+    }
+    for plan in &epic.ready {
+        if stop.is_some() {
+            break;
+        }
+        if cancellation.token.is_canceled() {
+            stop = Some(anyhow::Error::from(Canceled));
+            break;
+        }
+        println!("Updating {}", plan.environment());
+        match epic.apply(paths, plan) {
+            Ok(updated) => {
+                done += 1;
+                epic::report(paths, plan, &updated);
+            }
+            Err(error) if stopped(&error).is_some() => {
+                stop = Some(error);
+                break;
+            }
+            Err(error) => failures.push((plan.environment().to_owned(), format!("{error:#}"))),
         }
     }
     for (name, reason) in &failures {
