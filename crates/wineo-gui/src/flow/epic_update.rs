@@ -361,7 +361,7 @@ impl Page {
             Stage::Planning => {}
             Stage::Asking => {
                 if let Some(offer) = &self.offer {
-                    body = body.push(offer.view(palette).map(Event::Offer));
+                    body = body.push(legendary::card(offer, palette).map(Event::Offer));
                 }
             }
             Stage::Review | Stage::Working => {

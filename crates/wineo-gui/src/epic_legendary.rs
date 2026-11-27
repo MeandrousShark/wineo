@@ -260,6 +260,8 @@ impl Offer {
         }
     }
 
+    /// The offer's rows, bare: inside a section they share its surface, and
+    /// on a page `card` frames them.
     pub(crate) fn view<'a>(&'a self, palette: Palette) -> Element<'a, Event> {
         let mut content = column![].spacing(12);
         match self.stage {
@@ -308,8 +310,14 @@ impl Offer {
                 );
             }
         }
-        ui::section(content, palette).into()
+        content.into()
     }
+}
+
+/// The offer framed as a card of its own, for a page that has no section
+/// to put it in.
+pub(crate) fn card<'a>(offer: &'a Offer, palette: Palette) -> Element<'a, Event> {
+    ui::section(offer.view(palette), palette).into()
 }
 
 /// The download's state in words beside its bar.
