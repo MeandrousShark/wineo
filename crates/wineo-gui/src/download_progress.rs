@@ -16,17 +16,39 @@ pub(crate) fn install<T: Transport>(
     interval: Duration,
     mut progress_line: impl FnMut(String),
 ) -> anyhow::Result<std::path::PathBuf> {
-    let mut last_progress = Instant::now() - interval;
+    let mut throttle = Throttle::new(interval);
     client.install(paths, global, release, token, |progress| {
+        if throttle.pass(&progress) {
+            progress_line(download_line(release.provider, progress));
+        }
+    })
+}
+
+/// Lets every step through but holds Downloading to one per interval.
+pub(crate) struct Throttle {
+    interval: Duration,
+    last: Instant,
+}
+
+impl Throttle {
+    /// Backdated, so the first Downloading goes through at once.
+    pub(crate) fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: Instant::now() - interval,
+        }
+    }
+
+    pub(crate) fn pass(&mut self, progress: &Progress) -> bool {
         let now = Instant::now();
         if matches!(progress, Progress::Downloading { .. })
-            && now.duration_since(last_progress) < interval
+            && now.duration_since(self.last) < self.interval
         {
-            return;
+            return false;
         }
-        last_progress = now;
-        progress_line(download_line(release.provider, progress));
-    })
+        self.last = now;
+        true
+    }
 }
 
 pub(crate) fn download_line(provider: Provider, progress: Progress) -> String {

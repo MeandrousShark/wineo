@@ -549,8 +549,8 @@ impl App {
 
     pub(crate) fn cancel_management(&self) {
         self.cancel_checkup(false);
-        if let Some(Change::Downloads(crate::downloads_page::Change::Download { token, .. })) =
-            &self.change
+        if let Some(Change::Downloads(change)) = &self.change
+            && let Some(token) = change.token()
         {
             token.cancel();
         }
