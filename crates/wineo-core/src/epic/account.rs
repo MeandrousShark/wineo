@@ -101,8 +101,12 @@ pub fn login(legendary: &Legendary, code: &LoginCode, token: &Token) -> Result<S
 }
 
 /// Logs out and removes the cached owned list. Returns whether someone
-/// was logged in. Installed games keep their records.
+/// was logged in. Installed games keep their records. Refused in a
+/// portable root, where the login is still the host's.
 pub fn logout(legendary: &Legendary, token: &Token) -> Result<bool, Error> {
+    if legendary.paths().portable_root().is_some() {
+        return Err(Error::HostOnly);
+    }
     let _lock = EpicLock::acquire(legendary.paths())?;
     let was = log_out_locked(legendary, token)?;
     super::owned::remove_cache(legendary.paths())?;
@@ -114,6 +118,9 @@ pub fn logout(legendary: &Legendary, token: &Token) -> Result<bool, Error> {
 /// owned list. Returns whether a login was saved. A symlink there is
 /// removed, never followed.
 pub fn logout_without_legendary(paths: &Paths) -> Result<bool, Error> {
+    if paths.portable_root().is_some() {
+        return Err(Error::HostOnly);
+    }
     let _lock = EpicLock::acquire(paths)?;
     let user = super::state_dir(paths).join("user.json");
     // `remove_file` takes a symlink away itself and refuses a folder.

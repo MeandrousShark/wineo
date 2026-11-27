@@ -404,3 +404,23 @@ fn log_out_shows_only_with_a_login_saved_and_a_locked_page_starts_nothing() {
     assert_eq!(row.status.as_ref().unwrap().account, Account::LoggedOut);
     let _ = fs::metadata(paths.global_config()).unwrap();
 }
+
+#[test]
+fn log_out_is_refused_in_a_portable_session_like_the_terminals() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let paths = Paths::select(
+        move |key| (key == "HOME").then(|| std::ffi::OsString::from(&home)),
+        Some(&root.path().join("portable")),
+    )
+    .unwrap();
+    let user = wineo_core::epic::state_dir(&paths).join("user.json");
+    fs::create_dir_all(user.parent().unwrap()).unwrap();
+    fs::write(&user, "{}\n").unwrap();
+    assert_eq!(
+        logout_from(&paths, Found::Offer(missing()), &Token::new()).unwrap_err(),
+        "Epic games live in the host library. Run this without --portable."
+    );
+    assert!(user.exists(), "the host's login stays");
+}

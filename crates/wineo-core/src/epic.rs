@@ -103,6 +103,11 @@ pub enum Error {
     #[error("Not logged in to Epic. Log in with wineo import epic --login.")]
     LoggedOut,
 
+    /// Logging out from a portable root, which would remove the host's
+    /// login: only logging in and listing work there.
+    #[error("{}", install::HOST_ONLY)]
+    HostOnly,
+
     #[error("Couldn't get owned Epic games: {0}")]
     Owned(Box<Error>),
 
